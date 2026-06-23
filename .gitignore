@@ -1,0 +1,40 @@
+# ── Secrets (NEVER commit) ───────────────────────────────────
+.env
+*.env
+!.env.example
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# ── Model weights / heavy artifacts (download on Colab, don't commit) ──
+weights/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+model/
+data/
+sources/
+
+# ── Runtime / outputs ────────────────────────────────────────
+results/
+*.log
+*.wav
+*.mp4
+tmp/
+.runtime/
+
+# ── OS / editor ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+codegraph/

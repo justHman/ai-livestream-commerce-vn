@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LiveAvatar — Test Viewer (FULL mode)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #1a1a2e; color: #eee; }
+    header { padding: 12px 20px; background: #0173B2; }
+    header h1 { margin: 0; font-size: 18px; }
+    .wrap { display: flex; gap: 16px; padding: 20px; flex-wrap: wrap; }
+    .panel { background: #232336; border-radius: 10px; padding: 16px; }
+    .controls { flex: 1; min-width: 280px; }
+    .stage { flex: 2; min-width: 360px; }
+    video { width: 100%; border-radius: 8px; background: #000; aspect-ratio: 16/9; }
+    button { background: #0173B2; color: #fff; border: none; padding: 10px 16px;
+             border-radius: 6px; cursor: pointer; font-size: 14px; margin: 4px 0; }
+    button.stop { background: #D55E00; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0 12px;
+                      border-radius: 6px; border: 1px solid #444; background: #1a1a2e; color: #eee; }
+    label { font-size: 13px; color: #aaa; }
+    #log { font-family: monospace; font-size: 12px; white-space: pre-wrap;
+           max-height: 220px; overflow-y: auto; background: #14141f; padding: 10px; border-radius: 6px; }
+    .row { display: flex; gap: 8px; }
+    .row button { flex: 1; }
+  </style>
+</head>
+<body>
+  <header><h1>LiveAvatar — FULL mode test viewer</h1></header>
+
+  <div class="wrap">
+    <div class="panel controls">
+      <label>Broker URL (backend)</label>
+      <input id="broker" value="http://127.0.0.1:8800" />
+
+      <label>Context ID (optional — empty = silent avatar)</label>
+      <input id="contextId" placeholder="afd1d7e3-...-context-id" />
+
+      <label>Avatar ID (empty = sandbox)</label>
+      <input id="avatarId" placeholder="dd73ea75-... (sandbox default)" />
+
+      <div class="row">
+        <button id="startBtn">▶ Start (FULL)</button>
+        <button id="stopBtn" class="stop" disabled>■ Stop</button>
+      </div>
+
+      <label>Make avatar speak (LLM response)</label>
+      <textarea id="speakText" rows="2" placeholder="Giá kem chống nắng bao nhiêu?"></textarea>
+      <div class="row">
+        <button id="speakBtn" disabled>🗣 Speak (response)</button>
+        <button id="repeatBtn" disabled>🔁 Repeat (verbatim)</button>
+      </div>
+
+      <label>Log</label>
+      <div id="log"></div>
+    </div>
+
+    <div class="panel stage">
+      <video id="avatarVideo" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <!-- LiveKit client (CDN). The LiveAvatar Web SDK wraps this; for a
+       dependency-free test we use livekit-client directly. -->
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = (m) => { $("log").textContent += m + "\n"; $("log").scrollTop = 1e9; };
+
+    let room = null;
+    let sessionId = null;
+
+    async function start() {
+      const broker = $("broker").value.replace(/\/$/, "");
+      const body = {
+        context_id: $("contextId").value || null,
+        avatar_id: $("avatarId").value || null,
+        is_sandbox: true,
+        language: "en",
+      };
+      log("→ POST /api/session/full");
+      const res = await fetch(broker + "/api/session/full", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { log("✗ " + res.status + " " + (await res.text())); return; }
+      const data = await res.json();
+      sessionId = data.session_id;
+      log("✓ session " + sessionId + " (" + data.mode + ")");
+
+      // Join the LiveKit room with the frontend-safe client token.
+      room = new LivekitClient.Room();
+      room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
+        if (track.kind === "video" || track.kind === "audio") {
+          track.attach($("avatarVideo"));
+          log("✓ " + track.kind + " track attached");
+        }
+      });
+      await room.connect(data.livekit_url, data.livekit_client_token);
+      log("✓ connected to LiveKit room");
+
+      $("startBtn").disabled = true;
+      $("stopBtn").disabled = false;
+      $("speakBtn").disabled = false;
+      $("repeatBtn").disabled = false;
+    }
+
+    // FULL mode events go over LiveKit data channels on topic "agent-control".
+    function sendControl(eventType, payload) {
+      if (!room) return;
+      const msg = JSON.stringify({ event_type: eventType, ...payload });
+      const data = new TextEncoder().encode(msg);
+      room.localParticipant.publishData(data, { reliable: true, topic: "agent-control" });
+      log("→ " + eventType + " " + JSON.stringify(payload));
+    }
+
+    async function stop() {
+      if (room) { await room.disconnect(); room = null; }
+      if (sessionId) {
+        const broker = $("broker").value.replace(/\/$/, "");
+        await fetch(broker + "/api/session/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        log("✓ stopped " + sessionId);
+        sessionId = null;
+      }
+      $("startBtn").disabled = false;
+      $("stopBtn").disabled = true;
+      $("speakBtn").disabled = true;
+      $("repeatBtn").disabled = true;
+    }
+
+    $("startBtn").onclick = () => start().catch((e) => log("✗ " + e));
+    $("stopBtn").onclick = () => stop().catch((e) => log("✗ " + e));
+    $("speakBtn").onclick = () =>
+      sendControl("avatar.speak_response", { text: $("speakText").value });
+    $("repeatBtn").onclick = () =>
+      sendControl("avatar.speak_text", { text: $("speakText").value });
+  </script>
+</body>
+</html>

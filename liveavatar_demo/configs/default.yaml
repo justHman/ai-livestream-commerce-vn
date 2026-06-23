@@ -1,0 +1,36 @@
+# LiveAvatar Demo — default configuration
+# Block-wise autoregressive streaming with anti-drift strategies
+
+# Generator settings (matching Wan2.2 latent dimensions)
+generator:
+  latent_channels: 16
+  latent_height: 50    # 400 / 8
+  latent_width: 90     # 720 / 8
+  block_size: 3        # latent frames per block
+  num_steps: 4         # DMD-distilled denoising steps
+  sigma_min: 0.002
+  sigma_max: 80.0
+  kv_window_size: 4    # rolling KV cache window (L)
+  num_heads: 30
+  head_dim: 128
+  audio_embed_dim: 768
+
+# Output
+resolution: [400, 720]
+target_fps: 24
+
+# Audio encoder
+wav2vec2_model: "facebook/wav2vec2-base"
+
+# TTS
+tts_voice: "vi-VN-HoaiMyNeural"  # Vietnamese female
+tts_rate: "+0%"
+
+# Anti-drift strategies
+enable_history_corrupt: true
+enable_aas: true
+enable_rolling_rope: true
+
+# Streaming
+max_blocks: 0          # 0 = infinite
+block_delay_ms: 0      # artificial delay per block (ms)

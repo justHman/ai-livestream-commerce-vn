@@ -1,0 +1,19 @@
+# requirements for the LiveAvatar LITE backend (Colab / local).
+# Core backend (always needed):
+requests
+fastapi
+uvicorn
+pydantic
+websocket-client
+numpy
+
+# Public tunnel for Colab:
+pyngrok
+
+# Model stacks (install on Colab GPU; heavy — skip locally if just brokering):
+# torch
+# transformers
+# accelerate
+# bitsandbytes        # 4-bit load for SeaLLMs on T4
+# kokoro              # Kokoro-Vietnamese TTS (apache-2.0)
+# vllm                # optional: faster LLM serving than transformers
