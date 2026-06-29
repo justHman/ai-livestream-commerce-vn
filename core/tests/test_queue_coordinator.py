@@ -3,11 +3,11 @@
 Covers:
   - BoundedVideoQueue: put up to max, next put drops oldest (dropped_count
     increments), qsize correct, get retrieves in order.
-  - CoordinatorMetrics: first_frame_latency_ms recorded, queue_depth_windows
+  - CoordinatorMetrics: pipeline_total_ms recorded, queue_depth_windows
     tracks qsize, dropped_windows accumulates.
   - StreamOrchestrator end-to-end with stub LLM (fixed TextChunks), stub TTS
     (yields AudioWindows), real MockRenderBackend: ordered VideoWindows
-    emitted, is_final on the last, first_frame_latency_ms recorded, total > 0.
+    emitted, is_final on the last, pipeline_total_ms recorded, total > 0.
   - Cancel mid-run: emission stops, queued windows dropped, run returns early.
   - Metrics dropped_windows increments on queue overflow.
 
@@ -122,7 +122,7 @@ def test_metrics_first_frame_latency_recorded():
     m.record_start()
     times[0] = 100.150  # +150 ms
     m.record_first_frame()
-    assert m.first_frame_latency_ms == pytest.approx(150.0, abs=1.0)
+    assert m.pipeline_total_ms == pytest.approx(150.0, abs=1.0)
 
 
 def test_metrics_queue_depth_and_dropped():
@@ -142,7 +142,7 @@ def test_metrics_to_dict_contains_all_fields():
     m.update_queue_depth(2)
     m.increment_dropped(1)
     d = m.to_dict()
-    assert "first_frame_latency_ms" in d
+    assert "pipeline_total_ms" in d
     assert "queue_depth_windows" in d
     assert "dropped_windows" in d
 
@@ -262,9 +262,9 @@ async def test_orchestrator_emits_ordered_videowindows_end_to_end():
     assert windows[-1].is_final is True
     # All windows belong to the same session.
     assert all(w.session_id == sid for w in windows)
-    # first_frame_latency_ms was recorded (>= 0).
-    assert metrics.first_frame_latency_ms is not None
-    assert metrics.first_frame_latency_ms >= 0
+    # pipeline_total_ms was recorded (>= 0).
+    assert metrics.pipeline_total_ms is not None
+    assert metrics.pipeline_total_ms >= 0
     # spoken text is non-empty (concatenation of LLM deltas).
     assert spoken, "run() must return non-empty spoken text"
 
@@ -277,9 +277,9 @@ async def test_orchestrator_records_first_frame_latency():
 
     await orch.run(sid, "hi", system_prompt=None)
 
-    # first_frame_latency_ms must have been set when the first VideoWindow was put.
-    assert metrics.first_frame_latency_ms is not None
-    assert metrics.first_frame_latency_ms >= 0.0
+    # pipeline_total_ms must have been set when the first VideoWindow was put.
+    assert metrics.pipeline_total_ms is not None
+    assert metrics.pipeline_total_ms >= 0.0
 
 
 @pytest.mark.asyncio

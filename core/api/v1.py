@@ -299,14 +299,19 @@ async def _streaming_say(d: V1Deps, req: SayReq) -> dict[str, Any]:
         "text_chunk_max_chars": getattr(cfg, "text_chunk_max_chars", 80),
         "text_chunk_flush_timeout_ms": getattr(cfg, "text_chunk_flush_timeout_ms", 350),
     }
-    orchestrator = StreamOrchestrator(
-        llm=llm, tts=tts, backend=d.backend, queue=queue, metrics=metrics, config=orch_cfg,
-    )
-    # Register the orchestrator so /lite/interrupt can cancel it.
-    d.orchestrators[sid] = {"orchestrator": orchestrator, "queue": queue}
-
-    await d.hub.emit(sid, {"type": "avatar.speak_started", "text": req.text})
+    # Widen the try/finally to wrap the speak_started emit, orchestrator
+    # construction, run, drain, and return. If the emit raises (e.g. WS
+    # error), the finally still releases the per-session lock and cleans up
+    # the orchestrator entry — otherwise the session would be permanently
+    # locked (every future /lite/say -> 409) and the entry would leak.
     try:
+        orchestrator = StreamOrchestrator(
+            llm=llm, tts=tts, backend=d.backend, queue=queue, metrics=metrics, config=orch_cfg,
+        )
+        # Register the orchestrator so /lite/interrupt can cancel it.
+        d.orchestrators[sid] = {"orchestrator": orchestrator, "queue": queue}
+
+        await d.hub.emit(sid, {"type": "avatar.speak_started", "text": req.text})
         system_prompt = None
         if em is not None and hasattr(em, "_system_prompt"):
             system_prompt = em._system_prompt or None

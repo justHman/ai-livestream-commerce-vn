@@ -98,8 +98,13 @@ class StreamOrchestrator:
         """Run one LLM->chunker->TTS->backend turn for ``session_id``.
 
         Puts each emitted ``VideoWindow`` into the bounded queue and records
-        ``first_frame_latency_ms`` on the first emission. Returns the full
+        ``pipeline_total_ms`` on the first emission. Returns the full
         spoken text (concatenation of all LLM TextChunk texts).
+
+        Note: the recorded ``pipeline_total_ms`` measures the FULL pipeline
+        (sync thread produces ALL windows, then ``run()`` drains them into
+        the queue and records on the first put). It is NOT true first-frame
+        latency. True per-window streaming drain is post-P0.
 
         On cancel: stops emission, clears the bounded queue, and returns the
         text produced so far.
