@@ -20,6 +20,13 @@ import os
 
 os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")  # offline, deterministic
 
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="integration smoke script — needs LIVEAVATAR_API_KEY / real sandbox; "
+           "run via `DIRECTOR_EMBEDDER=hash python -m core.tests.director_smoke_test`"
+)
+
 from core.director import (
     Comment,
     Director,

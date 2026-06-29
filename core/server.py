@@ -80,7 +80,17 @@ def create_app(config: AppConfig | None = None,
         side-effect import + ``reconfigure_cloud()``) is skipped for mock.
     """
     if config is None:
-        config = CONFIG
+        # Build a FRESH AppConfig.from_env() each call instead of reusing the
+        # module-level CONFIG. The module-level CONFIG is built once at import
+        # time (used by ``main()`` for the port and by the module-level
+        # ``app = create_app()`` for uvicorn). Reusing it here made create_app()
+        # non-deterministic wrt import order: if core.server was first imported
+        # under one env (e.g. cloud), a later create_app() call under a
+        # different env (e.g. mock via monkeypatch) still saw the stale cloud
+        # CONFIG and tried to build CloudRenderBackend without a key. Reading
+        # env fresh each call makes create_app() deterministic and robust to
+        # import-order staleness.
+        config = AppConfig.from_env()
 
     # Task 7: reject CORS_ORIGINS='*' for every environment EXCEPT explicit
     # "dev" (covers both the module-level ``app = create_app()`` path and

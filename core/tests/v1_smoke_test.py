@@ -16,6 +16,13 @@ Run:
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="integration smoke script — needs LIVEAVATAR_API_KEY / real sandbox; "
+           "run via `python -m core.tests.v1_smoke_test`"
+)
+
 from fastapi.testclient import TestClient
 
 from core.server import app
