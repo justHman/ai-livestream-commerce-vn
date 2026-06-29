@@ -145,6 +145,9 @@ class TTSConfig:
 class AppConfig:
     """Runtime configuration, read from environment."""
 
+    # Deployment environment: "dev" (auth disabled when tokens empty) | "prod"
+    app_env: str = "dev"
+
     # Renderer backend
     render_backend: str = "cloud"
 
@@ -169,6 +172,13 @@ class AppConfig:
     # Director orchestration
     director_enabled: bool = False
 
+    # Auth tokens (Task 7). Empty + app_env="dev" -> auth disabled.
+    backend_api_token: str = ""   # viewer token: /lite/* + /ws/control
+    admin_api_token: str = ""     # admin token: /engines/* + /debug/*
+
+    # Debug mode gate (Task 7). When False, /debug/* -> 404.
+    debug_enabled: bool = False
+
     # Engine configs
     llm: LLMConfig = field(default_factory=LLMConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
@@ -176,6 +186,7 @@ class AppConfig:
     @classmethod
     def from_env(cls) -> "AppConfig":
         return cls(
+            app_env=os.environ.get("APP_ENV", "dev").lower(),
             render_backend=os.environ.get("RENDER_BACKEND", "cloud").lower(),
             store_backend=os.environ.get("SESSION_STORE", "memory").lower(),
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
@@ -187,6 +198,10 @@ class AppConfig:
             mock_avatar_height=int(os.environ.get("MOCK_AVATAR_HEIGHT", "360")),
             director_enabled=os.environ.get("DIRECTOR_ENABLED", "0").lower()
             in ("1", "true", "yes"),
+            backend_api_token=os.environ.get("BACKEND_API_TOKEN", ""),
+            admin_api_token=os.environ.get("ADMIN_API_TOKEN", ""),
+            debug_enabled=os.environ.get("DEBUG_ENABLED", "0").lower()
+            in ("1", "true", "on", "yes"),
             llm=LLMConfig.from_env(),
             tts=TTSConfig.from_env(),
         )

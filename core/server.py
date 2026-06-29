@@ -74,6 +74,13 @@ def create_app(config: AppConfig | None = None,
     if config is None:
         config = CONFIG
 
+    # Task 7: reject CORS_ORIGINS='*' in prod (startup error, covers both the
+    # module-level ``app = create_app()`` path and explicit ``create_app``).
+    if config.app_env == "prod" and config.cors_list() == ["*"]:
+        raise RuntimeError(
+            "CORS_ORIGINS='*' is forbidden in APP_ENV=prod; set explicit origins"
+        )
+
     app = FastAPI(title="VN Live-Commerce Host — core API")
     app.add_middleware(
         CORSMiddleware,
@@ -84,10 +91,14 @@ def create_app(config: AppConfig | None = None,
 
     if deps is not None:
         # Injected path (tests): use deps' components verbatim, skip engine
-        # loading, skip Director construction.
+        # loading, skip Director construction. Wire config through so auth
+        # dependencies in v1 can read it.
         backend = deps.backend
         engine_mgr = deps.engine_manager
         director = deps.director
+        # If the caller passed a config on deps, prefer it; otherwise use the
+        # create_app config so auth gates are always wired.
+        deps.config = deps.config or config
         v1.init_deps(deps)
     else:
         # Env-driven path: build everything from config (previous behavior).
@@ -143,6 +154,7 @@ def create_app(config: AppConfig | None = None,
             hub=hub,
             director=director,
             engine_manager=engine_mgr,
+            config=config,
         ))
 
     app.include_router(v1.router)

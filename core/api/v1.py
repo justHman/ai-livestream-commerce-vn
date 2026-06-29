@@ -22,12 +22,14 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ..config import AppConfig
 from ..render.base import RenderBackend, StartOptions
 from ..render.mock import MockRenderBackend
+from .auth import admin_auth, debug_enabled_dep, validate_ws_token, viewer_auth
 
 router = APIRouter(prefix="/api/v1")
 
@@ -125,12 +127,13 @@ class V1Deps:
     """Dependencies injected by the server at startup."""
 
     def __init__(self, backend: RenderBackend, store, hub: ControlHub, director=None,
-                 engine_manager=None) -> None:
+                 engine_manager=None, config: AppConfig | None = None) -> None:
         self.backend = backend
         self.store = store
         self.hub = hub
         self.director = director       # DirectorRuntime (optional)
         self.engine_manager = engine_manager  # EngineManager (optional, for runtime swap)
+        self.config = config           # AppConfig (optional, for auth gates)
 
 
 _deps: Optional[V1Deps] = None
@@ -220,7 +223,7 @@ async def health_ready() -> dict[str, Any]:
 
 
 @router.post("/lite/start")
-async def lite_start(req: StartReq) -> dict[str, Any]:
+async def lite_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
     try:
         result = await asyncio.to_thread(
@@ -237,7 +240,7 @@ async def lite_start(req: StartReq) -> dict[str, Any]:
 
 
 @router.post("/lite/say")
-async def lite_say(req: SayReq) -> dict[str, Any]:
+async def lite_say(req: SayReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
     await d.hub.emit(req.session_id, {"type": "avatar.speak_started", "text": req.text})
     try:
@@ -249,7 +252,7 @@ async def lite_say(req: SayReq) -> dict[str, Any]:
 
 
 @router.post("/lite/interrupt")
-async def lite_interrupt(req: SessionReq) -> dict[str, Any]:
+async def lite_interrupt(req: SessionReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
     try:
         await asyncio.to_thread(d.backend.interrupt, req.session_id)
@@ -260,7 +263,7 @@ async def lite_interrupt(req: SessionReq) -> dict[str, Any]:
 
 
 @router.post("/lite/stop")
-async def lite_stop(req: SessionReq) -> dict[str, Any]:
+async def lite_stop(req: SessionReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
     try:
         await asyncio.to_thread(d.backend.stop, req.session_id)
@@ -277,7 +280,7 @@ async def lite_stop(req: SessionReq) -> dict[str, Any]:
 
 
 @router.post("/lite/attach")
-async def lite_attach(req: AttachReq) -> dict[str, Any]:
+async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     """Attach a Director to a started session: build the FSM + embed the catalog."""
     d = deps()
     if d.director is None:
@@ -293,7 +296,7 @@ async def lite_attach(req: AttachReq) -> dict[str, Any]:
 
 
 @router.post("/lite/ingest")
-async def lite_ingest(req: IngestReq) -> dict[str, Any]:
+async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     """Feed viewer comments to the Director; it decides + the avatar speaks.
 
     This is the closed loop: comments -> cluster/score -> Decision ->
@@ -340,7 +343,7 @@ class EngineSwapReq(BaseModel):
 
 
 @router.get("/engines")
-async def engines_status() -> dict[str, Any]:
+async def engines_status(_: None = Depends(admin_auth)) -> dict[str, Any]:
     """List available LLM/TTS presets + currently loaded engines."""
     d = deps()
     if d.engine_manager is None:
@@ -349,7 +352,7 @@ async def engines_status() -> dict[str, Any]:
 
 
 @router.post("/engines/llm")
-async def swap_llm(req: EngineSwapReq) -> dict[str, Any]:
+async def swap_llm(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[str, Any]:
     """Swap the LLM engine at runtime. Unloads the old model (frees VRAM),
     loads the new one, re-configures the cloud RenderBackend."""
     d = deps()
@@ -380,7 +383,7 @@ async def swap_llm(req: EngineSwapReq) -> dict[str, Any]:
 
 
 @router.post("/engines/tts")
-async def swap_tts(req: EngineSwapReq) -> dict[str, Any]:
+async def swap_tts(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[str, Any]:
     """Swap the TTS engine at runtime. Unloads the old model (frees VRAM),
     loads the new one, re-configures the cloud RenderBackend."""
     d = deps()
@@ -418,7 +421,11 @@ class DebugStartReq(BaseModel):
 
 
 @router.post("/debug/start")
-async def debug_start(req: DebugStartReq) -> dict[str, Any]:
+async def debug_start(
+    req: DebugStartReq,
+    _dbg: None = Depends(debug_enabled_dep),
+    _adm: None = Depends(admin_auth),
+) -> dict[str, Any]:
     """Start debug mode: feed mock viewer comments + simulated traffic to the Director."""
     d = deps()
     if d.director is None:
@@ -445,7 +452,11 @@ class DebugStopReq(BaseModel):
 
 
 @router.post("/debug/stop")
-async def debug_stop(req: DebugStopReq) -> dict[str, Any]:
+async def debug_stop(
+    req: DebugStopReq,
+    _dbg: None = Depends(debug_enabled_dep),
+    _adm: None = Depends(admin_auth),
+) -> dict[str, Any]:
     """Stop debug mode: stop the mock traffic simulator."""
     d = deps()
     sim = getattr(d, "_debug_sims", {}).pop(req.session_id, None)
@@ -457,7 +468,11 @@ async def debug_stop(req: DebugStopReq) -> dict[str, Any]:
 
 
 @router.get("/debug/status/{session_id}")
-async def debug_status(session_id: str) -> dict[str, Any]:
+async def debug_status(
+    session_id: str,
+    _dbg: None = Depends(debug_enabled_dep),
+    _adm: None = Depends(admin_auth),
+) -> dict[str, Any]:
     """Check if debug mode is running for a session."""
     d = deps()
     sim = getattr(d, "_debug_sims", {}).get(session_id)
@@ -468,7 +483,10 @@ async def debug_status(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/debug/mock_products")
-async def debug_mock_products() -> dict[str, Any]:
+async def debug_mock_products(
+    _dbg: None = Depends(debug_enabled_dep),
+    _adm: None = Depends(admin_auth),
+) -> dict[str, Any]:
     """Return a mock product catalog for debug/testing."""
     from ..debug.mock_data import MOCK_PRODUCTS
 
@@ -476,7 +494,10 @@ async def debug_mock_products() -> dict[str, Any]:
 
 
 @router.get("/debug/mock_viewer_msgs")
-async def debug_mock_viewer_msgs() -> dict[str, Any]:
+async def debug_mock_viewer_msgs(
+    _dbg: None = Depends(debug_enabled_dep),
+    _adm: None = Depends(admin_auth),
+) -> dict[str, Any]:
     """Return the pool of mock viewer messages for debug."""
     from ..debug.mock_data import MOCK_VIEWER_MSGS
 
@@ -486,6 +507,12 @@ async def debug_mock_viewer_msgs() -> dict[str, Any]:
 @router.websocket("/ws/control/{session_id}")
 async def ws_control(ws: WebSocket, session_id: str) -> None:
     d = deps()
+    # Task 7: validate token BEFORE accept(). On invalid, close with 4401
+    # and return without accepting (no control.connected event leaks).
+    cfg = d.config
+    if cfg is not None and not validate_ws_token(ws, cfg):
+        await ws.close(code=4401)
+        return
     await d.hub.connect(session_id, ws)
     await ws.send_json({"type": "control.connected", "session_id": session_id})
     try:
