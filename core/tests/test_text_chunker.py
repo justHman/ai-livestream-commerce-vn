@@ -119,9 +119,10 @@ def test_max_chars_exactly_at_boundary_no_extra():
 
 
 def test_timeout_flush_via_check_timeout():
-    """With a fake clock, feed a short token (below min_chars, no punct),
-    advance the clock past flush_timeout_ms, then check_timeout() must emit
-    the buffered chunk. Before advancing, check_timeout() must return []."""
+    """With a fake clock, a buffer >= min_chars flushed past the timeout
+    threshold is emitted by check_timeout(). A sub-min buffer does NOT fire
+    timeout — it keeps waiting until more tokens arrive or finalize() is
+    called (timeout respects the min-chars coalescing rule)."""
     clock, advance = make_clock(start=0.0)
     c = TextChunker(
         session_id="s",
@@ -131,29 +132,57 @@ def test_timeout_flush_via_check_timeout():
         clock=clock,
     )
 
-    # Buffer a short token — no flush (below min, no punct, no timeout yet).
-    assert c.feed("hello") == []
+    # Buffer a short token (< min_chars) — no flush (below min, no punct).
+    assert c.feed("hello") == []  # "hello" = 5 chars < 12
 
-    # Before timeout: check_timeout returns nothing.
-    advance(0.100)  # 100ms < 350ms
+    # Even past the timeout threshold, a sub-min buffer must NOT flush:
+    # timeout respects min_chars.
+    advance(0.400)  # 400ms >= 350ms
     assert c.check_timeout() == []
 
+    # The sub-min buffer is still waiting; finalize must emit it as a
+    # sub-min final chunk (timeout never did).
+    final = c.finalize()
+    assert len(final) == 1
+    assert final[0].text == "hello"
+    assert final[0].is_final is True
+
+    # Now a separate chunker: feed >= min_chars with no punctuation so only
+    # timeout can fire.
+    clock2, advance2 = make_clock(start=0.0)
+    c2 = TextChunker(
+        session_id="s",
+        utterance_id="u",
+        min_chars=12,
+        flush_timeout_ms=350,
+        clock=clock2,
+    )
+    # Feed 13 chars with no punctuation/boundary — stays buffered.
+    assert c2.feed("hello world ") == []  # 12 chars, no punct, no flush
+    assert c2.feed("x") == []  # 13 chars, no punct, no flush
+
+    # Before timeout: check_timeout returns nothing.
+    advance2(0.100)  # 100ms < 350ms
+    assert c2.check_timeout() == []
+
     # Cross the timeout threshold.
-    advance(0.300)  # total 400ms >= 350ms
-    flushed = c.check_timeout()
+    advance2(0.300)  # total 400ms >= 350ms
+    flushed = c2.check_timeout()
     assert len(flushed) == 1
-    assert flushed[0].text == "hello"
+    assert flushed[0].text == "hello world x"
     assert flushed[0].is_final is False
     assert flushed[0].seq == 0
 
     # After flush, buffer is empty; a further check_timeout returns [].
-    assert c.check_timeout() == []
+    assert c2.check_timeout() == []
 
 
 def test_timeout_flush_triggered_inside_feed():
     """If the clock has advanced past the timeout by the time feed() is
     called with a new token, the timeout condition flushes the previously
-    buffered text (the new token remains buffered)."""
+    buffered text — but ONLY when the buffer is >= min_chars (timeout
+    respects min_chars). A sub-min buffer does NOT flush on timeout; it
+    keeps accumulating until it reaches min_chars, or until finalize()."""
     clock, advance = make_clock(start=0.0)
     c = TextChunker(
         session_id="s",
@@ -162,17 +191,34 @@ def test_timeout_flush_triggered_inside_feed():
         flush_timeout_ms=350,
         clock=clock,
     )
-    c.feed("first")  # buffered, no flush
-    advance(0.500)  # 500ms >= 350ms
 
-    # Feeding a second token: timeout fires on the OLD buffer content.
-    out = c.feed("second")
-    # The flush contains "first" only (the new token was just appended, but
-    # the timeout condition checks the whole buffer — so the whole buffer
-    # "firstsecond" flushes together). Per spec: "flush the whole buffer".
+    # Buffer sub-min content ("firstsecon" = 10 chars < 12).
+    c.feed("first")   # 5 chars
+    c.feed("secon")   # +5 = 10 chars, still < 12
+    advance(0.500)    # 500ms >= 350ms — but buffer < min, no timeout flush.
+
+    # Feeding another token: still below min_chars (11), no flush (timeout
+    # cannot fire; no punct; not at max).
+    out = c.feed("x")  # +1 = 11 chars, still < 12
+    assert out == []
+
+    # Now feed one more token to reach min_chars (12). Timeout fires on the
+    # whole buffer (including the new token) because clock is still past
+    # threshold and buffer >= min_chars.
+    out = c.feed("y")  # buffer becomes "firstseconxy" = 12 chars
     assert len(out) == 1
-    assert out[0].text == "firstsecond"
+    assert out[0].text == "firstseconxy"
     assert out[0].is_final is False
+    assert out[0].seq == 0
+
+    # Sub-min remainder after flush: timeout will not emit it, finalize will.
+    c.feed("tail")  # 4 chars buffered, < min
+    advance(1.000)  # well past timeout
+    assert c.check_timeout() == []  # sub-min: no timeout flush
+    final = c.finalize()
+    assert len(final) == 1
+    assert final[0].text == "tail"
+    assert final[0].is_final is True
 
 
 # ---------- final flush ----------

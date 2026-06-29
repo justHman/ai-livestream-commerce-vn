@@ -14,16 +14,20 @@ TextChunks when one of the following conditions is met (checked in order):
   2. Max chars: the buffer length >= ``max_chars`` (hard cap). The whole
      buffer is flushed so the chunk never grows unboundedly between
      punctuation.
-  3. Timeout: the buffer is non-empty and
+  3. Timeout: the buffer length >= ``min_chars`` AND
      ``now - last_flush_time >= flush_timeout_ms``. The whole buffer is
      flushed. This is checked inside ``feed()`` on every token, AND is
      also exposed as ``check_timeout()`` so a coordinator can poll it
-     between tokens (e.g. when the LLM is momentarily quiet).
+     between tokens (e.g. when the LLM is momentarily quiet). A sub-min
+     buffer does NOT fire timeout — it keeps waiting until more tokens
+     arrive (reaching min_chars via punctuation/max) or ``finalize()``
+     is called.
 
-``feed()`` therefore never emits a chunk shorter than ``min_chars`` (the
-punctuation condition already requires >= min_chars; the max condition
-produces >= max_chars >= min_chars). Only ``flush()`` (forced) and
-``finalize()`` (end of utterance) may emit a sub-min remainder.
+``feed()`` and ``check_timeout()`` therefore never emit a chunk shorter
+than ``min_chars`` (the punctuation condition already requires >=
+min_chars; the max condition produces >= max_chars >= min_chars; the
+timeout condition also requires >= min_chars). Only ``flush()`` (forced)
+and ``finalize()`` (end of utterance) may emit a sub-min remainder.
 
 A clock callable is injectable so timeout behaviour is deterministic in
 tests. The default is ``time.monotonic``. The clock returns seconds (a
@@ -59,9 +63,9 @@ class TextChunker:
         session_id: Render session identifier (propagated to every chunk).
         utterance_id: Utterance identifier within the session.
         min_chars: Minimum chunk size for natural (non-forced) flushes.
-            ``feed()`` will not emit a chunk shorter than this unless a
-            punctuation/max/timeout condition produces one (punctuation
-            already requires >= min_chars; max produces >= max_chars).
+            ``feed()`` and ``check_timeout()`` will not emit a chunk
+            shorter than this (punctuation requires >= min_chars, max
+            produces >= max_chars, timeout also requires >= min_chars).
             Only ``flush()`` / ``finalize()`` may emit sub-min chunks.
         target_chars: Target phrase size. Currently informational (the
             chunker does not proactively flush at target; it waits for a
@@ -154,9 +158,17 @@ class TextChunker:
         return [chunk]
 
     def _check_timeout(self) -> bool:
-        """Return True if the timeout condition is currently satisfied
-        (non-empty buffer AND elapsed >= flush_timeout_ms)."""
-        if self._buffer_len == 0:
+        """Return True if the timeout condition is currently satisfied.
+
+        The timeout condition requires all of:
+          - buffer is non-empty,
+          - buffer length >= ``min_chars`` (timeout respects the same
+            min-chars coalescing rule as the punctuation condition; a
+            sub-min buffer keeps waiting until more tokens arrive or
+            ``finalize()`` is called),
+          - elapsed >= ``flush_timeout_ms`` since the last flush.
+        """
+        if self._buffer_len < self._min_chars:
             return False
         now = self._clock()
         return (now - self._last_flush_time) >= self._flush_timeout_s
@@ -170,8 +182,10 @@ class TextChunker:
         flushed by the punctuation / max / timeout conditions.
 
         ``feed()`` never emits a chunk shorter than ``min_chars`` (the
-        conditions that fire here all produce >= min_chars). Sub-min
-        remainders are emitted only via ``flush()`` or ``finalize()``.
+        conditions that fire here all produce >= min_chars: punctuation
+        requires >= min_chars, max produces >= max_chars, timeout also
+        requires >= min_chars). Sub-min remainders are emitted only via
+        ``flush()`` or ``finalize()``.
 
         Args:
             token_text: A token delta from the LLM stream. May be empty
