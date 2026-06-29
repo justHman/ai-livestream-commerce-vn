@@ -1,6 +1,27 @@
-"""CosyVoice2 adapter — Apache-2.0, streaming, multilingual (vi not official)."""
+"""CosyVoice2 adapter (NATIVE FALLBACK) — Apache-2.0, true streaming.
+
+CosyVoice2 (FunAudioLLM/CosyVoice2-0.5B) is a streaming multilingual TTS.
+It is NOT on HuggingFace AutoModelForTextToWaveform, so it needs its own
+runtime (the cosyvoice repo). Kept as a native fallback for when true
+sub-200ms streaming is needed (the transformers primary adapter does
+full-waveform synthesis, not streaming).
+
+Use cases:
+  - True streaming TTS (token-by-token output for lowest latency).
+  - Zero-shot voice cloning with a reference audio + transcript.
+  - Multilingual (vi not officially supported but works with VN finetune).
+
+Usage:
+    engine = load_engine({
+        "engine": "cosyvoice",
+        "model": "FunAudioLLM/CosyVoice2-0.5B",
+        "ref_audio": "path/to/voice_ref.wav",
+    })
+"""
 
 from __future__ import annotations
+
+from typing import Iterator, Optional
 
 import numpy as np
 
@@ -20,7 +41,8 @@ class CosyVoice2Adapter(TTSEngine):
         from cosyvoice.cli.cosyvoice import CosyVoice2  # FunAudioLLM/CosyVoice repo
 
         e = cls()
-        e._model = CosyVoice2(cfg.get("weights_path", "FunAudioLLM/CosyVoice2-0.5B"))
+        model_id = cfg.get("model") or cfg.get("weights_path", "FunAudioLLM/CosyVoice2-0.5B")
+        e._model = CosyVoice2(model_id)
         e._ref = cfg.get("ref_audio")
         e.sample_rate = int(cfg.get("sample_rate", 24_000))
         return e
@@ -28,7 +50,6 @@ class CosyVoice2Adapter(TTSEngine):
     def synthesize(self, req: TTSRequest) -> AudioChunk:
         if self._model is None:
             raise RuntimeError("CosyVoice2 not loaded")
-        # zero-shot: needs a ref wav + its transcript. Collect generator output.
         out = []
         for seg in self._model.inference_zero_shot(
             req.text, req.ref_text or "", req.voice or self._ref, stream=False
@@ -36,3 +57,24 @@ class CosyVoice2Adapter(TTSEngine):
             out.append(np.asarray(seg["tts_speech"], dtype=np.float32).reshape(-1))
         wav = np.concatenate(out) if out else np.zeros(1, np.float32)
         return AudioChunk(pcm=wav, sample_rate=self.sample_rate)
+
+    def stream(self, req: TTSRequest) -> Iterator[AudioChunk]:
+        """True streaming: yield AudioChunks as they are generated."""
+        if self._model is None:
+            raise RuntimeError("CosyVoice2 not loaded")
+        for seg in self._model.inference_zero_shot(
+            req.text, req.ref_text or "", req.voice or self._ref, stream=True
+        ):
+            wav = np.asarray(seg["tts_speech"], dtype=np.float32).reshape(-1)
+            yield AudioChunk(pcm=wav, sample_rate=self.sample_rate)
+
+    def unload(self) -> None:
+        self._model = None
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass

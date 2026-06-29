@@ -1,16 +1,31 @@
-"""VieNeu-TTS adapter (DEFAULT) — Apache-2.0, Vietnamese-native.
+"""VieNeu-TTS adapter (NATIVE FALLBACK) — Apache-2.0, Vietnamese-native.
 
 VieNeu-TTS (pnnbao-ump/VieNeu-TTS-v2 | -v3-Turbo) is a NeuTTS-style model
-(Qwen LM backbone + neural audio codec). It runs via its OFFICIAL runtime
-(the neuttsair / vieneu package), NOT a transformers TTS pipeline.
+(Qwen LM backbone + neural audio codec). It is NOT on HuggingFace
+AutoModelForTextToWaveform, so it needs its own runtime package.
+
+Kept as a native fallback because:
+  - It is Vietnamese-native (trained on VN speech) → best for RQ3
+    (VN sales-persuasive prosody vs generic MMS-VITS).
+  - The transformers primary adapter covers MMS-VN/Bark/SpeechT5 but not NeuTTS.
 
 This adapter defers the heavy import to from_config() and normalizes output to
 float32 mono. The exact call surface must be confirmed against the model card
-on a GPU run (see VERIFY note) — kept in ONE place so swapping the call is a
+on a GPU run (VERIFY note) — kept in ONE place so swapping the call is a
 one-file change.
+
+Usage:
+    engine = load_engine({
+        "engine": "vieneu",
+        "model": "pnnbao-ump/VieNeu-TTS-v2",
+        "device": "cuda",
+        "ref_audio": "path/to/voice_ref.wav",   # zero-shot voice reference
+    })
 """
 
 from __future__ import annotations
+
+from typing import Optional
 
 import numpy as np
 
@@ -23,6 +38,7 @@ class VieNeuAdapter(TTSEngine):
 
     def __init__(self) -> None:
         self._model = None
+        self._impl = ""             # "neuttsair" | "vieneu"
         self._default_ref = None
 
     @classmethod
@@ -30,7 +46,7 @@ class VieNeuAdapter(TTSEngine):
         e = cls()
         e.sample_rate = int(cfg.get("sample_rate", 24_000))
         e._default_ref = cfg.get("ref_audio")
-        model_id = cfg.get("weights_path", "pnnbao-ump/VieNeu-TTS-v2")
+        model_id = cfg.get("model") or cfg.get("weights_path", "pnnbao-ump/VieNeu-TTS-v2")
         device = cfg.get("device", "cuda")
 
         # VERIFY on GPU: confirm the official package + class name from the
@@ -49,10 +65,20 @@ class VieNeuAdapter(TTSEngine):
         if self._model is None:
             raise RuntimeError("VieNeu not loaded; call from_config on a GPU box")
         ref = req.voice or self._default_ref
-        # Both runtimes return a float32 waveform at self.sample_rate.
         if self._impl == "neuttsair":
             wav = self._model.infer(req.text, ref_audio=ref, ref_text=req.ref_text)
         else:
             wav = self._model.synthesize(req.text, ref_audio=ref)
         wav = np.asarray(wav, dtype=np.float32).reshape(-1)
         return AudioChunk(pcm=wav, sample_rate=self.sample_rate)
+
+    def unload(self) -> None:
+        self._model = None
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass

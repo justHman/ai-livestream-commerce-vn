@@ -61,6 +61,18 @@ class TTSEngine(ABC):
         """Default: single chunk. Override for true streaming models."""
         yield self.synthesize(req)
 
+    def warmup(self, text: str = "Xin chào") -> None:
+        """Pre-warm the engine: synthesize one dummy utterance to JIT CUDA
+        kernels + allocate GPU buffers. Call once after from_config.
+
+        Effect: first real synthesis skips CUDA kernel JIT (~200-500ms saved).
+        Non-fatal if it fails.
+        """
+        try:
+            self.synthesize(TTSRequest(text=text, max_tokens=16))
+        except Exception:
+            pass
+
     def unload(self) -> None:
         """Free VRAM when swapping models (override if needed)."""
         return None
