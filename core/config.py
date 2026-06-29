@@ -161,6 +161,11 @@ class AppConfig:
     # LiveAvatar (cloud backend)
     api_key_present: bool = False
 
+    # Mock avatar renderer (RENDER_BACKEND=mock)
+    mock_avatar_fps: int = 25
+    mock_avatar_width: int = 640
+    mock_avatar_height: int = 360
+
     # Director orchestration
     director_enabled: bool = False
 
@@ -177,6 +182,9 @@ class AppConfig:
             cors_origins=os.environ.get("CORS_ORIGINS", "*"),
             port=int(os.environ.get("PORT", "8800")),
             api_key_present=bool(os.environ.get("LIVEAVATAR_API_KEY")),
+            mock_avatar_fps=int(os.environ.get("MOCK_AVATAR_TARGET_FPS", "25")),
+            mock_avatar_width=int(os.environ.get("MOCK_AVATAR_WIDTH", "640")),
+            mock_avatar_height=int(os.environ.get("MOCK_AVATAR_HEIGHT", "360")),
             director_enabled=os.environ.get("DIRECTOR_ENABLED", "0").lower()
             in ("1", "true", "yes"),
             llm=LLMConfig.from_env(),
@@ -196,6 +204,14 @@ class AppConfig:
         return InMemorySessionStore()
 
     def build_render_backend(self):
+        if self.render_backend == "mock":
+            from .render.mock import MockRenderBackend
+
+            return MockRenderBackend(
+                fps=self.mock_avatar_fps,
+                width=self.mock_avatar_width,
+                height=self.mock_avatar_height,
+            )
         if self.render_backend == "self_host":
             from .render.self_host import SelfHostRenderBackend
 

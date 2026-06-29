@@ -84,6 +84,11 @@ if CONFIG.render_backend == "cloud":
         print(f"[server] LLM  engine={_engine_mgr.llm.name}")
     if _engine_mgr.tts:
         print(f"[server] TTS  engine={_engine_mgr.tts.name} sr={_engine_mgr.tts.sample_rate}")
+elif CONFIG.render_backend == "mock":
+    # Mock renderer needs no LLM/TTS cloud wiring and no LIVEAVATAR_API_KEY.
+    # LLM/TTS engines are not built here; the mock consumes AudioWindows
+    # produced upstream and does not call backend.say().
+    pass
 
 # Director runtime (optional orchestration layer).
 _director = None

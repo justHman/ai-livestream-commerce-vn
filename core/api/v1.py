@@ -22,10 +22,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..render.base import RenderBackend, StartOptions
+from ..render.mock import MockRenderBackend
 
 router = APIRouter(prefix="/api/v1")
 
@@ -445,3 +447,70 @@ async def ws_control(ws: WebSocket, session_id: str) -> None:
                 await ws.send_json({"type": "pong"})
     except WebSocketDisconnect:
         d.hub.disconnect(session_id)
+
+
+# ── Mock media endpoints (only when RENDER_BACKEND=mock) ────────────
+
+
+def _mock_backend() -> Optional[MockRenderBackend]:
+    """Return the mock backend if the active backend is a MockRenderBackend.
+
+    Returns None otherwise so route handlers can 404 cleanly.
+    """
+    backend = deps().backend
+    if isinstance(backend, MockRenderBackend):
+        return backend
+    return None
+
+
+@router.get("/mock/frame/{session_id}.png")
+async def mock_frame_png(session_id: str) -> Response:
+    """Return the latest rendered frame as a PNG.
+
+    Only available when the active backend is MockRenderBackend.
+    """
+    mb = _mock_backend()
+    if mb is None:
+        raise HTTPException(status_code=404, detail="mock backend not active")
+    try:
+        png = await asyncio.to_thread(mb.get_last_frame_png, session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown session_id")
+    return Response(content=png, media_type="image/png")
+
+
+@router.get("/mock/video/{session_id}.mjpeg")
+async def mock_video_mjpeg(session_id: str) -> StreamingResponse:
+    """MJPEG stream of frames from the last utterance (bounded).
+
+    Only available when the active backend is MockRenderBackend. Yields
+    the stored frames once then stops; if none, yields one placeholder.
+    """
+    mb = _mock_backend()
+    if mb is None:
+        raise HTTPException(status_code=404, detail="mock backend not active")
+
+    def _gen():
+        try:
+            yield from mb.iter_mjpeg_frames(session_id)
+        except KeyError:
+            return
+
+    boundary = MockRenderBackend.mjpeg_boundary()
+    return StreamingResponse(
+        _gen(),
+        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+    )
+
+
+@router.get("/mock/status/{session_id}")
+async def mock_status(session_id: str) -> dict[str, Any]:
+    """Return the current status of a mock render session as JSON."""
+    mb = _mock_backend()
+    if mb is None:
+        raise HTTPException(status_code=404, detail="mock backend not active")
+    try:
+        status = await asyncio.to_thread(mb.session_status, session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown session_id")
+    return {"session_id": session_id, "status": status, "backend": "mock"}
