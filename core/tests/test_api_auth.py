@@ -8,6 +8,8 @@ Covers:
   - DEBUG_ENABLED=0 -> /debug/* -> 404 (auth-gated so attackers can't probe).
   - APP_ENV=dev with no tokens -> auth DISABLED (existing tests still pass).
   - APP_ENV=prod + CORS_ORIGINS='*' -> create_app raises RuntimeError.
+  - Finding 3: APP_ENV != 'dev' + CORS_ORIGINS='*' -> create_app raises
+    (covers 'production', 'staging', 'prd' — anything not 'dev').
 
 All tests offline (mock backend, no model loads).
 """
@@ -246,8 +248,26 @@ def test_prod_cors_star_raises_runtime_error(mock_env: None) -> None:
     )
     from core.server import create_app
 
-    with pytest.raises(RuntimeError, match=r"CORS_ORIGINS.*forbidden.*prod"):
+    with pytest.raises(RuntimeError, match=r"CORS_ORIGINS.*forbidden.*dev"):
         create_app(config=cfg, deps=_deps())
+
+
+def test_nonprod_nondev_cors_star_raises_runtime_error(mock_env: None) -> None:
+    """Finding 3: APP_ENV=production (or 'staging', 'prd', anything not 'dev')
+    with CORS_ORIGINS='*' must raise. The old check only rejected 'prod';
+    'production'/'staging' bypassed it and ran with wildcard CORS."""
+    from core.server import create_app
+
+    for bad_env in ("production", "staging", "prd", "PROD", "Production"):
+        cfg = AppConfig(
+            render_backend="mock",
+            app_env=bad_env,
+            cors_origins="*",
+            backend_api_token="x",
+            admin_api_token="y",
+        )
+        with pytest.raises(RuntimeError, match=r"CORS_ORIGINS.*forbidden.*dev"):
+            create_app(config=cfg, deps=_deps())
 
 
 def test_dev_cors_star_allowed(mock_env: None) -> None:

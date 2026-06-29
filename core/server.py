@@ -22,9 +22,15 @@ Env (key ones — see core/config.py for the full list):
 
 The server auto-builds LLM/TTS engines from env and injects them into the
 cloud renderer via configure(). If an engine fails to load (missing deps on a
-non-GPU box), it falls back to the built-in stubs so the server still starts.
-For explicit control (custom cfg), call core.render.cloud.configure() before
-serving — the colab launcher does this.
+non-GPU box), it falls back to the built-in stubs so the server still starts,
+and records the failure on the EngineManager so /health/ready reports
+not-ready (Finding 2). For explicit control (custom cfg), call
+core.render.cloud.configure() before serving — the colab launcher does this.
+
+Note (Finding 1): a mock-mode deployment (RENDER_BACKEND=mock) STILL loads
+the configured LLM/TTS engines — mock = mock RENDER only; LLM/TTS stay real
+per the plan. Only the cloud-specific wiring (the ``cloud`` import +
+``reconfigure_cloud()``) is skipped for mock.
 
 App factory:
     create_app(config=None, deps=None) -> FastAPI
@@ -68,17 +74,21 @@ def create_app(config: AppConfig | None = None,
         engine_manager/director carried by ``deps`` are wired into the router
         AS-IS and NO LLM/TTS engine loading runs — heavy model loads are the
         caller's responsibility. When None, the components are built from
-        ``config`` and (for the cloud backend) the LLM/TTS engines are
-        auto-loaded, matching the previous module-level wiring exactly.
+        ``config`` and the LLM/TTS engines are auto-loaded for BOTH the cloud
+        and mock backends (Finding 1: mock = mock RENDER only; LLM/TTS stay
+        real per the plan). Only the cloud-specific wiring (the ``cloud``
+        side-effect import + ``reconfigure_cloud()``) is skipped for mock.
     """
     if config is None:
         config = CONFIG
 
-    # Task 7: reject CORS_ORIGINS='*' in prod (startup error, covers both the
-    # module-level ``app = create_app()`` path and explicit ``create_app``).
-    if config.app_env == "prod" and config.cors_list() == ["*"]:
+    # Task 7: reject CORS_ORIGINS='*' for every environment EXCEPT explicit
+    # "dev" (covers both the module-level ``app = create_app()`` path and
+    # explicit ``create_app``). Finding 3: a deployment with APP_ENV=production
+    # or "staging" must NOT bypass the wildcard-CORS rejection that prod gets.
+    if config.app_env != "dev" and config.cors_list() == ["*"]:
         raise RuntimeError(
-            "CORS_ORIGINS='*' is forbidden in APP_ENV=prod; set explicit origins"
+            "CORS_ORIGINS='*' is forbidden outside APP_ENV=dev; set explicit origins"
         )
 
     app = FastAPI(title="VN Live-Commerce Host — core API")
@@ -107,40 +117,50 @@ def create_app(config: AppConfig | None = None,
         hub = v1.ControlHub()
         engine_mgr = EngineManager()
 
+        # Finding 1: load configured LLM/TTS engines for BOTH cloud AND mock
+        # when deps is None. The plan's CORE principle is "mock render = mock
+        # rendering ONLY; LLM and TTS remain real." A mock-mode deployment with
+        # LLM_ENGINE=llamacpp TTS_ENGINE=transformers must load those real
+        # engines so /lite/say uses them instead of silently falling back to
+        # echo/tone stubs. Only the cloud-specific wiring (the ``cloud`` import
+        # + ``reconfigure_cloud()``) stays cloud-only — the mock backend does
+        # not call backend.say(), so reconfigure is not needed there.
         if config.render_backend == "cloud":
             from .render import cloud  # noqa: F401  (side-effect import kept)
 
+        _llm_engine = None
+        _tts_engine = None
+        try:
+            if config.llm.engine not in ("none", "", None):
+                _llm_engine = engine_mgr.load_llm(config.llm.to_engine_cfg())
+                engine_mgr.set_system_prompt(config.llm.system_prompt)
+        except Exception as exc:
+            # Record the failure so /health/ready can honestly report
+            # not-ready (Finding 2). Dev still falls back to the echo stub so
+            # the server starts; prod readiness is reported honestly.
+            engine_mgr.llm_load_error = f"{type(exc).__name__}: {exc}"
+            print(f"[server] LLM engine '{config.llm.engine}' unavailable "
+                  f"({type(exc).__name__}: {exc}); using echo stub.")
             _llm_engine = None
+
+        try:
+            if config.tts.engine not in ("tone", "", None):
+                _tts_engine = engine_mgr.load_tts(config.tts.to_engine_cfg())
+        except Exception as exc:
+            engine_mgr.tts_load_error = f"{type(exc).__name__}: {exc}"
+            print(f"[server] TTS engine '{config.tts.engine}' unavailable "
+                  f"({type(exc).__name__}: {exc}); using tone stub.")
             _tts_engine = None
-            try:
-                if config.llm.engine not in ("none", "", None):
-                    _llm_engine = engine_mgr.load_llm(config.llm.to_engine_cfg())
-                    engine_mgr.set_system_prompt(config.llm.system_prompt)
-            except Exception as exc:
-                print(f"[server] LLM engine '{config.llm.engine}' unavailable "
-                      f"({type(exc).__name__}: {exc}); using echo stub.")
-                _llm_engine = None
 
-            try:
-                if config.tts.engine not in ("tone", "", None):
-                    _tts_engine = engine_mgr.load_tts(config.tts.to_engine_cfg())
-            except Exception as exc:
-                print(f"[server] TTS engine '{config.tts.engine}' unavailable "
-                      f"({type(exc).__name__}: {exc}); using tone stub.")
-                _tts_engine = None
-
+        if config.render_backend == "cloud":
             engine_mgr.reconfigure_cloud()
             if engine_mgr.llm:
                 print(f"[server] LLM  engine={engine_mgr.llm.name}")
             if engine_mgr.tts:
                 print(f"[server] TTS  engine={engine_mgr.tts.name} "
                       f"sr={engine_mgr.tts.sample_rate}")
-        elif config.render_backend == "mock":
-            # Mock renderer needs no LLM/TTS cloud wiring and no
-            # LIVEAVATAR_API_KEY. LLM/TTS engines are not built here; the mock
-            # consumes AudioWindows produced upstream and does not call
-            # backend.say().
-            pass
+        # Mock backend: no reconfigure_cloud (mock does not call backend.say;
+        # /lite/say reads engine_mgr.llm/.tts directly via _streaming_say).
 
         director = None
         if config.director_enabled:
@@ -177,9 +197,12 @@ def create_app(config: AppConfig | None = None,
 
 
 # Module-level app — built once at import time from env, for uvicorn.
-# Under RENDER_BACKEND=mock + empty LIVEAVATAR_API_KEY this does NOT load any
-# heavy model (the mock branch skips engine loading). Under RENDER_BACKEND=cloud
-# this runs the engine-loading block (same as before the refactor).
+# Under RENDER_BACKEND=mock + LLM_ENGINE=none/TTS_ENGINE=tone (the offline
+# default) this does NOT load any heavy model — the engine guards skip the
+# load when the configured engine is the stub. Under RENDER_BACKEND=mock with
+# a real LLM_ENGINE/TTS_ENGINE set, those real engines ARE loaded (mock = mock
+# RENDER only; LLM/TTS stay real per the plan). Under RENDER_BACKEND=cloud
+# this runs the engine-loading block + reconfigure_cloud (same as before).
 app = create_app()
 
 

@@ -189,10 +189,16 @@ async def health_live() -> dict[str, Any]:
 async def health_ready() -> dict[str, Any]:
     """Readiness probe — backend + engines are ready to serve.
 
-    For the mock backend, readiness = backend exists. For the cloud backend,
-    readiness also requires the LLM/TTS engines to be loaded (or that the
-    configured engine is the stub "none"/"tone" — in which case nothing is
-    expected to load).
+    For the mock backend, readiness = backend exists (the mock renderer can
+    always serve frames). For the cloud backend, readiness also requires the
+    LLM/TTS engines to be loaded (or that the configured engine is the stub
+    "none"/"tone" — in which case nothing is expected to load).
+
+    Finding 2: if a configured REAL engine was requested but FAILED to load
+    (``engine_manager.llm_load_error`` / ``tts_load_error`` set), readiness
+    is ``False`` and the error is surfaced in the response — even though the
+    server fell back to a stub so it could start. A prod deployment with a
+    broken GGUF must NOT show "ready" while running echo stubs.
     """
     d = deps()
     backend = d.backend
@@ -202,6 +208,8 @@ async def health_ready() -> dict[str, Any]:
     tts_engine_name = "tone"
     llm_loaded = False
     tts_loaded = False
+    llm_load_error: Optional[str] = None
+    tts_load_error: Optional[str] = None
     if em is not None:
         if em.llm is not None:
             llm_loaded = True
@@ -213,25 +221,40 @@ async def health_ready() -> dict[str, Any]:
             tts_engine_name = em.tts.name
         else:
             tts_engine_name = em.tts_cfg.get("engine", "tone") or "tone"
+        llm_load_error = getattr(em, "llm_load_error", None)
+        tts_load_error = getattr(em, "tts_load_error", None)
 
     if backend is None:
         ready = False
     elif backend_name == "mock":
-        ready = True
+        # Mock backend can always serve frames. But if a real LLM/TTS engine
+        # was configured and FAILED to load (Finding 2), still report
+        # not-ready so the operator sees the broken config.
+        ready = not (llm_load_error or tts_load_error)
     else:
         # Cloud / self-host: ready if engines are loaded OR the configured
-        # engine is the stub (nothing is expected to load).
+        # engine is the stub (nothing is expected to load). A recorded load
+        # failure (Finding 2) overrides → not-ready.
         llm_ok = llm_loaded or llm_engine_name in ("none", "", None)
         tts_ok = tts_loaded or tts_engine_name in ("tone", "", None)
+        if llm_load_error:
+            llm_ok = False
+        if tts_load_error:
+            tts_ok = False
         ready = llm_ok and tts_ok
 
-    return {
+    resp: dict[str, Any] = {
         "ok": ready,
         "status": "ready" if ready else "not_ready",
         "render_backend": backend_name,
         "llm_engine": llm_engine_name,
         "tts_engine": tts_engine_name,
     }
+    if llm_load_error:
+        resp["llm_load_error"] = llm_load_error
+    if tts_load_error:
+        resp["tts_load_error"] = tts_load_error
+    return resp
 
 
 @router.post("/lite/start")
@@ -281,12 +304,18 @@ async def _streaming_say(d: V1Deps, req: SayReq) -> dict[str, Any]:
     if not d.locks.try_acquire(sid):
         raise HTTPException(status_code=409, detail="already_speaking")
 
-    # Resolve LLM/TTS engines. Mock mode may have none loaded (server.py mock
-    # branch doesn't load them) — fall back to built-in offline stubs so
-    # /lite/say always works without a model.
+    # Resolve LLM/TTS engines. Mock mode may have none loaded (e.g. offline
+    # defaults LLM_ENGINE=none / TTS_ENGINE=tone) — fall back to the built-in
+    # offline stubs so /lite/say always works without a model. When a real
+    # engine IS configured in mock mode, server.py loads it and em.llm/.tts
+    # are non-None (Finding 1).
     em = d.engine_manager
     llm: LLMEngine = em.llm if (em is not None and em.llm is not None) else _NoopEngine()
     tts: TTSEngine = em.tts if (em is not None and em.tts is not None) else ToneEngine()
+    # Note: if a real engine was configured but FAILED to load, em.llm/.tts
+    # are None and we fall back to the stubs here so /lite/say still responds.
+    # /health/ready is the honest signal that the configured engine is broken
+    # (Finding 2); this path keeps the server functional for dev/demo.
 
     # Bounded queue + metrics for this utterance.
     cfg = d.config or AppConfig()

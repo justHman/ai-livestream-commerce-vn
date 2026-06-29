@@ -82,6 +82,12 @@ class EngineManager:
         self._tts_cfg: dict = {}
         self._system_prompt: str = ""
         self._lock = threading.Lock()
+        # Finding 2: record the last load failure (if any) so /health/ready
+        # can honestly report not-ready when a configured real engine failed
+        # to load. Cleared on a successful load. ``None`` = no failure
+        # recorded (either no load attempted, or the last load succeeded).
+        self.llm_load_error: Optional[str] = None
+        self.tts_load_error: Optional[str] = None
 
     # ── LLM ─────────────────────────────────────────────────────────────
 
@@ -107,6 +113,8 @@ class EngineManager:
             # Load new engine (this is the slow part: 10-30s for a 4B model).
             self._llm = load_llm_engine(cfg)
             self._llm_cfg = cfg
+            # Clear any prior load failure — this load succeeded.
+            self.llm_load_error = None
             # Warmup: JIT CUDA kernels + populate prefix cache with persona.
             self._llm.warmup(system_prompt=self._system_prompt or None)
             return EngineInfo(
@@ -115,6 +123,12 @@ class EngineManager:
                 name=self._llm.name,
                 loaded=True,
             )
+
+    @property
+    def llm_failed(self) -> bool:
+        """True if a configured real LLM engine was requested but failed to
+        load (Finding 2). /health/ready uses this to report not-ready."""
+        return self.llm_load_error is not None
 
     def get_llm_fn(self):
         """Return the (text)->str callable for the cloud RenderBackend."""
@@ -141,6 +155,8 @@ class EngineManager:
                 self._tts = None
             self._tts = load_tts_engine(cfg)
             self._tts_cfg = cfg
+            # Clear any prior load failure — this load succeeded.
+            self.tts_load_error = None
             # Warmup: JIT CUDA kernels + allocate GPU buffers.
             self._tts.warmup()
             return EngineInfo(
@@ -150,6 +166,12 @@ class EngineManager:
                 loaded=True,
                 sample_rate=self._tts.sample_rate,
             )
+
+    @property
+    def tts_failed(self) -> bool:
+        """True if a configured real TTS engine was requested but failed to
+        load (Finding 2). /health/ready uses this to report not-ready."""
+        return self.tts_load_error is not None
 
     def get_tts_fn(self):
         """Return the (text)->(bytes,rate) callable for the cloud RenderBackend."""
