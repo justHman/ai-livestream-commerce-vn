@@ -164,6 +164,61 @@ async def health() -> dict[str, Any]:
     }
 
 
+@router.get("/health/live")
+async def health_live() -> dict[str, Any]:
+    """Liveness probe — process is alive. Always 200, no deps check."""
+    return {"ok": True, "status": "live"}
+
+
+@router.get("/health/ready")
+async def health_ready() -> dict[str, Any]:
+    """Readiness probe — backend + engines are ready to serve.
+
+    For the mock backend, readiness = backend exists. For the cloud backend,
+    readiness also requires the LLM/TTS engines to be loaded (or that the
+    configured engine is the stub "none"/"tone" — in which case nothing is
+    expected to load).
+    """
+    d = deps()
+    backend = d.backend
+    backend_name = backend.name if backend is not None else None
+    em = d.engine_manager
+    llm_engine_name = "none"
+    tts_engine_name = "tone"
+    llm_loaded = False
+    tts_loaded = False
+    if em is not None:
+        if em.llm is not None:
+            llm_loaded = True
+            llm_engine_name = em.llm.name
+        else:
+            llm_engine_name = em.llm_cfg.get("engine", "none") or "none"
+        if em.tts is not None:
+            tts_loaded = True
+            tts_engine_name = em.tts.name
+        else:
+            tts_engine_name = em.tts_cfg.get("engine", "tone") or "tone"
+
+    if backend is None:
+        ready = False
+    elif backend_name == "mock":
+        ready = True
+    else:
+        # Cloud / self-host: ready if engines are loaded OR the configured
+        # engine is the stub (nothing is expected to load).
+        llm_ok = llm_loaded or llm_engine_name in ("none", "", None)
+        tts_ok = tts_loaded or tts_engine_name in ("tone", "", None)
+        ready = llm_ok and tts_ok
+
+    return {
+        "ok": ready,
+        "status": "ready" if ready else "not_ready",
+        "render_backend": backend_name,
+        "llm_engine": llm_engine_name,
+        "tts_engine": tts_engine_name,
+    }
+
+
 @router.post("/lite/start")
 async def lite_start(req: StartReq) -> dict[str, Any]:
     d = deps()
