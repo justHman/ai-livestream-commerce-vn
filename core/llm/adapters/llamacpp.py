@@ -66,6 +66,14 @@ class LlamaCppEngine(LLMEngine):
                 "llamacpp adapter needs cfg['model_path'] or cfg['model'] (HF repo)"
             )
 
+        # Validate local file paths (skip HF repo download specs, which contain '*'
+        # or were built as "{repo}/{pattern}" and are resolved by llama_cpp at load).
+        is_download_spec = (
+            model_repo and not (os.path.isdir(model_path) or os.path.isfile(model_path))
+        ) or "*" in model_path
+        if not is_download_spec and not os.path.isfile(model_path):
+            raise FileNotFoundError(f"GGUF file not found: {model_path}")
+
         e._llm = Llama(
             model_path=model_path,
             n_ctx=int(cfg.get("n_ctx", 4096)),

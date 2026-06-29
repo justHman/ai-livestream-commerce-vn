@@ -290,3 +290,30 @@ def test_llamacpp_missing_gguf_raises_clear_error(tmp_path):
 def test_llamacpp_real_gguf_load_and_stream():
     """Integration marker: would load a real Qwen3.5-4B-Q4_K_M.gguf and stream."""
     pass
+
+
+def test_llamacpp_bogus_file_path_raises_filenotfounderror(tmp_path):
+    """A non-existent local file path (not a dir, not empty, no model_repo) must raise
+    FileNotFoundError naming the expected path — BEFORE Llama() is called, so the
+    error is deterministic and does not depend on llama_cpp internals.
+
+    Skipped when llama_cpp is not importable (from_config imports Llama at the top
+    of the method, so ImportError fires before the validation). Mirrors the
+    skip-when-llama_cpp-absent guard of test_llamacpp_missing_gguf_raises_clear_error.
+    """
+    try:
+        import llama_cpp  # noqa: F401
+        llama_available = True
+    except ImportError:
+        llama_available = False
+
+    if not llama_available:
+        pytest.skip("llama_cpp not installed; from_config raises ImportError before validation")
+
+    from core.llm.adapters.llamacpp import LlamaCppEngine
+
+    bogus = str(tmp_path / "does_not_exist.gguf")
+    with pytest.raises(FileNotFoundError) as excinfo:
+        LlamaCppEngine.from_config({"engine": "llamacpp", "model_path": bogus})
+    msg = str(excinfo.value)
+    assert bogus in msg, msg
