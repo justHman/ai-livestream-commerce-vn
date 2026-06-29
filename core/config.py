@@ -169,6 +169,14 @@ class AppConfig:
     mock_avatar_width: int = 640
     mock_avatar_height: int = 360
 
+    # Streaming coordinator (Task 8). Bounded VideoWindow queue cap + the
+    # TextChunker defaults used by the LLM->TTS->avatar pipeline.
+    avatar_max_queue_windows: int = 5
+    text_chunk_min_chars: int = 12
+    text_chunk_target_chars: int = 40
+    text_chunk_max_chars: int = 80
+    text_chunk_flush_timeout_ms: int = 350
+
     # Director orchestration
     director_enabled: bool = False
 
@@ -196,6 +204,11 @@ class AppConfig:
             mock_avatar_fps=int(os.environ.get("MOCK_AVATAR_TARGET_FPS", "25")),
             mock_avatar_width=int(os.environ.get("MOCK_AVATAR_WIDTH", "640")),
             mock_avatar_height=int(os.environ.get("MOCK_AVATAR_HEIGHT", "360")),
+            avatar_max_queue_windows=int(os.environ.get("AVATAR_MAX_QUEUE_WINDOWS", "5")),
+            text_chunk_min_chars=int(os.environ.get("TEXT_CHUNK_MIN_CHARS", "12")),
+            text_chunk_target_chars=int(os.environ.get("TEXT_CHUNK_TARGET_CHARS", "40")),
+            text_chunk_max_chars=int(os.environ.get("TEXT_CHUNK_MAX_CHARS", "80")),
+            text_chunk_flush_timeout_ms=int(os.environ.get("TEXT_CHUNK_FLUSH_TIMEOUT_MS", "350")),
             director_enabled=os.environ.get("DIRECTOR_ENABLED", "0").lower()
             in ("1", "true", "yes"),
             backend_api_token=os.environ.get("BACKEND_API_TOKEN", ""),

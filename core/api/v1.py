@@ -27,8 +27,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..config import AppConfig
+from ..llm.base import LLMEngine, LLMRequest, _NoopEngine
 from ..render.base import RenderBackend, StartOptions
 from ..render.mock import MockRenderBackend
+from ..render.orchestrator import StreamOrchestrator
+from ..render.queue import BoundedVideoQueue, CoordinatorMetrics
+from ..render.locks import SessionLockRegistry
+from ..tts.base import TTSEngine, ToneEngine
 from .auth import admin_auth, debug_enabled_dep, validate_ws_token, viewer_auth
 
 router = APIRouter(prefix="/api/v1")
@@ -127,13 +132,20 @@ class V1Deps:
     """Dependencies injected by the server at startup."""
 
     def __init__(self, backend: RenderBackend, store, hub: ControlHub, director=None,
-                 engine_manager=None, config: AppConfig | None = None) -> None:
+                 engine_manager=None, config: AppConfig | None = None,
+                 locks: SessionLockRegistry | None = None,
+                 orchestrators: dict | None = None) -> None:
         self.backend = backend
         self.store = store
         self.hub = hub
         self.director = director       # DirectorRuntime (optional)
         self.engine_manager = engine_manager  # EngineManager (optional, for runtime swap)
         self.config = config           # AppConfig (optional, for auth gates)
+        # Task 8: per-session lock registry + active orchestrator map. Lazy
+        # defaults so existing tests that build V1Deps directly still work.
+        self.locks = locks if locks is not None else SessionLockRegistry()
+        # session_id -> {"orchestrator": StreamOrchestrator, "queue": BoundedVideoQueue}
+        self.orchestrators: dict = orchestrators if orchestrators is not None else {}
 
 
 _deps: Optional[V1Deps] = None
@@ -242,18 +254,99 @@ async def lite_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str,
 @router.post("/lite/say")
 async def lite_say(req: SayReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
+    # Task 8: streaming coordinator path for streaming-capable backends
+    # (mock + future self-host). Cloud keeps the existing backend.say() path.
+    if isinstance(d.backend, MockRenderBackend):
+        return await _streaming_say(d, req)
+    # Cloud / FullPipelineBackend path — unchanged.
     await d.hub.emit(req.session_id, {"type": "avatar.speak_started", "text": req.text})
     try:
         reply = await asyncio.to_thread(d.backend.say, req.session_id, req.text)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
     await d.hub.emit(req.session_id, {"type": "avatar.speak_ended", "reply": reply})
     return {"ok": True, "reply": reply}
+
+
+async def _streaming_say(d: V1Deps, req: SayReq) -> dict[str, Any]:
+    """Run the LLM->chunker->TTS->backend streaming coordinator for one turn.
+
+    Per-session lock: if a turn is already running for this session, reject
+    with 409 already_speaking. The lock is released in ``finally`` so a
+    subsequent say always succeeds once this one finishes.
+    """
+    sid = req.session_id
+    if not d.locks.try_acquire(sid):
+        raise HTTPException(status_code=409, detail="already_speaking")
+
+    # Resolve LLM/TTS engines. Mock mode may have none loaded (server.py mock
+    # branch doesn't load them) — fall back to built-in offline stubs so
+    # /lite/say always works without a model.
+    em = d.engine_manager
+    llm: LLMEngine = em.llm if (em is not None and em.llm is not None) else _NoopEngine()
+    tts: TTSEngine = em.tts if (em is not None and em.tts is not None) else ToneEngine()
+
+    # Bounded queue + metrics for this utterance.
+    cfg = d.config or AppConfig()
+    max_q = getattr(cfg, "avatar_max_queue_windows", 5)
+    queue = BoundedVideoQueue(max_size=max_q)
+    metrics = CoordinatorMetrics()
+    orch_cfg = {
+        "text_chunk_min_chars": getattr(cfg, "text_chunk_min_chars", 12),
+        "text_chunk_target_chars": getattr(cfg, "text_chunk_target_chars", 40),
+        "text_chunk_max_chars": getattr(cfg, "text_chunk_max_chars", 80),
+        "text_chunk_flush_timeout_ms": getattr(cfg, "text_chunk_flush_timeout_ms", 350),
+    }
+    orchestrator = StreamOrchestrator(
+        llm=llm, tts=tts, backend=d.backend, queue=queue, metrics=metrics, config=orch_cfg,
+    )
+    # Register the orchestrator so /lite/interrupt can cancel it.
+    d.orchestrators[sid] = {"orchestrator": orchestrator, "queue": queue}
+
+    await d.hub.emit(sid, {"type": "avatar.speak_started", "text": req.text})
+    try:
+        system_prompt = None
+        if em is not None and hasattr(em, "_system_prompt"):
+            system_prompt = em._system_prompt or None
+        spoken = await orchestrator.run(sid, req.text, system_prompt=system_prompt)
+        # Drain the queue: emit one WS event per VideoWindow to the control
+        # hub so connected clients see frame updates. In production the MEDIA
+        # plane carries the actual video; this control event is for telemetry.
+        windows_emitted = 0
+        while queue.qsize() > 0:
+            vw = await queue.get()
+            windows_emitted += 1
+            await d.hub.emit(sid, {
+                "type": "avatar.video_window",
+                "seq": vw.seq,
+                "is_final": vw.is_final,
+                "duration_ms": vw.duration_ms,
+            })
+        await d.hub.emit(sid, {"type": "avatar.speak_ended", "reply": spoken})
+        return {
+            "ok": True,
+            "reply": spoken,
+            "windows": windows_emitted,
+            "metrics": metrics.to_dict(),
+        }
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown session_id")
+    finally:
+        d.orchestrators.pop(sid, None)
+        d.locks.release(sid)
 
 
 @router.post("/lite/interrupt")
 async def lite_interrupt(req: SessionReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
+    # Task 8: if there is an active streaming orchestrator for this session,
+    # cancel it first (stops emission + drains the bounded queue).
+    entry = d.orchestrators.get(req.session_id)
+    if entry is not None:
+        orch: StreamOrchestrator = entry["orchestrator"]
+        await orch.cancel(req.session_id)
     try:
         await asyncio.to_thread(d.backend.interrupt, req.session_id)
     except KeyError:
@@ -521,6 +614,11 @@ async def ws_control(ws: WebSocket, session_id: str) -> None:
             mtype = msg.get("type")
             if mtype == "interrupt":
                 try:
+                    # Task 8: cancel any active streaming orchestrator first.
+                    entry = d.orchestrators.get(session_id)
+                    if entry is not None:
+                        orch: StreamOrchestrator = entry["orchestrator"]
+                        await orch.cancel(session_id)
                     await asyncio.to_thread(d.backend.interrupt, session_id)
                     await d.hub.emit(session_id, {"type": "avatar.interrupted"})
                 except KeyError:
