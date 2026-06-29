@@ -9,47 +9,107 @@
     header { padding: 12px 20px; background: #029E73; }
     header h1 { margin: 0; font-size: 18px; }
     .wrap { display: flex; gap: 16px; padding: 20px; flex-wrap: wrap; }
-    .panel { background: #232336; border-radius: 10px; padding: 16px; }
-    .controls { flex: 1; min-width: 280px; }
-    .stage { flex: 2; min-width: 360px; }
+    .panel { background: #232336; border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+    .controls { flex: 1; min-width: 320px; }
+    .stage { flex: 2; min-width: 400px; }
     video { width: 100%; border-radius: 8px; background: #000; aspect-ratio: 16/9; }
     button { background: #029E73; color: #fff; border: none; padding: 10px 16px;
              border-radius: 6px; cursor: pointer; font-size: 14px; margin: 4px 0; }
     button.stop { background: #D55E00; }
+    button.debug { background: #56B4E9; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    input, textarea { width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0 12px;
+    input, textarea, select { width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0 12px;
                       border-radius: 6px; border: 1px solid #444; background: #1a1a2e; color: #eee; }
-    label { font-size: 13px; color: #aaa; }
+    label { font-size: 13px; color: #aaa; display: block; margin-top: 8px; }
     #log { font-family: monospace; font-size: 12px; white-space: pre-wrap;
            max-height: 240px; overflow-y: auto; background: #14141f; padding: 10px; border-radius: 6px; }
     .row { display: flex; gap: 8px; }
     .row button { flex: 1; }
+    .section-title { font-size: 15px; font-weight: bold; color: #029E73; margin: 12px 0 8px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+    .badge.on { background: #029E73; }
+    .badge.off { background: #555; }
+    .debug-panel { display: none; }
+    .debug-panel.visible { display: block; }
+    .engine-status { font-size: 12px; color: #888; margin: 4px 0; }
   </style>
 </head>
 <body>
   <header><h1>LiveAvatar — LITE viewer (your Colab backend)</h1></header>
 
   <div class="wrap">
+    <!-- LEFT: Controls -->
     <div class="panel controls">
+
+      <!-- ── Connection ── -->
+      <div class="section-title">🔗 Connection</div>
       <label>Backend URL (ngrok from Colab)</label>
       <input id="backend" placeholder="https://xxxx.ngrok-free.app" />
-
       <div class="row">
         <button id="startBtn">▶ Start session</button>
         <button id="stopBtn" class="stop" disabled>■ Stop</button>
       </div>
+      <div id="engineStatus" class="engine-status"></div>
 
-      <label>Send a viewer message (→ your LLM → your TTS → avatar)</label>
+      <!-- ── Engine selection (swap LLM/TTS at runtime) ── -->
+      <div class="section-title">🧠 Engine Selection</div>
+      <label>LLM Model</label>
+      <select id="llmSelect"><option value="">— Loading presets... —</option></select>
+      <button id="swapLlmBtn" disabled>Swap LLM (unload old → load new)</button>
+
+      <label>TTS Model</label>
+      <select id="ttsSelect"><option value="">— Loading presets... —</option></select>
+      <button id="swapTtsBtn" disabled>Swap TTS (unload old → load new)</button>
+
+      <!-- ── Viewer message ── -->
+      <div class="section-title">💬 Viewer Message</div>
+      <label>Send a viewer message (→ LLM → TTS → avatar)</label>
       <textarea id="msg" rows="2" placeholder="Giá kem chống nắng bao nhiêu?"></textarea>
       <div class="row">
         <button id="sayBtn" disabled>📨 Send</button>
         <button id="interruptBtn" class="stop" disabled>✋ Interrupt</button>
       </div>
 
-      <label>Log</label>
+      <!-- ── Director (attach products + ingest comments) ── -->
+      <div class="section-title">🎯 Director</div>
+      <label>Product catalog (JSON array — or click "Load mock products")</label>
+      <textarea id="productsJson" rows="3" placeholder='[{"id":"P001","name":"...","price":329000}]'></textarea>
+      <div class="row">
+        <button id="loadMockProductsBtn" class="debug">Load mock products</button>
+        <button id="attachBtn" disabled>Attach to session</button>
+      </div>
+
+      <!-- ── Debug mode ── -->
+      <div class="section-title">🐛 Debug Mode</div>
+      <div class="row">
+        <button id="debugToggleBtn" class="debug">Show Debug Panel</button>
+      </div>
+      <div id="debugPanel" class="debug-panel">
+        <label>Traffic mode</label>
+        <select id="trafficMode">
+          <option value="random">Random (mixed)</option>
+          <option value="low">Low (2-5 viewers)</option>
+          <option value="medium">Medium (10-30 viewers)</option>
+          <option value="high">High (50-200 viewers)</option>
+          <option value="ramp">Ramp (grows over time)</option>
+        </select>
+        <label>Interval (seconds between mock comment batches)</label>
+        <input id="debugInterval" type="number" value="5" min="1" max="60" />
+        <div class="row">
+          <button id="debugStartBtn" class="debug" disabled>▶ Start mock traffic</button>
+          <button id="debugStopBtn" class="stop" disabled>■ Stop mock</button>
+        </div>
+        <div id="debugStatus" class="engine-status"></div>
+        <label>Mock viewer messages pool (200 msgs)</label>
+        <button id="loadMockMsgsBtn" class="debug">Load 200 mock msgs</button>
+      </div>
+
+      <!-- ── Log ── -->
+      <div class="section-title">📋 Log</div>
       <div id="log"></div>
     </div>
 
+    <!-- RIGHT: Avatar video -->
     <div class="panel stage">
       <video id="avatarVideo" autoplay playsinline></video>
     </div>
@@ -63,11 +123,91 @@
 
     function backend() { return $("backend").value.replace(/\/$/, ""); }
 
+    // ── Engine presets ──────────────────────────────────────────────
+    async function loadEnginePresets() {
+      try {
+        const res = await fetch(backend() + "/api/v1/engines");
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Populate LLM dropdown
+        const llmSel = $("llmSelect");
+        llmSel.innerHTML = "";
+        data.available_llm_presets.forEach(p => {
+          const opt = document.createElement("option");
+          opt.value = JSON.stringify(p);
+          opt.textContent = p.label;
+          if (p.engine === data.llm.engine && p.model === data.llm.model) opt.selected = true;
+          llmSel.appendChild(opt);
+        });
+
+        // Populate TTS dropdown
+        const ttsSel = $("ttsSelect");
+        ttsSel.innerHTML = "";
+        data.available_tts_presets.forEach(p => {
+          const opt = document.createElement("option");
+          opt.value = JSON.stringify(p);
+          opt.textContent = p.label;
+          if (p.engine === data.tts.engine && p.model === data.tts.model) opt.selected = true;
+          ttsSel.appendChild(opt);
+        });
+
+        updateEngineStatus(data);
+      } catch (e) { log("⚠ Could not load engine presets: " + e); }
+    }
+
+    function updateEngineStatus(data) {
+      const llmBadge = data.llm.loaded ? '<span class="badge on">LOADED</span>' : '<span class="badge off">stub</span>';
+      const ttsBadge = data.tts.loaded ? '<span class="badge on">LOADED</span>' : '<span class="badge off">stub</span>';
+      $("engineStatus").innerHTML =
+        `LLM: ${data.llm.name} ${llmBadge} | TTS: ${data.tts.name} ${ttsBadge}`;
+    }
+
+    async function swapLlm() {
+      const preset = JSON.parse($("llmSelect").value);
+      log("→ Swap LLM: " + preset.label + " (unloading old, loading new...)");
+      $("swapLlmBtn").disabled = true;
+      try {
+        const res = await fetch(backend() + "/api/v1/engines/llm", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            engine: preset.engine, model: preset.model,
+            device: preset.device || "auto",
+            n_ctx: preset.n_ctx || 4096, n_gpu_layers: preset.n_gpu_layers ?? -1,
+            max_model_len: preset.max_model_len || 4096,
+          }),
+        });
+        const d = await res.json();
+        if (d.ok) log("✓ LLM swapped: " + d.name);
+        else log("✗ LLM swap failed: " + (d.detail || res.status));
+      } catch (e) { log("✗ LLM swap error: " + e); }
+      $("swapLlmBtn").disabled = false;
+    }
+
+    async function swapTts() {
+      const preset = JSON.parse($("ttsSelect").value);
+      log("→ Swap TTS: " + preset.label + " (unloading old, loading new...)");
+      $("swapTtsBtn").disabled = true;
+      try {
+        const res = await fetch(backend() + "/api/v1/engines/tts", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            engine: preset.engine, model: preset.model,
+            device: preset.device || "auto", sample_rate: preset.sample_rate || 24000,
+          }),
+        });
+        const d = await res.json();
+        if (d.ok) log("✓ TTS swapped: " + d.name + " sr=" + d.sample_rate);
+        else log("✗ TTS swap failed: " + (d.detail || res.status));
+      } catch (e) { log("✗ TTS swap error: " + e); }
+      $("swapTtsBtn").disabled = false;
+    }
+
+    // ── Session ─────────────────────────────────────────────────────
     async function start() {
-      log("→ POST /api/lite/start");
+      log("→ POST /api/v1/lite/start");
       const res = await fetch(backend() + "/api/v1/lite/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_sandbox: true }),
       });
       if (!res.ok) { log("✗ " + res.status + " " + (await res.text())); return; }
@@ -75,7 +215,6 @@
       sessionId = d.session_id;
       log("✓ session " + sessionId);
 
-      // Render avatar VIDEO directly from LiveKit (not via the backend).
       room = new LivekitClient.Room();
       room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
         track.attach($("avatarVideo"));
@@ -84,13 +223,17 @@
       await room.connect(d.livekit_url, d.livekit_client_token);
       log("✓ joined LiveKit room (video)");
 
-      // Open the CONTROL-plane WebSocket for events (speak_started/ended, interrupt).
       openControlWs(sessionId);
+      await loadEnginePresets();
 
       $("startBtn").disabled = true;
       $("stopBtn").disabled = false;
       $("sayBtn").disabled = false;
       $("interruptBtn").disabled = false;
+      $("attachBtn").disabled = false;
+      $("swapLlmBtn").disabled = false;
+      $("swapTtsBtn").disabled = false;
+      $("debugStartBtn").disabled = false;
     }
 
     function openControlWs(sid) {
@@ -98,7 +241,19 @@
       controlWs = new WebSocket(wsBase + "/api/v1/ws/control/" + sid);
       controlWs.onmessage = (e) => {
         const ev = JSON.parse(e.data);
-        log("◀ event: " + ev.type);
+        // Route event types to log formatting
+        if (ev.type === "debug.cycle") {
+          log(`🐛 [cycle ${ev.cycle}] viewers=${ev.viewers} rate=${ev.msg_rate} ` +
+              `action=${ev.director_action} phase=${ev.director_phase} spoken="${ev.spoken}"`);
+        } else if (ev.type === "engine.llm_swap_started" || ev.type === "engine.tts_swap_started") {
+          log("🔄 " + ev.type + ": " + ev.engine + " " + (ev.model || ""));
+        } else if (ev.type === "engine.llm_swapped" || ev.type === "engine.tts_swapped") {
+          log("✓ " + ev.type + ": " + ev.engine + " " + (ev.model || ""));
+        } else if (ev.type === "engine.llm_swap_failed" || ev.type === "engine.tts_swap_failed") {
+          log("✗ " + ev.type + ": " + ev.error);
+        } else {
+          log("◀ event: " + ev.type);
+        }
       };
       controlWs.onclose = () => log("◀ control WS closed");
       controlWs.onerror = () => log("✗ control WS error");
@@ -116,8 +271,7 @@
       if (!text || !sessionId) return;
       log("→ say: " + text);
       const res = await fetch(backend() + "/api/v1/lite/say", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, text }),
       });
       const d = await res.json();
@@ -129,8 +283,7 @@
       if (room) { await room.disconnect(); room = null; }
       if (sessionId) {
         await fetch(backend() + "/api/v1/lite/stop", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: sessionId }),
         });
         log("✓ stopped " + sessionId);
@@ -140,12 +293,87 @@
       $("stopBtn").disabled = true;
       $("sayBtn").disabled = true;
       $("interruptBtn").disabled = true;
+      $("attachBtn").disabled = true;
+      $("swapLlmBtn").disabled = true;
+      $("swapTtsBtn").disabled = true;
+      $("debugStartBtn").disabled = true;
     }
 
+    // ── Director: attach products ───────────────────────────────────
+    async function attachDirector() {
+      let products;
+      try { products = JSON.parse($("productsJson").value); }
+      catch (e) { log("✗ Invalid product JSON: " + e); return; }
+      log("→ Attach Director with " + products.length + " products");
+      const res = await fetch(backend() + "/api/v1/lite/attach", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, products }),
+      });
+      const d = await res.json();
+      log("✓ Director attached: " + (d.products || []).join(", ") + " embedder=" + d.embedder);
+    }
+
+    async function loadMockProducts() {
+      const res = await fetch(backend() + "/api/v1/debug/mock_products");
+      const d = await res.json();
+      $("productsJson").value = JSON.stringify(d.products, null, 2);
+      log("✓ Loaded " + d.products.length + " mock products");
+    }
+
+    async function loadMockMsgs() {
+      const res = await fetch(backend() + "/api/v1/debug/mock_viewer_msgs");
+      const d = await res.json();
+      log("✓ Mock viewer pool: " + d.count + " messages (use debug traffic to feed them)");
+    }
+
+    // ── Debug mode ──────────────────────────────────────────────────
+    async function debugStart() {
+      const mode = $("trafficMode").value;
+      const interval = parseFloat($("debugInterval").value) || 5.0;
+      log("→ Debug start: mode=" + mode + " interval=" + interval + "s");
+      const res = await fetch(backend() + "/api/v1/debug/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, interval_sec: interval, traffic_mode: mode }),
+      });
+      const d = await res.json();
+      if (d.ok) {
+        log("✓ Debug started — mock traffic feeding to Director");
+        $("debugStartBtn").disabled = true;
+        $("debugStopBtn").disabled = false;
+      } else log("✗ Debug start failed: " + (d.detail || res.status));
+    }
+
+    async function debugStop() {
+      const res = await fetch(backend() + "/api/v1/debug/stop", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      const d = await res.json();
+      log("✓ Debug stopped: " + JSON.stringify(d));
+      $("debugStartBtn").disabled = false;
+      $("debugStopBtn").disabled = true;
+    }
+
+    function toggleDebugPanel() {
+      const p = $("debugPanel");
+      p.classList.toggle("visible");
+      $("debugToggleBtn").textContent = p.classList.contains("visible")
+        ? "Hide Debug Panel" : "Show Debug Panel";
+    }
+
+    // ── Wire up ─────────────────────────────────────────────────────
     $("startBtn").onclick = () => start().catch((e) => log("✗ " + e));
     $("stopBtn").onclick = () => stop().catch((e) => log("✗ " + e));
     $("sayBtn").onclick = () => say().catch((e) => log("✗ " + e));
     $("interruptBtn").onclick = () => interruptAvatar();
+    $("swapLlmBtn").onclick = () => swapLlm().catch((e) => log("✗ " + e));
+    $("swapTtsBtn").onclick = () => swapTts().catch((e) => log("✗ " + e));
+    $("attachBtn").onclick = () => attachDirector().catch((e) => log("✗ " + e));
+    $("loadMockProductsBtn").onclick = () => loadMockProducts().catch((e) => log("✗ " + e));
+    $("loadMockMsgsBtn").onclick = () => loadMockMsgs().catch((e) => log("✗ " + e));
+    $("debugToggleBtn").onclick = () => toggleDebugPanel();
+    $("debugStartBtn").onclick = () => debugStart().catch((e) => log("✗ " + e));
+    $("debugStopBtn").onclick = () => debugStop().catch((e) => log("✗ " + e));
   </script>
 </body>
 </html>

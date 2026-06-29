@@ -2,7 +2,7 @@
 
 Paste this into a Colab cell (or run as a script). It:
   1. installs deps + the LLM/TTS stacks
-  2. loads the LLM (gemma-3-4b / Qwen3-4B / SeaLLMs) + VN TTS on the GPU
+  2. loads the LLM + VN TTS via the unified engine seams (core.llm / core.tts)
   3. injects them into the cloud RenderBackend (core.render.cloud.configure)
   4. starts `core.server:app` (serves /api/v1) in a background thread
   5. opens an ngrok tunnel and prints the public URL
@@ -10,6 +10,11 @@ Paste this into a Colab cell (or run as a script). It:
 Hand the printed ngrok URL to the static frontend (frontend/lite.html)
 as its "Backend URL". The browser talks JSON to /api/v1 and renders the
 avatar VIDEO directly from LiveKit — frames never transit this server.
+
+Models are selected by env vars — swap model = change string, not code:
+  LLM_ENGINE=llamacpp  LLM_MODEL=Qwen/Qwen3-4B-GGUF
+  TTS_ENGINE=transformers  TTS_MODEL=facebook/mms-tts-vie
+  (or TTS_ENGINE=vieneu for VN-native NeuTTS — needs the vieneu package)
 
 NOTE: This is a template. The model-loading functions are written to be
 correct but are guarded so the file imports cleanly off-GPU. Real model
@@ -23,90 +28,62 @@ import threading
 import time
 
 
-# ── 1. LLM backend (gemma-3-4b-it / Qwen3-4B, Q4_K_M GGUF via llama.cpp) ──
+# ── 1. LLM backend (via core.llm unified seam) ──────────────────────────
 
 def build_llm():
-    """Return an llm_fn(text)->reply backed by a Q4_K_M GGUF via llama.cpp.
+    """Build an LLMEngine via core.llm.load_engine from env config.
 
-    Models (confirmed): Qwen/Qwen3-4B-GGUF (Apache-2.0) or
-    google/gemma-3-4b-it GGUF (Gemma terms). The bootstrap notebook
-    downloads the GGUF into weights/llm/. llama.cpp keeps VRAM low on T4
-    and gives low first-token latency for 1-2 concurrent users (demo).
-    For many concurrent sessions in production, swap to vLLM + prefix cache.
+    Default on Colab T4: llama.cpp GGUF (Q4_K_M, ~3GB VRAM, low TTFT).
+    For production (many sessions): LLM_ENGINE=vllm + LLM_MODEL=Qwen/Qwen3-4B-Instruct.
+
+    The persona system prompt is set via LLM_SYSTEM_PROMPT (or the default
+    in core.config._DEFAULT_PERSONA). It is prepended to every call by
+    to_llm_fn(), so the cloud backend still gets a simple (text)->str callable.
     """
-    import glob
-    import os
+    from core.config import LLMConfig
+    from core.llm import load_engine, to_llm_fn
 
-    from llama_cpp import Llama  # pip install llama-cpp-python
+    cfg = LLMConfig.from_env()
+    if cfg.engine in ("none", "", None):
+        # Sensible Colab default if the user didn't set LLM_ENGINE
+        cfg.engine = "llamacpp"
+        cfg.model_path = cfg.model_path or os.environ.get("LLM_GGUF_DIR", "weights/llm")
 
-    model_dir = os.environ.get("LLM_GGUF_DIR", "weights/llm")
-    ggufs = sorted(glob.glob(os.path.join(model_dir, "*.gguf")))
-    if not ggufs:
-        raise FileNotFoundError(
-            f"No .gguf in {model_dir}. Run the bootstrap notebook steps 3-4 "
-            "(download Qwen3-4B / gemma-3-4b Q4_K_M GGUF)."
-        )
-    model_path = ggufs[0]
-    print(f"[llm] loading {model_path}")
-    llm = Llama(
-        model_path=model_path,
-        n_ctx=int(os.environ.get("LLM_N_CTX", "4096")),
-        n_gpu_layers=int(os.environ.get("LLM_N_GPU_LAYERS", "-1")),  # -1 = all on GPU
-        verbose=False,
-    )
-
-    system = (
-        "Bạn là MC bán hàng livestream tiếng Việt cho mỹ phẩm. "
-        "Trả lời ngắn gọn, nhiệt tình, tập trung sản phẩm và khuyến mãi."
-    )
-
-    def llm_fn(user_text: str) -> str:
-        out = llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_text},
-            ],
-            max_tokens=128,
-            temperature=0.7,
-        )
-        return out["choices"][0]["message"]["content"].strip()
-
-    return llm_fn
+    print(f"[llm] loading engine={cfg.engine} model={cfg.model or cfg.model_path}")
+    engine = load_engine(cfg.to_engine_cfg())
+    print(f"[llm] ready: {engine.name}")
+    return to_llm_fn(engine, system_prompt=cfg.system_prompt,
+                     max_tokens=cfg.max_tokens, temperature=cfg.temperature)
 
 
-# ── 2. TTS backend (model-agnostic via core.tts registry) ───────────────
+# ── 2. TTS backend (via core.tts unified seam) ──────────────────────────
 
 def build_tts():
-    """Return a tts_fn(text)->(pcm16_bytes, sample_rate) via the core.tts seam.
+    """Build a TTSEngine via core.tts.load_engine from env config.
 
-    Model is selected by config — swap by changing TTS_ENGINE / TTS_WEIGHTS,
-    NOT by rewriting code (no per-model import here). Adapters live in
-    core/tts/adapters/ and wrap each model's official runtime.
-
-    Default: VieNeu-TTS-v2 (Apache-2.0, Vietnamese-native). Alternatives:
-    TTS_ENGINE=kokoro|cosyvoice|xtts. Falls back to the offline 'tone' engine
-    if the selected model's deps are missing (keeps the server runnable).
+    Default: transformers (facebook/mms-tts-vie) — unified HF API, swap model
+    by changing TTS_MODEL. Alternatives: TTS_ENGINE=vieneu (VN-native NeuTTS)
+    or TTS_ENGINE=cosyvoice (streaming). Falls back to offline 'tone' engine
+    if the selected model's deps are missing.
     """
-    import os
-
+    from core.config import TTSConfig
     from core.tts import load_engine, to_tts_fn
 
-    cfg = {
-        "engine": os.environ.get("TTS_ENGINE", "vieneu"),
-        "weights_path": os.environ.get("TTS_WEIGHTS", "pnnbao-ump/VieNeu-TTS-v2"),
-        "device": os.environ.get("TTS_DEVICE", "cuda"),
-        "sample_rate": int(os.environ.get("TTS_SAMPLE_RATE", "24000")),
-        "ref_audio": os.environ.get("TTS_REF_AUDIO") or None,
-    }
+    cfg = TTSConfig.from_env()
+    if cfg.engine in ("tone", "", None):
+        cfg.engine = "transformers"
+        cfg.model = cfg.model or "facebook/mms-tts-vie"
+
+    print(f"[tts] loading engine={cfg.engine} model={cfg.model}")
     try:
-        engine = load_engine(cfg)
-        print(f"[tts] engine={engine.name} sr={engine.sample_rate}")
+        engine = load_engine(cfg.to_engine_cfg())
+        print(f"[tts] ready: {engine.name} sr={engine.sample_rate}")
     except Exception as exc:
-        print(f"[tts] '{cfg['engine']}' unavailable ({type(exc).__name__}: {exc}); "
+        print(f"[tts] '{cfg.engine}' unavailable ({type(exc).__name__}: {exc}); "
               "falling back to offline 'tone' engine.")
         engine = load_engine({"engine": "tone"})
 
-    return to_tts_fn(engine, voice=cfg.get("ref_audio"))
+    return to_tts_fn(engine, voice=cfg.ref_audio)
 
 
 # ── 3. Serve + tunnel ─────────────────────────────────────────────────────
@@ -140,7 +117,7 @@ def main() -> None:
     print("[colab] loading TTS...")
     tts_fn = build_tts()
 
-    cloud.configure(llm_fn=llm_fn, tts_fn=tts_fn)
+    cloud.configure(llm=llm_fn, tts=tts_fn)
     print("[colab] serving core /api/v1 on :8800")
     serve_background(8800)
 
