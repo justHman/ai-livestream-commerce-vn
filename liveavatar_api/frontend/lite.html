@@ -13,6 +13,7 @@
     .controls { flex: 1; min-width: 320px; }
     .stage { flex: 2; min-width: 400px; }
     video { width: 100%; border-radius: 8px; background: #000; aspect-ratio: 16/9; }
+    #avatarMjpeg { width: 100%; border-radius: 8px; background: #000; aspect-ratio: 16/9; object-fit: contain; }
     button { background: #029E73; color: #fff; border: none; padding: 10px 16px;
              border-radius: 6px; cursor: pointer; font-size: 14px; margin: 4px 0; }
     button.stop { background: #D55E00; }
@@ -20,7 +21,11 @@
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     input, textarea, select { width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0 12px;
                       border-radius: 6px; border: 1px solid #444; background: #1a1a2e; color: #eee; }
+    input:disabled, textarea:disabled { opacity: 0.5; }
     label { font-size: 13px; color: #aaa; display: block; margin-top: 8px; }
+    #ticker { font-family: monospace; font-size: 12px; color: #029E73; background: #14141f;
+              padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #log { font-family: monospace; font-size: 12px; white-space: pre-wrap;
            max-height: 240px; overflow-y: auto; background: #14141f; padding: 10px; border-radius: 6px; }
     .row { display: flex; gap: 8px; }
@@ -32,6 +37,7 @@
     .debug-panel { display: none; }
     .debug-panel.visible { display: block; }
     .engine-status { font-size: 12px; color: #888; margin: 4px 0; }
+    .hint { font-size: 12px; color: #DE8F05; margin: 4px 0 8px; }
   </style>
 </head>
 <body>
@@ -45,6 +51,8 @@
       <div class="section-title">🔗 Connection</div>
       <label>Backend URL (ngrok from Colab)</label>
       <input id="backend" placeholder="https://xxxx.ngrok-free.app" />
+      <label>API token (optional — leave empty for dev)</label>
+      <input id="apiToken" placeholder="Bearer token (prod/staging)" />
       <div class="row">
         <button id="startBtn">▶ Start session</button>
         <button id="stopBtn" class="stop" disabled>■ Stop</button>
@@ -57,9 +65,12 @@
       <select id="llmSelect"><option value="">— Loading presets... —</option></select>
       <button id="swapLlmBtn" disabled>Swap LLM (unload old → load new)</button>
 
-      <label>TTS Model</label>
+      <label>TTS Model (select = lightweight preset update, no model load)</label>
       <select id="ttsSelect"><option value="">— Loading presets... —</option></select>
-      <button id="swapTtsBtn" disabled>Swap TTS (unload old → load new)</button>
+      <div class="row">
+        <button id="applyTtsPresetBtn" disabled>Apply preset + reload TTS</button>
+        <button id="swapTtsBtn" disabled>Reload TTS (full swap)</button>
+      </div>
 
       <!-- ── Viewer message ── -->
       <div class="section-title">💬 Viewer Message</div>
@@ -77,6 +88,18 @@
       <div class="row">
         <button id="loadMockProductsBtn" class="debug">Load mock products</button>
         <button id="attachBtn" disabled>Attach to session</button>
+      </div>
+
+      <!-- ── Live chat (Phase B — continuous ingestion) ── -->
+      <div class="section-title">💬 Live Chat (continuous)</div>
+      <div id="chatHint" class="hint">Start a session first.</div>
+      <label>Author name</label>
+      <input id="chatAuthor" value="viewer_001" disabled />
+      <label>Chat message</label>
+      <input id="chatText" placeholder="giá bao nhiêu shop" disabled />
+      <div class="row">
+        <button id="sendChatBtn" disabled>📨 Send chat</button>
+        <button id="autoChatBtn" class="debug" disabled>▶ Auto-send demo</button>
       </div>
 
       <!-- ── Debug mode ── -->
@@ -104,33 +127,61 @@
         <button id="loadMockMsgsBtn" class="debug">Load 200 mock msgs</button>
       </div>
 
-      <!-- ── Log ── -->
+      <!-- ── Ticker + Log ── -->
+      <div class="section-title">📋 Event Ticker</div>
+      <div id="ticker">—</div>
       <div class="section-title">📋 Log</div>
       <div id="log"></div>
     </div>
 
-    <!-- RIGHT: Avatar video -->
+    <!-- RIGHT: Avatar video / MJPEG -->
     <div class="panel stage">
-      <video id="avatarVideo" autoplay playsinline></video>
+      <video id="avatarVideo" autoplay playsinline style="display:none"></video>
+      <img id="avatarMjpeg" alt="Avatar MJPEG stream" style="display:none" />
     </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
   <script>
+    // ── Helpers ────────────────────────────────────────────────────
     const $ = (id) => document.getElementById(id);
     const log = (m) => { $("log").textContent += m + "\n"; $("log").scrollTop = 1e9; };
-    let room = null, sessionId = null, controlWs = null;
-
+    const setTicker = (t) => { $("ticker").textContent = t; };
     function backend() { return $("backend").value.replace(/\/$/, ""); }
+    // Auth: single token field used for both viewer and admin endpoints.
+    // In production, viewer and admin tokens are separate scopes; this demo UI uses one field for simplicity.
+    function authHeaders() {
+      const t = $("apiToken").value.trim();
+      return t ? { "Authorization": "Bearer " + t } : {};
+    }
+    const jsonHeaders = () => ({ ...authHeaders(), "Content-Type": "application/json" });
 
-    // ── Engine presets ──────────────────────────────────────────────
+    // ── State ──────────────────────────────────────────────────────
+    let room = null, sessionId = null, controlWs = null;
+    let directorAttached = false;
+    let autoChatActive = false, autoChatTimer = null;
+    const presetIdToDict = {}; // tts preset id -> full preset dict (for full swap)
+    const DEMO_COMMENTS = [
+      "giá bao nhiêu shop",
+      "còn hàng không",
+      "ship về Hà Nội mất bao lâu",
+      "màu này có kem chống nắng không",
+      "cho em xin link",
+      "Quality thế nào shop",
+      "mua 2 có giảm giá không",
+      "shop tư vấn mình loại phù hợp da dầu",
+      "thanh toán quét mã QR được không",
+      "livestream tiếng quá shop ơi",
+    ];
+
+    // ── Engine presets ─────────────────────────────────────────────
     async function loadEnginePresets() {
       try {
-        const res = await fetch(backend() + "/api/v1/engines");
+        const res = await fetch(backend() + "/api/v1/engines", { headers: authHeaders() });
         if (!res.ok) return;
         const data = await res.json();
 
-        // Populate LLM dropdown
+        // LLM dropdown (keeps JSON value — swapLlm parses the full dict)
         const llmSel = $("llmSelect");
         llmSel.innerHTML = "";
         data.available_llm_presets.forEach(p => {
@@ -141,26 +192,57 @@
           llmSel.appendChild(opt);
         });
 
-        // Populate TTS dropdown
+        // TTS dropdown — option value is the preset id string (lightweight preset endpoint)
         const ttsSel = $("ttsSelect");
         ttsSel.innerHTML = "";
+        Object.keys(presetIdToDict).forEach(k => delete presetIdToDict[k]);
         data.available_tts_presets.forEach(p => {
+          presetIdToDict[p.id] = p;
           const opt = document.createElement("option");
-          opt.value = JSON.stringify(p);
+          opt.value = p.id;
           opt.textContent = p.label;
           if (p.engine === data.tts.engine && p.model === data.tts.model) opt.selected = true;
           ttsSel.appendChild(opt);
         });
 
-        updateEngineStatus(data);
+        await updateEngineStatusFromHealth(data);
       } catch (e) { log("⚠ Could not load engine presets: " + e); }
     }
 
-    function updateEngineStatus(data) {
-      const llmBadge = data.llm.loaded ? '<span class="badge on">LOADED</span>' : '<span class="badge off">stub</span>';
-      const ttsBadge = data.tts.loaded ? '<span class="badge on">LOADED</span>' : '<span class="badge off">stub</span>';
+    // Fetch /health/ready and render the combined engine + readiness status.
+    async function updateEngineStatusFromHealth(engData) {
+      let health = { ok: false, error: "unreachable" };
+      try {
+        const res = await fetch(backend() + "/health/ready", { headers: authHeaders() });
+        if (res.ok) health = await res.json();
+        else health = { ok: false, error: "HTTP " + res.status };
+      } catch (e) { health = { ok: false, error: String(e) }; }
+      updateEngineStatus(engData, health);
+    }
+
+    function updateEngineStatus(eng, health) {
+      if (!eng) { $("engineStatus").innerHTML = "Ready: ✗ (no engine info)"; return; }
+      const llmOn = eng.llm.loaded ? "✓" : "✗";
+      const ttsOn = eng.tts.loaded ? "✓" : "✗";
+      const sr = eng.tts.sample_rate
+        ? ` (${eng.tts.engine} ${Math.round(eng.tts.sample_rate / 1000)}kHz)`
+        : "";
+      const directorOn = directorAttached ? "ON" : "off";
+      const ready = health && health.ok
+        ? "✓"
+        : "✗ " + (health && health.error ? health.error : "not ready");
       $("engineStatus").innerHTML =
-        `LLM: ${data.llm.name} ${llmBadge} | TTS: ${data.tts.name} ${ttsBadge}`;
+        `LLM: ${eng.llm.name} ${llmOn} | TTS: ${eng.tts.name} ${ttsOn}${sr} | Director: ${directorOn} | Ready: ${ready}`;
+    }
+
+    // Refresh status only (no dropdown rebuild) — used after swaps and on swap WS events.
+    async function refreshEngineStatus() {
+      try {
+        const res = await fetch(backend() + "/api/v1/engines", { headers: authHeaders() });
+        if (!res.ok) return;
+        const eng = await res.json();
+        await updateEngineStatusFromHealth(eng);
+      } catch (e) { log("⚠ refreshEngineStatus error: " + e); }
     }
 
     async function swapLlm() {
@@ -169,7 +251,7 @@
       $("swapLlmBtn").disabled = true;
       try {
         const res = await fetch(backend() + "/api/v1/engines/llm", {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST", headers: jsonHeaders(),
           body: JSON.stringify({
             engine: preset.engine, model: preset.model,
             device: preset.device || "auto",
@@ -182,15 +264,46 @@
         else log("✗ LLM swap failed: " + (d.detail || res.status));
       } catch (e) { log("✗ LLM swap error: " + e); }
       $("swapLlmBtn").disabled = false;
+      await refreshEngineStatus();
     }
 
+    // Phase A — lightweight preset update (in-memory config, no model load).
+    async function applyTtsPreset() {
+      const presetId = $("ttsSelect").value;
+      if (!presetId) return null;
+      log("→ TTS preset (lightweight): " + presetId);
+      try {
+        const res = await fetch(backend() + "/api/v1/engines/tts/preset", {
+          method: "POST", headers: jsonHeaders(),
+          body: JSON.stringify({ preset_id: presetId }),
+        });
+        const d = await res.json();
+        if (res.ok && d.preset_id) {
+          log("✓ preset applied: " + d.preset_id + " (no model reload)");
+          return d; // {preset_id, tts_cfg}
+        }
+        log("✗ preset apply failed: " + (d.detail || res.status));
+        return null;
+      } catch (e) { log("✗ preset apply error: " + e); return null; }
+    }
+
+    // Dropdown onchange → lightweight preset only.
+    async function onTtsPresetChange() {
+      if (!sessionId) return; // don't call before session
+      await applyTtsPreset();
+      await refreshEngineStatus();
+    }
+
+    // Full TTS reload using the currently selected preset's full dict.
     async function swapTts() {
-      const preset = JSON.parse($("ttsSelect").value);
-      log("→ Swap TTS: " + preset.label + " (unloading old, loading new...)");
+      const presetId = $("ttsSelect").value;
+      const preset = presetIdToDict[presetId];
+      if (!preset) { log("✗ No TTS preset selected"); return false; }
+      log("→ Reload TTS (full swap): " + preset.label);
       $("swapTtsBtn").disabled = true;
       try {
         const res = await fetch(backend() + "/api/v1/engines/tts", {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST", headers: jsonHeaders(),
           body: JSON.stringify({
             engine: preset.engine, model: preset.model,
             device: preset.device || "auto", sample_rate: preset.sample_rate || 24000,
@@ -201,27 +314,65 @@
         else log("✗ TTS swap failed: " + (d.detail || res.status));
       } catch (e) { log("✗ TTS swap error: " + e); }
       $("swapTtsBtn").disabled = false;
+      await refreshEngineStatus();
+      return true;
     }
 
-    // ── Session ─────────────────────────────────────────────────────
+    // Two-step: preset (lightweight) → full reload with returned tts_cfg fields.
+    async function applyTtsPresetAndReload() {
+      $("applyTtsPresetBtn").disabled = true;
+      const presetResult = await applyTtsPreset();
+      if (presetResult && presetResult.tts_cfg) {
+        log("→ Reload TTS with preset cfg...");
+        try {
+          const cfg = presetResult.tts_cfg;
+          const res = await fetch(backend() + "/api/v1/engines/tts", {
+            method: "POST", headers: jsonHeaders(),
+            body: JSON.stringify({
+              engine: cfg.engine, model: cfg.model,
+              device: cfg.device || "auto", sample_rate: cfg.sample_rate || 24000,
+            }),
+          });
+          const d = await res.json();
+          if (d.ok) log("✓ TTS swapped: " + d.name + " sr=" + d.sample_rate);
+          else log("✗ TTS swap failed: " + (d.detail || res.status));
+        } catch (e) { log("✗ TTS swap error: " + e); }
+      }
+      $("applyTtsPresetBtn").disabled = false;
+      await refreshEngineStatus();
+    }
+
+    // ── Session ────────────────────────────────────────────────────
     async function start() {
       log("→ POST /api/v1/lite/start");
       const res = await fetch(backend() + "/api/v1/lite/start", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: jsonHeaders(),
         body: JSON.stringify({ is_sandbox: true }),
       });
       if (!res.ok) { log("✗ " + res.status + " " + (await res.text())); return; }
       const d = await res.json();
       sessionId = d.session_id;
-      log("✓ session " + sessionId);
+      log("✓ session " + sessionId + " mode=" + (d.mode || "cloud"));
 
-      room = new LivekitClient.Room();
-      room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
-        track.attach($("avatarVideo"));
-        log("✓ " + track.kind + " track attached");
-      });
-      await room.connect(d.livekit_url, d.livekit_client_token);
-      log("✓ joined LiveKit room (video)");
+      if (d.mode === "MOCK") {
+        // Phase C — MJPEG pre-rendered idle/utterance stream, no LiveKit.
+        $("avatarVideo").style.display = "none";
+        const img = $("avatarMjpeg");
+        img.src = backend() + "/api/v1/mock/video/" + sessionId + ".mjpeg";
+        img.style.display = "block";
+        log("✓ MJPEG stream attached (mock mode)");
+      } else {
+        // Cloud / self-host — LiveKit video track.
+        $("avatarMjpeg").style.display = "none";
+        $("avatarVideo").style.display = "block";
+        room = new LivekitClient.Room();
+        room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
+          track.attach($("avatarVideo"));
+          log("✓ " + track.kind + " track attached");
+        });
+        await room.connect(d.livekit_url, d.livekit_client_token);
+        log("✓ joined LiveKit room (video)");
+      }
 
       openControlWs(sessionId);
       await loadEnginePresets();
@@ -233,26 +384,61 @@
       $("attachBtn").disabled = false;
       $("swapLlmBtn").disabled = false;
       $("swapTtsBtn").disabled = false;
+      $("applyTtsPresetBtn").disabled = false;
       $("debugStartBtn").disabled = false;
+      updateChatPanelState();
     }
 
     function openControlWs(sid) {
       const wsBase = backend().replace(/^http/, "ws");
-      controlWs = new WebSocket(wsBase + "/api/v1/ws/control/" + sid);
+      const token = $("apiToken").value.trim();
+      const wsUrl = wsBase + "/api/v1/ws/control/" + sid
+        + (token ? "?token=" + encodeURIComponent(token) : "");
+      controlWs = new WebSocket(wsUrl);
       controlWs.onmessage = (e) => {
         const ev = JSON.parse(e.data);
-        // Route event types to log formatting
-        if (ev.type === "debug.cycle") {
-          log(`🐛 [cycle ${ev.cycle}] viewers=${ev.viewers} rate=${ev.msg_rate} ` +
-              `action=${ev.director_action} phase=${ev.director_phase} spoken="${ev.spoken}"`);
-        } else if (ev.type === "engine.llm_swap_started" || ev.type === "engine.tts_swap_started") {
-          log("🔄 " + ev.type + ": " + ev.engine + " " + (ev.model || ""));
-        } else if (ev.type === "engine.llm_swapped" || ev.type === "engine.tts_swapped") {
-          log("✓ " + ev.type + ": " + ev.engine + " " + (ev.model || ""));
-        } else if (ev.type === "engine.llm_swap_failed" || ev.type === "engine.tts_swap_failed") {
-          log("✗ " + ev.type + ": " + ev.error);
-        } else {
-          log("◀ event: " + ev.type);
+        // Route event types to log formatting + ticker
+        switch (ev.type) {
+          case "debug.cycle":
+            log(`🐛 [cycle ${ev.cycle}] viewers=${ev.viewers} rate=${ev.msg_rate} ` +
+                `action=${ev.director_action} phase=${ev.director_phase} spoken="${ev.spoken}"`);
+            setTicker(`🐛 cycle ${ev.cycle}: ${ev.director_action} / ${ev.director_phase}`);
+            break;
+          case "engine.llm_swap_started":
+          case "engine.tts_swap_started":
+            log("🔄 " + ev.type + ": " + ev.engine + " " + (ev.model || ""));
+            setTicker("🔄 loading " + ev.engine + " " + (ev.model || ""));
+            break;
+          case "engine.llm_swapped":
+          case "engine.tts_swapped":
+            log("✓ " + ev.type + ": " + ev.engine + " " + (ev.model || ""));
+            setTicker("✓ " + ev.engine + " ready: " + (ev.model || ""));
+            refreshEngineStatus();
+            break;
+          case "engine.llm_swap_failed":
+          case "engine.tts_swap_failed":
+            log("✗ " + ev.type + ": " + ev.error);
+            setTicker("✗ swap failed: " + ev.error);
+            break;
+          case "director.decision":
+            log(`🎯 decision: action=${ev.action} product=${ev.product || ev.product_id || "-"} score=${ev.score ?? "-"}`);
+            setTicker(`🎯 decision: ${ev.action} ${ev.product || ev.product_id || ""} (score ${ev.score ?? "-"}) → speaking`);
+            break;
+          case "coordinator.tick":
+            // Debug-level only: log just when the debug panel is open.
+            if ($("debugPanel").classList.contains("visible")) log("⏱ tick: " + JSON.stringify(ev));
+            break;
+          case "coordinator.speak_started":
+            log("🗣 speak_started: " + (ev.text || ev.utterance || ""));
+            setTicker("🗣 speaking: " + (ev.text || ev.utterance || ""));
+            break;
+          case "coordinator.speak_finished":
+            log("✅ speak_finished: " + (ev.text || ev.utterance || ""));
+            setTicker("✅ spoke: " + (ev.text || ev.utterance || ""));
+            break;
+          default:
+            log("◀ event: " + ev.type);
+            setTicker("◀ " + ev.type);
         }
       };
       controlWs.onclose = () => log("◀ control WS closed");
@@ -271,7 +457,7 @@
       if (!text || !sessionId) return;
       log("→ say: " + text);
       const res = await fetch(backend() + "/api/v1/lite/say", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: jsonHeaders(),
         body: JSON.stringify({ session_id: sessionId, text }),
       });
       const d = await res.json();
@@ -279,16 +465,23 @@
     }
 
     async function stop() {
+      stopAutoChat();
       if (controlWs) { controlWs.close(); controlWs = null; }
       if (room) { await room.disconnect(); room = null; }
+      // Reset stage display.
+      $("avatarVideo").style.display = "none";
+      const img = $("avatarMjpeg");
+      img.src = "";
+      img.style.display = "none";
       if (sessionId) {
         await fetch(backend() + "/api/v1/lite/stop", {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST", headers: jsonHeaders(),
           body: JSON.stringify({ session_id: sessionId }),
         });
         log("✓ stopped " + sessionId);
         sessionId = null;
       }
+      directorAttached = false;
       $("startBtn").disabled = false;
       $("stopBtn").disabled = true;
       $("sayBtn").disabled = true;
@@ -296,7 +489,9 @@
       $("attachBtn").disabled = true;
       $("swapLlmBtn").disabled = true;
       $("swapTtsBtn").disabled = true;
+      $("applyTtsPresetBtn").disabled = true;
       $("debugStartBtn").disabled = true;
+      updateChatPanelState();
     }
 
     // ── Director: attach products ───────────────────────────────────
@@ -306,24 +501,111 @@
       catch (e) { log("✗ Invalid product JSON: " + e); return; }
       log("→ Attach Director with " + products.length + " products");
       const res = await fetch(backend() + "/api/v1/lite/attach", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: jsonHeaders(),
         body: JSON.stringify({ session_id: sessionId, products }),
       });
       const d = await res.json();
       log("✓ Director attached: " + (d.products || []).join(", ") + " embedder=" + d.embedder);
+      directorAttached = true;
+      updateChatPanelState();
+      refreshEngineStatus();
     }
 
     async function loadMockProducts() {
-      const res = await fetch(backend() + "/api/v1/debug/mock_products");
+      const res = await fetch(backend() + "/api/v1/debug/mock_products", { headers: authHeaders() });
       const d = await res.json();
       $("productsJson").value = JSON.stringify(d.products, null, 2);
       log("✓ Loaded " + d.products.length + " mock products");
     }
 
     async function loadMockMsgs() {
-      const res = await fetch(backend() + "/api/v1/debug/mock_viewer_msgs");
+      const res = await fetch(backend() + "/api/v1/debug/mock_viewer_msgs", { headers: authHeaders() });
       const d = await res.json();
       log("✓ Mock viewer pool: " + d.count + " messages (use debug traffic to feed them)");
+    }
+
+    // ── Live chat (Phase B) ────────────────────────────────────────
+    function updateChatPanelState() {
+      const enabled = !!(sessionId && directorAttached);
+      $("sendChatBtn").disabled = !enabled;
+      $("autoChatBtn").disabled = !enabled;
+      $("chatText").disabled = !enabled;
+      $("chatAuthor").disabled = !enabled;
+      const hint = $("chatHint");
+      if (enabled) {
+        hint.style.display = "none";
+      } else {
+        hint.style.display = "block";
+        hint.textContent = !sessionId ? "Start a session first." : "Attach to Director first.";
+      }
+      if (!enabled && autoChatActive) stopAutoChat();
+    }
+
+    async function sendChat() {
+      const text = $("chatText").value.trim();
+      if (!text || !sessionId) return;
+      const author = $("chatAuthor").value.trim() || "viewer_001";
+      log("→ chat [" + author + "]: " + text);
+      try {
+        const res = await fetch(backend() + "/api/v1/lite/chat", {
+          method: "POST", headers: jsonHeaders(),
+          body: JSON.stringify({ session_id: sessionId, text, author, ts: Date.now() / 1000 }),
+        });
+        if (res.status === 202) {
+          const d = await res.json();
+          log("✓ chat accepted: comment_id=" + d.comment_id + " queue=" + JSON.stringify(d.queue_stats));
+        } else if (res.status === 404) {
+          log("✗ /lite/chat 404 — Director not active. Attach to Director first.");
+        } else {
+          log("✗ chat HTTP " + res.status + " " + (await res.text()));
+        }
+      } catch (e) { log("✗ chat error: " + e); }
+      $("chatText").value = "";
+    }
+
+    function toggleAutoChat() {
+      if (autoChatActive) stopAutoChat();
+      else startAutoChat();
+    }
+
+    function startAutoChat() {
+      if (!sessionId || !directorAttached) { log("✗ auto-chat needs session + Director attached"); return; }
+      autoChatActive = true;
+      $("autoChatBtn").textContent = "■ Stop auto-send";
+      log("▶ auto-chat started (3-5s jitter)");
+      scheduleAutoChat();
+    }
+
+    function stopAutoChat() {
+      if (!autoChatActive) return;
+      autoChatActive = false;
+      if (autoChatTimer) { clearTimeout(autoChatTimer); autoChatTimer = null; }
+      $("autoChatBtn").textContent = "▶ Auto-send demo";
+      log("■ auto-chat stopped");
+    }
+
+    function scheduleAutoChat() {
+      if (!autoChatActive) return;
+      const delay = 3000 + Math.random() * 2000; // 3-5s jitter
+      autoChatTimer = setTimeout(async () => {
+        if (!autoChatActive || !sessionId || !directorAttached) { autoChatActive = false; return; }
+        const msg = DEMO_COMMENTS[Math.floor(Math.random() * DEMO_COMMENTS.length)];
+        const author = "viewer_" + String(Math.floor(Math.random() * 200) + 1).padStart(3, "0");
+        try {
+          const res = await fetch(backend() + "/api/v1/lite/chat", {
+            method: "POST", headers: jsonHeaders(),
+            body: JSON.stringify({ session_id: sessionId, text: msg, author, ts: Date.now() / 1000 }),
+          });
+          if (res.status === 202) {
+            const d = await res.json();
+            log("💬 auto [" + author + "]: " + msg + " → comment " + d.comment_id);
+            setTicker("💬 " + author + ": " + msg);
+          } else {
+            log("✗ auto-chat HTTP " + res.status);
+          }
+        } catch (e) { log("✗ auto-chat error: " + e); }
+        scheduleAutoChat(); // schedule next tick
+      }, delay);
     }
 
     // ── Debug mode ──────────────────────────────────────────────────
@@ -332,7 +614,7 @@
       const interval = parseFloat($("debugInterval").value) || 5.0;
       log("→ Debug start: mode=" + mode + " interval=" + interval + "s");
       const res = await fetch(backend() + "/api/v1/debug/start", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: jsonHeaders(),
         body: JSON.stringify({ session_id: sessionId, interval_sec: interval, traffic_mode: mode }),
       });
       const d = await res.json();
@@ -345,7 +627,7 @@
 
     async function debugStop() {
       const res = await fetch(backend() + "/api/v1/debug/stop", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: jsonHeaders(),
         body: JSON.stringify({ session_id: sessionId }),
       });
       const d = await res.json();
@@ -368,9 +650,13 @@
     $("interruptBtn").onclick = () => interruptAvatar();
     $("swapLlmBtn").onclick = () => swapLlm().catch((e) => log("✗ " + e));
     $("swapTtsBtn").onclick = () => swapTts().catch((e) => log("✗ " + e));
+    $("applyTtsPresetBtn").onclick = () => applyTtsPresetAndReload().catch((e) => log("✗ " + e));
+    $("ttsSelect").onchange = () => onTtsPresetChange().catch((e) => log("✗ " + e));
     $("attachBtn").onclick = () => attachDirector().catch((e) => log("✗ " + e));
     $("loadMockProductsBtn").onclick = () => loadMockProducts().catch((e) => log("✗ " + e));
     $("loadMockMsgsBtn").onclick = () => loadMockMsgs().catch((e) => log("✗ " + e));
+    $("sendChatBtn").onclick = () => sendChat().catch((e) => log("✗ " + e));
+    $("autoChatBtn").onclick = () => toggleAutoChat();
     $("debugToggleBtn").onclick = () => toggleDebugPanel();
     $("debugStartBtn").onclick = () => debugStart().catch((e) => log("✗ " + e));
     $("debugStopBtn").onclick = () => debugStop().catch((e) => log("✗ " + e));
