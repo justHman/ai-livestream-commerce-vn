@@ -59,14 +59,27 @@ class CosyVoice2Adapter(TTSEngine):
         return AudioChunk(pcm=wav, sample_rate=self.sample_rate)
 
     def stream(self, req: TTSRequest) -> Iterator[AudioChunk]:
-        """True streaming: yield AudioChunks as they are generated."""
+        """True streaming: yield AudioChunks as they are generated.
+
+        Falls back to a single full-waveform chunk via :meth:`synthesize`
+        when the streaming call raises or yields nothing.
+        """
         if self._model is None:
             raise RuntimeError("CosyVoice2 not loaded")
-        for seg in self._model.inference_zero_shot(
-            req.text, req.ref_text or "", req.voice or self._ref, stream=True
-        ):
-            wav = np.asarray(seg["tts_speech"], dtype=np.float32).reshape(-1)
-            yield AudioChunk(pcm=wav, sample_rate=self.sample_rate)
+        try:
+            emitted = False
+            for seg in self._model.inference_zero_shot(
+                req.text, req.ref_text or "", req.voice or self._ref, stream=True
+            ):
+                pcm = np.asarray(seg["tts_speech"], dtype=np.float32).reshape(-1)
+                if pcm.size == 0:
+                    continue
+                emitted = True
+                yield AudioChunk(pcm=pcm, sample_rate=self.sample_rate)
+            if not emitted:
+                yield self.synthesize(req)
+        except Exception:
+            yield self.synthesize(req)
 
     def unload(self) -> None:
         self._model = None

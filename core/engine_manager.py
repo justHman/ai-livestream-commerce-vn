@@ -55,17 +55,78 @@ AVAILABLE_LLM_PRESETS = [
     {"engine": "none", "label": "Echo stub (no model, offline)", "model": ""},
 ]
 
+# Phase A: 6-preset TTS selector for the frontend dropdown.
+#
+# Each entry exposes a stable `id` (URL/UI-safe) plus the engine cfg fields
+# (`engine`, `weights_path`, `sample_rate`, `device`) and human-readable
+# `label`/`notes`. The default preset (the one the frontend pre-selects) is
+# `vieneu-v3-turbo` — but the engine that the test/dev process actually loads
+# is still driven by TTS_ENGINE/TTS_WEIGHTS in core.config (defaults stay on
+# `transformers`/`tone` so offline pytest never tries to import neuttsair).
 AVAILABLE_TTS_PRESETS = [
-    {"engine": "vieneu", "label": "VieNeu-TTS v2 (VN-native, Apache)", "model": "pnnbao-ump/VieNeu-TTS-v2",
-     "device": "cuda", "sample_rate": 24000},
-    {"engine": "vieneu", "label": "VieNeu-TTS v3 Turbo (VN-native, Apache)", "model": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
-     "device": "cuda", "sample_rate": 24000},
-    {"engine": "transformers", "label": "MMS-TTS Vietnamese (HF, Apache)", "model": "facebook/mms-tts-vie",
-     "device": "cuda", "sample_rate": 24000},
-    {"engine": "cosyvoice", "label": "CosyVoice2 0.5B (streaming, Apache)", "model": "FunAudioLLM/CosyVoice2-0.5B",
-     "device": "cuda", "sample_rate": 24000},
-    {"engine": "tone", "label": "Tone stub (offline, no model)", "model": "", "sample_rate": 24000},
+    {
+        "id": "vieneu-v3-turbo",
+        "label": "VieNeu-TTS v3 Turbo (VN-native, 48 kHz)",
+        "engine": "vieneu",
+        "weights_path": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+        "sample_rate": 48000,
+        "device": "cuda",
+        "notes": "Recommended default. Vietnamese-native, Apache-2.0, 48 kHz natural prosody.",
+    },
+    {
+        "id": "vieneu-v2",
+        "label": "VieNeu-TTS v2 (VN-native, 24 kHz)",
+        "engine": "vieneu",
+        "weights_path": "pnnbao-ump/VieNeu-TTS-v2",
+        "sample_rate": 24000,
+        "device": "cuda",
+        "notes": "VN-native baseline. Lower-bandwidth fallback.",
+    },
+    {
+        "id": "cosyvoice2",
+        "label": "CosyVoice2 0.5B (streaming, Apache)",
+        "engine": "cosyvoice",
+        "weights_path": "FunAudioLLM/CosyVoice2-0.5B",
+        "sample_rate": 24000,
+        "device": "cuda",
+        "notes": "True token-by-token streaming. Multilingual; VN via finetune.",
+    },
+    {
+        "id": "kokoro",
+        "label": "Kokoro 82M (Apache, multilingual)",
+        "engine": "kokoro",
+        "weights_path": "hexgrad/Kokoro-82M",
+        "sample_rate": 24000,
+        "device": "cuda",
+        "notes": "Compact multilingual model; experimental for VN.",
+    },
+    {
+        "id": "xtts-v2",
+        "label": "XTTS v2 (Coqui, zero-shot voice clone)",
+        "engine": "xtts",
+        "weights_path": "coqui/XTTS-v2",
+        "sample_rate": 24000,
+        "device": "cuda",
+        "notes": "Voice-clone capable; license is CC-NC, demo only.",
+    },
+    {
+        "id": "transformers-mms-vi",
+        "label": "MMS-TTS Vietnamese (HF transformers)",
+        "engine": "transformers",
+        "weights_path": "facebook/mms-tts-vie",
+        "sample_rate": 16000,
+        "device": "cuda",
+        "notes": "Apache, fully offline-friendly via HF transformers; 16 kHz.",
+    },
 ]
+
+
+def get_tts_preset(preset_id: str) -> Optional[dict]:
+    """Return the preset entry whose `id` matches, else None."""
+    for preset in AVAILABLE_TTS_PRESETS:
+        if preset.get("id") == preset_id:
+            return dict(preset)
+    return None
 
 
 class EngineManager:
@@ -179,6 +240,29 @@ class EngineManager:
             return None
         voice = self._tts_cfg.get("ref_audio")
         return to_tts_fn(self._tts, voice=voice)
+
+    def apply_tts_preset(self, preset_id: str) -> dict:
+        """Update the in-memory TTS cfg from a preset id (frontend dropdown).
+
+        This does NOT load the engine — it just records the preset's
+        engine/weights/sample_rate/device into ``_tts_cfg`` so the next call
+        to :meth:`load_tts` (or the status endpoint) sees the selection.
+        Callers that want to actually load the model should pass the returned
+        dict to :meth:`load_tts`.
+        """
+        preset = get_tts_preset(preset_id)
+        if preset is None:
+            raise KeyError(f"unknown TTS preset id '{preset_id}'")
+        cfg = {
+            "engine": preset["engine"],
+            "weights_path": preset["weights_path"],
+            "model": preset["weights_path"],
+            "sample_rate": preset["sample_rate"],
+            "device": preset["device"],
+        }
+        with self._lock:
+            self._tts_cfg = cfg
+        return cfg
 
     # ── Cloud re-configure ──────────────────────────────────────────────
 

@@ -111,23 +111,59 @@ class LLMConfig:
 
 @dataclass
 class TTSConfig:
-    """TTS engine configuration (env-driven)."""
+    """TTS engine configuration (env-driven).
+
+    Two layers:
+      - ``preset_id`` (default ``vieneu-v3-turbo``) is the recommended preset
+        for the frontend dropdown's INITIAL selection (Phase A). It is a
+        passive hint; setting it does NOT load that engine at startup.
+      - ``engine``/``model``/``sample_rate`` (default ``transformers``/empty/
+        24 kHz) drive the engine that is actually built at startup. If
+        ``TTS_PRESET_ID`` is set to a known preset id, its engine/weights/
+        sample_rate WIN over the individual TTS_ENGINE/TTS_WEIGHTS/
+        TTS_SAMPLE_RATE env vars so a single env switch picks both the
+        dropdown default AND the loaded engine.
+    """
 
     engine: str = "transformers"       # transformers(default) | vieneu | cosyvoice | tone
     model: str = ""                     # HF model id or path
     device: str = "auto"
     sample_rate: int = 24_000
     ref_audio: Optional[str] = None
+    preset_id: str = "vieneu-v3-turbo"
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "TTSConfig":
+        preset_id = os.environ.get("TTS_PRESET_ID", "vieneu-v3-turbo")
+        # Default fields (preserve offline behaviour when no TTS_* env is set).
+        engine = os.environ.get("TTS_ENGINE", "transformers").lower()
+        model = os.environ.get("TTS_MODEL", os.environ.get("TTS_WEIGHTS", ""))
+        sample_rate = int(os.environ.get("TTS_SAMPLE_RATE", "24000"))
+        device = os.environ.get("TTS_DEVICE", "auto")
+
+        # If TTS_PRESET_ID is explicitly set in env AND it matches a registered
+        # preset, the preset WINS over the individual fields (Phase A spec).
+        # Lazy import to avoid circular dependency at module import time.
+        if "TTS_PRESET_ID" in os.environ:
+            try:
+                from .engine_manager import get_tts_preset  # local import: avoid cycles
+                preset = get_tts_preset(preset_id)
+            except Exception:
+                preset = None
+            if preset is not None:
+                engine = preset["engine"]
+                model = preset["weights_path"]
+                sample_rate = preset["sample_rate"]
+                device = preset["device"]
+
         return cls(
-            engine=os.environ.get("TTS_ENGINE", "transformers").lower(),
-            model=os.environ.get("TTS_MODEL", os.environ.get("TTS_WEIGHTS", "")),
-            device=os.environ.get("TTS_DEVICE", "auto"),
-            sample_rate=int(os.environ.get("TTS_SAMPLE_RATE", "24000")),
+            engine=engine,
+            model=model,
+            device=device,
+            sample_rate=sample_rate,
             ref_audio=os.environ.get("TTS_REF_AUDIO") or None,
+            preset_id=preset_id,
         )
 
     def to_engine_cfg(self) -> dict:

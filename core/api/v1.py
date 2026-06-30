@@ -125,6 +125,11 @@ class IngestReq(BaseModel):
     msg_rate: Optional[float] = None
 
 
+class TTSPresetIn(BaseModel):
+    """Wave 2: select a TTS preset by id (Phase A dropdown)."""
+    preset_id: str
+
+
 # ── Wiring (set by core/server.py) ──────────────────────────────────
 
 
@@ -536,6 +541,21 @@ async def swap_tts(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[st
                            "sample_rate": info.sample_rate})
     return {"ok": True, "engine": info.engine, "model": info.model, "name": info.name,
             "sample_rate": info.sample_rate}
+
+
+@router.post("/engines/tts/preset")
+async def set_tts_preset(payload: TTSPresetIn, _: None = Depends(admin_auth)) -> dict[str, Any]:
+    """Select a TTS preset by id (Phase A dropdown). Updates the EngineManager's
+    in-memory TTS config without loading the model. The next ``POST /engines/tts``
+    or full reload will apply it."""
+    d = deps()
+    if d.engine_manager is None:
+        raise HTTPException(status_code=503, detail="engine manager not ready")
+    try:
+        updated = d.engine_manager.apply_tts_preset(payload.preset_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown preset {payload.preset_id}")
+    return {"preset_id": payload.preset_id, "tts_cfg": updated}
 
 
 # ── Debug mode endpoints (mock viewer traffic + products) ─────────────
