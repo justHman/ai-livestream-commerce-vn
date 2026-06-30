@@ -139,7 +139,7 @@ Recent changelog highlights: 1080p avatars, OpenAI/Gemini realtime voices,
 session memory, ElevenLabs JP text normalization (May–Jun 2026).
 
 ### What you can build for THIS project
-- A real Vietnamese talking-host avatar replacing the mock face in `liveavatar_demo`.
+- A real Vietnamese talking-host avatar replacing the mock face in `archive/legacy-liveavatar-demo`.
 - Chat-driven commerce host: viewer message → `avatar.speak_response` → avatar answers about products/promos.
 - Bring-your-own LLM (the planned Qwen3-4B) via `llm_configuration_id` while LiveAvatar handles ASR + TTS + video (FULL + Custom LLM).
 - Bring-your-own pipeline: stream your own VN TTS (PCM 24 kHz) and let LiveAvatar only render video (LITE).
@@ -147,7 +147,7 @@ session memory, ElevenLabs JP text normalization (May–Jun 2026).
 
 > ⚠️ Vietnamese voices: your account currently exposes **70 `en` voices, no `vi`**.
 > For Vietnamese speech today, use **LITE mode** with your own VN TTS (e.g. the
-> EdgeTTS `vi-VN-*` already in `liveavatar_demo`), or **FULL + Custom TTS** with an
+> EdgeTTS `vi-VN-*` already in `archive/legacy-liveavatar-demo`), or **FULL + Custom TTS** with an
 > ElevenLabs multilingual voice. Re-check `GET /v1/voices` later for native `vi`.
 
 ---
@@ -200,7 +200,7 @@ Start **FULL (sandbox)** to validate the talking avatar end-to-end (done — smo
 test passes). Then, because you need **Vietnamese** + a **custom LLM (Qwen3-4B)**,
 the production target is either:
 - **FULL + Custom LLM + Custom TTS** (ElevenLabs multilingual VN voice), or
-- **LITE** reusing the VN EdgeTTS pipeline already built in `liveavatar_demo`
+- **LITE** reusing the VN EdgeTTS pipeline already built in `archive/legacy-liveavatar-demo`
   (resampled to PCM 24 kHz).
 
 We are building **LITE + self-hosted LLM + TTS** (your choice) — see §4 and §5.
