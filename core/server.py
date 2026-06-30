@@ -184,8 +184,12 @@ def create_app(config: AppConfig | None = None,
         # The coordinator needs a StreamOrchestrator (per-session pipeline),
         # the lock registry, and its own config. It drives the background tick
         # loop that drains ChatQueue → Director → orchestrator.run().
+        # The shared ``orchestrators`` dict (V1Deps.orchestrators) lets the
+        # coordinator register its active queue so the continuous MJPEG endpoint
+        # drains utterance frames; ``hub`` lets it emit coordinator.* WS events.
         coordinator = None
         lock_registry = SessionLockRegistry()
+        orchestrators: dict = {}
         if director is not None:
             from .director.coordinator import DirectorCoordinator, CoordinatorConfig
             from .render.orchestrator import StreamOrchestrator
@@ -205,6 +209,8 @@ def create_app(config: AppConfig | None = None,
                 ),
                 lock_registry=lock_registry,
                 cfg=CoordinatorConfig(tick_ms=300, window_sec=75.0),
+                hub=hub,
+                orchestrator_registry=orchestrators,
             )
 
         v1.init_deps(v1.V1Deps(
@@ -215,6 +221,7 @@ def create_app(config: AppConfig | None = None,
             engine_manager=engine_mgr,
             config=config,
             locks=lock_registry,
+            orchestrators=orchestrators,
             coordinator=coordinator,
         ))
 

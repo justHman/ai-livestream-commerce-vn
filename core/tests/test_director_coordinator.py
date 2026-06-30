@@ -28,6 +28,7 @@ os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
 from core.director.catalog import Product
 from core.director.coordinator import CoordinatorConfig, DirectorCoordinator
 from core.director.config import StreamConfig
+from core.director.director import Decision
 from core.director.runtime import DirectorRuntime
 from core.render.locks import SessionLockRegistry
 from core.render.mock import MockRenderBackend, _MockSession
@@ -287,21 +288,97 @@ async def test_start_is_idempotent():
     await asyncio.sleep(0.05)
 
 
-async def test_coordinator_with_no_comments_still_ticks():
-    """The coordinator ticks even with no comments (phase hooks fire)."""
-    sid = "test-sess-empty"
-    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
+# ---------- WS emit + orchestrator-registry tests ----------
+
+
+class _RecordingHub:
+    """Minimal ControlHub stand-in that records emitted events per session."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, session_id: str, event: dict) -> None:
+        self.events.append((session_id, dict(event)))
+
+    def types(self) -> list[str]:
+        return [e["type"] for _, e in self.events]
+
+
+async def test_coordinator_emits_ws_events_and_registers_orchestrator():
+    """When hub + orchestrator_registry are wired, the coordinator emits
+    coordinator.speak_started/finished and director.decision, and registers the
+    active orchestrator+queue so MJPEG can drain utterance frames.
+
+    The registry-population is verified deterministically via the
+    _register_speaking/_unregister_speaking helpers (the tick-loop timing is
+    too racy to assert "registry empty at snapshot X" — a later tick may have
+    started a new in-flight speak).
+    """
+    from core.director.coordinator import _decision_to_event  # internal helper
+
+    sid = "test-sess-ws"
+    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=40, session_id=sid)
     products = _make_products()
+    hub = _RecordingHub()
+    registry: dict = {}
+    coord._hub = hub
+    coord._orchestrator_registry = registry
+
+    # Deterministic: register/unregister lifecycle on the registry.
+    assert sid not in registry
+    coord._register_speaking(sid)
+    assert sid in registry
+    assert registry[sid]["orchestrator"] is orch
+    assert registry[sid]["queue"] is orch._queue
+    coord._unregister_speaking(sid)
+    assert sid not in registry
+    # Idempotent unregister (no error on second call).
+    coord._unregister_speaking(sid)
 
     coord.start(sid, products)
+    # Ingest a comment that should trigger a non-idle decision.
+    coord.ingest(sid, "San pham nay gia bao nhieu?", "user1")
+    # Wait enough ticks for decide + speak.
+    await asyncio.sleep(0.5)
 
-    # Wait a few ticks.
-    await asyncio.sleep(0.2)
+    types = hub.types()
+    # director.decision is emitted every tick that produces a decision.
+    assert "director.decision" in types, f"no director.decision in {types}"
+    # If a speak happened, the start/finished pair must both be present
+    # (the finally block emits finished + unregisters).
+    if "coordinator.speak_started" in types:
+        assert "coordinator.speak_finished" in types
 
+    # _decision_to_event projects only serializable fields.
+    dec = Decision(action="answer_fact", product_id="P001", field="price",
+                   may_interrupt=False, reason="score=3")
+    ev = _decision_to_event(dec)
+    assert ev == {
+        "action": "answer_fact",
+        "product": "P001",
+        "field": "price",
+        "may_interrupt": False,
+        "reason": "score=3",
+    }
+
+    coord.stop(sid)
+    await asyncio.sleep(0.05)
+
+
+async def test_coordinator_without_hub_is_noop():
+    """No hub and no registry wired -> coordinator still runs, no errors."""
+    sid = "test-sess-nohub"
+    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
+    assert coord._hub is None
+    assert coord._orchestrator_registry is None
+
+    coord.start(sid, products := _make_products())
+    coord.ingest(sid, "hello", "user1")
+    await asyncio.sleep(0.25)
+
+    # No exceptions raised -> baseline behavior preserved.
     stats = coord.stats(sid)
-    # Should have made at least one tick (decisions or skips).
-    total_activity = stats["decisions_emitted"] + stats["skips"]
-    assert total_activity >= 0  # at minimum ran without crashing
+    assert stats["decisions_emitted"] + stats["skips"] >= 0
 
     coord.stop(sid)
     await asyncio.sleep(0.05)

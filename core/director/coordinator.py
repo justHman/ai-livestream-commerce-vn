@@ -32,7 +32,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from .catalog import Product
 from .chat_queue import ChatQueue, IncomingComment
@@ -47,7 +47,27 @@ from .state import ProductState, StreamState
 from ..render.orchestrator import StreamOrchestrator
 from ..render.locks import SessionLockRegistry
 
+if TYPE_CHECKING:
+    # Avoid a circular import at runtime: core.api.v1 imports DirectorCoordinator
+    # at module load, so importing ControlHub eagerly here would fail. The hub
+    # is only used through its async ``emit(session_id, event)`` method.
+    from ..api.v1 import ControlHub
+
 logger = logging.getLogger(__name__)
+
+
+def _decision_to_event(decision: Decision) -> dict:
+    """Project a Director Decision to a frontend-friendly WS event payload.
+
+    Drops non-serializable fields and keeps only what the UI ticker needs.
+    """
+    return {
+        "action": decision.action,
+        "product": decision.product_id,
+        "field": decision.field,
+        "may_interrupt": decision.may_interrupt,
+        "reason": decision.reason,
+    }
 
 
 @dataclass
@@ -85,16 +105,47 @@ class DirectorCoordinator:
         orchestrator: StreamOrchestrator,
         lock_registry: SessionLockRegistry,
         cfg: Optional[CoordinatorConfig] = None,
+        hub: Optional["ControlHub"] = None,
+        orchestrator_registry: Optional[dict] = None,
     ) -> None:
         self._runtime = runtime
         self._orchestrator = orchestrator
         self._lock_registry = lock_registry
         self._cfg = cfg or CoordinatorConfig()
+        self._hub = hub
+        # Shared dict (typically V1Deps.orchestrators) the coordinator writes
+        # to while speaking so the continuous MJPEG endpoint can find the active
+        # queue and serve utterance frames. When None, registration is skipped
+        # (tests that do not exercise MJPEG).
+        self._orchestrator_registry = orchestrator_registry
         self._queues: dict[str, ChatQueue] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._stats: dict[str, _SessionStats] = {}
         self._active_score: dict[str, float] = {}
         self._embedder = None  # lazy
+
+    async def _emit(self, session_id: str, event: dict) -> None:
+        """Send a WS event via the ControlHub if one is wired. No-op otherwise."""
+        if self._hub is None:
+            return
+        try:
+            await self._hub.emit(session_id, event)
+        except Exception:
+            logger.debug("hub.emit failed for %s", session_id, exc_info=True)
+
+    def _register_speaking(self, session_id: str) -> None:
+        """Publish the active orchestrator+queue so MJPEG can drain utterance frames."""
+        if self._orchestrator_registry is None:
+            return
+        self._orchestrator_registry[session_id] = {
+            "orchestrator": self._orchestrator,
+            "queue": self._orchestrator._queue,
+        }
+
+    def _unregister_speaking(self, session_id: str) -> None:
+        if self._orchestrator_registry is None:
+            return
+        self._orchestrator_registry.pop(session_id, None)
 
     def _get_embedder(self):
         if self._embedder is None:
@@ -256,6 +307,13 @@ class DirectorCoordinator:
         state.phase_elapsed_sec = now
         decision = director.decide(state.rolling_comments, now=now)
 
+        # Emit the decision to the WS hub (frontend ticker). Best-effort; the
+        # loop continues regardless.
+        await self._emit(session_id, {
+            "type": "director.decision",
+            **_decision_to_event(decision),
+        })
+
         # 5. Skip?
         if decision.action in ("idle", "skip"):
             self._stats[session_id].skips += 1
@@ -319,10 +377,23 @@ class DirectorCoordinator:
             return
 
         # 10. Run the streaming pipeline.
+        self._register_speaking(session_id)
         try:
+            await self._emit(session_id, {
+                "type": "coordinator.speak_started",
+                "text": text,
+                "utterance": text,
+                "action": decision.action,
+                "product": decision.product_id,
+            })
             await self._orchestrator.run(session_id, text)
             st.decisions_emitted += 1
             st.last_decision_ts = time.monotonic()
+            await self._emit(session_id, {
+                "type": "coordinator.speak_finished",
+                "text": text,
+                "utterance": text,
+            })
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -330,6 +401,7 @@ class DirectorCoordinator:
         finally:
             self._lock_registry.release(session_id)
             self._active_score.pop(session_id, None)
+            self._unregister_speaking(session_id)
 
 
 __all__ = ["DirectorCoordinator", "CoordinatorConfig"]
