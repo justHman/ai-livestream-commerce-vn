@@ -1,8 +1,8 @@
 """CloudRenderBackend — LiveAvatar cloud, behind the RenderBackend seam.
 
-Reuses the sandbox-verified `liveavatar_api` code (LiveAvatarClient,
+Reuses the sandbox-verified `providers.liveavatar_cloud` code (LiveAvatarClient,
 LiteConversation, LiteAudioAgent) without rewriting it. This adapter is the ONLY
-place core/ depends on liveavatar_api; swapping to self-host changes nothing above.
+place core/ depends on providers.liveavatar_cloud; swapping to self-host changes nothing above.
 
 LLM/TTS injection (production):
   configure(llm=..., tts=...) accepts EITHER:
@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Optional, Union
 
-from liveavatar_api.backend.client import LiveAvatarClient, SANDBOX_AVATAR_ID
-from liveavatar_api.backend.conversation import (
+from providers.liveavatar_cloud.sdk.client import LiveAvatarClient, SANDBOX_AVATAR_ID
+from providers.liveavatar_cloud.service.conversation import (
     LiteConversation,
     echo_llm,
     tone_tts,

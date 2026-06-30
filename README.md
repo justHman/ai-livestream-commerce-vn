@@ -36,11 +36,13 @@ core/                  production surface (transport-agnostic)
   director/            viewer-comment clustering + phase scoring + FSM (backend-agnostic)
   config.py store.py   env-driven config + SessionStore (InMemory | Redis)
   tests/               sandbox + offline smoke tests
-liveavatar_api/        LiveAvatar cloud SDK (behind the cloud RenderBackend) + demo frontend
-liveavatar_demo/       earlier mock diffusion PoC
+providers/liveavatar_cloud/        LiveAvatar cloud SDK (behind the cloud RenderBackend)
+archive/legacy-liveavatar-demo/   earlier mock diffusion PoC (archived)
 notebooks/             bootstrap_colab.ipynb (clone → weights → run → ngrok)
-PRODUCTION.md          architecture & portability (Colab → AWS)
-PLAN.md  TASKS.md      plan + task tracking
+docs/                  architecture.md + runbook + checklists
+  architecture.md      living architecture reference (replaces PRODUCTION.md)
+  runbook-colab.md     Colab deployment guide
+  checklists/          colab-readiness.md + release.md
 ```
 
 ## Quick start (local / sandbox — free, no credits)
@@ -58,7 +60,7 @@ uv run uvicorn core.server:app --port 8800
 #   or: python -m core.server
 
 # 4. open the demo frontend, paste the backend URL, click Start
-python -m http.server 8901 --directory liveavatar_api/frontend
+python -m http.server 8901 --directory frontend
 ```
 
 Director loop (cluster comments → decide → avatar speaks):
