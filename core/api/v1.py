@@ -490,6 +490,35 @@ async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[st
     return {"ok": True, **result}
 
 
+# ── Wave 2: single-comment chat endpoint (Phase B coordinator) ────────
+
+
+@router.post("/lite/chat", status_code=202)
+async def lite_chat(payload: ChatIn, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+    """Accept a single viewer chat comment via the DirectorCoordinator.
+
+    Returns 202 Accepted immediately; the coordinator's tick loop processes
+    comments asynchronously. Returns 404 if the coordinator is not active or
+    the session is not attached.
+    """
+    d = deps()
+    if d.coordinator is None or not d.coordinator.has(payload.session_id):
+        raise HTTPException(404, "session not attached to coordinator")
+    if len(payload.text) > 500:
+        raise HTTPException(413, "text too long")
+    comment = d.coordinator.ingest(
+        session_id=payload.session_id,
+        text=payload.text,
+        author=payload.author,
+        ts=payload.ts,
+    )
+    return {
+        "accepted": True,
+        "comment_id": comment.id,
+        "queue_stats": d.coordinator.stats(payload.session_id),
+    }
+
+
 # ── Engine management endpoints (runtime LLM/TTS swap) ───────────────
 
 
@@ -723,6 +752,8 @@ async def ws_control(ws: WebSocket, session_id: str) -> None:
 
 # ── Mock media endpoints (only when RENDER_BACKEND=mock) ────────────
 
+_MJPEG_BOUNDARY = "mockmjpegboundary"
+
 
 def _mock_backend() -> Optional[MockRenderBackend]:
     """Return the mock backend if the active backend is a MockRenderBackend.
@@ -753,25 +784,67 @@ async def mock_frame_png(session_id: str) -> Response:
 
 @router.get("/mock/video/{session_id}.mjpeg")
 async def mock_video_mjpeg(session_id: str) -> StreamingResponse:
-    """MJPEG stream of frames from the last utterance (bounded).
+    """Continuous MJPEG stream (Wave 2 rewrite).
 
-    Only available when the active backend is MockRenderBackend. Yields
-    the stored frames once then stops; if none, yields one placeholder.
+    Emits idle-loop frames at ~25 fps when no utterance is playing. When
+    a ``BoundedVideoQueue`` is active for the session (an utterance is
+    running through ``_streaming_say`` or the coordinator), utterance frames
+    are served from the queue and fall back to idle on underflow.
+
+    The stream runs until the client disconnects or the session is stopped.
+    Only available when the active backend is MockRenderBackend.
     """
+    import time as _time
+
     mb = _mock_backend()
     if mb is None:
         raise HTTPException(status_code=404, detail="mock backend not active")
+    # Validate session exists.
+    if session_id not in mb._sessions:
+        raise HTTPException(status_code=404, detail="unknown session_id")
 
-    def _gen():
-        try:
-            yield from mb.iter_mjpeg_frames(session_id)
-        except KeyError:
-            return
+    d = deps()
+    fps = mb.fps
+    frame_interval_s = 1.0 / fps
 
-    boundary = MockRenderBackend.mjpeg_boundary()
+    async def _gen():
+        boundary = _MJPEG_BOUNDARY
+        while True:
+            # Check whether a streaming orchestrator queue exists for this
+            # session (active utterance). If so, use get_or_idle for frame
+            # pacing. Otherwise serve idle frames directly.
+            entry = d.orchestrators.get(session_id)
+            if entry is not None:
+                queue: BoundedVideoQueue = entry["queue"]
+                idle_fn = lambda: mb.get_idle_frame_jpeg(
+                    session_id, int(_time.monotonic_ns() // 1_000_000)
+                )
+                try:
+                    jpeg, _is_idle = await queue.get_or_idle(
+                        idle_fn, timeout_ms=int(frame_interval_s * 1000)
+                    )
+                except (KeyError, asyncio.CancelledError):
+                    break
+            else:
+                # Pure idle: serve pre-rendered idle frames at frame rate.
+                try:
+                    jpeg = mb.get_idle_frame_jpeg(
+                        session_id, int(_time.monotonic_ns() // 1_000_000)
+                    )
+                except KeyError:
+                    break
+                await asyncio.sleep(frame_interval_s)
+
+            header = (
+                f"--{boundary}\r\n"
+                f"Content-Type: image/jpeg\r\n"
+                f"Content-Length: {len(jpeg)}\r\n\r\n"
+            ).encode("ascii")
+            yield header + jpeg + b"\r\n"
+
     return StreamingResponse(
         _gen(),
-        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+        media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}",
     )
 
 

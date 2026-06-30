@@ -19,6 +19,8 @@ Public surface:
     session_status(session_id) -> str
     get_last_frame_png(session_id) -> bytes
     iter_mjpeg_frames(session_id) -> Iterator[bytes]
+    iter_idle_frames(session_id) -> Iterator[bytes]
+    get_idle_frame_jpeg(session_id, t_ms=None) -> bytes
 """
 
 from __future__ import annotations
@@ -53,6 +55,9 @@ class _MockSession:
     last_audio_window: Optional[AudioWindow] = None
     # Per-session VideoWindow sequence counter.
     video_seq: int = 0
+    # Pre-rendered idle loop frames (JPEG bytes). Populated on start().
+    # Length is `MockRenderBackend._idle_loop_len` (default 75 = 3s @ 25fps).
+    idle_loop_frames: list[bytes] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +256,156 @@ def _synthesize_frame(
     return buf.getvalue()
 
 
+def _synthesize_idle_frame(
+    *,
+    width: int,
+    height: int,
+    frame_idx: int,
+    loop_len: int,
+    fps: int,
+    text_lines: list[str],
+) -> bytes:
+    """Render a single idle-loop frame and return JPEG bytes.
+
+    Differs from ``_synthesize_frame`` in three ways:
+      - Mouth fully closed (audio_rms=0).
+      - Head bob is a small sinusoid whose period is exactly ``loop_len``
+        frames, so frame ``loop_len`` would be identical to frame 0 (seamless
+        loop). Amplitude ~ 0.3px (clamped to integer 0 by PIL but kept via
+        floor so the bob is visually subtle while still mathematically
+        seamless across the wrap boundary).
+      - Blink only once per ~50 idle frames (one closed-eye frame at idx % 50 == 0).
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (width, height), (245, 240, 230))
+    draw = ImageDraw.Draw(img)
+
+    mouth_open = 0.0
+    blink = (frame_idx % 50) == 0
+
+    # We want a seamless loop, so we re-implement the body-draw with bob that
+    # uses loop_len as the period (not fps). _draw_avatar's internal bob and
+    # waving-arm formulas use fps for periodicity, which would NOT wrap
+    # seamlessly at frame=loop_len-1 -> frame=0. We therefore replicate the
+    # drawing here but parameterize the periodic terms on loop_len.
+
+    # Background.
+    draw.rectangle([0, 0, width, height], fill=(245, 240, 230))
+
+    cx = width // 2
+    head_r = min(width, height) // 8
+    head_cy = int(height * 0.32)
+
+    # Seamless head bob: amplitude 0.3 px nominally; rounded down by int(),
+    # giving a 0..1 px jitter that wraps perfectly across the loop boundary.
+    bob = int(0.3 * math.sin(2 * math.pi * frame_idx / max(1, loop_len)))
+    head_cy += bob
+
+    # Head.
+    draw.ellipse(
+        [cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r],
+        fill=(210, 190, 170),
+        outline=(60, 50, 40),
+        width=2,
+    )
+
+    # Eyes.
+    eye_dx = head_r // 2
+    eye_dy = head_r // 4
+    eye_r = max(2, head_r // 8)
+    if blink:
+        draw.line(
+            [cx - eye_dx - eye_r, head_cy - eye_dy, cx - eye_dx + eye_r, head_cy - eye_dy],
+            fill=(40, 30, 20),
+            width=2,
+        )
+        draw.line(
+            [cx + eye_dx - eye_r, head_cy - eye_dy, cx + eye_dx + eye_r, head_cy - eye_dy],
+            fill=(40, 30, 20),
+            width=2,
+        )
+    else:
+        draw.ellipse(
+            [cx - eye_dx - eye_r, head_cy - eye_dy - eye_r,
+             cx - eye_dx + eye_r, head_cy - eye_dy + eye_r],
+            fill=(40, 30, 20),
+        )
+        draw.ellipse(
+            [cx + eye_dx - eye_r, head_cy - eye_dy - eye_r,
+             cx + eye_dx + eye_r, head_cy - eye_dy + eye_r],
+            fill=(40, 30, 20),
+        )
+
+    # Mouth fully closed (mouth_open=0 -> minimal mouth_h).
+    mouth_w = max(4, head_r // 2)
+    mouth_h = 2
+    mouth_cy = head_cy + head_r // 2 + 4
+    draw.ellipse(
+        [cx - mouth_w // 2, mouth_cy - mouth_h // 2,
+         cx + mouth_w // 2, mouth_cy + mouth_h // 2],
+        fill=(120, 40, 40),
+    )
+
+    # Torso.
+    torso_top = head_cy + head_r + 4
+    torso_w = int(head_r * 2.4)
+    torso_h = int(height * 0.32)
+    draw.rounded_rectangle(
+        [cx - torso_w // 2, torso_top, cx + torso_w // 2, torso_top + torso_h],
+        radius=12,
+        fill=(70, 110, 160),
+        outline=(40, 60, 90),
+        width=2,
+    )
+
+    # Arms: idle pose. Static left arm; "right" arm sways gently on the loop
+    # period (also seamless) instead of the fps period used by utterance frames.
+    arm_w = max(6, head_r // 3)
+    arm_len = int(torso_h * 0.7)
+    arm_top = torso_top + 6
+
+    draw.rectangle(
+        [cx - torso_w // 2 - arm_w, arm_top,
+         cx - torso_w // 2, arm_top + arm_len],
+        fill=(70, 110, 160),
+        outline=(40, 60, 90),
+        width=2,
+    )
+
+    # Idle sway: smaller amplitude than utterance wave, period = loop_len.
+    angle = math.sin(2 * math.pi * frame_idx / max(1, loop_len)) * (math.pi / 20)
+    ax_start = (cx + torso_w // 2, arm_top + 4)
+    ax_end = (
+        ax_start[0] + int(arm_len * math.cos(angle)),
+        ax_start[1] - int(arm_len * math.sin(angle)),
+    )
+    draw.line([ax_start, ax_end], fill=(70, 110, 160), width=arm_w)
+    draw.ellipse(
+        [ax_end[0] - arm_w, ax_end[1] - arm_w, ax_end[0] + arm_w, ax_end[1] + arm_w],
+        fill=(210, 190, 170),
+        outline=(60, 50, 40),
+        width=2,
+    )
+
+    # Text overlay.
+    try:
+        from PIL import ImageFont
+
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    ty = 6
+    for line in text_lines:
+        draw.text((8, ty), line, fill=(20, 20, 20), font=font)
+        ty += 14
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
 def _placeholder_png(width: int, height: int) -> bytes:
     """A simple placeholder PNG (no session-specific content)."""
     from PIL import Image, ImageDraw
@@ -308,12 +463,17 @@ class MockRenderBackend(RenderBackend):
         self.width = width
         self.height = height
         self._sessions: dict[str, _MockSession] = {}
+        # Idle loop length: 3 seconds at the configured fps (75 frames @ 25fps).
+        # Kept on self so tests / callers can introspect or override.
+        self._idle_loop_len: int = max(1, fps * 3)
 
     # -- RenderBackend ABC --------------------------------------------------
 
     def start(self, opts: StartOptions) -> StartResult:
         session_id = f"mock-{uuid.uuid4().hex[:12]}"
-        self._sessions[session_id] = _MockSession(session_id=session_id)
+        sess = _MockSession(session_id=session_id)
+        sess.idle_loop_frames = self._build_idle_loop(session_id)
+        self._sessions[session_id] = sess
         return StartResult(
             session_id=session_id,
             livekit_url=f"mock://livekit/{session_id}",
@@ -515,3 +675,75 @@ class MockRenderBackend(RenderBackend):
     def mjpeg_boundary() -> str:
         """Return the MJPEG multipart boundary used by ``iter_mjpeg_frames``."""
         return _MJPEG_BOUNDARY
+
+    # -- Idle loop ---------------------------------------------------------
+
+    def _build_idle_loop(self, session_id: str) -> list[bytes]:
+        """Pre-render the seamless idle loop frames for one session.
+
+        Returns ``self._idle_loop_len`` JPEG frames (default 75 = 3 s @ 25 fps).
+        Each frame is rendered with mouth fully closed and a head bob whose
+        sinusoidal period equals ``_idle_loop_len`` so frame N wraps cleanly
+        to frame 0. Blinks once per ~50 idle frames.
+        """
+        frames: list[bytes] = []
+        n = self._idle_loop_len
+        for i in range(n):
+            text_lines = [
+                f"session: {session_id}",
+                "idle",
+            ]
+            jpeg = _synthesize_idle_frame(
+                width=self.width,
+                height=self.height,
+                frame_idx=i,
+                loop_len=n,
+                fps=self.fps,
+                text_lines=text_lines,
+            )
+            frames.append(jpeg)
+        return frames
+
+    def iter_idle_frames(self, session_id: str) -> Iterator[bytes]:
+        """Yield idle-loop JPEG frames indefinitely (no pacing, FIFO by frame_idx).
+
+        The caller controls the rate (e.g. one frame per 40 ms for 25 fps).
+        Raises KeyError if ``session_id`` is unknown. If the session was
+        started but the cache is somehow empty, it is rebuilt lazily.
+        """
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            raise KeyError(session_id)
+        if not sess.idle_loop_frames:
+            sess.idle_loop_frames = self._build_idle_loop(session_id)
+        frames = sess.idle_loop_frames
+        i = 0
+        n = len(frames)
+        while True:
+            yield frames[i % n]
+            i += 1
+
+    def get_idle_frame_jpeg(
+        self,
+        session_id: str,
+        t_ms: Optional[int] = None,
+    ) -> bytes:
+        """Return one idle-loop JPEG frame deterministically by logical time.
+
+        ``t_ms`` is in milliseconds. The returned frame is
+        ``idle_loop[(t_ms // 40) % loop_len]`` (40 ms = one 25-fps frame).
+        If ``t_ms`` is None, uses ``time.monotonic_ns() // 1_000_000``.
+
+        Raises KeyError if ``session_id`` is unknown.
+        """
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            raise KeyError(session_id)
+        if not sess.idle_loop_frames:
+            sess.idle_loop_frames = self._build_idle_loop(session_id)
+        if t_ms is None:
+            t_ms = time.monotonic_ns() // 1_000_000
+        # 40 ms per frame matches 25 fps idle pacing; loops via modulo.
+        n = len(sess.idle_loop_frames)
+        idx = (int(t_ms) // 40) % n
+        return sess.idle_loop_frames[idx]

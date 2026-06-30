@@ -48,14 +48,29 @@ class BoundedVideoQueue:
 
     ``get()`` is async and blocks until a window is available.
 
-    ``qsize()`` and ``dropped_count()`` are sync diagnostics.
+    ``get_or_idle(idle_provider, timeout_ms)`` is async and returns one JPEG
+    frame per call: drains frames from the current VideoWindow first, then
+    blocks up to ``timeout_ms`` for the next VideoWindow, and on timeout falls
+    back to ``idle_provider()`` (used by the continuous MJPEG endpoint so the
+    frontend never sees a black/frozen frame).
+
+    ``qsize()`` and ``dropped_count()`` are sync diagnostics. Idle-related
+    counters (``idle_frames_served``, ``underflow_count``, ``last_frame_age_ms``)
+    expose how often the queue ran dry and how stale the most recent emitted
+    frame is.
 
     Args:
         max_size: Maximum number of windows the queue holds before dropping.
             Must be >= 1.
+        clock: Monotonic clock source (seconds). Injectable for tests.
     """
 
-    def __init__(self, max_size: int = 5) -> None:
+    def __init__(
+        self,
+        max_size: int = 5,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         if max_size < 1:
             raise ValueError(f"max_size must be >= 1, got {max_size}")
         self._max_size = max_size
@@ -64,6 +79,21 @@ class BoundedVideoQueue:
         # use a maxsize queue and manually evict before putting when full.
         self._q: asyncio.Queue[VideoWindow] = asyncio.Queue(maxsize=max_size)
         self._dropped = 0
+        # Per-frame cursor over the most recently dequeued VideoWindow. The
+        # mjpeg endpoint and tests consume one JPEG at a time via
+        # ``get_or_idle``, so we drain ``current.frames`` before pulling the
+        # next window off the queue.
+        self._current: Optional[VideoWindow] = None
+        self._cursor: int = 0
+        # Idle / age metrics (per Phase C plan).
+        self.idle_frames_served: int = 0
+        self.underflow_count: int = 0
+        self.last_frame_age_ms: float = 0.0
+        # Last successfully returned frame (true or idle); used as emergency
+        # fallback if both the queue is empty AND ``idle_provider`` raises.
+        self.last_frame: Optional[bytes] = None
+        self._last_frame_at: Optional[float] = None
+        self._clock = clock
 
     @property
     def max_size(self) -> int:
@@ -110,6 +140,73 @@ class BoundedVideoQueue:
                 self._q.get_nowait()
             except asyncio.QueueEmpty:  # pragma: no cover - race-safe guard
                 break
+        self._current = None
+        self._cursor = 0
+
+    async def get_or_idle(
+        self,
+        idle_provider: Callable[[], bytes],
+        timeout_ms: int = 40,
+    ) -> tuple[bytes, bool]:
+        """Return one JPEG frame; fall back to ``idle_provider()`` on timeout.
+
+        Per-frame cursor semantics:
+          1. If there is a current VideoWindow with remaining frames, pop the
+             next frame and return it as ``(jpeg, False)`` (queue-served frame).
+          2. Otherwise, wait up to ``timeout_ms`` for the next VideoWindow to
+             arrive via ``put``; on success, install it as current and emit
+             its first frame as ``(jpeg, False)``.
+          3. On timeout, call ``idle_provider()`` and return ``(jpeg, True)``
+             — increments ``idle_frames_served`` and ``underflow_count``.
+
+        Emergency fallback: if both the queue is empty AND ``idle_provider``
+        raises, the most recently emitted frame in ``self.last_frame`` is
+        re-emitted (still as ``is_idle=True``) so the stream never gaps. If
+        no frame has ever been emitted, the original exception is re-raised.
+
+        ``last_frame_age_ms`` is updated on every successful call (time since
+        the previous emitted frame at this call's clock).
+        """
+        now = self._clock()
+        # Update age before we possibly block — callers want time since the
+        # last emit at the moment they asked, not at the moment we returned.
+        if self._last_frame_at is not None:
+            self.last_frame_age_ms = (now - self._last_frame_at) * 1000.0
+
+        # 1. Frame still in current window?
+        if self._current is not None and self._cursor < len(self._current.frames):
+            jpeg = self._current.frames[self._cursor]
+            self._cursor += 1
+            return self._after_emit(jpeg, is_idle=False)
+
+        # 2. Wait briefly for the next VideoWindow.
+        try:
+            window = await asyncio.wait_for(self._q.get(), timeout=timeout_ms / 1000.0)
+        except asyncio.TimeoutError:
+            window = None
+
+        if window is not None and window.frames:
+            self._current = window
+            self._cursor = 1
+            return self._after_emit(window.frames[0], is_idle=False)
+
+        # 3. Idle fallback.
+        self.underflow_count += 1
+        try:
+            jpeg = idle_provider()
+        except Exception:
+            if self.last_frame is not None:
+                self.idle_frames_served += 1
+                return self._after_emit(self.last_frame, is_idle=True)
+            raise
+        self.idle_frames_served += 1
+        return self._after_emit(jpeg, is_idle=True)
+
+    def _after_emit(self, jpeg: bytes, *, is_idle: bool) -> tuple[bytes, bool]:
+        """Update ``last_frame`` + ``_last_frame_at`` after every successful emit."""
+        self.last_frame = jpeg
+        self._last_frame_at = self._clock()
+        return jpeg, is_idle
 
 
 # ---------------------------------------------------------------------------
