@@ -9,13 +9,9 @@ the oldest window and increments a counter — deterministic and simple.
 ``CoordinatorMetrics`` tracks three signals for the /lite/say response and
 for runtime observability:
 
-  - ``pipeline_total_ms``: total time from coordinator start through producing
-    AND draining ALL VideoWindows into the queue (not true first-frame
-    latency). The current orchestrator collects every window in a sync thread
-    and then drains them into the async queue, so the recorded value reflects
-    end-to-end pipeline time, not the time to the first observable frame.
-    True per-window streaming drain (recording on the first window put, with
-    the sync generator yielding incrementally) is deferred to post-P0.
+  - ``pipeline_total_ms``: time from coordinator start to the FIRST
+    ``VideoWindow`` being put into the async queue. Phase E's streaming-drain
+    bridge makes this a real first-window latency proxy.
   - ``queue_depth_windows``: current queue depth (updated on each put/get).
   - ``dropped_windows``: total windows dropped due to overflow.
 
@@ -217,13 +213,10 @@ class BoundedVideoQueue:
 class CoordinatorMetrics:
     """Tracks coordinator observability signals for one /lite/say turn.
 
-    - ``pipeline_total_ms``: total pipeline time from ``record_start()`` to
-      ``record_first_frame()``. Despite the legacy method name, this measures
-      the FULL pipeline (all windows produced by the sync thread + drained
-      into the async queue), NOT true first-frame latency. The orchestrator
-      collects every VideoWindow via ``_run_sync`` before ``run()`` drains
-      them, so the recorded timestamp is taken after the complete collection
-      is ready. True per-window streaming drain is post-P0.
+    - ``pipeline_total_ms``: time from ``record_start()`` to the first
+      ``VideoWindow`` being put into the async queue. Phase E's streaming-drain
+      bridge records this while the sync worker is still producing later
+      windows, so it is a real first-window latency proxy.
     - ``queue_depth_windows``: last reported queue depth (caller updates via
       ``update_queue_depth``).
     - ``dropped_windows``: total dropped windows (caller increments via
@@ -248,12 +241,7 @@ class CoordinatorMetrics:
         self._start = self._clock()
 
     def record_first_frame(self) -> None:
-        """Stamp the pipeline-completion time and compute total pipeline ms.
-
-        Despite the name, this is recorded after the orchestrator has produced
-        and drained ALL windows, so it captures end-to-end pipeline time, not
-        true first-frame latency (see class docstring). Retained for post-P0
-        streaming-drain bridge that will record on the actual first window.
+        """Stamp the first-window time and compute latency in ms.
 
         No-op if called before ``record_start`` or more than once.
         """

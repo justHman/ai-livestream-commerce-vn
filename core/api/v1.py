@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from ..config import AppConfig
 from ..llm.base import LLMEngine, LLMRequest, _NoopEngine
-from ..render.base import RenderBackend, StartOptions
+from ..render.base import FullPipelineBackend, RenderBackend, StartOptions, StreamingAvatarBackend
 from ..render.mock import MockRenderBackend
 from ..render.orchestrator import StreamOrchestrator
 from ..render.queue import BoundedVideoQueue, CoordinatorMetrics
@@ -299,10 +299,12 @@ async def lite_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str,
 @router.post("/lite/say")
 async def lite_say(req: SayReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
-    # Task 8: streaming coordinator path for streaming-capable backends
-    # (mock + future self-host). Cloud keeps the existing backend.say() path.
-    if isinstance(d.backend, MockRenderBackend):
+    # Phase E: streaming coordinator path for StreamingAvatarBackend (mock +
+    # future self-host). FullPipelineBackend (cloud) keeps backend.say().
+    if isinstance(d.backend, StreamingAvatarBackend):
         return await _streaming_say(d, req)
+    if not isinstance(d.backend, FullPipelineBackend):
+        raise HTTPException(status_code=501, detail="backend does not support say()")
     # Cloud / FullPipelineBackend path — unchanged.
     await d.hub.emit(req.session_id, {"type": "avatar.speak_started", "text": req.text})
     try:
@@ -457,7 +459,7 @@ async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[st
     """Feed viewer comments to the Director; it decides + the avatar speaks.
 
     This is the closed loop: comments -> cluster/score -> Decision ->
-    backend.say(). Frontend just POSTs raw comments; the avatar reacts.
+    background streaming pipeline. Frontend just POSTs raw comments; the avatar reacts.
 
     Wave 2: when a DirectorCoordinator is active for this session, route
     comments through it (async ChatQueue path) instead of the sync Director

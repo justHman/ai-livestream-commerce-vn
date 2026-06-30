@@ -32,7 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
-from .base import RenderBackend, StartOptions, StartResult
+from .base import StreamingAvatarBackend, StartOptions, StartResult
 from .windows import AudioWindow, VideoWindow, num_frames_for
 
 
@@ -445,7 +445,7 @@ def _placeholder_jpeg(width: int, height: int) -> bytes:
 _MJPEG_BOUNDARY = "mockmjpegboundary"
 
 
-class MockRenderBackend(RenderBackend):
+class MockRenderBackend(StreamingAvatarBackend):
     """Streaming mock avatar renderer.
 
     Renders ``AudioWindow`` -> ``VideoWindow`` with PIL-synthesized JPEG

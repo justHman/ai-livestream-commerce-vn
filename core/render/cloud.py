@@ -23,7 +23,7 @@ from liveavatar_api.backend.conversation import (
     tone_tts,
 )
 
-from .base import RenderBackend, StartOptions, StartResult
+from .base import FullPipelineBackend, StartOptions, StartResult
 
 # Module-level injected backends. Defaults are the lightweight stubs so the
 # backend runs anywhere out of the box (offline / CI / sandbox).
@@ -73,7 +73,7 @@ def _is_tts_engine(obj) -> bool:
     return hasattr(obj, "synthesize") and hasattr(obj, "name") and hasattr(obj, "from_config")
 
 
-class CloudRenderBackend(RenderBackend):
+class CloudRenderBackend(FullPipelineBackend):
     """Renders via LiveAvatar cloud (LITE mode)."""
 
     name = "cloud"
