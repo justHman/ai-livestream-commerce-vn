@@ -36,6 +36,10 @@ from ..render.locks import SessionLockRegistry
 from ..tts.base import TTSEngine, ToneEngine
 from .auth import admin_auth, debug_enabled_dep, validate_ws_token, viewer_auth
 
+# Phase B coordinator — optional, constructed in server.py.
+# Imported here for type annotations; actual import is safe (no heavy deps).
+from ..director.coordinator import DirectorCoordinator
+
 router = APIRouter(prefix="/api/v1")
 
 
@@ -125,6 +129,14 @@ class IngestReq(BaseModel):
     msg_rate: Optional[float] = None
 
 
+class ChatIn(BaseModel):
+    """Wave 2: single chat comment from a viewer (Phase B coordinator path)."""
+    session_id: str
+    text: str
+    author: str
+    ts: Optional[float] = None
+
+
 class TTSPresetIn(BaseModel):
     """Wave 2: select a TTS preset by id (Phase A dropdown)."""
     preset_id: str
@@ -139,7 +151,8 @@ class V1Deps:
     def __init__(self, backend: RenderBackend, store, hub: ControlHub, director=None,
                  engine_manager=None, config: AppConfig | None = None,
                  locks: SessionLockRegistry | None = None,
-                 orchestrators: dict | None = None) -> None:
+                 orchestrators: dict | None = None,
+                 coordinator: DirectorCoordinator | None = None) -> None:
         self.backend = backend
         self.store = store
         self.hub = hub
@@ -151,6 +164,10 @@ class V1Deps:
         self.locks = locks if locks is not None else SessionLockRegistry()
         # session_id -> {"orchestrator": StreamOrchestrator, "queue": BoundedVideoQueue}
         self.orchestrators: dict = orchestrators if orchestrators is not None else {}
+        # Phase B: DirectorCoordinator (optional). When present, /lite/chat
+        # pushes comments into the coordinator's ChatQueue, and /lite/attach +
+        # /lite/stop also drive the coordinator lifecycle.
+        self.coordinator = coordinator
 
 
 _deps: Optional[V1Deps] = None
@@ -397,6 +414,9 @@ async def lite_interrupt(req: SessionReq, _: None = Depends(viewer_auth)) -> dic
 @router.post("/lite/stop")
 async def lite_stop(req: SessionReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()
+    # Wave 2: stop the DirectorCoordinator for this session (before teardown).
+    if d.coordinator is not None and d.coordinator.has(req.session_id):
+        d.coordinator.stop(req.session_id)
     try:
         await asyncio.to_thread(d.backend.stop, req.session_id)
     except KeyError:
@@ -405,6 +425,8 @@ async def lite_stop(req: SessionReq, _: None = Depends(viewer_auth)) -> dict[str
         d.director.detach(req.session_id)
     await d.store.delete(req.session_id)
     await d.hub.emit(req.session_id, {"type": "session.stopped"})
+    # P4 hardening: drop the per-session lock entry to prevent memory leak.
+    d.locks.drop(req.session_id)
     return {"ok": True, "stopped": req.session_id}
 
 
@@ -424,6 +446,9 @@ async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[st
         info = await asyncio.to_thread(d.director.attach, req.session_id, products)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # Wave 2: also start the DirectorCoordinator for this session.
+    if d.coordinator is not None:
+        d.coordinator.start(session_id=req.session_id, products=products)
     return {"ok": True, **info}
 
 
@@ -433,8 +458,21 @@ async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[st
 
     This is the closed loop: comments -> cluster/score -> Decision ->
     backend.say(). Frontend just POSTs raw comments; the avatar reacts.
+
+    Wave 2: when a DirectorCoordinator is active for this session, route
+    comments through it (async ChatQueue path) instead of the sync Director
+    ingest. The coordinator's tick loop will decide and speak asynchronously.
+    Falls back to the existing sync Director path when coordinator is None.
     """
     d = deps()
+    # Wave 2: coordinator path (async tick loop drains the queue).
+    if d.coordinator is not None and d.coordinator.has(req.session_id):
+        for c in req.comments:
+            d.coordinator.ingest(req.session_id, c.text, author="viewer", ts=c.t)
+        return {"ok": True, "accepted": True,
+                "queue_stats": d.coordinator.stats(req.session_id)}
+
+    # Fallback: original sync Director path.
     if d.director is None:
         raise HTTPException(status_code=501, detail="Director not enabled")
     if not d.director.has(req.session_id):

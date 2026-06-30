@@ -55,6 +55,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import v1
 from .config import AppConfig
 from .engine_manager import EngineManager
+from .render.locks import SessionLockRegistry
+from .render.queue import BoundedVideoQueue, CoordinatorMetrics
 
 # Module-level config — used by ``main()`` for the port and as the default
 # for ``create_app()``. Built once at import time from env.
@@ -178,6 +180,33 @@ def create_app(config: AppConfig | None = None,
 
             director = DirectorRuntime(backend)
 
+        # Wave 2: build DirectorCoordinator when the Director runtime is wired.
+        # The coordinator needs a StreamOrchestrator (per-session pipeline),
+        # the lock registry, and its own config. It drives the background tick
+        # loop that drains ChatQueue → Director → orchestrator.run().
+        coordinator = None
+        lock_registry = SessionLockRegistry()
+        if director is not None:
+            from .director.coordinator import DirectorCoordinator, CoordinatorConfig
+            from .render.orchestrator import StreamOrchestrator
+            from .llm.base import _NoopEngine
+            from .tts.base import ToneEngine
+
+            _llm_stub = engine_mgr.llm if (engine_mgr.llm is not None) else _NoopEngine()
+            _tts_stub = engine_mgr.tts if (engine_mgr.tts is not None) else ToneEngine()
+            coordinator = DirectorCoordinator(
+                runtime=director,
+                orchestrator=StreamOrchestrator(
+                    llm=_llm_stub,
+                    tts=_tts_stub,
+                    backend=backend,
+                    queue=BoundedVideoQueue(max_size=5),
+                    metrics=CoordinatorMetrics(),
+                ),
+                lock_registry=lock_registry,
+                cfg=CoordinatorConfig(tick_ms=300, window_sec=75.0),
+            )
+
         v1.init_deps(v1.V1Deps(
             backend=backend,
             store=store,
@@ -185,6 +214,8 @@ def create_app(config: AppConfig | None = None,
             director=director,
             engine_manager=engine_mgr,
             config=config,
+            locks=lock_registry,
+            coordinator=coordinator,
         ))
 
     app.include_router(v1.router)
