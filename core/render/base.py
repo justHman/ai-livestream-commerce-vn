@@ -77,3 +77,14 @@ class RenderBackend(ABC):
     def stop(self, session_id: str) -> None:
         """Tear down a session."""
         ...
+
+    def session_status(self, session_id: str) -> str:
+        """Return a status string for a session.
+
+        Concrete default: returns ``"unknown"`` so backends that do not
+        track per-session status (e.g. the cloud backend) are unaffected.
+        Streaming backends that track session state (e.g. MockRenderBackend)
+        override this to return the real status and raise KeyError for
+        unknown sessions.
+        """
+        return "unknown"

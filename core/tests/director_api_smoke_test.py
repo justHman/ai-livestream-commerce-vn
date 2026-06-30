@@ -21,6 +21,13 @@ import os
 os.environ.setdefault("DIRECTOR_ENABLED", "1")
 os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
 
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="integration smoke script — needs LIVEAVATAR_API_KEY / real sandbox; "
+           "run via `DIRECTOR_ENABLED=1 DIRECTOR_EMBEDDER=hash python -m core.tests.director_api_smoke_test`"
+)
+
 from fastapi.testclient import TestClient
 
 # Import AFTER env is set so the server wires the Director runtime.

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 class Phase(str, enum.Enum):
@@ -76,6 +76,12 @@ class StreamState:
     product_elapsed_sec: float = 0.0
     sec_since_relevant_msg: float = 0.0
 
+    # Phase B: rolling comments + embedding cache persisted cross-tick.
+    # The coordinator merges new comments via add_comments(); Director.decide()
+    # reads rolling_comments instead of receiving a fresh list every call.
+    rolling_comments: list[Any] = field(default_factory=list)  # list[Comment]
+    embeddings_cache: dict[str, list[float]] = field(default_factory=dict)  # comment_id -> vec
+
     def current_product(self) -> Optional[ProductState]:
         if 0 <= self.current_product_index < len(self.products):
             return self.products[self.current_product_index]
@@ -92,3 +98,18 @@ class StreamState:
 
     def all_products_done(self) -> bool:
         return all(p.status == ProductStatus.DONE for p in self.products)
+
+    # ── Phase B helpers ──────────────────────────────────────────────
+
+    def add_comments(self, new: list[Any]) -> None:
+        """Merge new Comment objects into rolling_comments without duplicates.
+
+        Deduplication uses the ``text + t`` pair as identity (Comment has no
+        ``id`` field; the IncomingComment id is tracked in embeddings_cache).
+        """
+        existing = {(c.text, c.t) for c in self.rolling_comments}
+        for c in new:
+            key = (c.text, c.t)
+            if key not in existing:
+                self.rolling_comments.append(c)
+                existing.add(key)
