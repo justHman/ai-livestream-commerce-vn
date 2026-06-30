@@ -213,6 +213,39 @@ class _StubTTS(TTSEngine):
         yield aw
 
 
+class _SlowStreamingBackend:
+    """Backend that yields first window immediately, then a second one later.
+
+    Used to prove Phase E streaming-drain: the async queue receives the first
+    VideoWindow while the sync worker is still rendering the second.
+    """
+
+    name = "slow-streaming-backend"
+
+    def stream_audio(self, session_id: str, audio_window: AudioWindow) -> Iterator[VideoWindow]:
+        yield VideoWindow(
+            session_id=session_id,
+            utterance_id=audio_window.utterance_id,
+            seq=0,
+            frames=[b"first"],
+            fps=25,
+            duration_ms=100,
+            audio_window_id=audio_window.id,
+            is_final=False,
+        )
+        time.sleep(0.20)
+        yield VideoWindow(
+            session_id=session_id,
+            utterance_id=audio_window.utterance_id,
+            seq=1,
+            frames=[b"second"],
+            fps=25,
+            duration_ms=100,
+            audio_window_id=audio_window.id,
+            is_final=True,
+        )
+
+
 def _build_orchestrator(deltas: list[str], max_queue: int = 5) -> tuple[StreamOrchestrator, MockRenderBackend, BoundedVideoQueue, CoordinatorMetrics]:
     backend = MockRenderBackend()
     backend.start(StartOptions())
@@ -317,6 +350,46 @@ async def test_orchestrator_dropped_windows_increments_on_queue_overflow():
     assert metrics.dropped_windows >= 3, (
         f"expected >=3 dropped windows, got {metrics.dropped_windows}"
     )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_streaming_drain_exposes_first_window_before_worker_finishes():
+    """Phase E: first VideoWindow is queued before later backend windows finish.
+
+    Old behavior collected all VideoWindows in the sync worker, so queue.qsize()
+    stayed 0 until the slow backend yielded its second window. New behavior pushes
+    the first window through the bridge immediately.
+    """
+    queue = BoundedVideoQueue(max_size=5)
+    metrics = CoordinatorMetrics()
+    orch = StreamOrchestrator(
+        llm=_StubLLM(["Xin chào."]),
+        tts=_StubTTS(),
+        backend=_SlowStreamingBackend(),
+        queue=queue,
+        metrics=metrics,
+        config={
+            "text_chunk_min_chars": 4,
+            "text_chunk_target_chars": 20,
+            "text_chunk_max_chars": 40,
+            "text_chunk_flush_timeout_ms": 350,
+        },
+    )
+
+    task = asyncio.create_task(orch.run("sess-stream", "hello"))
+    await asyncio.sleep(0.05)
+
+    assert queue.qsize() >= 1, "first VideoWindow should be visible before worker finishes"
+    assert metrics.pipeline_total_ms is not None
+    assert metrics.pipeline_total_ms < 150.0
+
+    spoken = await task
+    assert spoken
+    windows: list[VideoWindow] = []
+    while queue.qsize() > 0:
+        windows.append(await queue.get())
+    assert [w.seq for w in windows] == [0, 1]
+    assert windows[-1].is_final is True
 
 
 @pytest.mark.asyncio

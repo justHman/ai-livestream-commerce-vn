@@ -15,7 +15,10 @@ seam: the API can route to it without any other code change.
 
 from __future__ import annotations
 
-from .base import RenderBackend, StartOptions, StartResult
+from typing import Iterator
+
+from .base import StreamingAvatarBackend, StartOptions, StartResult
+from .windows import AudioWindow, VideoWindow
 
 _MSG = (
     "Self-host renderer not implemented yet. The avatar video model is still "
@@ -24,7 +27,7 @@ _MSG = (
 )
 
 
-class SelfHostRenderBackend(RenderBackend):
+class SelfHostRenderBackend(StreamingAvatarBackend):
     """Placeholder for the future diffusion renderer."""
 
     name = "self_host"
@@ -32,7 +35,11 @@ class SelfHostRenderBackend(RenderBackend):
     def start(self, opts: StartOptions) -> StartResult:
         raise NotImplementedError(_MSG)
 
-    def say(self, session_id: str, text: str, generate: bool = True) -> str:
+    def stream_audio(
+        self,
+        session_id: str,
+        audio_window: AudioWindow,
+    ) -> Iterator[VideoWindow]:
         raise NotImplementedError(_MSG)
 
     def interrupt(self, session_id: str) -> None:

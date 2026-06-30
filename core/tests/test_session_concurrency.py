@@ -33,7 +33,7 @@ from core.api import v1
 from core.config import AppConfig
 from core.engine_manager import EngineManager
 from core.llm.base import LLMEngine, LLMRequest, LLMResponse
-from core.render.base import RenderBackend, StartOptions, StartResult
+from core.render.base import FullPipelineBackend, RenderBackend, StartOptions, StartResult
 from core.render.mock import MockRenderBackend
 from core.render.windows import AudioWindow, TextChunk, VideoWindow
 from core.store import InMemorySessionStore
@@ -277,7 +277,7 @@ async def test_interrupt_during_long_say_returns_200(mock_env: None):
 # ---------- cloud backend unchanged: /lite/say still calls backend.say ----------
 
 
-class _FakeCloudBackend(RenderBackend):
+class _FakeCloudBackend(FullPipelineBackend):
     """A fake non-mock backend so /lite/say takes the cloud path (backend.say)."""
 
     name = "fake-cloud"
