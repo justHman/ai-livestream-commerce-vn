@@ -181,36 +181,43 @@ def create_app(config: AppConfig | None = None,
             director = DirectorRuntime(backend)
 
         # Wave 2: build DirectorCoordinator when the Director runtime is wired.
-        # The coordinator needs a StreamOrchestrator (per-session pipeline),
-        # the lock registry, and its own config. It drives the background tick
-        # loop that drains ChatQueue → Director → orchestrator.run().
+        # The coordinator builds a FRESH StreamOrchestrator per _maybe_speak()
+        # call (mirroring /lite/say's _streaming_say pattern) so concurrent
+        # sessions do not corrupt each other's per-turn state. We pass the
+        # factory inputs (llm, tts, backend, chunker_config) instead of a
+        # pre-built orchestrator.
         # The shared ``orchestrators`` dict (V1Deps.orchestrators) lets the
-        # coordinator register its active queue so the continuous MJPEG endpoint
-        # drains utterance frames; ``hub`` lets it emit coordinator.* WS events.
+        # coordinator register its active per-call queue so the continuous
+        # MJPEG endpoint drains utterance frames; ``hub`` lets it emit
+        # coordinator.* WS events.
         coordinator = None
         lock_registry = SessionLockRegistry()
         orchestrators: dict = {}
         if director is not None:
             from .director.coordinator import DirectorCoordinator, CoordinatorConfig
-            from .render.orchestrator import StreamOrchestrator
             from .llm.base import _NoopEngine
             from .tts.base import ToneEngine
 
             _llm_stub = engine_mgr.llm if (engine_mgr.llm is not None) else _NoopEngine()
             _tts_stub = engine_mgr.tts if (engine_mgr.tts is not None) else ToneEngine()
+            chunker_config = {
+                "text_chunk_min_chars": getattr(config, "text_chunk_min_chars", 12),
+                "text_chunk_target_chars": getattr(config, "text_chunk_target_chars", 40),
+                "text_chunk_max_chars": getattr(config, "text_chunk_max_chars", 80),
+                "text_chunk_flush_timeout_ms": getattr(config, "text_chunk_flush_timeout_ms", 350),
+            }
+            max_q = getattr(config, "avatar_max_queue_windows", 5)
             coordinator = DirectorCoordinator(
                 runtime=director,
-                orchestrator=StreamOrchestrator(
-                    llm=_llm_stub,
-                    tts=_tts_stub,
-                    backend=backend,
-                    queue=BoundedVideoQueue(max_size=5),
-                    metrics=CoordinatorMetrics(),
-                ),
+                llm=_llm_stub,
+                tts=_tts_stub,
+                backend=backend,
+                chunker_config=chunker_config,
                 lock_registry=lock_registry,
                 cfg=CoordinatorConfig(tick_ms=300, window_sec=75.0),
                 hub=hub,
                 orchestrator_registry=orchestrators,
+                max_queue_windows=max_q,
             )
 
         v1.init_deps(v1.V1Deps(

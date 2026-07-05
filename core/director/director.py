@@ -45,6 +45,10 @@ class Decision:
     field: Optional[str] = None      # structured attribute answered (if action == answer_fact)
     may_interrupt: bool = False
     reason: str = ""
+    # Structured decision score (set from the ranked cluster score for
+    # answer_fact/answer_cluster; 0.0 for hooks/idle/introduce). Used by the
+    # coordinator for interrupt arbitration without parsing `reason`.
+    score: float = 0.0
 
 
 class Director:
@@ -118,11 +122,11 @@ class Director:
         self._maybe_leave_opening()
         if s.phase == Phase.OPENING:
             hook = self.hooks.next_hook("opening")
-            return Decision(action="speak_hook", text=hook, reason="opening phase")
+            return Decision(action="speak_hook", text=hook, reason="opening phase", score=0.0)
 
         if s.phase == Phase.CLOSING:
             hook = self.hooks.next_hook("closing")
-            return Decision(action="close", text=hook, reason="closing phase")
+            return Decision(action="close", text=hook, reason="closing phase", score=0.0)
 
         # SELLING
         # product switch check first (challenge 3)
@@ -130,7 +134,7 @@ class Director:
             self._advance_product()
             if s.phase == Phase.CLOSING:
                 return Decision(action="close", text=self.hooks.next_hook("closing"),
-                                reason="all products done")
+                                reason="all products done", score=0.0)
 
         # cluster + rank within selection window
         window = [cm for cm in comments if now - cm.t <= c.selection_window_sec]
@@ -144,13 +148,14 @@ class Director:
             level = s.traffic.level(c.traffic_low_threshold, c.traffic_high_threshold)
             if level == "low":
                 return Decision(action="speak_hook", text=self.hooks.next_hook("engagement"),
-                                reason="low traffic, no clusters")
+                                reason="low traffic, no clusters", score=0.0)
             # medium/high but nothing new yet -> keep presenting current product
             return Decision(
                 action="introduce_product",
                 prompt=self._introduce_prompt(cur),
                 product_id=cur.product_id if cur else None,
                 reason="no fresh clusters; continue product",
+                score=0.0,
             )
 
         top = ranked[0]
@@ -187,6 +192,7 @@ class Director:
                     field=field_name,
                     may_interrupt=may_interrupt,
                     reason=f"O(1) field '{field_name}' for {pid} (score={top.score:.2f}) -> LLM phrasing",
+                    score=top.score,
                 )
 
         return Decision(
@@ -195,6 +201,7 @@ class Director:
             product_id=top.cluster.product_id,
             may_interrupt=may_interrupt,
             reason=f"top cluster score={top.score:.2f} (phase={top.phase_rel:.2f}, intent={top.intent:.2f})",
+            score=top.score,
         )
 
     @staticmethod

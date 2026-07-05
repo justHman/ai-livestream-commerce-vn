@@ -28,11 +28,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from .catalog import Product
 from .chat_queue import ChatQueue, IncomingComment
@@ -46,6 +45,7 @@ from .state import ProductState, StreamState
 
 from ..render.orchestrator import StreamOrchestrator
 from ..render.locks import SessionLockRegistry
+from ..render.queue import BoundedVideoQueue, CoordinatorMetrics
 
 if TYPE_CHECKING:
     # Avoid a circular import at runtime: core.api.v1 imports DirectorCoordinator
@@ -102,15 +102,29 @@ class DirectorCoordinator:
     def __init__(
         self,
         runtime: DirectorRuntime,
-        orchestrator: StreamOrchestrator,
-        lock_registry: SessionLockRegistry,
+        llm: Any,
+        tts: Any,
+        backend: Any,
+        chunker_config: Optional[dict] = None,
+        lock_registry: Optional[SessionLockRegistry] = None,
         cfg: Optional[CoordinatorConfig] = None,
         hub: Optional["ControlHub"] = None,
         orchestrator_registry: Optional[dict] = None,
+        max_queue_windows: int = 5,
     ) -> None:
         self._runtime = runtime
-        self._orchestrator = orchestrator
-        self._lock_registry = lock_registry
+        # Factory inputs for building a FRESH StreamOrchestrator + queue +
+        # metrics per _maybe_speak() call. Sharing one orchestrator across
+        # concurrent sessions corrupts per-turn state (cancel_event, queue,
+        # metrics, running_session) — session A's cancel() would stop
+        # session B's pipeline. Building per-call mirrors /lite/say's
+        # _streaming_say pattern in core/api/v1.py.
+        self._llm = llm
+        self._tts = tts
+        self._backend = backend
+        self._chunker_config = dict(chunker_config or {})
+        self._max_queue_windows = max_queue_windows
+        self._lock_registry = lock_registry or SessionLockRegistry()
         self._cfg = cfg or CoordinatorConfig()
         self._hub = hub
         # Shared dict (typically V1Deps.orchestrators) the coordinator writes
@@ -133,13 +147,19 @@ class DirectorCoordinator:
         except Exception:
             logger.debug("hub.emit failed for %s", session_id, exc_info=True)
 
-    def _register_speaking(self, session_id: str) -> None:
-        """Publish the active orchestrator+queue so MJPEG can drain utterance frames."""
+    def _register_speaking(self, session_id: str, orchestrator: StreamOrchestrator,
+                           queue: BoundedVideoQueue) -> None:
+        """Publish the active orchestrator+queue so MJPEG can drain utterance frames.
+
+        Per-call: the orchestrator+queue are fresh for each _maybe_speak()
+        invocation, so the registry always points at the in-flight turn's
+        queue (not a shared long-lived one).
+        """
         if self._orchestrator_registry is None:
             return
         self._orchestrator_registry[session_id] = {
-            "orchestrator": self._orchestrator,
-            "queue": self._orchestrator._queue,
+            "orchestrator": orchestrator,
+            "queue": queue,
         }
 
     def _unregister_speaking(self, session_id: str) -> None:
@@ -176,7 +196,7 @@ class DirectorCoordinator:
 
         self._queues[session_id] = ChatQueue(session_id)
         self._stats[session_id] = _SessionStats()
-        task = asyncio.get_event_loop().create_task(
+        task = asyncio.create_task(
             self._tick_loop(session_id),
             name=f"coordinator-tick-{session_id}",
         )
@@ -322,7 +342,14 @@ class DirectorCoordinator:
         await self._maybe_speak(session_id, decision)
 
     async def _maybe_speak(self, session_id: str, decision: Decision) -> None:
-        """Attempt to acquire the lock and run the orchestrator for a decision."""
+        """Attempt to acquire the lock and run the orchestrator for a decision.
+
+        Builds a FRESH ``StreamOrchestrator`` + ``BoundedVideoQueue`` +
+        ``CoordinatorMetrics`` for this call so concurrent sessions do not
+        corrupt each other's per-turn state (cancel_event, queue, metrics,
+        running_session). Mirrors the per-turn pattern in
+        ``core/api/v1.py::_streaming_say``.
+        """
         st = self._stats.get(session_id)
         if st is None:
             return
@@ -332,17 +359,19 @@ class DirectorCoordinator:
             # Someone is speaking. Check interrupt eligibility.
             if decision.may_interrupt:
                 existing_score = self._active_score.get(session_id, 0.0)
-                new_score = getattr(decision, "score", 0.0) if hasattr(decision, "score") else 0.0
-                # Use a heuristic score from the decision reason if no explicit score.
-                if new_score == 0.0 and decision.reason:
-                    # Extract score from reason string if present.
-                    m = re.search(r"score=(\d+\.?\d*)", decision.reason)
-                    if m:
-                        new_score = float(m.group(1))
+                new_score = float(decision.score)
 
                 if new_score > existing_score:
-                    # Interrupt: cancel current speech.
-                    await self._orchestrator.cancel(session_id)
+                    # Interrupt: cancel current speech. The active
+                    # orchestrator for this session is the one registered in
+                    # the orchestrator_registry (set by a previous
+                    # _maybe_speak call still in flight). Cancel through the
+                    # registry entry rather than a shared self._orchestrator.
+                    if self._orchestrator_registry is not None:
+                        entry = self._orchestrator_registry.get(session_id)
+                        if entry is not None:
+                            active_orch: StreamOrchestrator = entry["orchestrator"]
+                            await active_orch.cancel(session_id)
                     self._lock_registry.release(session_id)
                     st.interrupts += 1
                     # Short backoff so the cancel propagates.
@@ -361,11 +390,7 @@ class DirectorCoordinator:
             return
 
         # Stash the decision score for interrupt comparison.
-        decision_score = 0.0
-        if decision.reason:
-            m = re.search(r"score=(\d+\.?\d*)", decision.reason)
-            if m:
-                decision_score = float(m.group(1))
+        decision_score = float(decision.score)
         self._active_score[session_id] = decision_score
 
         # 9. Build the text to speak.
@@ -376,8 +401,18 @@ class DirectorCoordinator:
             st.skips += 1
             return
 
-        # 10. Run the streaming pipeline.
-        self._register_speaking(session_id)
+        # 10. Build a FRESH orchestrator+queue+metrics for this turn and run it.
+        queue = BoundedVideoQueue(max_size=self._max_queue_windows)
+        metrics = CoordinatorMetrics()
+        orchestrator = StreamOrchestrator(
+            llm=self._llm,
+            tts=self._tts,
+            backend=self._backend,
+            queue=queue,
+            metrics=metrics,
+            config=self._chunker_config,
+        )
+        self._register_speaking(session_id, orchestrator, queue)
         try:
             await self._emit(session_id, {
                 "type": "coordinator.speak_started",
@@ -386,7 +421,7 @@ class DirectorCoordinator:
                 "action": decision.action,
                 "product": decision.product_id,
             })
-            await self._orchestrator.run(session_id, text)
+            await orchestrator.run(session_id, text)
             st.decisions_emitted += 1
             st.last_decision_ts = time.monotonic()
             await self._emit(session_id, {

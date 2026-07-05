@@ -135,11 +135,13 @@ def _make_coordinator(
     tick_ms: int = 50,
     window_sec: float = 75.0,
     session_id: str = "test-sess",
-) -> tuple[DirectorCoordinator, DirectorRuntime, StreamOrchestrator, SessionLockRegistry, MockRenderBackend]:
+) -> tuple[DirectorCoordinator, DirectorRuntime, SessionLockRegistry, MockRenderBackend]:
     """Build a full DirectorCoordinator with stubs.
 
-    The orchestrator's backend has the session pre-registered so stream_audio
-    doesn't raise KeyError.
+    The coordinator builds a fresh orchestrator per _maybe_speak() call, so we
+    pass the factory inputs (llm, tts, backend, chunker_config) rather than a
+    pre-built orchestrator. The backend has the session pre-registered so
+    stream_audio doesn't raise KeyError.
     """
     backend = MockRenderBackend()
     _register_mock_session(backend, session_id)
@@ -148,25 +150,24 @@ def _make_coordinator(
 
     llm = _StubLLM()
     tts = _StubTTS()
-    queue = BoundedVideoQueue(max_size=20)
-    metrics = CoordinatorMetrics()
-    orch = StreamOrchestrator(
-        llm=llm,
-        tts=tts,
-        backend=backend,
-        queue=queue,
-        metrics=metrics,
-    )
 
     locks = SessionLockRegistry()
     cfg = CoordinatorConfig(tick_ms=tick_ms, window_sec=window_sec)
     coord = DirectorCoordinator(
         runtime=runtime,
-        orchestrator=orch,
+        llm=llm,
+        tts=tts,
+        backend=backend,
+        chunker_config={
+            "text_chunk_min_chars": 12,
+            "text_chunk_target_chars": 40,
+            "text_chunk_max_chars": 80,
+            "text_chunk_flush_timeout_ms": 350,
+        },
         lock_registry=locks,
         cfg=cfg,
     )
-    return coord, runtime, orch, locks, backend
+    return coord, runtime, locks, backend
 
 
 # ---------- tests ----------
@@ -175,7 +176,7 @@ def _make_coordinator(
 async def test_start_ingest_and_emit_decision():
     """start(sid) -> ingest 5 comments -> wait a few ticks -> coordinator emits >= 1 decision."""
     sid = "test-sess-1"
-    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
+    coord, runtime, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
     products = _make_products()
 
     coord.start(sid, products)
@@ -200,7 +201,7 @@ async def test_start_ingest_and_emit_decision():
 async def test_stop_cancels_task_and_drops_queue():
     """stop(sid) -> task cancelled, ChatQueue dropped."""
     sid = "test-sess-2"
-    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
+    coord, runtime, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
     products = _make_products()
 
     coord.start(sid, products)
@@ -222,7 +223,7 @@ async def test_stop_cancels_task_and_drops_queue():
 async def test_loop_survives_decide_exception():
     """If decide() raises once, the next tick continues normally."""
     sid = "test-sess-3"
-    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
+    coord, runtime, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
     products = _make_products()
 
     coord.start(sid, products)
@@ -255,14 +256,14 @@ async def test_loop_survives_decide_exception():
 
 async def test_ingest_raises_for_unknown_session():
     """ingest() on a non-existent session raises KeyError."""
-    coord, _, _, _, _ = _make_coordinator()
+    coord, _, _, _ = _make_coordinator()
     with pytest.raises(KeyError):
         coord.ingest("nonexistent", "hello", "user")
 
 
 async def test_stats_empty_session():
     """stats() for a non-started session returns zeroed dict."""
-    coord, _, _, _, _ = _make_coordinator()
+    coord, _, _, _ = _make_coordinator()
     s = coord.stats("nonexistent")
     assert s["decisions_emitted"] == 0
     assert s["skips"] == 0
@@ -272,7 +273,7 @@ async def test_stats_empty_session():
 async def test_start_is_idempotent():
     """Calling start() twice for the same session does not crash or duplicate tasks."""
     sid = "test-sess-idempotent"
-    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
+    coord, runtime, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
     products = _make_products()
 
     coord.start(sid, products)
@@ -317,19 +318,29 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
     from core.director.coordinator import _decision_to_event  # internal helper
 
     sid = "test-sess-ws"
-    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=40, session_id=sid)
+    coord, runtime, locks, backend = _make_coordinator(tick_ms=40, session_id=sid)
     products = _make_products()
     hub = _RecordingHub()
     registry: dict = {}
     coord._hub = hub
     coord._orchestrator_registry = registry
 
-    # Deterministic: register/unregister lifecycle on the registry.
+    # Deterministic: register/unregister lifecycle on the registry. The
+    # coordinator now builds a fresh orchestrator+queue per _maybe_speak()
+    # call, so _register_speaking takes both the orchestrator and queue as
+    # arguments.
+    from core.render.orchestrator import StreamOrchestrator
+    from core.render.queue import BoundedVideoQueue, CoordinatorMetrics
     assert sid not in registry
-    coord._register_speaking(sid)
+    orch = StreamOrchestrator(
+        llm=_StubLLM(), tts=_StubTTS(), backend=backend,
+        queue=BoundedVideoQueue(max_size=5), metrics=CoordinatorMetrics(),
+    )
+    q = BoundedVideoQueue(max_size=5)
+    coord._register_speaking(sid, orch, q)
     assert sid in registry
     assert registry[sid]["orchestrator"] is orch
-    assert registry[sid]["queue"] is orch._queue
+    assert registry[sid]["queue"] is q
     coord._unregister_speaking(sid)
     assert sid not in registry
     # Idempotent unregister (no error on second call).
@@ -368,7 +379,7 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
 async def test_coordinator_without_hub_is_noop():
     """No hub and no registry wired -> coordinator still runs, no errors."""
     sid = "test-sess-nohub"
-    coord, runtime, orch, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
+    coord, runtime, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
     assert coord._hub is None
     assert coord._orchestrator_registry is None
 
