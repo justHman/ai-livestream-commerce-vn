@@ -171,10 +171,11 @@ curl <ngrok-url>/
 set `HF_TOKEN` in Colab Secrets. Alternative: use Qwen3-4B (Apache-2.0, no gating).
 
 ### vieneu import error
-**Symptom**: `ModuleNotFoundError: No module named 'vieneu'` or `neuttsair`.
+**Symptom**: `ModuleNotFoundError: No module named 'vieneu'`.
 
-**Fix**: The official pip package name may differ from the model card.
-Switch to the transformers fallback:
+**Fix**: Confirm `pip install vieneu` succeeded (package is `vieneu`, not the
+unrelated `neuttsair`/`neutts` English upstream package). If install still
+fails, switch to the transformers fallback:
 - Set `TTS_ENGINE=transformers TTS_MODEL=facebook/mms-tts-vie`
 - Or use `TTS_ENGINE=cosyvoice` if CosyVoice2 package is installed.
 

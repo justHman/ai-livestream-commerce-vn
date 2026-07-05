@@ -62,7 +62,7 @@ AVAILABLE_LLM_PRESETS = [
 # `label`/`notes`. The default preset (the one the frontend pre-selects) is
 # `vieneu-v3-turbo` — but the engine that the test/dev process actually loads
 # is still driven by TTS_ENGINE/TTS_WEIGHTS in core.config (defaults stay on
-# `transformers`/`tone` so offline pytest never tries to import neuttsair).
+# `transformers`/`tone` so offline pytest never tries to import vieneu).
 AVAILABLE_TTS_PRESETS = [
     {
         "id": "vieneu-v3-turbo",
@@ -70,8 +70,10 @@ AVAILABLE_TTS_PRESETS = [
         "engine": "vieneu",
         "weights_path": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
         "sample_rate": 48000,
-        "device": "cuda",
-        "notes": "Recommended default. Vietnamese-native, Apache-2.0, 48 kHz natural prosody.",
+        "device": "auto",
+        "notes": "Recommended default. Vietnamese-native, Apache-2.0, 48 kHz. "
+                 "device=auto -> ONNX-CPU (maintainer-recommended; GPU ONNX was "
+                 "reverted upstream as slower).",
     },
     {
         "id": "vieneu-v2",
@@ -79,7 +81,7 @@ AVAILABLE_TTS_PRESETS = [
         "engine": "vieneu",
         "weights_path": "pnnbao-ump/VieNeu-TTS-v2",
         "sample_rate": 24000,
-        "device": "cuda",
+        "device": "auto",
         "notes": "VN-native baseline. Lower-bandwidth fallback.",
     },
     {

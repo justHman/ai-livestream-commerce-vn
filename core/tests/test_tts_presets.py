@@ -13,7 +13,7 @@ Covers:
     weights/sample_rate WIN over individual TTS_* fields
   - TTSConfig.from_env: when TTS_PRESET_ID is NOT set, defaults stay on the
     offline-safe ``transformers``/empty/24 kHz combo so the test baseline
-    keeps booting without neuttsair
+    keeps booting without vieneu
 
 All tests are offline; no model downloads, no GPU.
 """
