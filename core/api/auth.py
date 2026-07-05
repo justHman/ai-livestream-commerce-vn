@@ -23,9 +23,23 @@ WebSocket auth:
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import HTTPException, Request, WebSocket
 
 from ..config import AppConfig
+
+
+# ── constant-time token compare ─────────────────────────────────────
+
+def _tokens_match(a: str, b: str) -> bool:
+    """Constant-time comparison for two non-empty token strings.
+
+    Both arguments MUST be non-empty str (callers guard the empty/dev-disabled
+    path before reaching here). Encoded to UTF-8 bytes so non-ASCII tokens
+    are handled consistently across Python versions.
+    """
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -72,7 +86,7 @@ async def viewer_auth(request: Request) -> None:
     if not token:
         # prod with empty configured token: auth required, nothing to match.
         raise HTTPException(status_code=401, detail="viewer auth required")
-    if presented != token:
+    if presented is None or not _tokens_match(presented, token):
         raise HTTPException(status_code=401, detail="invalid credentials")
 
 
@@ -98,10 +112,14 @@ async def admin_auth(request: Request) -> None:
     if not admin_token:
         # prod with empty admin token: admin auth required, nothing to match.
         raise HTTPException(status_code=401, detail="admin auth required")
-    if presented == admin_token:
+    if presented is not None and _tokens_match(presented, admin_token):
         return
     # Distinguish a valid-but-insufficient viewer token from a wrong token.
-    if presented and presented == cfg.backend_api_token and cfg.backend_api_token:
+    if (
+        presented
+        and cfg.backend_api_token
+        and _tokens_match(presented, cfg.backend_api_token)
+    ):
         raise HTTPException(status_code=403, detail="admin privilege required")
     raise HTTPException(status_code=401, detail="invalid credentials")
 
@@ -143,7 +161,7 @@ def validate_ws_token(ws: WebSocket, config: AppConfig) -> bool:
     presented = ws.query_params.get("token")
     if presented is None:
         return False
-    return presented == token
+    return _tokens_match(presented, token)
 
 
 __all__ = [
