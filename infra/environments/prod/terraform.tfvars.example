@@ -5,10 +5,12 @@ env        = "prod"
 project    = "ai-livestream"
 aws_region = "ap-northeast-2"
 
-vpc_cidr           = "10.30.0.0/16"
-public_subnet_cidr = "10.30.1.0/24"
-az                 = "ap-northeast-2a"
-# extra_public_subnet_ids = ["subnet-yyyyyyyy"]
+vpc_cidr             = "10.30.0.0/16"
+public_subnet_cidr   = "10.30.1.0/24"
+public_subnet_cidr_b = "10.30.2.0/24"
+az                   = "ap-northeast-2a"
+az_b                 = "ap-northeast-2b"
+# Network module creates 2 public AZs (ALB/RDS). No NAT.
 
 # Restrict to Cloudflare published IPs when grey-cloud/proxy is on.
 alb_ingress_cidrs = ["0.0.0.0/0"]

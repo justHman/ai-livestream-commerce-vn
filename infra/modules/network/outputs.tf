@@ -9,13 +9,18 @@ output "vpc_cidr_block" {
 }
 
 output "public_subnet_id" {
-  description = "Single public subnet ID"
+  description = "Primary public subnet ID (compute pin AZ)"
   value       = aws_subnet.public.id
 }
 
 output "public_subnet_ids" {
-  description = "Public subnet IDs (list for downstream modules)"
-  value       = [aws_subnet.public.id]
+  description = "All public subnet IDs (primary + ALB/RDS span AZ) — no private/NAT"
+  value       = [aws_subnet.public.id, aws_subnet.public_b.id]
+}
+
+output "public_subnet_b_id" {
+  description = "Second public subnet ID (ALB/RDS multi-AZ span)"
+  value       = aws_subnet.public_b.id
 }
 
 output "public_route_table_id" {

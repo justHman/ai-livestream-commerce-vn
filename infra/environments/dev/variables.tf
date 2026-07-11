@@ -23,9 +23,15 @@ variable "vpc_cidr" {
 }
 
 variable "public_subnet_cidr" {
-  description = "Primary public subnet CIDR"
+  description = "Primary public subnet CIDR (compute pin AZ)"
   type        = string
   default     = "10.20.1.0/24"
+}
+
+variable "public_subnet_cidr_b" {
+  description = "Second public subnet CIDR (ALB/RDS multi-AZ span; still public, no NAT)"
+  type        = string
+  default     = "10.20.2.0/24"
 }
 
 variable "az" {
@@ -34,11 +40,15 @@ variable "az" {
   default     = "ap-northeast-2a"
 }
 
-# Second AZ subnet — required by RDS subnet group + ALB (AWS needs >=2 AZs).
-# Network module currently creates 1 subnet; pass extra subnet IDs after extending network
-# or use a temporary second module instance. Until then, plan/apply may fail on DB/ALB.
+variable "az_b" {
+  description = "Second AZ for ALB/RDS subnet groups"
+  type        = string
+  default     = "ap-northeast-2b"
+}
+
+# Optional third+ subnets if ever needed. Network module already creates 2 public AZs.
 variable "extra_public_subnet_ids" {
-  description = "Additional public subnet IDs (second AZ) for RDS/ALB"
+  description = "Optional additional public subnet IDs beyond network module"
   type        = list(string)
   default     = []
 }

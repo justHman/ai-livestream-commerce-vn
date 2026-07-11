@@ -5,13 +5,12 @@ env         = "dev"
 project     = "ai-livestream"
 aws_region  = "ap-northeast-2"
 
-vpc_cidr           = "10.20.0.0/16"
-public_subnet_cidr = "10.20.1.0/24"
-az                 = "ap-northeast-2a"
-
-# REQUIRED before apply: second AZ subnet for RDS subnet group + ALB.
-# Network module ships 1 subnet; add a second public subnet id here.
-# extra_public_subnet_ids = ["subnet-xxxxxxxx"]
+vpc_cidr             = "10.20.0.0/16"
+public_subnet_cidr   = "10.20.1.0/24"
+public_subnet_cidr_b = "10.20.2.0/24"
+az                   = "ap-northeast-2a"
+az_b                 = "ap-northeast-2b"
+# Network module creates 2 public AZs (ALB/RDS). No NAT. extra_public_subnet_ids rarely needed.
 
 alb_ingress_cidrs = ["0.0.0.0/0"]
 certificate_arn   = "" # empty → HTTP:80 for dev

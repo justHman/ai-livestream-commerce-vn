@@ -16,15 +16,27 @@ variable "cidr_block" {
 }
 
 variable "public_subnet_cidr" {
-  description = "Single public subnet CIDR"
+  description = "Primary public subnet CIDR (compute pin AZ)"
   type        = string
   default     = "10.20.1.0/24"
 }
 
+variable "public_subnet_cidr_b" {
+  description = "Second public subnet CIDR (ALB/RDS multi-AZ span). Still public — no NAT."
+  type        = string
+  default     = "10.20.2.0/24"
+}
+
 variable "az" {
-  description = "Availability zone for the single public subnet"
+  description = "Primary AZ for public subnet + compute pin"
   type        = string
   default     = "ap-northeast-2a"
+}
+
+variable "az_b" {
+  description = "Second AZ for ALB/RDS subnet groups (public only)"
+  type        = string
+  default     = "ap-northeast-2b"
 }
 
 variable "enable_dns_hostnames" {

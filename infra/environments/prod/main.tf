@@ -7,12 +7,14 @@ locals {
 module "network" {
   source = "../../modules/network"
 
-  env                = var.env
-  project            = var.project
-  cidr_block         = var.vpc_cidr
-  public_subnet_cidr = var.public_subnet_cidr
-  az                 = var.az
-  tags               = var.tags
+  env                  = var.env
+  project              = var.project
+  cidr_block           = var.vpc_cidr
+  public_subnet_cidr   = var.public_subnet_cidr
+  public_subnet_cidr_b = var.public_subnet_cidr_b
+  az                   = var.az
+  az_b                 = var.az_b
+  tags                 = var.tags
 }
 
 module "security" {

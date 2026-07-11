@@ -23,9 +23,15 @@ variable "vpc_cidr" {
 }
 
 variable "public_subnet_cidr" {
-  description = "Primary public subnet CIDR"
+  description = "Primary public subnet CIDR (compute pin AZ)"
   type        = string
   default     = "10.30.1.0/24"
+}
+
+variable "public_subnet_cidr_b" {
+  description = "Second public subnet CIDR (ALB/RDS multi-AZ span; still public, no NAT)"
+  type        = string
+  default     = "10.30.2.0/24"
 }
 
 variable "az" {
@@ -34,8 +40,14 @@ variable "az" {
   default     = "ap-northeast-2a"
 }
 
+variable "az_b" {
+  description = "Second AZ for ALB/RDS subnet groups"
+  type        = string
+  default     = "ap-northeast-2b"
+}
+
 variable "extra_public_subnet_ids" {
-  description = "Additional public subnet IDs (second AZ) for RDS/ALB"
+  description = "Optional additional public subnet IDs beyond network module"
   type        = list(string)
   default     = []
 }

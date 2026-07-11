@@ -27,6 +27,7 @@ resource "aws_internet_gateway" "this" {
   })
 }
 
+# Primary public subnet (compute pin / single-AZ workloads).
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.this.id
   cidr_block              = var.public_subnet_cidr
@@ -36,6 +37,22 @@ resource "aws_subnet" "public" {
   tags = merge(local.common_tags, {
     Name = "${var.project}-${var.env}-public-${var.az}"
     Tier = "public"
+    Role = "primary"
+  })
+}
+
+# Second public subnet in another AZ — required by ALB + RDS subnet groups
+# (AWS needs ≥2 AZs). Still public-only; NO NAT / private subnet.
+resource "aws_subnet" "public_b" {
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = var.public_subnet_cidr_b
+  availability_zone       = var.az_b
+  map_public_ip_on_launch = true
+
+  tags = merge(local.common_tags, {
+    Name = "${var.project}-${var.env}-public-${var.az_b}"
+    Tier = "public"
+    Role = "alb-rds-span"
   })
 }
 
@@ -55,6 +72,11 @@ resource "aws_route" "public_internet" {
 
 resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_b" {
+  subnet_id      = aws_subnet.public_b.id
   route_table_id = aws_route_table.public.id
 }
 
