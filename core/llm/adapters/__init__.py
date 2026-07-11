@@ -14,5 +14,6 @@ from . import llamacpp       # noqa: F401
 from . import transformers   # noqa: F401
 from . import vllm           # noqa: F401
 from . import sglang         # noqa: F401
+from . import openai_compat  # noqa: F401  remote OpenAI-compat HTTP client
 
-__all__ = ["llamacpp", "transformers", "vllm", "sglang"]
+__all__ = ["llamacpp", "transformers", "vllm", "sglang", "openai_compat"]
