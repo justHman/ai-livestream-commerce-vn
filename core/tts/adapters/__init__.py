@@ -19,7 +19,8 @@ Removed (covered by transformers primary now):
 from __future__ import annotations
 
 # Each import is guarded: a missing optional dep must not break the registry.
-for _mod in ("transformers", "vieneu", "cosyvoice"):
+# remote_http only needs httpx (already a core dep) — still guarded for symmetry.
+for _mod in ("transformers", "vieneu", "cosyvoice", "remote_http"):
     try:
         __import__(f"{__name__}.{_mod}", fromlist=["*"])
     except Exception:
