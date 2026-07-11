@@ -105,16 +105,18 @@ implementations/
 |   +-- colab_demo.ipynb            # Interactive demo notebook
 +-- archive/
 |   +-- legacy-liveavatar-demo/     # Pre-refactor mock diffusion PoC (archived)
-+-- docs/
-|   +-- architecture.md             # THIS FILE
-|   +-- PRODUCTION.md               # Historical -- see architecture.md
-|   +-- PLAN.md                     # Historical -- see architecture.md
-|   +-- TASKS.md                    # Historical -- see architecture.md
-|   +-- BACKEND_PRODUCTION_FIX_PLAN.md  # Historical fix plan (items now DONE)
-|   +-- runbook-colab.md            # Colab deployment runbook
-|   +-- checklists/
-|       +-- colab-readiness.md
-|       +-- release.md
++-- docs/                           # Confirmed design + pricing (see docs/README.md)
+|   +-- architecture.md             # THIS FILE (app/control-plane map)
+|   +-- aws-architecture.md         # AWS Seoul stack (confirmed)
+|   +-- brief-for-confirmation.md   # Product/system decisions (confirmed)
+|   +-- scope-engine-and-models.md  # LLM/TTS/Avatar detail
+|   +-- terraform-layout.md / cicd-branch-strategy.md
+|   +-- aws-pricing-seoul.*         # Validated Seoul cost
+|   +-- runbook-colab.md + checklists/
++-- plans/                          # Active implementation plans only
+|   +-- 00-implement-aws-stack.md
+|   +-- 01-app-feature-backlog.md
++-- archive/docs-historical/        # Superseded PLAN/TASKS/PRODUCTION/fix plans
 ```
 
 ## 3. RenderBackend seam
@@ -232,37 +234,32 @@ briefly -- acceptable for demo.
 
 ## 9. API surface
 
+All under `/api/v1`. `/lite/*` kept for compat; preferred product surface is `/sessions/*`.
+
 | Endpoint | Auth | Description |
 |------|------|-------------|
-| `GET /health` | none | Service info |
-| `GET /health/live` | none | Liveness probe |
-| `GET /health/ready` | none | Readiness probe (backend + engines) |
-| `POST /lite/start` | viewer | Create session, return LiveKit token |
-| `POST /lite/say` | viewer | One turn: LLM -> TTS -> avatar |
-| `POST /lite/interrupt` | viewer | Barge-in |
-| `POST /lite/stop` | viewer | Stop + cleanup |
-| `POST /lite/attach` | viewer | Attach Director + product catalog |
-| `POST /lite/ingest` | viewer | Batch comments -> Director decides -> speaks |
-| `POST /lite/chat` | viewer | Single comment -> coordinator queue (202 Accepted) |
-| `WS /ws/control/{id}` | viewer | Per-session event stream |
-| `GET /engines` | admin | List presets + loaded engines |
-| `POST /engines/llm` | admin | Swap LLM engine |
-| `POST /engines/tts` | admin | Swap TTS engine |
-| `POST /engines/tts/preset` | admin | Select TTS preset |
-| `GET /mock/frame/{id}.png` | none | Mock: latest frame as PNG |
-| `GET /mock/video/{id}.mjpeg` | none | Mock: continuous MJPEG stream |
-| `GET /mock/status/{id}` | none | Mock: session status |
-| `POST /debug/start` | admin+debug | Start traffic simulator |
-| `POST /debug/stop` | admin+debug | Stop traffic simulator |
-| `GET /debug/status/{id}` | admin+debug | Debug status |
-| `GET /debug/mock_products` | admin+debug | Mock product catalog |
-| `GET /debug/mock_viewer_msgs` | admin+debug | Mock viewer message pool |
+| `GET /health` `/health/live` `/health/ready` | none | Liveness / readiness |
+| `POST /sessions` | viewer | Create session (alias of `/lite/start`) |
+| `POST /sessions/{id}/say\|interrupt\|stop\|attach\|ingest\|chat` | viewer | Session lifecycle (aliases of `/lite/*`) |
+| `POST /sessions/{id}/plan/create` | viewer | Deterministic RunPlan + store on session |
+| `POST /lite/*` | viewer | Legacy paths (still supported) |
+| `POST /media/livekit/room/{id}` | viewer | Mint LiveKit room-join token |
+| `POST/GET/PUT/DELETE /avatars[/{id}]` | viewer | In-memory avatar CRUD + idle regenerate stub |
+| `WS /ws/control/{id}` | viewer | Control events |
+| `WS /ws/platform/{id}` | viewer | Platform comments → ChatQueue |
+| `GET /engines` `POST /engines/llm\|tts\|tts/preset` | admin | Engine registry / swap |
+| `GET /admin/config` `/admin/health` | admin | Sanitized config + deep health |
+| `GET /mock/*` | debug/dev | MJPEG/PNG debug (gated when not dev) |
+| `POST/GET /debug/*` | admin+debug | Traffic simulator |
+
+Remote engines: `LLM_BASE_URL` / `TTS_BASE_URL` / `AVATAR_BASE_URL` + `RENDER_BACKEND=remote_avatar`.  
+Stubs (flags default off): `PIPECAT_ENABLED`, `LIVEKIT_PUBLISH`, `LMCACHE_ENABLED`.
 
 ## 10. Auth model
 
 Two auth planes:
-- **VIEWER** (`BACKEND_API_TOKEN`): `/lite/*` + `/ws/control/{id}`
-- **ADMIN** (`ADMIN_API_TOKEN`): `/engines/*` + `/debug/*`
+- **VIEWER** (`BACKEND_API_TOKEN`): `/lite/*`, `/sessions/*`, `/avatars/*`, `/media/*`, `/ws/*`
+- **ADMIN** (`ADMIN_API_TOKEN`): `/engines/*`, `/admin/*`, `/debug/*`
 
 Rules:
 - `APP_ENV=dev` + token empty -> auth disabled (local dev + existing tests)
