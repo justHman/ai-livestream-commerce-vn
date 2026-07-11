@@ -1,0 +1,50 @@
+# Build context = repo root for service Dockerfiles.
+# Weights NEVER enter the image (aws-architecture §2.5).
+
+.git
+.github
+.venv
+.superpowers
+.codegraph
+.runtime
+.pytest_cache
+__pycache__
+*.py[cod]
+*.egg-info
+.env
+*.env
+!.env.example
+
+# Heavy / local-only
+weights/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+model/
+data/
+sources/
+results/
+notebooks/
+archived/
+archive/
+docs/
+plans/
+infra/
+frontend/
+notes/
+providers/
+configs/
+*.log
+*.wav
+*.mp4
+tmp/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+codegraph/
