@@ -1,0 +1,34 @@
+[project]
+name = "ai-livestream-backend"
+version = "0.1.0"
+description = "VN AI livestream commerce backend (FastAPI core package)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic",
+  "httpx",
+  "python-multipart",
+  "python-dotenv",
+  "redis",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-timeout",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*"]
+exclude = ["core.tests*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["core/tests"]
+pythonpath = ["."]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
