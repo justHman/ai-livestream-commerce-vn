@@ -14,7 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /build
 RUN pip install --upgrade pip \
-    && pip install "fastapi>=0.110" "uvicorn[standard]>=0.27" "pydantic>=2.6"
+    && pip install "fastapi>=0.110" "uvicorn[standard]>=0.27" "pydantic>=2.6" "pillow>=10.0"
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
