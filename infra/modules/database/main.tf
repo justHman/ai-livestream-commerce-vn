@@ -107,9 +107,8 @@ resource "aws_elasticache_cluster" "redis" {
   subnet_group_name    = aws_elasticache_subnet_group.this.name
   security_group_ids   = [var.redis_sg_id]
 
-  # AUTH only when token provided (Transit encryption required by AWS for AUTH).
-  transit_encryption_enabled = var.redis_auth_token != ""
-  auth_token                 = var.redis_auth_token != "" ? var.redis_auth_token : null
+  # AUTH/transit encryption require aws_elasticache_replication_group, not cluster.
+  # MVP: SG isolation only; redis_auth_token reserved for future replication_group.
 
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-redis"

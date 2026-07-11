@@ -81,7 +81,7 @@ resource "aws_iam_role_policy" "ecs_execution_ssm" {
           "ssm:GetParameters",
           "ssm:GetParameter",
         ]
-        Resource = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/${var.env}/*"
+        Resource = "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.env}/*"
       },
       {
         Effect   = "Allow"
@@ -89,7 +89,7 @@ resource "aws_iam_role_policy" "ecs_execution_ssm" {
         Resource = "*"
         Condition = {
           StringEquals = {
-            "kms:ViaService" = "ssm.${data.aws_region.current.name}.amazonaws.com"
+            "kms:ViaService" = "ssm.${data.aws_region.current.region}.amazonaws.com"
           }
         }
       }
@@ -574,7 +574,7 @@ resource "aws_ecs_task_definition" "backend" {
         logDriver = "awslogs"
         options = {
           awslogs-group         = "${local.log_prefix}/backend"
-          awslogs-region        = data.aws_region.current.name
+          awslogs-region        = data.aws_region.current.region
           awslogs-stream-prefix = "backend"
         }
       }
@@ -625,7 +625,7 @@ resource "aws_ecs_task_definition" "llm_tts" {
         logDriver = "awslogs"
         options = {
           awslogs-group         = "${local.log_prefix}/llm"
-          awslogs-region        = data.aws_region.current.name
+          awslogs-region        = data.aws_region.current.region
           awslogs-stream-prefix = "llm"
         }
       }
@@ -651,7 +651,7 @@ resource "aws_ecs_task_definition" "llm_tts" {
         logDriver = "awslogs"
         options = {
           awslogs-group         = "${local.log_prefix}/tts"
-          awslogs-region        = data.aws_region.current.name
+          awslogs-region        = data.aws_region.current.region
           awslogs-stream-prefix = "tts"
         }
       }
@@ -697,7 +697,7 @@ resource "aws_ecs_task_definition" "avatar" {
         logDriver = "awslogs"
         options = {
           awslogs-group         = "${local.log_prefix}/avatar"
-          awslogs-region        = data.aws_region.current.name
+          awslogs-region        = data.aws_region.current.region
           awslogs-stream-prefix = "avatar"
         }
       }
@@ -740,7 +740,7 @@ resource "aws_ecs_task_definition" "lmcache" {
         logDriver = "awslogs"
         options = {
           awslogs-group         = "${local.log_prefix}/lmcache"
-          awslogs-region        = data.aws_region.current.name
+          awslogs-region        = data.aws_region.current.region
           awslogs-stream-prefix = "lmcache"
         }
       }
@@ -788,7 +788,7 @@ resource "aws_ecs_task_definition" "livekit" {
         logDriver = "awslogs"
         options = {
           awslogs-group         = "${local.log_prefix}/livekit"
-          awslogs-region        = data.aws_region.current.name
+          awslogs-region        = data.aws_region.current.region
           awslogs-stream-prefix = "livekit"
         }
       }

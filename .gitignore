@@ -39,3 +39,20 @@ Thumbs.db
 .vscode/
 codegraph/
 .superpowers/
+
+# ── Terraform ────────────────────────────────────────────────
+**/.terraform/
+.tf-plugin-cache/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+*.tfvars
+!*.tfvars.example
+*.tfvars.local
