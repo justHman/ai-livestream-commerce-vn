@@ -1,0 +1,35 @@
+# Prod sample — copy to terraform.tfvars.local (secrets) / terraform.tfvars (non-secrets).
+# NEVER commit real passwords or cert private material.
+
+env        = "prod"
+project    = "ai-livestream"
+aws_region = "ap-northeast-2"
+
+vpc_cidr           = "10.30.0.0/16"
+public_subnet_cidr = "10.30.1.0/24"
+az                 = "ap-northeast-2a"
+# extra_public_subnet_ids = ["subnet-yyyyyyyy"]
+
+# Restrict to Cloudflare published IPs when grey-cloud/proxy is on.
+alb_ingress_cidrs = ["0.0.0.0/0"]
+# certificate_arn = "arn:aws:acm:ap-northeast-2:ACCOUNT:certificate/UUID"
+
+db_instance_class       = "db.t4g.medium"
+db_allocated_storage_gb = 100
+redis_node_type         = "cache.t4g.small"
+
+lmcache_enabled     = false
+desired_backend     = 1
+desired_llm_tts     = 1
+desired_avatar      = 1
+desired_livekit     = 1
+desired_lmcache     = 0
+create_ec2_capacity = true
+
+image_backend = "justhman/ai-live-backend:latest"
+image_llm_tts = "justhman/ai-live-llm-tts:latest"
+image_avatar  = "justhman/ai-live-avatar:latest"
+image_lmcache = "justhman/ai-live-lmcache:latest"
+
+alert_email           = "ops@example.com"
+enable_billing_alarms = false # enable from global/us-east-1

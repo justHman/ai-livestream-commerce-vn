@@ -1,0 +1,38 @@
+# Copy to terraform.tfvars (gitignored) or pass -var-file.
+# Secrets: use TF_VAR_db_password or terraform.tfvars.local (never commit secrets).
+
+env         = "dev"
+project     = "ai-livestream"
+aws_region  = "ap-northeast-2"
+
+vpc_cidr           = "10.20.0.0/16"
+public_subnet_cidr = "10.20.1.0/24"
+az                 = "ap-northeast-2a"
+
+# REQUIRED before apply: second AZ subnet for RDS subnet group + ALB.
+# Network module ships 1 subnet; add a second public subnet id here.
+# extra_public_subnet_ids = ["subnet-xxxxxxxx"]
+
+alb_ingress_cidrs = ["0.0.0.0/0"]
+certificate_arn   = "" # empty → HTTP:80 for dev
+
+# db_password = "set-via-TF_VAR_db_password"
+db_instance_class        = "db.t4g.medium"
+db_allocated_storage_gb  = 100
+redis_node_type          = "cache.t4g.small"
+
+lmcache_enabled     = false
+desired_backend     = 1
+desired_llm_tts     = 0
+desired_avatar      = 0
+desired_livekit     = 0
+desired_lmcache     = 0
+create_ec2_capacity = true
+
+image_backend  = "justhman/ai-live-backend:latest"
+image_llm_tts  = "justhman/ai-live-llm-tts:latest"
+image_avatar   = "justhman/ai-live-avatar:latest"
+image_lmcache  = "justhman/ai-live-lmcache:latest"
+
+alert_email           = ""
+enable_billing_alarms = false
