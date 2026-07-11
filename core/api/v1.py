@@ -279,6 +279,43 @@ async def health_ready() -> dict[str, Any]:
     return resp
 
 
+@router.post("/media/livekit/room/{session_id}")
+async def media_livekit_room(
+    session_id: str,
+    _: None = Depends(viewer_auth),
+) -> dict[str, Any]:
+    """Mint a LiveKit room-join token for ``session_id`` (room name = session_id).
+
+    Requires LIVEKIT_URL + LIVEKIT_API_KEY + LIVEKIT_API_SECRET. Returns 503 when
+    any credential is missing so FE can show a clear "media not configured" state.
+    """
+    d = deps()
+    cfg = d.config or AppConfig.from_env()
+    url = (cfg.livekit_url or "").strip()
+    api_key = (cfg.livekit_api_key or "").strip()
+    api_secret = (cfg.livekit_api_secret or "").strip()
+    if not url or not api_key or not api_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="LiveKit not configured (LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET)",
+        )
+    from ..livekit_tokens import LiveKitConfigError, mint_session_viewer_token
+
+    try:
+        token = mint_session_viewer_token(
+            api_key=api_key,
+            api_secret=api_secret,
+            session_id=session_id,
+        )
+    except (LiveKitConfigError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "livekit_url": url,
+        "token": token,
+        "room": session_id,
+    }
+
+
 @router.post("/lite/start")
 async def lite_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     d = deps()

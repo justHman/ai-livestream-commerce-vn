@@ -234,6 +234,8 @@ class AppConfig:
     # Remote service URLs (AWS multi-service; empty offline)
     avatar_base_url: str = ""
     livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
     lmcache_enabled: bool = False
 
     # Engine configs
@@ -266,6 +268,8 @@ class AppConfig:
             in ("1", "true", "on", "yes"),
             avatar_base_url=os.environ.get("AVATAR_BASE_URL", ""),
             livekit_url=os.environ.get("LIVEKIT_URL", ""),
+            livekit_api_key=os.environ.get("LIVEKIT_API_KEY", ""),
+            livekit_api_secret=os.environ.get("LIVEKIT_API_SECRET", ""),
             lmcache_enabled=os.environ.get("LMCACHE_ENABLED", "0").lower()
             in ("1", "true", "on", "yes"),
             llm=LLMConfig.from_env(),
@@ -293,6 +297,10 @@ class AppConfig:
                 width=self.mock_avatar_width,
                 height=self.mock_avatar_height,
             )
+        if self.render_backend in ("remote_avatar", "remote"):
+            from .render.remote_avatar import RemoteAvatarBackend
+
+            return RemoteAvatarBackend(base_url=self.avatar_base_url)
         if self.render_backend == "self_host":
             from .render.self_host import SelfHostRenderBackend
 

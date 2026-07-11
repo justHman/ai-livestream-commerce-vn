@@ -12,6 +12,7 @@ dependencies = [
   "python-multipart",
   "python-dotenv",
   "redis",
+  "PyJWT",
   "pytest",
   "pytest-asyncio",
   "pytest-timeout",
