@@ -10,21 +10,22 @@ Two planes (see PRODUCTION.md):
 
 Endpoints:
   GET  /api/v1/health
-  POST /api/v1/lite/start      {avatar_id?, is_sandbox?} -> {session_id, livekit_url, livekit_client_token, mode}
-  POST /api/v1/lite/say        {session_id, text}        -> {ok, reply}
-  POST /api/v1/lite/interrupt  {session_id}              -> {ok}
-  POST /api/v1/lite/stop       {session_id}              -> {ok}
-  WS   /api/v1/ws/control/{session_id}                   <- events; -> {type:"interrupt"|"ping"}
+  POST /api/v1/lite/* and aliases POST /api/v1/sessions/*
+  POST /api/v1/avatars CRUD (in-memory)
+  WS   /api/v1/ws/control/{session_id}
+  WS   /api/v1/ws/platform/{session_id}
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+import threading
+import uuid
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..config import AppConfig
 from ..llm.base import LLMEngine, LLMRequest, _NoopEngine
@@ -142,6 +143,98 @@ class TTSPresetIn(BaseModel):
     preset_id: str
 
 
+class AvatarCreateReq(BaseModel):
+    scope: Literal["half", "full"] = "half"
+    ref_photo_url: Optional[str] = None
+    voice: Optional[str] = None
+
+
+class AvatarUpdateReq(BaseModel):
+    scope: Optional[Literal["half", "full"]] = None
+    ref_photo_url: Optional[str] = None
+    voice: Optional[str] = None
+
+
+class PlanCreateReq(BaseModel):
+    """Optional products/persona for deterministic offline run-plan generation."""
+
+    products: list[ProductIn] = Field(default_factory=list)
+    persona: Optional[str] = None
+
+
+class PathSayReq(BaseModel):
+    text: str
+
+
+class PathChatIn(BaseModel):
+    text: str
+    author: str = "viewer"
+    ts: Optional[float] = None
+
+
+class PathIngestReq(BaseModel):
+    comments: list[CommentIn]
+    viewer_count: Optional[int] = None
+    msg_rate: Optional[float] = None
+
+
+class PathAttachReq(BaseModel):
+    products: list[ProductIn]
+
+
+# ── In-memory avatar store ──────────────────────────────────────────
+
+
+class AvatarStore:
+    """Thread-safe in-memory avatar registry (MVP; no DB)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, dict[str, Any]] = {}
+
+    def create(
+        self,
+        *,
+        scope: str,
+        ref_photo_url: Optional[str],
+        voice: Optional[str],
+    ) -> dict[str, Any]:
+        avatar_id = str(uuid.uuid4())
+        item = {
+            "avatar_id": avatar_id,
+            "scope": scope,
+            "ref_photo_url": ref_photo_url,
+            "voice": voice,
+            "status": "ready",
+        }
+        with self._lock:
+            self._items[avatar_id] = item
+        return dict(item)
+
+    def list(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(v) for v in self._items.values()]
+
+    def get(self, avatar_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            item = self._items.get(avatar_id)
+            return dict(item) if item is not None else None
+
+    def update(self, avatar_id: str, **fields: Any) -> Optional[dict[str, Any]]:
+        with self._lock:
+            item = self._items.get(avatar_id)
+            if item is None:
+                return None
+            for k, v in fields.items():
+                if v is not None and k in item:
+                    item[k] = v
+            return dict(item)
+
+    def delete(self, avatar_id: str) -> bool:
+        with self._lock:
+            return self._items.pop(avatar_id, None) is not None
+
+
 # ── Wiring (set by core/server.py) ──────────────────────────────────
 
 
@@ -152,7 +245,8 @@ class V1Deps:
                  engine_manager=None, config: AppConfig | None = None,
                  locks: SessionLockRegistry | None = None,
                  orchestrators: dict | None = None,
-                 coordinator: DirectorCoordinator | None = None) -> None:
+                 coordinator: DirectorCoordinator | None = None,
+                 avatars: AvatarStore | None = None) -> None:
         self.backend = backend
         self.store = store
         self.hub = hub
@@ -168,6 +262,7 @@ class V1Deps:
         # pushes comments into the coordinator's ChatQueue, and /lite/attach +
         # /lite/stop also drive the coordinator lifecycle.
         self.coordinator = coordinator
+        self.avatars = avatars if avatars is not None else AvatarStore()
 
 
 _deps: Optional[V1Deps] = None
@@ -182,6 +277,73 @@ def deps() -> V1Deps:
     if _deps is None:
         raise RuntimeError("v1 router not initialized — call init_deps()")
     return _deps
+
+
+def _mock_or_debug_allowed() -> None:
+    """404 /mock/* when not debug_enabled and APP_ENV != dev."""
+    cfg = deps().config
+    if cfg is None:
+        return
+    if cfg.debug_enabled or cfg.app_env == "dev":
+        return
+    raise HTTPException(status_code=404, detail="not found")
+
+
+def build_run_plan(
+    products: list[ProductIn] | list[dict[str, Any]] | None = None,
+    persona: Optional[str] = None,
+) -> "RunPlan":
+    """Deterministic offline RunPlan from products (no LLM)."""
+    from ..schemas.run_plan import (
+        ClosingPhase,
+        OpeningPhase,
+        ProductSellingPhase,
+        RunPlan,
+    )
+
+    items: list[ProductSellingPhase] = []
+    for p in products or []:
+        if isinstance(p, ProductIn):
+            data = p.model_dump()
+        elif hasattr(p, "model_dump"):
+            data = p.model_dump()
+        else:
+            data = dict(p)
+        pid = str(data.get("id") or data.get("product_id") or "")
+        name = str(data.get("name") or "")
+        features = list(data.get("features") or [])
+        if not features:
+            # Minimal selling points from description / promotion / name.
+            features = []
+            if data.get("description"):
+                features.append(str(data["description"])[:120])
+            if data.get("promotion"):
+                features.append(f"Khuyến mãi: {data['promotion']}")
+            if data.get("price") is not None:
+                features.append(f"Giá chỉ {data['price']}")
+            if not features:
+                features = [f"Ưu điểm nổi bật của {name or pid}"]
+        items.append(
+            ProductSellingPhase(
+                product_id=pid,
+                product_name=name,
+                key_selling_points=features,
+            )
+        )
+    phases: list = ["opening"]
+    if items:
+        phases.extend(["selling"] * len(items))
+    phases.append("closing")
+    opening = OpeningPhase()
+    if persona:
+        opening.persona = persona
+    return RunPlan(
+        phases=phases,  # type: ignore[arg-type]
+        opening=opening,
+        selling=items,
+        closing=ClosingPhase(),
+        persona=persona,
+    )
 
 
 # ── Endpoints ───────────────────────────────────────────────────────
@@ -806,7 +968,10 @@ def _mock_backend() -> Optional[MockRenderBackend]:
 
 
 @router.get("/mock/frame/{session_id}.png")
-async def mock_frame_png(session_id: str) -> Response:
+async def mock_frame_png(
+    session_id: str,
+    _: None = Depends(_mock_or_debug_allowed),
+) -> Response:
     """Return the latest rendered frame as a PNG.
 
     Only available when the active backend is MockRenderBackend.
@@ -822,7 +987,10 @@ async def mock_frame_png(session_id: str) -> Response:
 
 
 @router.get("/mock/video/{session_id}.mjpeg")
-async def mock_video_mjpeg(session_id: str) -> StreamingResponse:
+async def mock_video_mjpeg(
+    session_id: str,
+    _: None = Depends(_mock_or_debug_allowed),
+) -> StreamingResponse:
     """Continuous MJPEG stream (Wave 2 rewrite).
 
     Emits idle-loop frames at ~25 fps when no utterance is playing. When
@@ -888,7 +1056,10 @@ async def mock_video_mjpeg(session_id: str) -> StreamingResponse:
 
 
 @router.get("/mock/status/{session_id}")
-async def mock_status(session_id: str) -> dict[str, Any]:
+async def mock_status(
+    session_id: str,
+    _: None = Depends(_mock_or_debug_allowed),
+) -> dict[str, Any]:
     """Return the current status of a mock render session as JSON."""
     mb = _mock_backend()
     if mb is None:
@@ -898,3 +1069,271 @@ async def mock_status(session_id: str) -> dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     return {"session_id": session_id, "status": status, "backend": "mock"}
+
+
+# ── Sessions aliases (compat keep /lite/*) ──────────────────────────
+
+
+@router.post("/sessions")
+async def sessions_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+    return await lite_start(req, _)
+
+
+@router.post("/sessions/{session_id}/say")
+async def sessions_say(
+    session_id: str, req: PathSayReq, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    return await lite_say(SayReq(session_id=session_id, text=req.text), _)
+
+
+@router.post("/sessions/{session_id}/interrupt")
+async def sessions_interrupt(
+    session_id: str, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    return await lite_interrupt(SessionReq(session_id=session_id), _)
+
+
+@router.post("/sessions/{session_id}/stop")
+async def sessions_stop(
+    session_id: str, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    return await lite_stop(SessionReq(session_id=session_id), _)
+
+
+@router.post("/sessions/{session_id}/attach")
+async def sessions_attach(
+    session_id: str, req: PathAttachReq, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    return await lite_attach(
+        AttachReq(session_id=session_id, products=req.products), _
+    )
+
+
+@router.post("/sessions/{session_id}/ingest")
+async def sessions_ingest(
+    session_id: str, req: PathIngestReq, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    return await lite_ingest(
+        IngestReq(
+            session_id=session_id,
+            comments=req.comments,
+            viewer_count=req.viewer_count,
+            msg_rate=req.msg_rate,
+        ),
+        _,
+    )
+
+
+@router.post("/sessions/{session_id}/chat", status_code=202)
+async def sessions_chat(
+    session_id: str, req: PathChatIn, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    return await lite_chat(
+        ChatIn(
+            session_id=session_id,
+            text=req.text,
+            author=req.author,
+            ts=req.ts,
+        ),
+        _,
+    )
+
+
+@router.post("/sessions/{session_id}/plan/create")
+async def sessions_plan_create(
+    session_id: str,
+    req: PlanCreateReq | None = None,
+    _: None = Depends(viewer_auth),
+) -> dict[str, Any]:
+    """Generate a minimal deterministic RunPlan and store on the session."""
+    d = deps()
+    meta = await d.store.get(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="unknown session_id")
+    body = req or PlanCreateReq()
+    plan = build_run_plan(body.products, persona=body.persona)
+    plan_dict = plan.model_dump()
+    meta = dict(meta)
+    meta["run_plan"] = plan_dict
+    await d.store.set(session_id, meta)
+
+    # If director runtime has the session, attach plan + reset cursor.
+    if d.director is not None and d.director.has(session_id):
+        try:
+            ds = d.director._sessions.get(session_id)
+            if ds is not None:
+                state = ds.director.state
+                state.run_plan = plan
+                state.cursor.phase = "opening"
+                state.cursor.product_idx = 0
+                state.cursor.talking_point_idx = 0
+                state.covered_points = {}
+        except Exception:
+            pass
+    return {"ok": True, "session_id": session_id, "plan": plan_dict}
+
+
+# ── Avatars CRUD (in-memory) ────────────────────────────────────────
+
+
+@router.post("/avatars")
+async def avatars_create(
+    req: AvatarCreateReq, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    return deps().avatars.create(
+        scope=req.scope,
+        ref_photo_url=req.ref_photo_url,
+        voice=req.voice,
+    )
+
+
+@router.get("/avatars")
+async def avatars_list(_: None = Depends(viewer_auth)) -> dict[str, Any]:
+    return {"avatars": deps().avatars.list()}
+
+
+@router.get("/avatars/{avatar_id}")
+async def avatars_get(
+    avatar_id: str, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    item = deps().avatars.get(avatar_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="unknown avatar_id")
+    return item
+
+
+@router.put("/avatars/{avatar_id}")
+async def avatars_put(
+    avatar_id: str, req: AvatarUpdateReq, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    item = deps().avatars.update(
+        avatar_id,
+        scope=req.scope,
+        ref_photo_url=req.ref_photo_url,
+        voice=req.voice,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="unknown avatar_id")
+    return item
+
+
+@router.delete("/avatars/{avatar_id}")
+async def avatars_delete(
+    avatar_id: str, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    ok = deps().avatars.delete(avatar_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="unknown avatar_id")
+    return {"ok": True, "deleted": avatar_id}
+
+
+@router.post("/avatars/{avatar_id}/idle/regenerate")
+async def avatars_idle_regenerate(
+    avatar_id: str, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
+    item = deps().avatars.get(avatar_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="unknown avatar_id")
+    # Stub: real idle pre-render is avatar-server work.
+    return {"ok": True, "avatar_id": avatar_id, "status": "ready", "frames": 75}
+
+
+# ── Platform WS (viewer chat ingress) ───────────────────────────────
+
+
+@router.websocket("/ws/platform/{session_id}")
+async def ws_platform(ws: WebSocket, session_id: str) -> None:
+    """Accept platform chat JSON {text, author?} → coordinator ChatQueue."""
+    d = deps()
+    cfg = d.config
+    if cfg is not None and not validate_ws_token(ws, cfg):
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    await ws.send_json({"type": "platform.connected", "session_id": session_id})
+    try:
+        while True:
+            msg = await ws.receive_json()
+            text = (msg.get("text") or "").strip()
+            if not text:
+                await ws.send_json({"type": "error", "detail": "text required"})
+                continue
+            author = msg.get("author") or "viewer"
+            ts = msg.get("ts")
+            if d.coordinator is not None and d.coordinator.has(session_id):
+                try:
+                    comment = d.coordinator.ingest(
+                        session_id, text, author=author, ts=ts
+                    )
+                    await ws.send_json(
+                        {
+                            "type": "platform.accepted",
+                            "comment_id": comment.id,
+                        }
+                    )
+                except KeyError:
+                    await ws.send_json(
+                        {"type": "error", "detail": "session not attached"}
+                    )
+            else:
+                # Store pending message on session meta when coordinator absent.
+                meta = await d.store.get(session_id) or {}
+                pending = list(meta.get("pending_platform_chat") or [])
+                pending.append({"text": text, "author": author, "ts": ts})
+                meta["pending_platform_chat"] = pending[-100:]
+                await d.store.set(session_id, meta)
+                await ws.send_json(
+                    {"type": "platform.stored", "pending": len(pending)}
+                )
+    except WebSocketDisconnect:
+        return
+
+
+# ── Admin ───────────────────────────────────────────────────────────
+
+
+@router.get("/admin/config")
+async def admin_config(_: None = Depends(admin_auth)) -> dict[str, Any]:
+    """Sanitized config dump: present/missing for secrets, no secret values."""
+    cfg = deps().config or AppConfig.from_env()
+    def _present(val: str) -> str:
+        return "present" if (val or "").strip() else "missing"
+
+    return {
+        "app_env": cfg.app_env,
+        "render_backend": cfg.render_backend,
+        "store_backend": cfg.store_backend,
+        "director_enabled": cfg.director_enabled,
+        "debug_enabled": cfg.debug_enabled,
+        "pipecat_enabled": getattr(cfg, "pipecat_enabled", False),
+        "lmcache_enabled": cfg.lmcache_enabled,
+        "coverage_match_threshold": getattr(cfg, "coverage_match_threshold", 0.75),
+        "llm": {
+            "engine": cfg.llm.engine,
+            "model": cfg.llm.model or None,
+            "base_url": "present" if cfg.llm.base_url else "missing",
+            "guided_json": getattr(cfg.llm, "guided_json", False),
+            "stream": cfg.llm.stream,
+        },
+        "tts": {
+            "engine": cfg.tts.engine,
+            "model": cfg.tts.model or None,
+            "base_url": "present" if cfg.tts.base_url else "missing",
+            "preset_id": cfg.tts.preset_id,
+        },
+        "secrets": {
+            "backend_api_token": _present(cfg.backend_api_token),
+            "admin_api_token": _present(cfg.admin_api_token),
+            "liveavatar_api_key": "present" if cfg.api_key_present else "missing",
+            "livekit_api_key": _present(cfg.livekit_api_key),
+            "livekit_api_secret": _present(cfg.livekit_api_secret),
+            "avatar_base_url": _present(cfg.avatar_base_url),
+            "livekit_url": _present(cfg.livekit_url),
+        },
+    }
+
+
+@router.get("/admin/health")
+async def admin_health(_: None = Depends(admin_auth)) -> dict[str, Any]:
+    """Deep health — same payload as /health/ready."""
+    return await health_ready()

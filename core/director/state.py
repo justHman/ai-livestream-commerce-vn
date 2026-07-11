@@ -62,6 +62,15 @@ class TrafficMode:
 
 
 @dataclass
+class DirectorCursor:
+    """Where the host is now on the run plan (proactive driver)."""
+
+    phase: str = "opening"  # opening | selling | closing
+    product_idx: int = 0
+    talking_point_idx: int = 0
+
+
+@dataclass
 class StreamState:
     """Full mutable state of one live session."""
 
@@ -75,6 +84,11 @@ class StreamState:
     phase_elapsed_sec: float = 0.0
     product_elapsed_sec: float = 0.0
     sec_since_relevant_msg: float = 0.0
+
+    # Run-plan cursor + coverage (M3). covered_points: product_id -> set of points.
+    cursor: DirectorCursor = field(default_factory=DirectorCursor)
+    covered_points: dict[str, set] = field(default_factory=dict)
+    run_plan: Optional[Any] = None  # core.schemas.run_plan.RunPlan or dict
 
     # Phase B: rolling comments + embedding cache persisted cross-tick.
     # The coordinator merges new comments via add_comments(); Director.decide()
@@ -113,3 +127,18 @@ class StreamState:
             if key not in existing:
                 self.rolling_comments.append(c)
                 existing.add(key)
+
+    def advance_talking_point(self, n_points: int) -> None:
+        """Advance talking_point_idx after a proactive speak (clamp to n_points)."""
+        if n_points <= 0:
+            return
+        self.cursor.talking_point_idx = min(
+            self.cursor.talking_point_idx + 1, max(n_points - 1, 0)
+        )
+
+    def mark_product_covered(self, product_id: str, points: set[str]) -> None:
+        """Union coverage set for a product_id."""
+        if not product_id:
+            return
+        cur = self.covered_points.get(product_id) or set()
+        self.covered_points[product_id] = set(cur) | set(points)

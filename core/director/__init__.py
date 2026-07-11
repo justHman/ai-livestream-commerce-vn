@@ -23,7 +23,9 @@ from .embedder import build_embedder, cosine
 from .hooks import HookPool
 from .runtime import DirectorRuntime
 from .scorer import rank_clusters, retrieve_product
+from .coverage import coverage_ratio, mark_coverage
 from .state import (
+    DirectorCursor,
     Phase,
     ProductState,
     ProductStatus,
@@ -40,6 +42,7 @@ __all__ = [
     "ProductStatus",
     "Phase",
     "TrafficMode",
+    "DirectorCursor",
     "StreamConfig",
     "HookPool",
     "Product",
@@ -52,4 +55,6 @@ __all__ = [
     "retrieve_product",
     "build_embedder",
     "cosine",
+    "mark_coverage",
+    "coverage_ratio",
 ]
