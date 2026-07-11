@@ -30,5 +30,6 @@ asyncio_mode = "auto"
 testpaths = ["core/tests"]
 pythonpath = ["."]
 filterwarnings = [
-  "ignore::DeprecationWarning",
+  "ignore::DeprecationWarning:httpx.*",
+  "ignore::DeprecationWarning:starlette.*",
 ]
