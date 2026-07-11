@@ -40,7 +40,13 @@ def _auth_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
-def _payload(req: LLMRequest, model: str, *, stream: bool) -> dict[str, Any]:
+def _payload(
+    req: LLMRequest,
+    model: str,
+    *,
+    stream: bool,
+    guided_json: bool = False,
+) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
         "messages": list(req.messages),
@@ -59,6 +65,18 @@ def _payload(req: LLMRequest, model: str, *, stream: bool) -> dict[str, Any]:
         body["repetition_penalty"] = req.repetition_penalty
     if req.top_k is not None and req.top_k > 0:
         body["top_k"] = req.top_k
+    # Outlines / guided JSON: attach OpenAI response_format + vLLM extra_body.
+    schema = getattr(req, "response_schema", None)
+    if guided_json and schema:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema.get("title") or "Utterance",
+                "schema": schema,
+            },
+        }
+        # vLLM Outlines backend also accepts guided_json in extra_body.
+        body["extra_body"] = {"guided_json": schema}
     return body
 
 
@@ -99,6 +117,7 @@ class OpenAICompatEngine(LLMEngine):
         self._model: str = ""
         self._api_key: str = ""
         self._timeout: float = 60.0
+        self._guided_json: bool = False
         self._client: Optional[httpx.Client] = None
 
     @classmethod
@@ -120,6 +139,11 @@ class OpenAICompatEngine(LLMEngine):
             cfg.get("api_key") or os.environ.get("LLM_API_KEY", "") or ""
         )
         e._timeout = float(cfg.get("timeout", 60.0))
+        e._guided_json = bool(
+            cfg.get("guided_json")
+            or os.environ.get("LLM_GUIDED_JSON", "").lower()
+            in ("1", "true", "on", "yes")
+        )
         # Allow injecting a prebuilt client (tests); otherwise lazy-create.
         client = cfg.get("http_client")
         if client is not None:
@@ -138,7 +162,9 @@ class OpenAICompatEngine(LLMEngine):
         try:
             resp = client.post(
                 url,
-                json=_payload(req, self._model, stream=False),
+                json=_payload(
+                    req, self._model, stream=False, guided_json=self._guided_json
+                ),
                 headers=_auth_headers(self._api_key),
             )
         except httpx.RequestError as exc:
@@ -175,7 +201,9 @@ class OpenAICompatEngine(LLMEngine):
             with client.stream(
                 "POST",
                 url,
-                json=_payload(req, self._model, stream=True),
+                json=_payload(
+                    req, self._model, stream=True, guided_json=self._guided_json
+                ),
                 headers=headers,
             ) as resp:
                 _raise_http(resp, "stream")

@@ -124,3 +124,49 @@ def test_http_error_surfaces_clear_message():
     with pytest.raises(RuntimeError, match="HTTP 503"):
         engine.generate(LLMRequest.from_prompt("x"))
     client.close()
+
+
+def test_guided_json_includes_schema_in_body():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"speech":"hi","action":"wave","is_final":true}',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    schema = {
+        "title": "Utterance",
+        "type": "object",
+        "properties": {"speech": {"type": "string"}},
+    }
+    engine = load_engine(
+        {
+            "engine": "openai_compat",
+            "base_url": "http://llm:8001",
+            "model": "m",
+            "guided_json": True,
+            "http_client": client,
+        }
+    )
+    req = LLMRequest.from_prompt("hi")
+    req.response_schema = schema
+    engine.generate(req)
+    body = captured["body"]
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["schema"] == schema
+    assert body["extra_body"]["guided_json"] == schema
+    client.close()
