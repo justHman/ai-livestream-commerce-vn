@@ -1,7 +1,7 @@
 # deploy-dev — auto deploy to DEV on push to develop
 # Requires GitHub secrets: AWS_ROLE_ARN_DEV, DOCKERHUB_USER, DOCKERHUB_TOKEN
 # OIDC provider must exist in AWS account: https://token.actions.githubusercontent.com
-# IAM trust: repo:imjusthman/ai-livestream-commerce-vn:ref:refs/heads/develop
+# IAM trust (GitHub org/user, NOT Docker Hub): repo:justHman/ai-livestream-commerce-vn:ref:refs/heads/develop
 name: deploy-dev
 
 on:

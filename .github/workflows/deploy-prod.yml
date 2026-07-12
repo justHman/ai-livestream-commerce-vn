@@ -1,7 +1,8 @@
 # deploy-prod — deploy to PROD on tag v* with manual approval gate
 # Requires GitHub secrets: AWS_ROLE_ARN_PROD, DOCKERHUB_USER, DOCKERHUB_TOKEN
 # GitHub Environment "production" must have required reviewers configured
-# OIDC trust: repo:imjusthman/ai-livestream-commerce-vn:ref:refs/tags/v*
+# OIDC trust (GitHub user justHman, NOT Docker Hub imjusthman):
+#   repo:justHman/ai-livestream-commerce-vn:ref:refs/tags/v*
 name: deploy-prod
 
 on:
