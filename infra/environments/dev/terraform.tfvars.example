@@ -26,9 +26,9 @@ desired_llm_tts     = 0
 desired_avatar      = 0
 desired_livekit     = 0
 desired_lmcache     = 0
-create_ec2_capacity = true
+create_ec2_capacity = false   # API-only smoke: no GPU/ARM ASG until Tier G
 
-image_backend  = "imjusthman/ai-live-backend:latest"
+image_backend  = "imjusthman/ai-live-backend:dev"
 image_llm_tts  = "imjusthman/ai-live-llm-tts:latest"
 image_avatar   = "imjusthman/ai-live-avatar:latest"
 image_lmcache  = "imjusthman/ai-live-lmcache:latest"

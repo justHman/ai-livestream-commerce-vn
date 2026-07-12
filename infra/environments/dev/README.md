@@ -42,11 +42,11 @@ terraform plan -var-file=terraform.tfvars
 # terraform apply -var-file=terraform.tfvars
 ```
 
-## Apply blockers (known)
+## Apply notes
 
-1. **RDS + ALB need >=2 AZs.** Network module creates 1 public subnet. Provide `extra_public_subnet_ids` or extend network module before apply.
+1. Network module creates **2 public subnets** (AZ a+b) for ALB/RDS. Workload still pins primary AZ.
 2. **Billing alarms** disabled by default (metric only in us-east-1).
-3. GPU Spot desired counts default **0** until budget approved.
+3. API-only smoke: `create_ec2_capacity=false`, GPU/livekit/lmcache desired **0**.
 
 ## Explicit non-goals
 
