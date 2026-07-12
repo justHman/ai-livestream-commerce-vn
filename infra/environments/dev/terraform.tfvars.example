@@ -33,5 +33,6 @@ image_llm_tts  = "imjusthman/ai-live-llm-tts:latest"
 image_avatar   = "imjusthman/ai-live-avatar:latest"
 image_lmcache  = "imjusthman/ai-live-lmcache:latest"
 
-alert_email           = ""
+alert_email           = "hmantools11@gmail.com"
 enable_billing_alarms = false
+# First live smoke: API-only (desired GPU/livekit/lmcache = 0). See docs/runbook-live-smoke-and-teardown.md
