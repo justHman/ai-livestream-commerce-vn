@@ -28,10 +28,10 @@ desired_livekit     = 1
 desired_lmcache     = 0
 create_ec2_capacity = true
 
-image_backend = "justhman/ai-live-backend:latest"
-image_llm_tts = "justhman/ai-live-llm-tts:latest"
-image_avatar  = "justhman/ai-live-avatar:latest"
-image_lmcache = "justhman/ai-live-lmcache:latest"
+image_backend = "imjusthman/ai-live-backend:latest"
+image_llm_tts = "imjusthman/ai-live-llm-tts:latest"
+image_avatar  = "imjusthman/ai-live-avatar:latest"
+image_lmcache = "imjusthman/ai-live-lmcache:latest"
 
 alert_email           = "ops@example.com"
 enable_billing_alarms = false # enable from global/us-east-1

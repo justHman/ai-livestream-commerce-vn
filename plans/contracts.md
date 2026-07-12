@@ -8,12 +8,12 @@
 
 | service | port | health | hub image | arch |
 |---|---|---|---|---|
-| backend | 8800 | `/api/v1/health/live`, `/api/v1/health/ready` | `justhman/ai-live-backend` | arm64 |
-| llm | 8001 | `/health` | `justhman/ai-live-llm` | amd64+gpu |
-| tts | 8002 | `/health` | `justhman/ai-live-tts` | amd64+gpu |
-| avatar | 8080 | `/health` | `justhman/ai-live-avatar` | amd64+gpu |
-| livekit | 7880 + UDP 50000-60000 | `/` or livekit health | `justhman/ai-live-livekit` | arm64 |
-| lmcache | 5555 zmq + 8080 metrics | `:8080/metrics` | `justhman/ai-live-lmcache` | arm64 |
+| backend | 8800 | `/api/v1/health/live`, `/api/v1/health/ready` | `imjusthman/ai-live-backend` | arm64 |
+| llm | 8001 | `/health` | `imjusthman/ai-live-llm` | amd64+gpu |
+| tts | 8002 | `/health` | `imjusthman/ai-live-tts` | amd64+gpu |
+| avatar | 8080 | `/health` | `imjusthman/ai-live-avatar` | amd64+gpu |
+| livekit | 7880 + UDP 50000-60000 | `/` or livekit health | `imjusthman/ai-live-livekit` | arm64 |
+| lmcache | 5555 zmq + 8080 metrics | `:8080/metrics` | `imjusthman/ai-live-lmcache` | arm64 |
 
 ## ECS task note
 

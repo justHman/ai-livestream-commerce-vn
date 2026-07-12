@@ -1,7 +1,7 @@
 # deploy-prod — deploy to PROD on tag v* with manual approval gate
 # Requires GitHub secrets: AWS_ROLE_ARN_PROD, DOCKERHUB_USER, DOCKERHUB_TOKEN
 # GitHub Environment "production" must have required reviewers configured
-# OIDC trust: repo:justHman/ai-livestream-commerce-vn:ref:refs/tags/v*
+# OIDC trust: repo:imjusthman/ai-livestream-commerce-vn:ref:refs/tags/v*
 name: deploy-prod
 
 on:
@@ -36,10 +36,10 @@ jobs:
         run: |
           TAG=${GITHUB_REF_NAME#v}
           docker build -f services/backend/Dockerfile \
-            -t justhman/ai-live-backend:$TAG \
-            -t justhman/ai-live-backend:latest .
-          docker push justhman/ai-live-backend:$TAG
-          docker push justhman/ai-live-backend:latest
+            -t imjusthman/ai-live-backend:$TAG \
+            -t imjusthman/ai-live-backend:latest .
+          docker push imjusthman/ai-live-backend:$TAG
+          docker push imjusthman/ai-live-backend:latest
 
       - name: ECS rolling update PROD
         # Stub: set if: true when PROD ECS cluster is ready

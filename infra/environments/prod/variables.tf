@@ -118,22 +118,22 @@ variable "desired_lmcache" {
 
 variable "image_backend" {
   type    = string
-  default = "justhman/ai-live-backend:latest"
+  default = "imjusthman/ai-live-backend:latest"
 }
 
 variable "image_llm_tts" {
   type    = string
-  default = "justhman/ai-live-llm-tts:latest"
+  default = "imjusthman/ai-live-llm-tts:latest"
 }
 
 variable "image_avatar" {
   type    = string
-  default = "justhman/ai-live-avatar:latest"
+  default = "imjusthman/ai-live-avatar:latest"
 }
 
 variable "image_lmcache" {
   type    = string
-  default = "justhman/ai-live-lmcache:latest"
+  default = "imjusthman/ai-live-lmcache:latest"
 }
 
 variable "alert_email" {

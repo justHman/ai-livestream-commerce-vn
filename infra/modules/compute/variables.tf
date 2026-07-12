@@ -30,25 +30,25 @@ variable "assign_public_ip" {
 variable "image_backend" {
   description = "Backend image URI"
   type        = string
-  default     = "justhman/ai-live-backend:latest"
+  default     = "imjusthman/ai-live-backend:latest"
 }
 
 variable "image_llm_tts" {
   description = "Shared LLM+TTS image URI (two containers, one image family)"
   type        = string
-  default     = "justhman/ai-live-llm-tts:latest"
+  default     = "imjusthman/ai-live-llm-tts:latest"
 }
 
 variable "image_avatar" {
   description = "Avatar image URI"
   type        = string
-  default     = "justhman/ai-live-avatar:latest"
+  default     = "imjusthman/ai-live-avatar:latest"
 }
 
 variable "image_lmcache" {
   description = "LMCache image URI"
   type        = string
-  default     = "justhman/ai-live-lmcache:latest"
+  default     = "imjusthman/ai-live-lmcache:latest"
 }
 
 variable "image_livekit" {
@@ -68,19 +68,19 @@ variable "desired_backend" {
 variable "desired_llm_tts" {
   description = "LLM+TTS EC2 GPU service desired count"
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "desired_avatar" {
   description = "Avatar EC2 GPU service desired count"
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "desired_livekit" {
   description = "LiveKit Fargate service desired count"
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "desired_lmcache" {

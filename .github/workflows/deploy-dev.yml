@@ -1,7 +1,7 @@
 # deploy-dev — auto deploy to DEV on push to develop
 # Requires GitHub secrets: AWS_ROLE_ARN_DEV, DOCKERHUB_USER, DOCKERHUB_TOKEN
 # OIDC provider must exist in AWS account: https://token.actions.githubusercontent.com
-# IAM trust: repo:justHman/ai-livestream-commerce-vn:ref:refs/heads/develop
+# IAM trust: repo:imjusthman/ai-livestream-commerce-vn:ref:refs/heads/develop
 name: deploy-dev
 
 on:
@@ -36,10 +36,10 @@ jobs:
         run: |
           TAG=dev-${{ github.sha }}
           docker build -f services/backend/Dockerfile \
-            -t justhman/ai-live-backend:$TAG \
-            -t justhman/ai-live-backend:dev .
-          docker push justhman/ai-live-backend:$TAG
-          docker push justhman/ai-live-backend:dev
+            -t imjusthman/ai-live-backend:$TAG \
+            -t imjusthman/ai-live-backend:dev .
+          docker push imjusthman/ai-live-backend:$TAG
+          docker push imjusthman/ai-live-backend:dev
 
       - name: ECS rolling update DEV
         # Stub: set if: true when AWS account and ECS cluster are ready

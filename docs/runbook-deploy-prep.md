@@ -84,17 +84,17 @@ Build from **repo root** (`implementations/`). Prefer `--platform` matching serv
 
 | Image | Dockerfile | Arch |
 |-------|------------|------|
-| `justhman/ai-live-backend` | `services/backend/Dockerfile` | arm64 |
-| `justhman/ai-live-llm` | `services/llm/Dockerfile` (or llm-tts) | amd64+gpu |
-| `justhman/ai-live-tts` | `services/tts/Dockerfile` | amd64+gpu |
-| `justhman/ai-live-avatar` | `services/avatar/Dockerfile` | amd64+gpu |
-| `justhman/ai-live-livekit` | `services/livekit/Dockerfile` | arm64 |
-| `justhman/ai-live-lmcache` | `services/lmcache/Dockerfile` | arm64 |
+| `imjusthman/ai-live-backend` | `services/backend/Dockerfile` | arm64 |
+| `imjusthman/ai-live-llm` | `services/llm/Dockerfile` (or llm-tts) | amd64+gpu |
+| `imjusthman/ai-live-tts` | `services/tts/Dockerfile` | amd64+gpu |
+| `imjusthman/ai-live-avatar` | `services/avatar/Dockerfile` | amd64+gpu |
+| `imjusthman/ai-live-livekit` | `services/livekit/Dockerfile` | arm64 |
+| `imjusthman/ai-live-lmcache` | `services/lmcache/Dockerfile` | arm64 |
 
 ```bash
 docker login -u justhman
-docker build -f services/backend/Dockerfile -t justhman/ai-live-backend:dev .
-docker push justhman/ai-live-backend:dev
+docker build -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
+docker push imjusthman/ai-live-backend:dev
 # repeat per service; CI deploy-dev does this on push to develop when secrets exist
 ```
 
@@ -173,7 +173,7 @@ Or call `PostgresRuntimeStore.apply_schema()` once from an admin job.
 
 ## 7. Rollback sketch
 
-1. ECS: redeploy previous image tag (`justhman/ai-live-backend:<old-sha>`).
+1. ECS: redeploy previous image tag (`imjusthman/ai-live-backend:<old-sha>`).
 2. Terraform: avoid destructive DB changes on first week; prefer additive schema only.
 3. Feature flags: set `LMCACHE_ENABLED=false`, `LIVEKIT_PUBLISH=false` without rebuild.
 
