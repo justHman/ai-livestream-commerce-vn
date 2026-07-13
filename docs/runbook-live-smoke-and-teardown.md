@@ -42,10 +42,23 @@ You asked for: **everything that can run for real and correctly**, with logs, th
 | CloudWatch logs | Long-lived Spot GPU |
 | SNS → `hmantools11@gmail.com` | — |
 
-Backend env: `RENDER_BACKEND=mock`, `LLM_ENGINE=none`, `TTS_ENGINE=tone`, `SESSION_STORE=redis`.
+Backend env (task definition): `RENDER_BACKEND=mock`, `LLM_ENGINE=none`, `TTS_ENGINE=tone`, `SESSION_STORE=memory` (smoke path; Redis/RDS still provisioned but not required for mock health).
 
-**Proves:** Terraform, ALB, RDS, Redis, ECS, images, health, sessions API, logs, SNS path.  
-**Does not prove:** vLLM/Omni GPU, real LiveKit media, avatar model.
+**Proves:** Terraform, ALB, RDS, Redis, ECS, images, health, lite session API, logs.  
+**Does not prove:** vLLM/Omni GPU, real LiveKit media, avatar model, Redis session ownership.
+
+### Lessons from 2026-07-13 smoke (PASS then destroy)
+
+| Symptom | Root cause | Fix now in code |
+|---------|------------|-----------------|
+| `ModuleNotFoundError: numpy` | image deps incomplete | `pyproject` + uv multi-stage Dockerfile; include `providers/` |
+| Target unhealthy | ALB health path `/health` | default `health_check_path=/api/v1/health/live` |
+| ALB timeout, target healthy | SG only 443; listener :80 | open SG :80 when `certificate_arn=""` |
+| GPU service invalid FARGATE | EC2 task + FARGATE_SPOT fallback | `count = create_ec2_capacity` on GPU services |
+| SG create invalid | Unicode in description | ASCII-only SG descriptions |
+
+Auth map: `/health*` open; `/lite/*` = viewer token; `/engines*` = admin token.  
+Smoke log dir: `.runtime/smoke-20260713/`. CF CNAME `api.livento.me` created (DNS only); update content after every ALB recreate.
 
 ### Tier G — GPU burst (optional same day, **time-boxed**)
 
@@ -156,23 +169,50 @@ Capture outputs: `alb_dns`, `rds_endpoint`, `redis_endpoint`, `ecs_cluster`, `s3
 ```powershell
 cd <implementations root>
 docker login -u imjusthman
-docker build -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
+# ARM64 for Fargate Spot (Graviton)
+docker build --platform linux/arm64 -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
+# Quick import check (mock path)
+docker run --rm --platform linux/arm64 `
+  -e RENDER_BACKEND=mock -e LLM_ENGINE=none -e TTS_ENGINE=tone `
+  -e SESSION_STORE=memory -e APP_ENV=dev `
+  --entrypoint python imjusthman/ai-live-backend:dev `
+  -c "from core.server import app; print(type(app).__name__)"
 docker push imjusthman/ai-live-backend:dev
+# Dockerfile: multi-stage uv → /opt/venv, non-root appuser, copies core/ + providers/
 ```
 
-Backend task env (minimum):
+Task definition injects mock env + tokens via TF vars (`TF_VAR_backend_api_token`, `TF_VAR_admin_api_token`). ALB health path is `/api/v1/health/live`.
+
+Smoke sketch:
+
+```powershell
+$base = "http://$(terraform -chdir=infra/environments/dev output -raw alb_dns_name)"
+$H_v = @{ Authorization = "Bearer $env:TF_VAR_backend_api_token"; "Content-Type"="application/json" }
+$H_a = @{ Authorization = "Bearer $env:TF_VAR_admin_api_token";  "Content-Type"="application/json" }
+Invoke-WebRequest "$base/api/v1/health/live" -UseBasicParsing
+Invoke-WebRequest "$base/api/v1/engines" -Headers $H_a -UseBasicParsing
+$sid = ((Invoke-WebRequest "$base/api/v1/lite/start" -Method POST -Headers $H_v -Body '{}' -UseBasicParsing).Content | ConvertFrom-Json).session_id
+Invoke-WebRequest "$base/api/v1/lite/say" -Method POST -Headers $H_v -Body (@{session_id=$sid;text="smoke"}|ConvertTo-Json) -UseBasicParsing
+Invoke-WebRequest "$base/api/v1/lite/stop" -Method POST -Headers $H_v -Body (@{session_id=$sid}|ConvertTo-Json) -UseBasicParsing
+# then: terraform -chdir=infra/environments/dev destroy -auto-approve -var-file=terraform.tfvars
+# if Redis already gone mid-destroy: terraform state rm module.database.aws_elasticache_cluster.redis; destroy -refresh=false
+```
+
+Backend task env (minimum — wired by Terraform compute module):
 
 ```
 APP_ENV=dev
 RENDER_BACKEND=mock
 LLM_ENGINE=none
 TTS_ENGINE=tone
-SESSION_STORE=redis
-REDIS_URL=...
-DATABASE_URL=...
-BACKEND_API_TOKEN=<random>
-ADMIN_API_TOKEN=<random>
+SESSION_STORE=memory
+BACKEND_API_TOKEN=<TF_VAR_backend_api_token>
+ADMIN_API_TOKEN=<TF_VAR_admin_api_token>
 DEBUG_ENABLED=true
+DIRECTOR_ENABLED=1
+LMCACHE_ENABLED=false
+PIPECAT_ENABLED=0
+LIVEKIT_PUBLISH=0
 LMCACHE_ENABLED=false
 PIPECAT_ENABLED=false
 LIVEKIT_PUBLISH=false

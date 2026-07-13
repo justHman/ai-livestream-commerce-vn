@@ -22,10 +22,12 @@ module "network" {
 module "security" {
   source = "../../modules/security"
 
-  env               = var.env
-  project           = var.project
-  vpc_id            = module.network.vpc_id
-  alb_ingress_cidrs = var.alb_ingress_cidrs
+  env                   = var.env
+  project               = var.project
+  vpc_id                = module.network.vpc_id
+  alb_ingress_cidrs     = var.alb_ingress_cidrs
+  alb_http_ingress_cidrs = var.certificate_arn == "" ? ["0.0.0.0/0"] : []
+  certificate_arn       = var.certificate_arn
   enable_oidc       = false # OIDC lives in environments/global
   tags              = var.tags
 }
@@ -103,6 +105,9 @@ module "compute" {
   assign_public_ip         = true
   create_ec2_capacity      = var.create_ec2_capacity
   log_group_prefix         = "/ecs/${var.project}-${var.env}"
+  backend_api_token        = var.backend_api_token
+  admin_api_token          = var.admin_api_token
+  debug_enabled            = var.debug_enabled
   tags                     = var.tags
 }
 

@@ -13,9 +13,20 @@ dependencies = [
   "python-dotenv",
   "redis",
   "PyJWT",
+  # Runtime deps imported by core/ (mock render + TTS base use numpy/Pillow).
+  "numpy",
+  "Pillow",
+  # providers/liveavatar_cloud SDK (cloud render backend).
+  "requests",
+  "websocket-client",
+]
+
+[project.optional-dependencies]
+test = [
   "pytest",
   "pytest-asyncio",
   "pytest-timeout",
+  "async_timeout",
 ]
 
 [build-system]

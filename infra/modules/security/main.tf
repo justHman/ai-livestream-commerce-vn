@@ -10,7 +10,7 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
-# Security groups — matrix from docs/aws-architecture.md §3
+# Security groups - matrix from docs/aws-architecture.md s3
 # Iron rules: no port 22; no 0.0.0.0/0 on DB/Redis/GPU control ports
 # ---------------------------------------------------------------------------
 
@@ -37,6 +37,19 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   ip_protocol       = "tcp"
   from_port         = 443
   to_port           = 443
+  cidr_ipv4         = each.value
+}
+
+# Dev / no-cert smoke: ALB listens on HTTP:80. Open 80 only when no ACM cert.
+# Iron rule preserved: prod (cert set) keeps 443-only; 80 stays closed.
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  for_each = var.certificate_arn == "" ? toset(var.alb_http_ingress_cidrs) : toset([])
+
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTP from edge (dev/no-cert, ${each.value})"
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
   cidr_ipv4         = each.value
 }
 
@@ -283,7 +296,7 @@ resource "aws_vpc_security_group_egress_rule" "avatar_livekit_udp" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.project}-${var.env}-sg-rds"
-  description = "RDS Postgres — backend only"
+  description = "RDS Postgres - backend only"
   vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, {
@@ -305,13 +318,13 @@ resource "aws_vpc_security_group_ingress_rule" "rds_from_backend" {
   referenced_security_group_id = aws_security_group.backend.id
 }
 
-# no egress rules — default deny all outbound for data plane
+# no egress rules - default deny all outbound for data plane
 
 # --- redis ---
 
 resource "aws_security_group" "redis" {
   name        = "${var.project}-${var.env}-sg-redis"
-  description = "ElastiCache Redis — backend only"
+  description = "ElastiCache Redis - backend only"
   vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, {
@@ -337,7 +350,7 @@ resource "aws_vpc_security_group_ingress_rule" "redis_from_backend" {
 
 resource "aws_security_group" "lmcache" {
   name        = "${var.project}-${var.env}-sg-lmcache"
-  description = "LMCache KV server — llm only"
+  description = "LMCache KV server - llm only"
   vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, {
@@ -363,7 +376,7 @@ resource "aws_vpc_security_group_ingress_rule" "lmcache_from_llm" {
 
 resource "aws_security_group" "livekit" {
   name        = "${var.project}-${var.env}-sg-livekit"
-  description = "LiveKit SFU — signaling + public media UDP"
+  description = "LiveKit SFU - signaling + public media UDP"
   vpc_id      = var.vpc_id
 
   tags = merge(local.common_tags, {

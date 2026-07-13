@@ -569,6 +569,21 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "ENV", value = var.env },
         { name = "PORT", value = "8800" },
+        { name = "APP_ENV", value = var.env },
+        # API-only smoke: mock render + tone TTS + no LLM + in-memory session store.
+        # Keeps backend healthy without Redis/RDS readiness dependencies.
+        { name = "RENDER_BACKEND", value = "mock" },
+        { name = "LLM_ENGINE", value = "none" },
+        { name = "TTS_ENGINE", value = "tone" },
+        { name = "SESSION_STORE", value = "memory" },
+        { name = "DIRECTOR_ENABLED", value = "1" },
+        { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
+        { name = "PIPECAT_ENABLED", value = "0" },
+        { name = "LIVEKIT_PUBLISH", value = "0" },
+        { name = "DEBUG_ENABLED", value = var.debug_enabled ? "1" : "0" },
+        { name = "BACKEND_API_TOKEN", value = var.backend_api_token },
+        { name = "ADMIN_API_TOKEN", value = var.admin_api_token },
+        { name = "CORS_ORIGINS", value = "*" },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -840,29 +855,21 @@ resource "aws_ecs_service" "backend" {
   }
 }
 
+# EC2/GPU services only exist when capacity providers exist.
+# Task defs require EC2 — never fall back to FARGATE (invalid launch type).
 resource "aws_ecs_service" "llm_tts" {
+  count = var.create_ec2_capacity ? 1 : 0
+
   name                   = "${local.name_prefix}-llm-tts"
   cluster                = aws_ecs_cluster.this.id
   task_definition        = aws_ecs_task_definition.llm_tts.arn
   desired_count          = var.desired_llm_tts
   enable_execute_command = var.enable_execute_command
 
-  dynamic "capacity_provider_strategy" {
-    for_each = var.create_ec2_capacity ? [1] : []
-    content {
-      capacity_provider = aws_ecs_capacity_provider.llm[0].name
-      weight            = 1
-      base              = 0
-    }
-  }
-
-  # Fallback when EC2 capacity skeleton disabled — service still declared.
-  dynamic "capacity_provider_strategy" {
-    for_each = var.create_ec2_capacity ? [] : [1]
-    content {
-      capacity_provider = "FARGATE_SPOT"
-      weight            = 1
-    }
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.llm[0].name
+    weight            = 1
+    base              = 0
   }
 
   network_configuration {
@@ -885,26 +892,17 @@ resource "aws_ecs_service" "llm_tts" {
 }
 
 resource "aws_ecs_service" "avatar" {
+  count = var.create_ec2_capacity ? 1 : 0
+
   name                   = "${local.name_prefix}-avatar"
   cluster                = aws_ecs_cluster.this.id
   task_definition        = aws_ecs_task_definition.avatar.arn
   desired_count          = var.desired_avatar
   enable_execute_command = var.enable_execute_command
 
-  dynamic "capacity_provider_strategy" {
-    for_each = var.create_ec2_capacity ? [1] : []
-    content {
-      capacity_provider = aws_ecs_capacity_provider.avatar[0].name
-      weight            = 1
-    }
-  }
-
-  dynamic "capacity_provider_strategy" {
-    for_each = var.create_ec2_capacity ? [] : [1]
-    content {
-      capacity_provider = "FARGATE_SPOT"
-      weight            = 1
-    }
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.avatar[0].name
+    weight            = 1
   }
 
   network_configuration {
@@ -924,26 +922,17 @@ resource "aws_ecs_service" "avatar" {
 }
 
 resource "aws_ecs_service" "lmcache" {
+  count = var.create_ec2_capacity ? 1 : 0
+
   name                   = "${local.name_prefix}-lmcache"
   cluster                = aws_ecs_cluster.this.id
   task_definition        = aws_ecs_task_definition.lmcache.arn
   desired_count          = local.lmcache_desired
   enable_execute_command = var.enable_execute_command
 
-  dynamic "capacity_provider_strategy" {
-    for_each = var.create_ec2_capacity ? [1] : []
-    content {
-      capacity_provider = aws_ecs_capacity_provider.lmcache[0].name
-      weight            = 1
-    }
-  }
-
-  dynamic "capacity_provider_strategy" {
-    for_each = var.create_ec2_capacity ? [] : [1]
-    content {
-      capacity_provider = "FARGATE_SPOT"
-      weight            = 1
-    }
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.lmcache[0].name
+    weight            = 1
   }
 
   network_configuration {

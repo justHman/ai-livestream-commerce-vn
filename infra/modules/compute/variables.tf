@@ -186,3 +186,23 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "backend_api_token" {
+  description = "Backend API bearer token (injected as env; rotate via SSM in prod)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "admin_api_token" {
+  description = "Admin API bearer token (injected as env; rotate via SSM in prod)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "debug_enabled" {
+  description = "Enable verbose debug logging in backend (dev only)"
+  type        = bool
+  default     = false
+}

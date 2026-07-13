@@ -37,9 +37,9 @@ variable "backend_port" {
 }
 
 variable "health_check_path" {
-  description = "Backend health check path"
+  description = "Backend health check path (router is /api/v1)"
   type        = string
-  default     = "/health"
+  default     = "/api/v1/health/live"
 }
 
 variable "idle_timeout" {

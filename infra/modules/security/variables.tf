@@ -20,6 +20,18 @@ variable "alb_ingress_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
+variable "alb_http_ingress_cidrs" {
+  description = "CIDRs allowed to reach ALB:80 (dev/no-cert smoke only; empty when HTTPS cert is set)"
+  type        = list(string)
+  default     = []
+}
+
+variable "certificate_arn" {
+  description = "ACM cert ARN. Empty → ALB listens on HTTP:80 (dev). Set → HTTPS:443 only."
+  type        = string
+  default     = ""
+}
+
 variable "enable_oidc" {
   description = "Create GitHub Actions OIDC provider (usually only once per account)"
   type        = bool

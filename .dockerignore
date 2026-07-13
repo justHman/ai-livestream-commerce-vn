@@ -35,7 +35,6 @@ plans/
 infra/
 frontend/
 notes/
-providers/
 configs/
 *.log
 *.wav

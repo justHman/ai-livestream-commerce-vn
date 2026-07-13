@@ -25,14 +25,18 @@ output "task_definition_arns" {
 }
 
 output "service_names" {
-  description = "Map of role → ECS service name"
-  value = {
-    backend = aws_ecs_service.backend.name
-    llm_tts = aws_ecs_service.llm_tts.name
-    avatar  = aws_ecs_service.avatar.name
-    lmcache = aws_ecs_service.lmcache.name
-    livekit = aws_ecs_service.livekit.name
-  }
+  description = "Map of role → ECS service name (GPU services only when create_ec2_capacity=true)"
+  value = merge(
+    {
+      backend = aws_ecs_service.backend.name
+      livekit = aws_ecs_service.livekit.name
+    },
+    var.create_ec2_capacity ? {
+      llm_tts = aws_ecs_service.llm_tts[0].name
+      avatar  = aws_ecs_service.avatar[0].name
+      lmcache = aws_ecs_service.lmcache[0].name
+    } : {}
+  )
 }
 
 output "execution_role_arn" {

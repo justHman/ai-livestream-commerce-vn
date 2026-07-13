@@ -160,3 +160,23 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "backend_api_token" {
+  description = "Backend API bearer token. Set via TF_VAR_backend_api_token — never commit."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "admin_api_token" {
+  description = "Admin API bearer token. Set via TF_VAR_admin_api_token — never commit."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "debug_enabled" {
+  description = "Enable verbose backend logging (dev smoke only)"
+  type        = bool
+  default     = true
+}
