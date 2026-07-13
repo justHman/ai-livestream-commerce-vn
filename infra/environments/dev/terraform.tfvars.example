@@ -1,0 +1,38 @@
+# Copy to terraform.tfvars (gitignored) or pass -var-file.
+# Secrets: use TF_VAR_db_password or terraform.tfvars.local (never commit secrets).
+
+env         = "dev"
+project     = "ai-livestream"
+aws_region  = "ap-northeast-2"
+
+vpc_cidr             = "10.20.0.0/16"
+public_subnet_cidr   = "10.20.1.0/24"
+public_subnet_cidr_b = "10.20.2.0/24"
+az                   = "ap-northeast-2a"
+az_b                 = "ap-northeast-2b"
+# Network module creates 2 public AZs (ALB/RDS). No NAT. extra_public_subnet_ids rarely needed.
+
+alb_ingress_cidrs = ["0.0.0.0/0"]
+certificate_arn   = "" # empty → HTTP:80 for dev
+
+# db_password = "set-via-TF_VAR_db_password"
+db_instance_class        = "db.t4g.medium"
+db_allocated_storage_gb  = 100
+redis_node_type          = "cache.t4g.small"
+
+lmcache_enabled     = false
+desired_backend     = 1
+desired_llm_tts     = 0
+desired_avatar      = 0
+desired_livekit     = 0
+desired_lmcache     = 0
+create_ec2_capacity = false   # API-only smoke: no GPU/ARM ASG until Tier G
+
+image_backend  = "imjusthman/ai-live-backend:dev"
+image_llm_tts  = "imjusthman/ai-live-llm-tts:latest"
+image_avatar   = "imjusthman/ai-live-avatar:latest"
+image_lmcache  = "imjusthman/ai-live-lmcache:latest"
+
+alert_email           = "hmantools11@gmail.com"
+enable_billing_alarms = false
+# First live smoke: API-only (desired GPU/livekit/lmcache = 0). See docs/runbook-live-smoke-and-teardown.md

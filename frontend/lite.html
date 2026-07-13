@@ -138,6 +138,10 @@
     <div class="panel stage">
       <video id="avatarVideo" autoplay playsinline style="display:none"></video>
       <img id="avatarMjpeg" alt="Avatar MJPEG stream" style="display:none" />
+      <div id="livekitBar" class="row" style="display:none; margin-top:8px;">
+        <button id="livekitConnectBtn" type="button">Connect LiveKit</button>
+        <span id="livekitStatus" class="engine-status" style="flex:1; align-self:center;"></span>
+      </div>
     </div>
   </div>
 
@@ -160,6 +164,7 @@
     let room = null, sessionId = null, controlWs = null;
     let directorAttached = false;
     let autoChatActive = false, autoChatTimer = null;
+    let pendingLivekit = null; // { url, token } when start returns LiveKit creds
     const presetIdToDict = {}; // tts preset id -> full preset dict (for full swap)
     const DEMO_COMMENTS = [
       "giá bao nhiêu shop",
@@ -343,6 +348,53 @@
     }
 
     // ── Session ────────────────────────────────────────────────────
+    function hasLivekitClient() {
+      return typeof LivekitClient !== "undefined" && LivekitClient && LivekitClient.Room;
+    }
+
+    function setLivekitBar(visible, statusText) {
+      const bar = $("livekitBar");
+      if (!bar) return;
+      bar.style.display = visible ? "flex" : "none";
+      if (statusText != null) $("livekitStatus").textContent = statusText;
+    }
+
+    async function connectLiveKit(url, token, { auto = false } = {}) {
+      if (!url || !token) {
+        log("✗ LiveKit connect missing url/token");
+        return false;
+      }
+      if (!hasLivekitClient()) {
+        log("✗ livekit-client CDN unavailable — keep MJPEG/offline path");
+        setLivekitBar(true, "CDN missing — use Connect after reload or stay on MJPEG");
+        pendingLivekit = { url, token };
+        return false;
+      }
+      try {
+        $("avatarMjpeg").style.display = "none";
+        $("avatarVideo").style.display = "block";
+        if (room) {
+          try { await room.disconnect(); } catch (_) { /* ignore */ }
+          room = null;
+        }
+        room = new LivekitClient.Room();
+        room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
+          track.attach($("avatarVideo"));
+          log("✓ " + track.kind + " track attached");
+        });
+        await room.connect(url, token);
+        log("✓ joined LiveKit room" + (auto ? " (auto)" : ""));
+        setLivekitBar(true, "connected");
+        pendingLivekit = null;
+        $("livekitConnectBtn").disabled = true;
+        return true;
+      } catch (e) {
+        log("✗ LiveKit connect failed: " + e);
+        setLivekitBar(true, "connect failed — MJPEG fallback if available");
+        return false;
+      }
+    }
+
     async function start() {
       log("→ POST /api/v1/lite/start");
       const res = await fetch(backend() + "/api/v1/lite/start", {
@@ -354,24 +406,44 @@
       sessionId = d.session_id;
       log("✓ session " + sessionId + " mode=" + (d.mode || "cloud"));
 
+      const lkUrl = d.livekit_url || d.livekitUrl || "";
+      const lkToken = d.livekit_client_token || d.token || "";
+      const hasLk = !!(lkUrl && lkToken);
+      pendingLivekit = hasLk ? { url: lkUrl, token: lkToken } : null;
+
       if (d.mode === "MOCK") {
-        // Phase C — MJPEG pre-rendered idle/utterance stream, no LiveKit.
+        // Phase C — MJPEG pre-rendered idle/utterance stream.
+        // If start also returns LiveKit creds, show optional connect button.
         $("avatarVideo").style.display = "none";
         const img = $("avatarMjpeg");
         img.src = backend() + "/api/v1/mock/video/" + sessionId + ".mjpeg";
         img.style.display = "block";
         log("✓ MJPEG stream attached (mock mode)");
+        if (hasLk) {
+          setLivekitBar(true, "LiveKit available (optional)");
+          $("livekitConnectBtn").disabled = false;
+          // Auto-connect when CDN present; MJPEG stays until tracks attach.
+          if (hasLivekitClient()) {
+            await connectLiveKit(lkUrl, lkToken, { auto: true });
+          }
+        } else {
+          setLivekitBar(false, "");
+        }
+      } else if (hasLk) {
+        // Cloud / self-host / remote — LiveKit video track.
+        setLivekitBar(true, "connecting…");
+        $("livekitConnectBtn").disabled = false;
+        const ok = await connectLiveKit(lkUrl, lkToken, { auto: true });
+        if (!ok) {
+          // Offline demo without SFU: hide video, keep session usable.
+          $("avatarVideo").style.display = "none";
+          log("⚠ LiveKit unavailable — session control still works without media");
+        }
       } else {
-        // Cloud / self-host — LiveKit video track.
         $("avatarMjpeg").style.display = "none";
-        $("avatarVideo").style.display = "block";
-        room = new LivekitClient.Room();
-        room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
-          track.attach($("avatarVideo"));
-          log("✓ " + track.kind + " track attached");
-        });
-        await room.connect(d.livekit_url, d.livekit_client_token);
-        log("✓ joined LiveKit room (video)");
+        $("avatarVideo").style.display = "none";
+        setLivekitBar(false, "");
+        log("⚠ start response has no livekit_url/token — media path skipped");
       }
 
       openControlWs(sessionId);
@@ -468,6 +540,9 @@
       stopAutoChat();
       if (controlWs) { controlWs.close(); controlWs = null; }
       if (room) { await room.disconnect(); room = null; }
+      pendingLivekit = null;
+      setLivekitBar(false, "");
+      $("livekitConnectBtn").disabled = true;
       // Reset stage display.
       $("avatarVideo").style.display = "none";
       const img = $("avatarMjpeg");
@@ -660,6 +735,10 @@
     $("debugToggleBtn").onclick = () => toggleDebugPanel();
     $("debugStartBtn").onclick = () => debugStart().catch((e) => log("✗ " + e));
     $("debugStopBtn").onclick = () => debugStop().catch((e) => log("✗ " + e));
+    $("livekitConnectBtn").onclick = () => {
+      if (!pendingLivekit) { log("✗ no pending LiveKit creds"); return; }
+      connectLiveKit(pendingLivekit.url, pendingLivekit.token).catch((e) => log("✗ " + e));
+    };
   </script>
 </body>
 </html>

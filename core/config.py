@@ -30,7 +30,7 @@ _DEFAULT_PERSONA = (
 class LLMConfig:
     """LLM engine configuration (env-driven)."""
 
-    engine: str = "none"               # vllm | llamacpp | sglang | hf | none
+    engine: str = "none"               # vllm | llamacpp | sglang | hf | openai_compat | none
     model: str = ""                     # HF model id or path
     model_path: str = ""                # local path (for llamacpp GGUF dir)
     device: str = "auto"               # cuda | cpu | auto
@@ -42,6 +42,8 @@ class LLMConfig:
     n_ctx: int = 4096                   # llamacpp context
     n_gpu_layers: int = -1              # llamacpp GPU layers
     stream: bool = False               # LLM_STREAM=1 -> emit TextChunks via stream_chunks()
+    base_url: str = ""                 # remote OpenAI-compat endpoint (LLM_BASE_URL)
+    guided_json: bool = False          # LLM_GUIDED_JSON / outlines structured output
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -59,6 +61,9 @@ class LLMConfig:
             n_ctx=int(os.environ.get("LLM_N_CTX", "4096")),
             n_gpu_layers=int(os.environ.get("LLM_N_GPU_LAYERS", "-1")),
             stream=os.environ.get("LLM_STREAM", "").lower() in ("1", "true", "on", "yes"),
+            base_url=os.environ.get("LLM_BASE_URL", ""),
+            guided_json=os.environ.get("LLM_GUIDED_JSON", "0").lower()
+            in ("1", "true", "on", "yes"),
         )
 
     def to_engine_cfg(self) -> dict:
@@ -68,6 +73,8 @@ class LLMConfig:
             cfg["model"] = self.model
         if self.model_path:
             cfg["model_path"] = cfg["weights_path"] = self.model_path
+        if self.base_url:
+            cfg["base_url"] = self.base_url
         cfg["device"] = self.device
         cfg["dtype"] = os.environ.get("LLM_DTYPE", "auto")
         cfg["max_model_len"] = self.max_model_len
@@ -78,6 +85,7 @@ class LLMConfig:
         cfg["n_ctx"] = self.n_ctx
         cfg["n_gpu_layers"] = self.n_gpu_layers
         cfg["stream"] = self.stream
+        cfg["guided_json"] = self.guided_json
         cfg["seed"] = int(os.environ.get("LLM_SEED", "42"))
         cfg["enable_prefix_caching"] = os.environ.get(
             "LLM_PREFIX_CACHE", "1"
@@ -125,12 +133,13 @@ class TTSConfig:
         dropdown default AND the loaded engine.
     """
 
-    engine: str = "transformers"       # transformers(default) | vieneu | cosyvoice | tone
+    engine: str = "transformers"       # transformers(default) | vieneu | cosyvoice | tone | remote_http
     model: str = ""                     # HF model id or path
     device: str = "auto"
     sample_rate: int = 24_000
     ref_audio: Optional[str] = None
     preset_id: str = "vieneu-v3-turbo"
+    base_url: str = ""                 # remote TTS service URL (TTS_BASE_URL)
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -164,12 +173,15 @@ class TTSConfig:
             sample_rate=sample_rate,
             ref_audio=os.environ.get("TTS_REF_AUDIO") or None,
             preset_id=preset_id,
+            base_url=os.environ.get("TTS_BASE_URL", ""),
         )
 
     def to_engine_cfg(self) -> dict:
         cfg: dict[str, Any] = {"engine": self.engine}
         if self.model:
             cfg["weights_path"] = cfg["model"] = self.model
+        if self.base_url:
+            cfg["base_url"] = self.base_url
         cfg["device"] = self.device
         cfg["sample_rate"] = self.sample_rate
         cfg["ref_audio"] = self.ref_audio
@@ -223,6 +235,21 @@ class AppConfig:
     # Debug mode gate (Task 7). When False, /debug/* -> 404.
     debug_enabled: bool = False
 
+    # Remote service URLs (AWS multi-service; empty offline)
+    avatar_base_url: str = ""
+    livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+    lmcache_enabled: bool = False
+    # Pipecat orchestration toggle (full wiring is another agent). Default off.
+    pipecat_enabled: bool = False
+    # Director coverage match threshold (speech vs key_selling_points)
+    coverage_match_threshold: float = 0.75
+    # Optional Postgres runtime (Wave D). Empty = store disabled.
+    database_url: str = ""
+    # Backend audio publish to LiveKit SFU (stub until SDK wired).
+    livekit_publish: bool = False
+
     # Engine configs
     llm: LLMConfig = field(default_factory=LLMConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
@@ -251,6 +278,20 @@ class AppConfig:
             admin_api_token=os.environ.get("ADMIN_API_TOKEN", ""),
             debug_enabled=os.environ.get("DEBUG_ENABLED", "0").lower()
             in ("1", "true", "on", "yes"),
+            avatar_base_url=os.environ.get("AVATAR_BASE_URL", ""),
+            livekit_url=os.environ.get("LIVEKIT_URL", ""),
+            livekit_api_key=os.environ.get("LIVEKIT_API_KEY", ""),
+            livekit_api_secret=os.environ.get("LIVEKIT_API_SECRET", ""),
+            lmcache_enabled=os.environ.get("LMCACHE_ENABLED", "0").lower()
+            in ("1", "true", "on", "yes"),
+            pipecat_enabled=os.environ.get("PIPECAT_ENABLED", "0").lower()
+            in ("1", "true", "on", "yes"),
+            coverage_match_threshold=float(
+                os.environ.get("COVERAGE_MATCH_THRESHOLD", "0.75")
+            ),
+            database_url=os.environ.get("DATABASE_URL", ""),
+            livekit_publish=os.environ.get("LIVEKIT_PUBLISH", "0").lower()
+            in ("1", "true", "on", "yes"),
             llm=LLMConfig.from_env(),
             tts=TTSConfig.from_env(),
         )
@@ -276,6 +317,10 @@ class AppConfig:
                 width=self.mock_avatar_width,
                 height=self.mock_avatar_height,
             )
+        if self.render_backend in ("remote_avatar", "remote"):
+            from .render.remote_avatar import RemoteAvatarBackend
+
+            return RemoteAvatarBackend(base_url=self.avatar_base_url)
         if self.render_backend == "self_host":
             from .render.self_host import SelfHostRenderBackend
 

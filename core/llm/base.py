@@ -54,6 +54,8 @@ class LLMRequest:
     seed: int = 42
     repetition_penalty: float = 1.0
     frequency_penalty: float = 0.0
+    # Optional JSON Schema for Outlines / guided decoding (openai_compat only).
+    response_schema: Optional[dict] = None
 
     @classmethod
     def from_prompt(

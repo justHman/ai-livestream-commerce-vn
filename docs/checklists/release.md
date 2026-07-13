@@ -22,7 +22,8 @@
 
 ### Docs
 - [ ] `docs/architecture.md` reflects current module layout
-- [ ] Stale docs in `docs/` have historical note header
+- [ ] `docs/aws-architecture.md` + pricing match live Seoul stack
+- [ ] Active work only in `plans/`; historical drafts only under `archive/docs-historical/`
 - [ ] `docs/runbook-colab.md` matches the current bootstrap notebook steps
 - [ ] Any new env vars are documented in `core/config.py` docstrings
 

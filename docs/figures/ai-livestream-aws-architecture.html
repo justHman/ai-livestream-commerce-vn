@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Livestream Commerce VN — AWS Architecture (Seoul)</title>
+<style>
+  :root {
+    --aws-squid: #232F3E;
+    --aws-orange: #FF9900;
+    --aws-smile: #146EB4;
+    --vpc: #E6F4EA;
+    --vpc-border: #1D8102;
+    --subnet: #F0F7FF;
+    --subnet-border: #0073BB;
+    --fargate: #E3F2FD;
+    --gpu: #FDE7F3;
+    --data: #FFF8E1;
+    --edge: #F5F9FF;
+    --shared: #FFF7EF;
+    --line: #545B64;
+    --dash: #C76FA7;
+    --ok: #1D8102;
+    --card: #ffffff;
+    --shadow: 0 2px 8px rgba(15, 23, 42, .08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Amazon Ember", "Helvetica Neue", Arial, sans-serif;
+    background: #f2f3f3;
+    color: var(--aws-squid);
+  }
+  header {
+    background: linear-gradient(90deg, var(--aws-squid), #37475A);
+    color: #fff;
+    padding: 18px 28px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0 0 6px; font-size: 20px; font-weight: 700; }
+  header p { margin: 0; opacity: .9; font-size: 13px; line-height: 1.45; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+  .badge {
+    background: rgba(255,255,255,.12);
+    border: 1px solid rgba(255,255,255,.2);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+  .badge.accent { background: rgba(255,153,0,.2); border-color: var(--aws-orange); }
+  main { padding: 20px; max-width: 1480px; margin: 0 auto; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 12px 18px;
+    background: #fff; border-radius: 10px; padding: 12px 16px;
+    box-shadow: var(--shadow); margin-bottom: 16px; font-size: 12px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #ccc; }
+  .line-solid, .line-dash, .line-dot {
+    width: 28px; height: 0; border-top: 2px solid var(--line); display: inline-block;
+  }
+  .line-dash { border-top-style: dashed; border-color: var(--dash); }
+  .line-dot { border-top-style: dotted; }
+  .board {
+    display: grid;
+    grid-template-columns: 280px 1fr 240px;
+    gap: 14px;
+    align-items: start;
+  }
+  @media (max-width: 1100px) {
+    .board { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    border: 1px solid #e5e7eb;
+    overflow: hidden;
+  }
+  .panel-h {
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel-b { padding: 12px; display: grid; gap: 10px; }
+  .edge { background: var(--edge); }
+  .shared { background: var(--shared); }
+  .aws {
+    background: #fffaf0;
+    border: 2px solid #E8A33D;
+  }
+  .vpc {
+    background: var(--vpc);
+    border: 2px dashed var(--vpc-border);
+    border-radius: 12px;
+    padding: 12px;
+  }
+  .vpc-title {
+    font-size: 12px; font-weight: 700; color: var(--vpc-border);
+    margin-bottom: 10px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  }
+  .row { display: grid; gap: 10px; margin-bottom: 10px; }
+  .row.2 { grid-template-columns: 1fr 1fr; }
+  .row.3 { grid-template-columns: 1.1fr 1.2fr; }
+  .row.4 { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 900px) {
+    .row.2, .row.3, .row.4 { grid-template-columns: 1fr; }
+  }
+  .group {
+    border-radius: 10px;
+    border: 1px solid #cfd8e3;
+    background: #fff;
+    padding: 10px;
+  }
+  .group.fargate { background: var(--fargate); border-color: #5B9BD5; }
+  .group.gpu { background: var(--gpu); border-color: #C76FA7; }
+  .group.data { background: var(--data); border-color: #E0C060; }
+  .group-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+    margin-bottom: 8px; color: #37475A;
+  }
+  .nodes { display: grid; gap: 8px; }
+  .nodes.cols-2 { grid-template-columns: 1fr 1fr; }
+  .node {
+    background: #fff;
+    border: 1px solid #d5dbe3;
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+    cursor: default;
+  }
+  .node:hover, .node.active {
+    transform: translateY(-1px);
+    border-color: var(--aws-orange);
+    box-shadow: 0 6px 16px rgba(255,153,0,.18);
+  }
+  .node .icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 800; color: #fff; margin-bottom: 8px;
+  }
+  .i-alb { background: #8C4FFF; }
+  .i-fargate { background: #ED7100; }
+  .i-ec2 { background: #ED7100; }
+  .i-rds { background: #3B48CC; }
+  .i-redis { background: #C925D1; }
+  .i-s3 { background: #7AA116; }
+  .i-ssm { background: #E7157B; }
+  .i-cw { background: #E7157B; }
+  .i-sns { background: #E7157B; }
+  .i-iam { background: #DD344C; }
+  .i-igw { background: #8C4FFF; }
+  .i-cf { background: #F38020; }
+  .i-hub { background: #2496ED; }
+  .i-gh { background: #24292F; }
+  .i-users { background: #146EB4; }
+  .node h3 { margin: 0 0 4px; font-size: 13px; }
+  .node p { margin: 0; font-size: 11px; color: #545B64; line-height: 1.4; }
+  .tag {
+    display: inline-block; margin-top: 6px; font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 999px; background: #eef2f7; color: #37475A;
+  }
+  .tag.free { background: #e8f5e9; color: #1B5E20; }
+  .tag.spot { background: #fff3e0; color: #E65100; }
+  .tag.reject { background: #fce4ec; color: #880E4F; text-decoration: line-through; }
+  .flows {
+    margin-top: 16px; background: #fff; border-radius: 12px; box-shadow: var(--shadow);
+    border: 1px solid #e5e7eb; overflow: hidden;
+  }
+  .flows h2 {
+    margin: 0; padding: 12px 16px; font-size: 14px; border-bottom: 1px solid #e5e7eb;
+    background: #fafafa;
+  }
+  .flow-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+  }
+  @media (max-width: 900px) { .flow-grid { grid-template-columns: 1fr; } }
+  .flow {
+    padding: 14px 16px; border-right: 1px solid #e5e7eb; font-size: 12px; line-height: 1.55;
+  }
+  .flow:last-child { border-right: none; }
+  .flow strong { display: block; margin-bottom: 6px; font-size: 12px; }
+  .flow code {
+    background: #f4f6f8; border-radius: 4px; padding: 1px 5px; font-size: 11px;
+  }
+  .notes {
+    margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  }
+  @media (max-width: 900px) { .notes { grid-template-columns: 1fr; } }
+  .note {
+    background: #fff; border-radius: 12px; box-shadow: var(--shadow);
+    border: 1px solid #e5e7eb; padding: 14px 16px; font-size: 12px; line-height: 1.5;
+  }
+  .note h3 { margin: 0 0 8px; font-size: 13px; }
+  ul { margin: 0; padding-left: 18px; }
+  li { margin: 4px 0; }
+  footer {
+    margin: 18px 0 8px; text-align: center; color: #6b7280; font-size: 11px;
+  }
+  a { color: var(--aws-smile); }
+  .cost {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
+  }
+  .cost b {
+    background: var(--aws-squid); color: #fff; border-radius: 8px;
+    padding: 6px 10px; font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>AI Livestream Commerce VN — AWS Production Architecture</h1>
+    <p>
+      Region <strong>ap-northeast-2 (Seoul)</strong> · Single-AZ · 1 public subnet · No NAT ·
+      Cloudflare Free edge · Docker Hub public images · Weights on S3 · SSM secrets free
+    </p>
+  </div>
+  <div class="badges">
+    <span class="badge accent">MVP = prod</span>
+    <span class="badge">Spot MVP ~$535–625/mo</span>
+    <span class="badge">ECS + Fargate + EC2 GPU</span>
+    <span class="badge">LMCACHE_ENABLED toggle</span>
+  </div>
+</header>
+
+<main>
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--vpc)"></i> VPC / public subnet</span>
+    <span><i class="swatch" style="background:var(--fargate)"></i> Fargate Spot ARM</span>
+    <span><i class="swatch" style="background:var(--gpu)"></i> EC2 Spot GPU</span>
+    <span><i class="swatch" style="background:var(--data)"></i> Data plane</span>
+    <span><i class="line-solid"></i> control / data path</span>
+    <span><i class="line-dash"></i> WebRTC / image pull</span>
+    <span><i class="line-dot"></i> egress via IGW</span>
+  </div>
+
+  <div class="board">
+    <!-- EDGE -->
+    <section class="panel edge">
+      <div class="panel-h">🌐 External / Edge</div>
+      <div class="panel-b">
+        <div class="node" data-id="users">
+          <div class="icon i-users">USR</div>
+          <h3>Viewers / BE SE / FE</h3>
+          <p>HTTPS clients + LiveKit WebRTC subscribers</p>
+        </div>
+        <div class="node" data-id="cf">
+          <div class="icon i-cf">CF</div>
+          <h3>Cloudflare Free</h3>
+          <p>DNS + rate-limit + basic DDoS/WAF</p>
+          <span class="tag free">$0 · replaces Route53 + AWS WAF</span>
+        </div>
+        <div class="node" data-id="gh">
+          <div class="icon i-gh">GH</div>
+          <h3>GitHub Actions</h3>
+          <p>OIDC assume role · no static AWS keys</p>
+          <span class="tag">ci / deploy-dev / deploy-prod</span>
+        </div>
+        <div class="node" data-id="hub">
+          <div class="icon i-hub">HUB</div>
+          <h3>Docker Hub public</h3>
+          <p>backend · llm-tts · avatar · lmcache</p>
+          <span class="tag free">$0 · code+deps only</span>
+        </div>
+        <div class="note" style="box-shadow:none;border-style:dashed">
+          <h3>Security (edge)</h3>
+          <ul>
+            <li>Only ALB :443 + LiveKit UDP public</li>
+            <li>No SSH / no key pairs</li>
+            <li>ECS Exec via SSM Session Manager</li>
+            <li>RDS/Redis never public</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- AWS VPC -->
+    <section class="panel aws">
+      <div class="panel-h">☁️ AWS · ap-northeast-2 (Seoul)</div>
+      <div class="panel-b">
+        <div class="vpc">
+          <div class="vpc-title">
+            <span>VPC · Public Subnet · AZ ap-northeast-2a</span>
+            <span>No NAT · No private subnet · IGW only</span>
+          </div>
+
+          <div class="row 2">
+            <div class="node" data-id="igw">
+              <div class="icon i-igw">IGW</div>
+              <h3>Internet Gateway</h3>
+              <p>Inbound ALB + outbound Hub/S3/HF</p>
+              <span class="tag free">$0</span>
+            </div>
+            <div class="node" data-id="alb">
+              <div class="icon i-alb">ALB</div>
+              <h3>Application Load Balancer :443</h3>
+              <p>TLS origin · path routing · WS sticky · health checks</p>
+              <span class="tag">hourly + LCU ~$48/mo</span>
+            </div>
+          </div>
+
+          <div class="row 3">
+            <div class="group fargate">
+              <div class="group-title">ECS Fargate Spot · ARM64</div>
+              <div class="nodes cols-2">
+                <div class="node" data-id="backend">
+                  <div class="icon i-fargate">FG</div>
+                  <h3>Backend API</h3>
+                  <p>FastAPI + Pipecat + Director · 1 vCPU / 2 GB</p>
+                  <span class="tag spot">Spot ~$11/mo</span>
+                </div>
+                <div class="node" data-id="livekit">
+                  <div class="icon i-fargate">LK</div>
+                  <h3>LiveKit SFU</h3>
+                  <p>WebRTC UDP 50000–60000 · 2 vCPU / 4 GB</p>
+                  <span class="tag spot">Spot ~$22/mo</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="group gpu">
+              <div class="group-title">ECS on EC2 Spot · GPU Capacity Provider</div>
+              <div class="nodes cols-2">
+                <div class="node" data-id="g6">
+                  <div class="icon i-ec2">G6</div>
+                  <h3>g6.xlarge · L4 24GB</h3>
+                  <p>LLM vLLM util 0.6 · TTS VieNeu util 0.25 · SSE :8001/:8002</p>
+                  <span class="tag spot">Spot ~$171/mo</span>
+                </div>
+                <div class="node" data-id="g4dn">
+                  <div class="icon i-ec2">T4</div>
+                  <h3>g4dn.xlarge · T4 16GB</h3>
+                  <p>Avatar · LiveKit video publish · HTTP :8080</p>
+                  <span class="tag spot">Spot ~$177/mo</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="row 4">
+            <div class="node" data-id="lmcache">
+              <div class="icon i-ec2">C7G</div>
+              <h3>LMCache · c7g.2xlarge ASG</h3>
+              <p>Stateful KV · ZMQ :5555 · env LMCACHE_ENABLED</p>
+              <span class="tag spot">Spot ~$90 · off = $0</span>
+            </div>
+            <div class="group data" style="grid-column: span 2;">
+              <div class="group-title">Data plane (SG-locked, not public)</div>
+              <div class="nodes cols-2">
+                <div class="node" data-id="rds">
+                  <div class="icon i-rds">RDS</div>
+                  <h3>RDS PostgreSQL 16</h3>
+                  <p>db.t4g.medium + 100GB gp3 · single-AZ · publicly_accessible=false</p>
+                  <span class="tag">~$86/mo compute+disk</span>
+                </div>
+                <div class="node" data-id="redis">
+                  <div class="icon i-redis">REDIS</div>
+                  <h3>ElastiCache Redis 7</h3>
+                  <p>cache.t4g.small · ChatQueue XADD · locks</p>
+                  <span class="tag">~$12/mo</span>
+                </div>
+              </div>
+            </div>
+            <div class="node" data-id="s3gw">
+              <div class="icon i-s3">EP</div>
+              <h3>S3 Gateway Endpoint</h3>
+              <p>Private path to S3 from public subnet</p>
+              <span class="tag free">$0</span>
+            </div>
+          </div>
+
+          <div class="note" style="box-shadow:none;background:#fff9e6;border-color:#e0c060">
+            <h3>Security Groups (iron)</h3>
+            <ul>
+              <li><strong>Public ingress:</strong> ALB TCP 443 · LiveKit UDP media range</li>
+              <li><strong>Internal only:</strong> RDS 5432 · Redis 6379 · LLM 8001 · TTS 8002 · Avatar 8080 · LMCache 5555</li>
+              <li>IMDSv2 required · CI fails if SG opens 0.0.0.0/0 on non-public ports</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SHARED -->
+    <section class="panel shared">
+      <div class="panel-h">📦 AWS Managed</div>
+      <div class="panel-b">
+        <div class="node" data-id="s3">
+          <div class="icon i-s3">S3</div>
+          <h3>S3</h3>
+          <p>weights · idle-frames · replays · tfstate</p>
+          <span class="tag">~$1–5/mo</span>
+        </div>
+        <div class="node" data-id="ssm">
+          <div class="icon i-ssm">SSM</div>
+          <h3>SSM Parameter Store</h3>
+          <p>SecureString secrets (DB, Redis, LiveKit, HF, JWT)</p>
+          <span class="tag free">Standard FREE</span>
+        </div>
+        <div class="node" data-id="cw">
+          <div class="icon i-cw">CW</div>
+          <h3>CloudWatch</h3>
+          <p>logs · metrics · alarms · billing $50/$100</p>
+        </div>
+        <div class="node" data-id="sns">
+          <div class="icon i-sns">SNS</div>
+          <h3>SNS</h3>
+          <p>email deploy + billing alerts</p>
+          <span class="tag free">free tier</span>
+        </div>
+        <div class="node" data-id="iam">
+          <div class="icon i-iam">IAM</div>
+          <h3>IAM task roles</h3>
+          <p>least-privilege per service + GitHub OIDC deploy roles</p>
+          <span class="tag free">$0</span>
+        </div>
+        <div class="note" style="box-shadow:none;border-style:dashed">
+          <h3>Rejected (not drawn)</h3>
+          <span class="tag reject">NAT</span>
+          <span class="tag reject">AWS WAF</span>
+          <span class="tag reject">Route53</span>
+          <span class="tag reject">ECR</span>
+          <span class="tag reject">Secrets Manager</span>
+          <span class="tag reject">API Gateway</span>
+          <span class="tag reject">EKS</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="flows">
+    <h2>Primary traffic flows</h2>
+    <div class="flow-grid">
+      <div class="flow">
+        <strong>1. Control plane (HTTPS)</strong>
+        Viewers/SE → <code>Cloudflare</code> → <code>ALB:443</code> → <code>Backend:8800</code><br/>
+        Backend → RDS <code>5432</code> · Redis <code>6379</code> · SSM secrets · CloudWatch
+      </div>
+      <div class="flow">
+        <strong>2. Realtime pipeline (~300ms tick)</strong>
+        Platform WS → Backend ChatQueue → Director decide →
+        LLM <code>SSE 8001</code> → TTS <code>SSE 8002</code> → LiveKit audio ·
+        Avatar <code>8080</code> → LiveKit video
+      </div>
+      <div class="flow">
+        <strong>3. Media + deploy</strong>
+        Viewers <code>WebRTC UDP</code> direct → LiveKit (bypass Cloudflare)<br/>
+        GitHub OIDC → Docker Hub push · ECS pull via IGW ·
+        GPU/TTS entrypoint <code>aws s3 sync</code> weights
+      </div>
+    </div>
+  </section>
+
+  <section class="notes">
+    <div class="note">
+      <h3>AWS best practices applied</h3>
+      <ul>
+        <li>Public subnet + IGW for outbound (ECS public-subnet pattern) — no NAT cost</li>
+        <li>Isolation via Security Groups, not private-subnet tax</li>
+        <li>ALB for L7 routing / sticky WS; Cloudflare for edge DNS/DDoS</li>
+        <li>Fargate for stateless CPU; EC2 Spot only where GPU/stateful needed</li>
+        <li>Secrets in SSM SecureString; IAM task roles; OIDC CI/CD</li>
+        <li>Weights out-of-band on S3 (image stays small, Hub free public OK)</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>Cost snapshot (Spot Seoul)</h3>
+      <div class="cost">
+        <b>LMCache ON ~$625/mo</b>
+        <b>LMCache OFF ~$535/mo</b>
+      </div>
+      <ul style="margin-top:10px">
+        <li>GPU (g6+g4dn) dominates ~$348 Spot</li>
+        <li>ALB+LCU ~$48 · RDS+gp3 ~$86 · Redis ~$12</li>
+        <li>Cloudflare / Hub / SSM / IGW / S3 GW = $0</li>
+      </ul>
+      <p style="margin:10px 0 0">Sources: <code>aws-architecture.md</code> · <code>aws-pricing-seoul.csv</code></p>
+    </div>
+  </section>
+
+  <footer>
+    Companion diagrams:
+    <a href="./ai-livestream-aws-architecture-seoul.png">diagrams PNG</a> ·
+    <a href="./ai-livestream-aws-architecture-eraser.png">Eraser PNG</a> ·
+    Eraser workspace:
+    <a href="https://app.eraser.io/workspace/ZYLtQe5wQbJ8YaeLgYvh" target="_blank" rel="noopener">open</a>
+    · Generated from confirmed architecture 2026-07-11
+  </footer>
+</main>
+
+<script>
+  // Lightweight hover focus for node cards
+  document.querySelectorAll('.node').forEach(n => {
+    n.addEventListener('mouseenter', () => n.classList.add('active'));
+    n.addEventListener('mouseleave', () => n.classList.remove('active'));
+  });
+</script>
+</body>
+</html>

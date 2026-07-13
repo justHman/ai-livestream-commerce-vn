@@ -8,6 +8,7 @@ from .base import (
     StreamingAvatarBackend,
 )
 from .mock import MockRenderBackend
+from .remote_avatar import RemoteAvatarBackend
 
 __all__ = [
     "FullPipelineBackend",
@@ -16,4 +17,5 @@ __all__ = [
     "StartResult",
     "StreamingAvatarBackend",
     "MockRenderBackend",
+    "RemoteAvatarBackend",
 ]

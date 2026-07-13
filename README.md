@@ -39,10 +39,9 @@ core/                  production surface (transport-agnostic)
 providers/liveavatar_cloud/        LiveAvatar cloud SDK (behind the cloud RenderBackend)
 archive/legacy-liveavatar-demo/   earlier mock diffusion PoC (archived)
 notebooks/             bootstrap_colab.ipynb (clone → weights → run → ngrok)
-docs/                  architecture.md + runbook + checklists
-  architecture.md      living architecture reference (replaces PRODUCTION.md)
-  runbook-colab.md     Colab deployment guide
-  checklists/          colab-readiness.md + release.md
+docs/                  confirmed design + Seoul pricing (see docs/README.md)
+plans/                 active implement plans (00 AWS stack, 01 app backlog)
+archive/               legacy demo + docs-historical/
 ```
 
 ## Quick start (local / sandbox — free, no credits)

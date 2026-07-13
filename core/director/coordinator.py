@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -424,6 +425,8 @@ class DirectorCoordinator:
             await orchestrator.run(session_id, text)
             st.decisions_emitted += 1
             st.last_decision_ts = time.monotonic()
+            # M3: coverage + cursor advance after proactive speak.
+            self._after_speak(session_id, decision, text)
             await self._emit(session_id, {
                 "type": "coordinator.speak_finished",
                 "text": text,
@@ -437,6 +440,62 @@ class DirectorCoordinator:
             self._lock_registry.release(session_id)
             self._active_score.pop(session_id, None)
             self._unregister_speaking(session_id)
+
+    def _after_speak(
+        self, session_id: str, decision: Decision, speech: str
+    ) -> None:
+        """Update covered_points + advance talking_point_idx on proactive speak."""
+        ds = self._runtime._sessions.get(session_id)
+        if ds is None:
+            return
+        state: StreamState = ds.director.state
+        plan = state.run_plan
+        product_id = decision.product_id
+        key_points: list[str] = []
+        if plan is not None and product_id:
+            selling = getattr(plan, "selling", None)
+            if selling is None and isinstance(plan, dict):
+                selling = plan.get("selling") or []
+            for sp in selling or []:
+                pid = sp.product_id if hasattr(sp, "product_id") else sp.get("product_id")
+                if pid == product_id:
+                    ksp = (
+                        sp.key_selling_points
+                        if hasattr(sp, "key_selling_points")
+                        else sp.get("key_selling_points") or []
+                    )
+                    key_points = list(ksp)
+                    break
+        if key_points and speech:
+            try:
+                from .coverage import mark_coverage
+
+                thr = float(os.environ.get("COVERAGE_MATCH_THRESHOLD", "0.75"))
+                prev = state.covered_points.get(product_id) or set()
+                covered = mark_coverage(
+                    self._get_embedder(),
+                    speech,
+                    key_points,
+                    threshold=thr,
+                    already_covered=prev,
+                )
+                state.mark_product_covered(product_id, covered)
+            except Exception:
+                logger.debug("coverage update failed", exc_info=True)
+        # Advance cursor only for proactive (non-reactive) actions.
+        if decision.action in (
+            "speak_hook",
+            "introduce_product",
+            "answer_fact",
+            "close",
+        ) or (
+            decision.action == "answer_cluster" and not decision.may_interrupt
+        ):
+            n = len(key_points) if key_points else 1
+            state.advance_talking_point(n)
+            # Keep cursor phase in sync with FSM phase.
+            state.cursor.phase = state.phase.value
+            state.cursor.product_idx = state.current_product_index
 
 
 __all__ = ["DirectorCoordinator", "CoordinatorConfig"]

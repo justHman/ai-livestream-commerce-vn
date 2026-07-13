@@ -1,0 +1,11 @@
+project    = "ai-livestream"
+aws_region = "ap-northeast-2"
+
+enable_github_oidc = true
+# github_org_repo = "your-org/ai-livestream-commerce-vn"
+
+# First bootstrap can create state bucket+lock (chicken/egg: use local state once).
+create_tfstate_bucket = false
+create_tf_lock_table  = false
+tfstate_bucket_name   = "ai-livestream-tfstate"
+tf_lock_table_name    = "ai-livestream-tf-lock"

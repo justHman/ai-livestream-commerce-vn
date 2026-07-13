@@ -1,0 +1,62 @@
+# deploy-prod — deploy to PROD on tag v* with manual approval gate
+# Requires GitHub secrets: AWS_ROLE_ARN_PROD, DOCKERHUB_USER, DOCKERHUB_TOKEN
+# GitHub Environment "production" should have required reviewers
+# OIDC trust: repo:justHman/ai-livestream-commerce-vn:ref:refs/tags/v*
+name: deploy-prod
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ap-northeast-2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push release images
+        run: |
+          TAG=${GITHUB_REF_NAME#v}
+          docker build -f services/backend/Dockerfile \
+            -t imjusthman/ai-live-backend:$TAG \
+            -t imjusthman/ai-live-backend:latest .
+          docker push imjusthman/ai-live-backend:$TAG
+          docker push imjusthman/ai-live-backend:latest
+
+      - name: ECS rolling update PROD
+        if: ${{ false }}
+        run: |
+          for svc in backend llm-tts avatar livekit lmcache; do
+            aws ecs update-service --cluster ai-livestream-prod-cluster --service ai-livestream-prod-$svc --force-new-deployment || true
+          done
+
+      - name: Wait for services stable
+        if: ${{ false }}
+        run: |
+          aws ecs wait services-stable --cluster ai-livestream-prod-cluster \
+            --services ai-livestream-prod-backend
+        timeout-minutes: 15
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Manual rollback: aws ecs update-service --task-definition <prev-revision-arn>"

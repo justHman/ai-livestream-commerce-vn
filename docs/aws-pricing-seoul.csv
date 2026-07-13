@@ -1,0 +1,63 @@
+# aws-pricing-seoul.csv
+# Region: ap-northeast-2 (Seoul) | Final validated: 2026-07-11
+# Sources: aws pricing get-products + describe-spot-price-history
+# 1h/1d/1m = purchasing option in resource; reserved_* = RI or same as operating (never blank)
+# Month=730h. Human twin: aws-pricing-seoul.xlsx. Report: aws-pricing-seoul-validation.md
+
+### TABLE 1 — MVP (Spot compute + Single-AZ data + free edge)
+service,resource,1h,1d,1m,reserved_1y_1h,reserved_1y_1d,reserved_1y_1m,reserved_3y_1h,reserved_3y_1d,reserved_3y_1m,notes
+EC2,g6.xlarge L4 24GB Spot (Linux) - LLM+TTS GPU share,0.30204,7.249,220.49,0.6135,14.724,447.87,0.4206,10.093,307.01,LLM vLLM + VieNeu TTS share 1 GPU (0.6/0.25 util). Spot reclaim OK via ECS replace. reserved_* = RI alt (usually > Spot).
+EC2,g4dn.xlarge T4 16GB Spot (Linux) - Avatar GPU,0.242881,5.8291,177.3,0.3877,9.305,283.04,0.2584,6.202,188.64,Avatar render + LiveKit video publish; idle-loop when silent. reserved_* = RI alt (usually > Spot).
+EC2,c7g.2xlarge Graviton3 8vCPU 16GB Spot (Linux) - LMCache ON,0.129364,3.1047,94.44,0.2053,4.928,149.89,0.1374,3.297,100.29,Stateful warm KV ZMQ :5555; ASG rebalance; LMCACHE_ENABLED=true. reserved_* = RI alt.
+ECS-Fargate,Backend 1vCPU+2GB ARM64 Spot - API/Director,0.013629,0.3271,9.95,0.013629,0.3271,9.95,0.013629,0.3271,9.95,FastAPI + Pipecat + Director. Spot est = 0.3 * OD (vCPU 0.03725 + 2*GB 0.00409). No RI for Fargate.
+ECS-Fargate,LiveKit 2vCPU+4GB ARM64 Spot - WebRTC SFU,0.027258,0.6542,19.9,0.027258,0.6542,19.9,0.027258,0.6542,19.9,WebRTC SFU; UDP 50000-60000 public media. Spot est = 0.3 * OD. No RI for Fargate.
+RDS-Postgres,db.t4g.medium Single-AZ 2vCPU 4GB On-Demand - compute,0.102,2.448,74.46,0.0752,1.8037,54.86,0.0508,1.2197,37.1,Postgres 16 compute only (not disk). Sessions/audit/catalog. publicly_accessible=false.
+RDS-Postgres,gp3-storage-100GB Single-AZ @ $0.131/GB-mo - disk,0.017945,0.4307,13.1,0.017945,0.4307,13.1,0.017945,0.4307,13.1,EBS gp3 100GB; 3000 IOPS/125MB/s base. Storage price fixed (no RI discount).
+ElastiCache-Redis,cache.t4g.small 2vCPU 1.45GB On-Demand Single-node,0.047,1.128,34.31,0.047,1.128,34.31,0.047,1.128,34.31,ChatQueue XADD + session locks + short TTL. Single-AZ MVP.
+ALB,ALB base hourly fee On-Demand (Application LB),0.0225,0.54,16.43,0.0225,0.54,16.43,0.0225,0.54,16.43,TLS origin for Cloudflare; path routing; WS sticky; health checks.
+ALB,ALB LCU ~5 avg @ $0.008/LCU-hr On-Demand,0.04,0.96,29.2,0.04,0.96,29.2,0.04,0.96,29.2,"LCU = max(new conn, active conn, bytes, rule evals). MVP ~5 LCU."
+S3,Standard storage ~50GB weights+idle+replays+tfstate,0.001712,0.0411,1.25,0.001712,0.0411,1.25,0.001712,0.0411,1.25,$0.025/GB-mo first 50TB Seoul. Weights + idle frames + replays + tfstate.
+CloudWatch,Logs ingest ~3GB/mo Standard class @ $0.76/GB,0.003123,0.075,2.28,0.003123,0.075,2.28,0.003123,0.075,2.28,Container stdout JSON + API access logs.
+DataTransfer,Internet egress ~50GB @ $0.126/GB (first 10TB),0.00863,0.2071,6.3,0.00863,0.2071,6.3,0.00863,0.2071,6.3,Outbound viewers/Hub/HF. Same-region S3 via Gateway Endpoint not counted here.
+SSM-ParameterStore,SecureString Standard tier (<4KB params) FREE,0,0,0,0,0,0,0,0,0,"Secrets: DB password, Redis auth, LiveKit keys, HF token, JWT. No auto-rotation MVP."
+Cloudflare,Free plan DNS + rate-limit + basic DDoS/WAF,0,0,0,0,0,0,0,0,0,Edge DNS anycast; 1 rate-limit rule. Replaces Route53 + AWS WAF for MVP.
+DockerHub,4 public repos (backend/llm-tts/avatar/lmcache) FREE,0,0,0,0,0,0,0,0,0,Public images code+deps only. Weights pulled from S3 at container start.
+SNS,Email alerts free tier (~1000 emails/mo),0,0,0,0,0,0,0,0,0,Deploy + billing alarm notifications ($50/$100).
+S3-Gateway-Endpoint,Gateway VPC Endpoint for S3 FREE,0,0,0,0,0,0,0,0,0,Private AWS backbone public-subnet->S3. Avoids internet DT for weights.
+IGW,Internet Gateway FREE,0,0,0,0,0,0,0,0,0,Public subnet ingress ALB + egress Hub/HF. Free resource.
+TOTAL,BASE stack LMCache ON (operating 1h/1d/1m),0.9581,22.99,699.41,1.4635,35.12,1068.38,1.049,25.17,765.76,reserved_* never blank: no-RI services copy 1h/1d/1m. Final validated Seoul 2026-07-11.
+TOTAL,Stack with RI 1y where available (else operating),1.4635,35.12,1068.38,1.4635,35.12,1068.38,1.049,25.17,765.76,Sum reserved_1y_* across every service row.
+TOTAL,Stack with RI 3y where available (else operating),1.049,25.17,765.76,1.4635,35.12,1068.38,1.049,25.17,765.76,Sum reserved_3y_* across every service row.
+
+### TABLE 2 — PROD (On-Demand compute + Multi-AZ data + free edge)
+service,resource,1h,1d,1m,reserved_1y_1h,reserved_1y_1d,reserved_1y_1m,reserved_3y_1h,reserved_3y_1d,reserved_3y_1m,notes
+EC2,g6.xlarge L4 24GB On-Demand (Linux) - LLM+TTS GPU share,0.9896,23.7504,722.41,0.6135,14.724,447.87,0.4206,10.093,307.01,Same GPU role as MVP but On-Demand for SLA. reserved_* = RI Partial Upfront.
+EC2,g4dn.xlarge T4 16GB On-Demand (Linux) - Avatar GPU,0.647,15.528,472.31,0.3877,9.305,283.04,0.2584,6.202,188.64,Avatar with On-Demand SLA. reserved_* = RI Partial Upfront.
+EC2,c7g.2xlarge Graviton3 8vCPU 16GB On-Demand (Linux) - LMCache ON,0.3264,7.8336,238.27,0.2053,4.928,149.89,0.1374,3.297,100.29,Stateful KV 24/7 warm cache. reserved_* = RI Partial Upfront.
+ECS-Fargate,Backend 1vCPU+2GB ARM64 On-Demand - API/Director,0.04543,1.0903,33.16,0.04543,1.0903,33.16,0.04543,1.0903,33.16,Fargate OD ARM = 1*0.03725 + 2*0.00409. No reclaim. No RI (use Compute Savings Plans later).
+ECS-Fargate,LiveKit 2vCPU+4GB ARM64 On-Demand - WebRTC SFU,0.09086,2.1806,66.33,0.09086,2.1806,66.33,0.09086,2.1806,66.33,Fargate OD ARM = 2*0.03725 + 4*0.00409. Avoids mid-session media drop.
+RDS-Postgres,db.t4g.medium Multi-AZ 2vCPU 4GB On-Demand - compute,0.203,4.872,148.19,0.1504,3.61,109.81,0.1016,2.439,74.17,Multi-AZ standby failover. Still no public IP. reserved_* = RI Partial Upfront.
+RDS-Postgres,gp3-storage-100GB Multi-AZ @ $0.262/GB-mo - disk,0.03589,0.8614,26.2,0.03589,0.8614,26.2,0.03589,0.8614,26.2,Multi-AZ gp3 storage synced to standby. 100GB logical capacity.
+ElastiCache-Redis,cache.t4g.small x2 Multi-AZ (primary+replica) On-Demand,0.094,2.256,68.62,0.094,2.256,68.62,0.094,2.256,68.62,Replication group 1 primary + 1 replica. ChatQueue HA for prod streams.
+ALB,ALB base hourly fee On-Demand (Application LB),0.0225,0.54,16.43,0.0225,0.54,16.43,0.0225,0.54,16.43,TLS origin for Cloudflare Full (strict); path routing + WS sticky.
+ALB,ALB LCU ~15 avg @ $0.008/LCU-hr On-Demand,0.12,2.88,87.6,0.12,2.88,87.6,0.12,2.88,87.6,Higher concurrent viewers/WS; ~3x MVP LCU estimate.
+S3,Standard storage ~150GB weights+idle+replays+tfstate,0.005137,0.1233,3.75,0.005137,0.1233,3.75,0.005137,0.1233,3.75,$0.025/GB-mo * 150GB. Larger weight set + more replay retention.
+CloudWatch,Logs ingest ~10GB/mo Standard class @ $0.76/GB,0.010411,0.2499,7.6,0.010411,0.2499,7.6,0.010411,0.2499,7.6,Higher request/log volume under paying traffic.
+DataTransfer,Internet egress ~200GB @ $0.126/GB (first 10TB),0.034521,0.8285,25.2,0.034521,0.8285,25.2,0.034521,0.8285,25.2,Viewer signaling + API responses. LiveKit media UDP separate path.
+SSM-ParameterStore,SecureString Standard tier (<4KB params) FREE,0,0,0,0,0,0,0,0,0,Same free secrets store. Rotate manually or later Secrets Manager.
+Cloudflare,Free plan DNS + rate-limit + basic DDoS/WAF,0,0,0,0,0,0,0,0,0,"Still Free unless advanced WAF needed (Pro $20/mo optional, not included)."
+DockerHub,4 public repos FREE,0,0,0,0,0,0,0,0,0,Public images remain OK. Switch to private/ECR only if license requires.
+SNS,Email alerts free tier,0,0,0,0,0,0,0,0,0,Deploy + billing + alarm fan-out.
+S3-Gateway-Endpoint,Gateway VPC Endpoint for S3 FREE,0,0,0,0,0,0,0,0,0,Same free S3 private path as MVP.
+IGW,Internet Gateway FREE,0,0,0,0,0,0,0,0,0,Public subnet only design retained.
+TOTAL,BASE stack LMCache ON (operating 1h/1d/1m),2.6247,62.99,1916.07,1.8156,43.58,1325.5,1.3767,33.04,1005,reserved_* never blank: no-RI services copy 1h/1d/1m. Final validated Seoul 2026-07-11.
+TOTAL,Stack with RI 1y where available (else operating),1.8156,43.58,1325.5,1.8156,43.58,1325.5,1.3767,33.04,1005,Sum reserved_1y_* across every service row.
+TOTAL,Stack with RI 3y where available (else operating),1.3767,33.04,1005,1.8156,43.58,1325.5,1.3767,33.04,1005,Sum reserved_3y_* across every service row.
+
+### TABLE 2b — PROD-only OPTIONAL add-ons (NOT in base TOTAL)
+service,resource,1h,1d,1m,reserved_1y_1h,reserved_1y_1d,reserved_1y_1m,reserved_3y_1h,reserved_3y_1d,reserved_3y_1m,notes
+ECR,Private image storage ~10GB @ $0.10/GB-mo,0.00137,0.0329,1,0.00137,0.0329,1,0.00137,0.0329,1,OPTIONAL. Only if private images needed (license-restricted weights in image).
+NAT-Gateway,NAT Gateway hourly fee (if private subnet required),0.059,1.416,43.07,0.059,1.416,43.07,0.059,1.416,43.07,OPTIONAL. $0.059/h + $0.059/GB processed. Only if compliance forces private subnet.
+Secrets-Manager,1 secret with auto-rotation,0.000548,0.0132,0.4,0.000548,0.0132,0.4,0.000548,0.0132,0.4,OPTIONAL. $0.40/secret/mo + $0.05/10k API. Only when RDS password auto-rotate needed.
+AWS-WAF,2 rules + ~1M requests/mo (if leave Cloudflare),0.003562,0.0855,2.6,0.003562,0.0855,2.6,0.003562,0.0855,2.6,OPTIONAL. If compliance blocks Cloudflare. ~$0.60/rule + $0.60/1M requests.
+Route53,1 hosted zone (if leave Cloudflare DNS),0.000685,0.0164,0.5,0.000685,0.0164,0.5,0.000685,0.0164,0.5,OPTIONAL. $0.50/zone/mo + query fees. Only if not using Cloudflare DNS.
