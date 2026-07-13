@@ -33,10 +33,16 @@ variable "image_backend" {
   default     = "imjusthman/ai-live-backend:latest"
 }
 
-variable "image_llm_tts" {
-  description = "Shared LLM+TTS image URI (two containers, one image family)"
+variable "image_llm" {
+  description = "LLM image URI (vLLM + Qwen3.5-4B-AWQ)"
   type        = string
-  default     = "imjusthman/ai-live-llm-tts:latest"
+  default     = "imjusthman/ai-live-llm:latest"
+}
+
+variable "image_tts" {
+  description = "TTS image URI (vllm-omni + VieNeu-TTS-v2)"
+  type        = string
+  default     = "imjusthman/ai-live-tts:latest"
 }
 
 variable "image_avatar" {
@@ -211,4 +217,56 @@ variable "cors_origins" {
   description = "Comma-separated CORS origins. Dev allows *; prod must be explicit."
   type        = string
   default     = "*"
+}
+
+variable "session_store" {
+  description = "Session store backend: memory (single-task) or redis (multi-task)."
+  type        = string
+  default     = "memory"
+}
+
+variable "redis_url" {
+  description = "Redis connection string for SESSION_STORE=redis. Empty = memory store."
+  type        = string
+  default     = ""
+}
+
+variable "app_env" {
+  description = "APP_ENV runtime flag. Empty = falls back to var.env (dev)."
+  type        = string
+  default     = ""
+}
+variable "vpc_id" {
+  description = "VPC ID for Cloud Map service discovery namespace"
+  type        = string
+  default     = ""
+}
+variable "render_backend" {
+  description = "Backend render backend: mock (no GPU) or cloud/self_host (GPU)"
+  type        = string
+  default     = "mock"
+}
+
+variable "llm_engine" {
+  description = "Backend LLM engine: none (stub), openai_compat (remote vLLM), vllm"
+  type        = string
+  default     = "none"
+}
+
+variable "llm_base_url" {
+  description = "Remote LLM OpenAI-compat base URL (service discovery). Empty when llm_engine=none."
+  type        = string
+  default     = ""
+}
+
+variable "tts_engine" {
+  description = "Backend TTS engine: tone (stub), remote_http (remote vllm-omni), vieneu"
+  type        = string
+  default     = "tone"
+}
+
+variable "tts_base_url" {
+  description = "Remote TTS base URL (service discovery). Empty when tts_engine=tone."
+  type        = string
+  default     = ""
 }

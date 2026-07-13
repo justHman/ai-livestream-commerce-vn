@@ -90,3 +90,75 @@ resource "aws_dynamodb_table" "tf_lock" {
     Name = var.tf_lock_table_name
   })
 }
+
+# ---------------------------------------------------------------------------
+# GitHub Actions deploy role (develop branch → dev env)
+# OIDC trust: repo:justHman/ai-livestream-commerce-vn:ref:refs/heads/develop
+# ---------------------------------------------------------------------------
+data "aws_iam_policy_document" "github_oidc_assume" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github[0].arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:justHman/ai-livestream-commerce-vn:ref:refs/heads/develop"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_deploy_dev" {
+  count              = var.enable_github_oidc ? 1 : 0
+  name               = "${var.project}-github-deploy-dev"
+  assume_role_policy = data.aws_iam_policy_document.github_oidc_assume[0].json
+  tags               = local.common_tags
+}
+
+data "aws_iam_policy_document" "github_deploy_dev" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecs:UpdateService",
+      "ecs:DescribeServices",
+      "ecs:DescribeTasks",
+      "ecs:ListTasks",
+      "ecs:DescribeTaskDefinition",
+      "ecs:RegisterTaskDefinition",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+    ]
+    resources = ["arn:aws:ssm:*:*:parameter/dev/*"]
+  }
+  statement {
+    effect    = "Allow"
+    actions   = ["logs:DescribeLogGroups", "logs:DescribeLogStreams"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "github_deploy_dev" {
+  count  = var.enable_github_oidc ? 1 : 0
+  name   = "${var.project}-github-deploy-dev"
+  role   = aws_iam_role.github_deploy_dev[0].id
+  policy = data.aws_iam_policy_document.github_deploy_dev.json
+}
+
+output "github_deploy_dev_role_arn" {
+  value = var.enable_github_oidc ? aws_iam_role.github_deploy_dev[0].arn : ""
+}

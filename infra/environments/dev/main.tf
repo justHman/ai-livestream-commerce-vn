@@ -89,10 +89,12 @@ module "compute" {
 
   env                      = var.env
   project                  = var.project
+  vpc_id                   = module.network.vpc_id
   subnet_ids               = module.network.public_subnet_ids
   sg_map                   = module.security.sg_map
   image_backend            = var.image_backend
-  image_llm_tts            = var.image_llm_tts
+  image_llm                = var.image_llm
+  image_tts                = var.image_tts
   image_avatar             = var.image_avatar
   image_lmcache            = var.image_lmcache
   lmcache_enabled          = var.lmcache_enabled
@@ -111,6 +113,14 @@ module "compute" {
   admin_api_token          = var.admin_api_token
   cors_origins             = var.cors_origins
   debug_enabled            = var.debug_enabled
+  session_store            = var.session_store
+  redis_url                = var.redis_url != "" ? var.redis_url : "redis://${module.database.redis_connection_string}"
+  app_env                  = var.app_env
+  render_backend           = var.render_backend
+  llm_engine               = var.llm_engine
+  llm_base_url             = var.llm_base_url
+  tts_engine               = var.tts_engine
+  tts_base_url             = var.tts_base_url
   tags                     = var.tags
 }
 

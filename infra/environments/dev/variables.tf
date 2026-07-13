@@ -123,9 +123,44 @@ variable "image_backend" {
   default = "imjusthman/ai-live-backend:latest"
 }
 
-variable "image_llm_tts" {
+variable "image_llm" {
   type    = string
-  default = "imjusthman/ai-live-llm-tts:latest"
+  default = "imjusthman/ai-live-llm:dev"
+}
+
+variable "image_tts" {
+  type    = string
+  default = "imjusthman/ai-live-tts:dev"
+}
+
+variable "render_backend" {
+  description = "Render backend: mock (no GPU), cloud (LiveAvatar), self_host (MuseTalk future)"
+  type        = string
+  default     = "cloud"
+}
+
+variable "llm_engine" {
+  description = "LLM engine: none (stub), openai_compat (remote vLLM GPU)"
+  type        = string
+  default     = "openai_compat"
+}
+
+variable "llm_base_url" {
+  description = "Remote LLM base URL via service discovery. Empty when llm_engine=none."
+  type        = string
+  default     = ""
+}
+
+variable "tts_engine" {
+  description = "TTS engine: tone (stub), remote_http (remote vllm-omni GPU)"
+  type        = string
+  default     = "remote_http"
+}
+
+variable "tts_base_url" {
+  description = "Remote TTS base URL via service discovery. Empty when tts_engine=tone."
+  type        = string
+  default     = ""
 }
 
 variable "image_avatar" {
@@ -185,4 +220,21 @@ variable "cors_origins" {
   description = "CORS origins. Dev default *; tighten for prod-like."
   type        = string
   default     = "*"
+}
+variable "session_store" {
+  description = "Session store: memory (single-task) or redis (multi-task)."
+  type        = string
+  default     = "memory"
+}
+
+variable "redis_url" {
+  description = "Redis URL. Empty → derive from database module output."
+  type        = string
+  default     = ""
+}
+
+variable "app_env" {
+  description = "APP_ENV runtime flag. Empty → falls back to env (dev)."
+  type        = string
+  default     = ""
 }

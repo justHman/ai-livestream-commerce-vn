@@ -56,3 +56,6 @@ terraform.rc
 *.tfvars
 !*.tfvars.example
 *.tfvars.local
+*.tfplan
+infra/modules/*/.terraform.lock.hcl
+infra/modules/**/.terraform.lock.hcl

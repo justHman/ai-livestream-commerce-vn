@@ -199,6 +199,44 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
 }
 
 # ---------------------------------------------------------------------------
+# Cloud Map service discovery (internal DNS for backend → LLM/TTS)
+# 1 namespace + 1 SD service registering the llm_tts task ENI.
+# Both LLM (8001) and TTS (8002) resolve via the same A record;
+# backend calls llm-tts.<env>.ai-live.local:8001 and :8002 respectively.
+# ---------------------------------------------------------------------------
+resource "aws_service_discovery_private_dns_namespace" "this" {
+  count = var.create_ec2_capacity ? 1 : 0
+
+  name        = "${var.env}.ai-live.local"
+  description = "Internal DNS for ${var.env} GPU services"
+  vpc         = var.vpc_id
+  tags        = local.common_tags
+}
+
+resource "aws_service_discovery_service" "llm_tts" {
+  count = var.create_ec2_capacity ? 1 : 0
+
+  name = "llm-tts"
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.this[0].id
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+    routing_policy = "MULTIVALUE"
+  }
+
+  health_check_config {
+    type             = "HTTP"
+    resource_path    = "/health"
+    failure_threshold = 2
+  }
+
+  tags = local.common_tags
+}
+
+# ---------------------------------------------------------------------------
 # EC2 Spot capacity — g6 (LLM+TTS), g4dn (Avatar), c7g (LMCache)
 # Placeholders: min=0 so create does not launch expensive Spot until desired>0
 # ---------------------------------------------------------------------------
@@ -569,19 +607,22 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "ENV", value = var.env },
         { name = "PORT", value = "8800" },
-        { name = "APP_ENV", value = var.env },
-        # API-only smoke: mock render + tone TTS + no LLM + in-memory session store.
-        # Keeps backend healthy without Redis/RDS readiness dependencies.
-        { name = "RENDER_BACKEND", value = "mock" },
-        { name = "LLM_ENGINE", value = "none" },
-        { name = "TTS_ENGINE", value = "tone" },
-        { name = "SESSION_STORE", value = "memory" },
+        { name = "APP_ENV", value = var.app_env != "" ? var.app_env : var.env },
+        # API-only smoke: mock render + tone TTS + no LLM.
+        # SESSION_STORE: memory (single-task) or redis (multi-task via redis_url).
+        { name = "RENDER_BACKEND", value = var.render_backend },
+        { name = "LLM_ENGINE", value = var.llm_engine },
+        { name = "LLM_BASE_URL", value = var.llm_base_url },
+        { name = "TTS_ENGINE", value = var.tts_engine },
+        { name = "TTS_BASE_URL", value = var.tts_base_url },
+        { name = "SESSION_STORE", value = var.session_store },
         { name = "DIRECTOR_ENABLED", value = "1" },
         { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
         { name = "PIPECAT_ENABLED", value = "0" },
         { name = "LIVEKIT_PUBLISH", value = "0" },
         { name = "DEBUG_ENABLED", value = var.debug_enabled ? "1" : "0" },
         { name = "CORS_ORIGINS", value = var.cors_origins },
+        { name = "REDIS_URL", value = var.redis_url },
       ]
       secrets = [
         {
@@ -622,7 +663,7 @@ resource "aws_ecs_task_definition" "llm_tts" {
   container_definitions = jsonencode([
     {
       name      = "llm"
-      image     = var.image_llm_tts
+      image     = var.image_llm
       essential = true
       # ONLY llm container requests GPU — TTS shares the same device.
       resourceRequirements = [
@@ -655,7 +696,7 @@ resource "aws_ecs_task_definition" "llm_tts" {
     },
     {
       name      = "tts"
-      image     = var.image_llm_tts
+      image     = var.image_tts
       essential = true
       # No GPU resourceRequirements — shares GPU 0 with llm via process fractions.
       portMappings = [
@@ -873,6 +914,14 @@ resource "aws_ecs_service" "llm_tts" {
   task_definition        = aws_ecs_task_definition.llm_tts.arn
   desired_count          = var.desired_llm_tts
   enable_execute_command = var.enable_execute_command
+
+  # Cloud Map: register the task ENI under llm-tts.<env>.ai-live.local.
+  # Both LLM (:8001) and TTS (:8002) share this A record (same task ENI).
+  service_registries {
+    registry_arn = aws_service_discovery_service.llm_tts[0].arn
+    container_name = "llm"
+    container_port = 8001
+  }
 
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.llm[0].name

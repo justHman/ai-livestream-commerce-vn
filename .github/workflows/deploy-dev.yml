@@ -32,23 +32,36 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push backend image
+      - name: Build and push images
         run: |
           TAG=dev-${GITHUB_SHA}
+          # Backend (ARM64 Graviton, Fargate)
           docker build -f services/backend/Dockerfile \
             -t imjusthman/ai-live-backend:$TAG \
             -t imjusthman/ai-live-backend:dev .
           docker push imjusthman/ai-live-backend:$TAG
           docker push imjusthman/ai-live-backend:dev
+          # LLM (vLLM + Qwen3.5-4B-AWQ, base vllm/vllm-openai:v0.22.0)
+          docker build -f services/llm/Dockerfile \
+            -t imjusthman/ai-live-llm:$TAG \
+            -t imjusthman/ai-live-llm:dev .
+          docker push imjusthman/ai-live-llm:$TAG
+          docker push imjusthman/ai-live-llm:dev
+          # TTS (vllm-omni + VieNeu-TTS-v2)
+          docker build -f services/tts/Dockerfile \
+            -t imjusthman/ai-live-tts:$TAG \
+            -t imjusthman/ai-live-tts:dev .
+          docker push imjusthman/ai-live-tts:$TAG
+          docker push imjusthman/ai-live-tts:dev
 
       - name: ECS rolling update DEV
-        # Stub until DEV ECS cluster is long-lived and secrets are set
-        if: ${{ false }}
+        # Skips services not yet created (infra not applied) via || true.
+        if: ${{ true }}
         run: |
           for svc in backend llm-tts avatar livekit lmcache; do
             aws ecs update-service --cluster ai-livestream-dev-cluster --service ai-livestream-dev-$svc --force-new-deployment || true
           done
 
       - name: Smoke test
-        if: ${{ false }}
+        if: ${{ true }}
         run: curl -fsS https://api.livento.me/api/v1/health/ready

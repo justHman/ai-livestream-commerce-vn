@@ -6,6 +6,8 @@ export WEIGHTS_LOCAL_DIR="${WEIGHTS_LOCAL_DIR:-/models}"
 export MODEL_ID="${MODEL_ID:-pnnbao-ump/VieNeu-TTS-v2}"
 export PORT="${PORT:-8002}"
 export GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.25}"
+# Editable install of vllm-omni fork — keep source on path so `vllm` CLI sees it.
+export PYTHONPATH="/opt/vllm-omni:${PYTHONPATH:-}"
 
 if [[ -n "${WEIGHTS_S3_URI:-}" ]]; then
   /usr/local/bin/fetch_weights.sh
