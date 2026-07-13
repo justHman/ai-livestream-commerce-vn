@@ -1,57 +1,41 @@
 name: ci
 
 on:
-  pull_request:
   push:
     branches:
       - main
       - develop
-      - "feature/**"
-
-permissions:
-  contents: read
+      - feature/**
+  pull_request:
 
 jobs:
-  test:
-    name: offline-tests
+  offline-tests:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
           cache: pip
-
-      - name: Install package and deps
+      - name: Install
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[test]"
-
-      - name: Run offline core tests
+      - name: Pytest
         env:
           RENDER_BACKEND: mock
           LLM_ENGINE: none
           TTS_ENGINE: tone
-          DIRECTOR_ENABLED: "0"
+          DIRECTOR_ENABLED: '0'
           APP_ENV: dev
         run: python -m pytest core/tests/ -q
-
-  docker-build:
-    name: docker-build-backend
+  docker-build-backend:
     runs-on: ubuntu-latest
-    if: hashFiles('services/backend/Dockerfile') != ''
+    needs: []
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build backend image (no push)
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
           context: .
           file: services/backend/Dockerfile
