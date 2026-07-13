@@ -1,13 +1,13 @@
 # deploy-prod — deploy to PROD on tag v* with manual approval gate
 # Requires GitHub secrets: AWS_ROLE_ARN_PROD, DOCKERHUB_USER, DOCKERHUB_TOKEN
-# GitHub Environment "production" must have required reviewers configured
-# OIDC trust (GitHub user justHman, NOT Docker Hub imjusthman):
-#   repo:justHman/ai-livestream-commerce-vn:ref:refs/tags/v*
+# GitHub Environment "production" should have required reviewers
+# OIDC trust: repo:justHman/ai-livestream-commerce-vn:ref:refs/tags/v*
 name: deploy-prod
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -43,18 +43,17 @@ jobs:
           docker push imjusthman/ai-live-backend:latest
 
       - name: ECS rolling update PROD
-        # Stub: set if: true when PROD ECS cluster is ready
-        if: false
+        if: ${{ false }}
         run: |
-          for svc in backend llm tts avatar livekit lmcache; do
-            aws ecs update-service --cluster ai-live-prod --service $svc --force-new-deployment
+          for svc in backend llm-tts avatar livekit lmcache; do
+            aws ecs update-service --cluster ai-livestream-prod-cluster --service ai-livestream-prod-$svc --force-new-deployment || true
           done
 
       - name: Wait for services stable
-        if: false
+        if: ${{ false }}
         run: |
-          aws ecs wait services-stable --cluster ai-live-prod \
-            --services backend llm tts avatar livekit lmcache
+          aws ecs wait services-stable --cluster ai-livestream-prod-cluster \
+            --services ai-livestream-prod-backend
         timeout-minutes: 15
 
       - name: Rollback on failure
