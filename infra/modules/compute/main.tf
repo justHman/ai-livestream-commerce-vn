@@ -227,12 +227,6 @@ resource "aws_service_discovery_service" "llm_tts" {
     routing_policy = "MULTIVALUE"
   }
 
-  health_check_config {
-    type             = "HTTP"
-    resource_path    = "/health"
-    failure_threshold = 2
-  }
-
   tags = local.common_tags
 }
 
@@ -835,8 +829,13 @@ resource "aws_ecs_task_definition" "livekit" {
       essential = true
       portMappings = [
         {
-          containerPort = 443
-          hostPort      = 443
+          containerPort = 7880
+          hostPort      = 7880
+          protocol      = "tcp"
+        },
+        {
+          containerPort = 7881
+          hostPort      = 7881
           protocol      = "tcp"
         },
         {
@@ -847,6 +846,16 @@ resource "aws_ecs_task_definition" "livekit" {
       ]
       environment = [
         { name = "ENV", value = var.env },
+      ]
+      secrets = [
+        {
+          name      = "LIVEKIT_API_KEY",
+          valueFrom = var.secrets_arns["livekit/api_key"]
+        },
+        {
+          name      = "LIVEKIT_API_SECRET",
+          valueFrom = var.secrets_arns["livekit/api_secret"]
+        },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -920,7 +929,6 @@ resource "aws_ecs_service" "llm_tts" {
   service_registries {
     registry_arn = aws_service_discovery_service.llm_tts[0].arn
     container_name = "llm"
-    container_port = 8001
   }
 
   capacity_provider_strategy {

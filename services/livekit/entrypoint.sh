@@ -1,14 +1,16 @@
 #!/usr/bin/env sh
 # LiveKit SFU entrypoint. No model weights.
+# Builds LIVEKIT_KEYS ("APIkey: secret") from SSM-injected API_KEY + API_SECRET.
 set -eu
 
 CONFIG="${LIVEKIT_CONFIG:-/etc/livekit.yaml}"
 
-if [ -n "${LIVEKIT_KEYS:-}" ]; then
-  # LIVEKIT_KEYS format: "APIxxx: secret" (official env support may also apply).
-  echo "[livekit] LIVEKIT_KEYS provided via env"
+if [ -n "${LIVEKIT_API_KEY:-}" ] && [ -n "${LIVEKIT_API_SECRET:-}" ]; then
+  export LIVEKIT_KEYS="${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+  echo "[livekit] LIVEKIT_KEYS built from SSM API_KEY/API_SECRET"
+else
+  echo "[livekit] WARN: LIVEKIT_API_KEY/API_SECRET unset — keys empty"
 fi
 
 echo "[livekit] starting with config ${CONFIG}"
-# Official image entry is livekit-server; pass remaining args through.
-exec livekit-server "$@"
+exec livekit-server --config "${CONFIG}" "$@"
