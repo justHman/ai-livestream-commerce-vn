@@ -878,7 +878,8 @@ resource "aws_ecs_service" "llm_tts" {
       try(var.sg_map["llm"], ""),
       try(var.sg_map["tts"], ""),
     ])
-    assign_public_ip = var.assign_public_ip
+    # EC2 launch type: public IP is on the instance ENI, not the task ENI.
+    assign_public_ip = false
   }
 
   deployment_minimum_healthy_percent = 0
@@ -908,7 +909,7 @@ resource "aws_ecs_service" "avatar" {
   network_configuration {
     subnets          = var.subnet_ids
     security_groups  = compact([try(var.sg_map["avatar"], "")])
-    assign_public_ip = var.assign_public_ip
+    assign_public_ip = false
   }
 
   deployment_minimum_healthy_percent = 0
@@ -938,7 +939,7 @@ resource "aws_ecs_service" "lmcache" {
   network_configuration {
     subnets          = var.subnet_ids
     security_groups  = compact([try(var.sg_map["lmcache"], "")])
-    assign_public_ip = var.assign_public_ip
+    assign_public_ip = false
   }
 
   deployment_minimum_healthy_percent = 0

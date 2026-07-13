@@ -26,7 +26,8 @@ module "security" {
   project               = var.project
   vpc_id                = module.network.vpc_id
   alb_ingress_cidrs     = var.alb_ingress_cidrs
-  alb_http_ingress_cidrs = var.certificate_arn == "" ? ["0.0.0.0/0"] : []
+  # :80 always open in dev: forward when no cert, redirect→443 when cert set.
+  alb_http_ingress_cidrs = ["0.0.0.0/0"]
   certificate_arn       = var.certificate_arn
   enable_oidc       = false # OIDC lives in environments/global
   tags              = var.tags
@@ -78,6 +79,7 @@ module "loadbalancer" {
   subnet_ids                 = local.public_subnet_ids
   sg_alb_id                  = module.security.sg_alb_id
   certificate_arn            = var.certificate_arn
+  enable_http_redirect       = var.certificate_arn != ""
   enable_deletion_protection = false
   tags                       = var.tags
 }

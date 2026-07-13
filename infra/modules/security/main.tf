@@ -40,13 +40,13 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   cidr_ipv4         = each.value
 }
 
-# Dev / no-cert smoke: ALB listens on HTTP:80. Open 80 only when no ACM cert.
-# Iron rule preserved: prod (cert set) keeps 443-only; 80 stays closed.
+# HTTP:80 — either forward (no cert) or redirect-to-HTTPS (cert set).
+# Caller passes alb_http_ingress_cidrs; empty list = close :80.
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  for_each = var.certificate_arn == "" ? toset(var.alb_http_ingress_cidrs) : toset([])
+  for_each = toset(var.alb_http_ingress_cidrs)
 
   security_group_id = aws_security_group.alb.id
-  description       = "HTTP from edge (dev/no-cert, ${each.value})"
+  description       = "HTTP from edge (${each.value})"
   ip_protocol       = "tcp"
   from_port         = 80
   to_port           = 80
