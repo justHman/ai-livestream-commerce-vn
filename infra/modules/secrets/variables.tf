@@ -24,6 +24,8 @@ variable "parameters" {
     "livekit/api_key"    = "CHANGE_ME"
     "livekit/api_secret" = "CHANGE_ME"
     "jwt/secret"         = "CHANGE_ME"
+    "backend/api_token"  = "CHANGE_ME"
+    "admin/api_token"    = "CHANGE_ME"
   }
 }
 

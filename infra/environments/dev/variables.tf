@@ -180,3 +180,9 @@ variable "debug_enabled" {
   type        = bool
   default     = true
 }
+
+variable "cors_origins" {
+  description = "CORS origins. Dev default *; tighten for prod-like."
+  type        = string
+  default     = "*"
+}

@@ -581,9 +581,17 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "PIPECAT_ENABLED", value = "0" },
         { name = "LIVEKIT_PUBLISH", value = "0" },
         { name = "DEBUG_ENABLED", value = var.debug_enabled ? "1" : "0" },
-        { name = "BACKEND_API_TOKEN", value = var.backend_api_token },
-        { name = "ADMIN_API_TOKEN", value = var.admin_api_token },
-        { name = "CORS_ORIGINS", value = "*" },
+        { name = "CORS_ORIGINS", value = var.cors_origins },
+      ]
+      secrets = [
+        {
+          name      = "BACKEND_API_TOKEN",
+          valueFrom = var.secrets_arns["backend/api_token"]
+        },
+        {
+          name      = "ADMIN_API_TOKEN",
+          valueFrom = var.secrets_arns["admin/api_token"]
+        },
       ]
       logConfiguration = {
         logDriver = "awslogs"
