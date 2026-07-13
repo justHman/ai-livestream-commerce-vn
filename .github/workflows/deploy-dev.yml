@@ -30,6 +30,8 @@ jobs:
             dockerfile: services/llm/Dockerfile
           - svc: tts
             dockerfile: services/tts/Dockerfile
+          - svc: livekit
+            dockerfile: services/livekit/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
