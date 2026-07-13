@@ -108,6 +108,7 @@ module "compute" {
   backend_target_group_arn = module.loadbalancer.backend_target_group_arn
   assign_public_ip         = true
   create_ec2_capacity      = var.create_ec2_capacity
+  spot_capacity_percentage = var.spot_capacity_percentage
   log_group_prefix         = "/ecs/${var.project}-${var.env}"
   backend_api_token        = var.backend_api_token
   admin_api_token          = var.admin_api_token

@@ -238,3 +238,8 @@ variable "app_env" {
   type        = string
   default     = ""
 }
+variable "spot_capacity_percentage" {
+  description = "Spot capacity % (0=On-Demand for smoke when Spot quota=0, 100=Spot prod)"
+  type        = number
+  default     = 100
+}

@@ -270,3 +270,8 @@ variable "tts_base_url" {
   type        = string
   default     = ""
 }
+variable "spot_capacity_percentage" {
+  description = "Percentage of capacity from Spot (0-100). 0 = all On-Demand (smoke when Spot quota=0), 100 = all Spot (prod)."
+  type        = number
+  default     = 100
+}

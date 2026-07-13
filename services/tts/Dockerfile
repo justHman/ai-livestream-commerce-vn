@@ -38,7 +38,7 @@ RUN apt-get update \
     && git clone --depth 1 --branch "${FORK_BRANCH}" "${FORK_REPO}" /opt/vllm-omni \
     && cd /opt/vllm-omni \
     && git fetch --tags --depth 1 origin "${OMNI_TAG}" \
-    && uv pip install --no-cache-dir -e "/opt/vllm-omni[vieneu]" \
+    && uv pip install --system --no-cache-dir -e "/opt/vllm-omni[vieneu]" \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
     && mkdir -p /models \
     && chown -R appuser:appuser /opt/vllm-omni /models

@@ -385,7 +385,7 @@ resource "aws_autoscaling_group" "llm" {
   mixed_instances_policy {
     instances_distribution {
       on_demand_base_capacity                  = 0
-      on_demand_percentage_above_base_capacity = 0
+      on_demand_percentage_above_base_capacity = 100 - var.spot_capacity_percentage
       spot_allocation_strategy                 = "price-capacity-optimized"
     }
 
@@ -433,7 +433,7 @@ resource "aws_autoscaling_group" "avatar" {
   mixed_instances_policy {
     instances_distribution {
       on_demand_base_capacity                  = 0
-      on_demand_percentage_above_base_capacity = 0
+      on_demand_percentage_above_base_capacity = 100 - var.spot_capacity_percentage
       spot_allocation_strategy                 = "price-capacity-optimized"
     }
 
@@ -481,7 +481,7 @@ resource "aws_autoscaling_group" "lmcache" {
   mixed_instances_policy {
     instances_distribution {
       on_demand_base_capacity                  = 0
-      on_demand_percentage_above_base_capacity = 0
+      on_demand_percentage_above_base_capacity = 100 - var.spot_capacity_percentage
       spot_allocation_strategy                 = "price-capacity-optimized"
     }
 
