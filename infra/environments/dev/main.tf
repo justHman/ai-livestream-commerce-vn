@@ -109,6 +109,7 @@ module "compute" {
   log_group_prefix         = "/ecs/${var.project}-${var.env}"
   backend_api_token        = var.backend_api_token
   admin_api_token          = var.admin_api_token
+  cors_origins             = var.cors_origins
   debug_enabled            = var.debug_enabled
   tags                     = var.tags
 }

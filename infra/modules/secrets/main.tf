@@ -18,7 +18,9 @@ resource "aws_ssm_parameter" "this" {
   description = "SecureString placeholder for ${each.key} (${var.env})"
   type        = "SecureString"
   value       = each.value
-  overwrite   = false
+  # Idempotent re-apply when values are set out-of-band (aws ssm put-parameter --overwrite).
+  # ignore_changes(value) below means Terraform never fights the real secret.
+  overwrite   = true
   tier        = "Standard"
 
   tags = merge(local.common_tags, {

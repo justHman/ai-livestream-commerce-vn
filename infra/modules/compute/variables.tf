@@ -206,3 +206,9 @@ variable "debug_enabled" {
   type        = bool
   default     = false
 }
+
+variable "cors_origins" {
+  description = "Comma-separated CORS origins. Dev allows *; prod must be explicit."
+  type        = string
+  default     = "*"
+}
