@@ -675,7 +675,8 @@ resource "aws_ecs_task_definition" "llm_tts" {
       ]
       environment = [
         { name = "ENV", value = var.env },
-        { name = "WEIGHTS_S3_URI", value = var.weights_s3_uri },
+        { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}llm/" },
+        { name = "MODEL_ID", value = "/models" },
         { name = "ROLE", value = "llm" },
         { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
       ]
@@ -702,7 +703,8 @@ resource "aws_ecs_task_definition" "llm_tts" {
       ]
       environment = [
         { name = "ENV", value = var.env },
-        { name = "WEIGHTS_S3_URI", value = var.weights_s3_uri },
+        { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}tts/" },
+        { name = "MODEL_ID", value = "/models/vieneu" },
         { name = "ROLE", value = "tts" },
       ]
       logConfiguration = {
