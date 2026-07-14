@@ -10,8 +10,8 @@ Confirmed design: **2 containers / 1 ECS Task / 1 GPU** on `g6.xlarge`.
 Build images separately:
 
 ```bash
-docker build -f services/llm/Dockerfile -t justhman/ai-live-llm:dev .
-docker build -f services/tts/Dockerfile -t justhman/ai-live-tts:dev .
+docker build -f services/llm/Dockerfile -t imjusthman/ai-live-llm:dev .
+docker build -f services/tts/Dockerfile -t imjusthman/ai-live-tts:dev .
 ```
 
 Task definition wiring lives under `infra/modules/compute` (not this domain).

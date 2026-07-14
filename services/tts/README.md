@@ -1,4 +1,4 @@
-# tts — `justhman/ai-live-tts`
+# tts — `imjusthman/ai-live-tts`
 
 vLLM-Omni / VieNeu TTS on the **same g6 Task** as LLM (GPU share).
 
@@ -13,7 +13,7 @@ vLLM-Omni / VieNeu TTS on the **same g6 Task** as LLM (GPU share).
 ## Build
 
 ```bash
-docker build -f services/tts/Dockerfile -t justhman/ai-live-tts:dev .
+docker build -f services/tts/Dockerfile -t imjusthman/ai-live-tts:dev .
 ```
 
 ## Run
@@ -24,7 +24,7 @@ docker run --rm --gpus all -p 8002:8002 \
   -e MODEL_ID=pnnbao-ump/VieNeu-TTS-v2 \
   -e GPU_MEMORY_UTILIZATION=0.25 \
   -e NVIDIA_VISIBLE_DEVICES=all \
-  justhman/ai-live-tts:dev
+  imjusthman/ai-live-tts:dev
 ```
 
 ## ECS notes

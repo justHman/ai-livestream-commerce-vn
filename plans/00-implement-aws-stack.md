@@ -30,7 +30,7 @@ Ship AWS Seoul path:
 | Item | Value |
 |---|---|
 | Region | `ap-northeast-2` |
-| Network | 1 public subnet, IGW, S3 Gateway Endpoint, no NAT |
+| Network | 2 public subnets across AZs, IGW, S3 Gateway Endpoint, no NAT |
 | Edge | Cloudflare Free → ALB |
 | Registry | Docker Hub public |
 | Secrets | SSM SecureString |
@@ -49,7 +49,7 @@ Freeze ports/env/image names from master roadmap §5. No AWS resources yet.
 
 | Module | Contents |
 |---|---|
-| `network` | VPC, 1 public subnet, IGW, routes, S3 GW EP |
+| `network` | VPC, 2 public subnets across AZs, IGW, routes, S3 GW EP |
 | `security` | SG matrix aws-architecture §3; OIDC; task/exec/deploy roles; IMDSv2; no :22 |
 | `compute` | ECS cluster; CP Fargate Spot + EC2 Spot GPU ASG (g6/g4dn); LMCache c7g ASG; 4 task defs / 4 services |
 | `database` | RDS Postgres + ElastiCache Redis (`publicly_accessible=false`) |
@@ -77,7 +77,7 @@ Dirs already exist empty — fill them:
 | Dir | Image role | Arch | Entrypoint |
 |---|---|---|---|
 | `services/backend` | FastAPI/Pipecat API | arm64 | no large weights |
-| `services/llm-tts` | 2-container Task context: llm + tts Dockerfiles or dual stage | amd64 GPU | `aws s3 sync` then vLLM / Omni |
+| `services/llm` + `services/tts` | 2 separate images, 2 containers in 1 shared GPU Task | amd64 GPU | `aws s3 sync` then vLLM / Omni |
 | `services/avatar` | avatar-server + LiveKit publish | amd64 GPU | sync weights + start |
 | `services/livekit` | SFU | arm64 | config + start |
 | `services/lmcache` | lmcache-server | arm64 | start ZMQ :5555 |

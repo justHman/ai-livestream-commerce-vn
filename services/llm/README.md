@@ -1,4 +1,4 @@
-# llm — `justhman/ai-live-llm`
+# llm — `imjusthman/ai-live-llm`
 
 vLLM OpenAI-compatible server on **g6.xlarge L4** (shared ECS Task with TTS).
 
@@ -13,7 +13,7 @@ vLLM OpenAI-compatible server on **g6.xlarge L4** (shared ECS Task with TTS).
 ## Build
 
 ```bash
-docker build -f services/llm/Dockerfile -t justhman/ai-live-llm:dev .
+docker build -f services/llm/Dockerfile -t imjusthman/ai-live-llm:dev .
 ```
 
 Requires a CUDA-capable build host (or multi-stage remote builder) for a full vLLM install.
@@ -26,7 +26,7 @@ docker run --rm --gpus all -p 8001:8001 \
   -e MODEL_ID=cyankiwi/Qwen3.5-4B-AWQ-4bit \
   -e GPU_MEMORY_UTILIZATION=0.6 \
   -e ENABLE_PREFIX_CACHING=1 \
-  justhman/ai-live-llm:dev
+  imjusthman/ai-live-llm:dev
 ```
 
 ## ECS notes

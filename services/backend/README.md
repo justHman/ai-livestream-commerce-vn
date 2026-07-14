@@ -1,4 +1,4 @@
-# backend — `justhman/ai-live-backend`
+# backend — `imjusthman/ai-live-backend`
 
 FastAPI control plane for Fargate Spot **ARM64**.
 
@@ -15,7 +15,7 @@ FastAPI control plane for Fargate Spot **ARM64**.
 From **repo root** (needs `core/` + optional root `pyproject.toml`):
 
 ```bash
-docker build -f services/backend/Dockerfile -t justhman/ai-live-backend:dev .
+docker build -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
 ```
 
 ## Run
@@ -29,7 +29,7 @@ docker run --rm -p 8800:8800 \
   -e LIVEKIT_URL=ws://livekit:7880 \
   -e REDIS_URL=redis://redis:6379/0 \
   -e DATABASE_URL=postgresql://... \
-  justhman/ai-live-backend:dev
+  imjusthman/ai-live-backend:dev
 ```
 
 ## Notes

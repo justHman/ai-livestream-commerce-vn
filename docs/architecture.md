@@ -140,7 +140,7 @@ RenderBackend (ABC)
         SelfHostRenderBackend -- future diffusion model (stub, NotImplemented)
 ```
 
-Select with `RENDER_BACKEND=cloud|mock|self_host`. The API layer (`/lite/say`)
+Select with `RENDER_BACKEND=cloud_liveavatar|mock|self_host_avatarforcing_half|self_host_echoavatar_full`. The API layer (`/lite/say`)
 branches on `isinstance(backend, StreamingAvatarBackend)` to choose the streaming
 pipeline vs the cloud's `backend.say()` path.
 
@@ -195,7 +195,7 @@ LLMEngine (ABC)
   unload() -> None                 (free VRAM)
   warmup(system_prompt) -> None
 
-Engines: llamacpp | vllm | sglang | hf | none (echo stub)
+Engines: vllm | openai_compat | hf | none (echo stub)
 ```
 
 `to_llm_fn(engine)` wraps the engine as a `(text) -> str` callable for the cloud
@@ -212,7 +212,7 @@ TTSEngine (ABC)
   unload() -> None
   warmup() -> None
 
-Adapters: vieneu | cosyvoice | transformers | tone (no-deps stub)
+Adapters: vllm-omni remote | vieneu | cosyvoice | transformers | tone (no-deps stub)
 ```
 
 `to_tts_fn(engine)` wraps as a `(text) -> (bytes, rate)` callable.
@@ -252,7 +252,7 @@ All under `/api/v1`. `/lite/*` kept for compat; preferred product surface is `/s
 | `GET /mock/*` | debug/dev | MJPEG/PNG debug (gated when not dev) |
 | `POST/GET /debug/*` | admin+debug | Traffic simulator |
 
-Remote engines: `LLM_BASE_URL` / `TTS_BASE_URL` / `AVATAR_BASE_URL` + `RENDER_BACKEND=remote_avatar`.  
+Remote engines: `LLM_BASE_URL` / `TTS_BASE_URL` / `AVATAR_BASE_URL` + `backend-to-avatar internal HTTP -- not a public RENDER_BACKEND`.  
 Stubs (flags default off): `PIPECAT_ENABLED`, `LIVEKIT_PUBLISH`, `LMCACHE_ENABLED`.
 
 ## 10. Auth model
@@ -271,7 +271,7 @@ Rules:
 
 | Dimension | Colab (now) | AWS (later) |
 |-----------|-------------|-------------|
-| RENDER_BACKEND | cloud (or mock) | cloud (or self_host) |
+| RENDER_BACKEND | cloud_liveavatar (or mock) | cloud_liveavatar (or self_host_avatarforcing_half/echoavatar_full) |
 | SESSION_STORE | memory (InMemorySessionStore) | redis (RedisSessionStore) |
 | Process model | 1 uvicorn process | N containers behind ALB (sticky sessions) |
 | LLM | llamacpp GGUF (local) | vLLM (shared endpoint, prefix cache) |

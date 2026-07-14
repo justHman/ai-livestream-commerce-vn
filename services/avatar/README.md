@@ -1,4 +1,4 @@
-# avatar — `justhman/ai-live-avatar`
+# avatar — `imjusthman/ai-live-avatar`
 
 Avatar-server skeleton for **g4dn.xlarge T4**. Ships health + idle frame endpoints; LiveKit video publish + model runtime come later (Plan 01 Wave B/F).
 
@@ -13,7 +13,7 @@ Avatar-server skeleton for **g4dn.xlarge T4**. Ships health + idle frame endpoin
 ## Build
 
 ```bash
-docker build -f services/avatar/Dockerfile -t justhman/ai-live-avatar:dev .
+docker build -f services/avatar/Dockerfile -t imjusthman/ai-live-avatar:dev .
 ```
 
 ## Run
@@ -21,7 +21,7 @@ docker build -f services/avatar/Dockerfile -t justhman/ai-live-avatar:dev .
 ```bash
 docker run --rm -p 8080:8080 \
   -e WEIGHTS_S3_URI=s3://ai-livestream-dev/weights/avatar/ \
-  justhman/ai-live-avatar:dev
+  imjusthman/ai-live-avatar:dev
 ```
 
 Quick test:

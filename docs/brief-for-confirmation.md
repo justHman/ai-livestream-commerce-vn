@@ -79,7 +79,7 @@ Move from monolithic backend (LLM/TTS in-process) to **3-instance + 3-support-se
 - Avatar models generate video only, NOT audio â†’ audio from TTS separately. 2 tracks, LiveKit syncs via RTP timestamp.
 - **Idle loop**: 75 pre-rendered frames pushed into LiveKit VideoSource, 40ms/tick (25fps) â€” utterance frame if queue has one, else idle frame. Background task `/attach`â†’`/stop`.
 - **LMCache MP mode** (cross-replica KV-cache, env-togglable `LMCACHE_ENABLED`, task #47):
-  - 4th ECS Service "lmcache-server" (Fargate c7g.2xlarge Spot ~$30/mo test, c7g.4xlarge on-demand ~$195/mo prod), CPU-only no GPU, `desired_count=1` (single, shared by all LLM replicas, NO scale).
+  - 4th ECS Service "lmcache-server" (EC2 c7g.2xlarge Spot ~$30/mo test, c7g.4xlarge on-demand ~$195/mo prod), CPU-only no GPU, `desired_count=1` (single, shared by all LLM replicas, NO scale).
   - `lmcache server --host 0.0.0.0 --port 5555 --l1-size-gb 8 --eviction-policy LRU --chunk-size 256` (port 5555 ZMQ + 8080 HTTP metrics).
   - LLM container: `PYTHONHASHSEED=0` MANDATORY (else hash key mismatch â†’ 100% miss), `LMCACHE_CONFIG_FILE=/app/lmcache_config.yaml`, vllm serve add `--kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'` + keep `--enable-prefix-caching` (Layer 1 always on).
   - `lmcache_config.yaml`: chunk_size 256, local_cpu true, remote_url `lm://lmcache-server.internal:5555`, remote_serde cachegen.
@@ -206,7 +206,7 @@ REST = default (no `rest/` prefix). WS + media prefixed (different protocol, dif
 
 1. HTTP/SSE client wiring (openai SDK + httpx) replacing in-process engines.
 2. ECS Terraform: Cluster + 2 Capacity Provider (EC2 Spot ASG GPU + Fargate Spot) + 4 Task Definition + 4 Service.
-3. Dockerfiles: LLM (vLLM base + AWQ), TTS (vLLM-Omni fork + `[vieneu]` extra), Avatar (FastAPI + LiveKit SDK + mock/MuseTalk/EchoMimic), Backend (ARM64 Graviton).
+3. Dockerfiles: LLM (vLLM base + AWQ), TTS (vLLM-Omni fork + `[vieneu]` extra), Avatar (FastAPI + LiveKit SDK + selected renderer after benchmark), Backend (ARM64 Graviton).
 4. vLLM + vLLM-Omni launch configs (ports, `--gpu-memory-utilization` 0.6/0.25, prefix caching, dtype).
 5. LiveKit server container + `livekit-rtc` SDK integration (CĂ¡ch B avatar-server publish video, API publish audio).
 6. Idle loop pre-render + push into LiveKit VideoSource.

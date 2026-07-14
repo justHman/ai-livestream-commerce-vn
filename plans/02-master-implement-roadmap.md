@@ -124,7 +124,7 @@ TARGET (confirmed multi-service, Seoul)
 | Decision | Value |
 |---|---|
 | Region | `ap-northeast-2` Seoul |
-| Network | 1 public subnet, IGW, **S3 Gateway Endpoint**, **no NAT** |
+| Network | 2 public subnets across AZs, IGW, **S3 Gateway Endpoint**, **no NAT** |
 | Edge | Cloudflare Free → ALB Full(strict) |
 | Registry | Docker Hub **public**; weights on S3 |
 | Secrets | SSM SecureString (not Secrets Manager MVP) |
@@ -200,12 +200,12 @@ Write once into `docs/` or `plans/contracts.md` (on implement start):
 
 | Service | Port(s) | Health | Image (Hub) | Arch |
 |---|---|---|---|---|
-| backend | 8800 | `/api/v1/health/live`, `/ready` | `justhman/ai-live-backend` | arm64 |
-| llm | 8001 | vLLM `/health` | `justhman/ai-live-llm` | amd64+GPU |
-| tts | 8002 | Omni health | `justhman/ai-live-tts` (or combined llm-tts Task) | amd64+GPU |
-| avatar | 8080 | `/health` | `justhman/ai-live-avatar` | amd64+GPU |
-| livekit | 7880 + UDP 50000-60000 | LiveKit health | `justhman/ai-live-livekit` or official image | arm64 |
-| lmcache | 5555 ZMQ + 8080 metrics | metrics | `justhman/ai-live-lmcache` | arm64 |
+| backend | 8800 | `/api/v1/health/live`, `/ready` | `imjusthman/ai-live-backend` | arm64 |
+| llm | 8001 | vLLM `/health` | `imjusthman/ai-live-llm` | amd64+GPU |
+| tts | 8002 | Omni health | `imjusthman/ai-live-tts` (separate image; shared LLM+TTS ECS Task) | amd64+GPU |
+| avatar | 8080 | `/health` | `imjusthman/ai-live-avatar` | amd64+GPU |
+| livekit | 7880 + UDP 50000-60000 | LiveKit health | `imjusthman/ai-live-livekit` or official image | arm64 |
+| lmcache | 5555 ZMQ + 8080 metrics | metrics | `imjusthman/ai-live-lmcache` | arm64 |
 
 ECS Task note (confirmed): **LLM+TTS = 2 containers / 1 Task / 1 GPU** on g6; only LLM declares GPU resource; TTS shares via `NVIDIA_VISIBLE_DEVICES`.
 
@@ -241,7 +241,7 @@ See also `00-implement-aws-stack.md` (updated to match this roadmap).
 | Order | WP | Deliverable | Exit criteria |
 |---|---|---|---|
 | 00.1 | Contracts | ports/env/image names committed | Phase 0 done |
-| 00.2 | `modules/network` | VPC, 1 public subnet, IGW, S3 GW EP | plan shows 0 NAT |
+| 00.2 | `modules/network` | VPC, 2 public subnets across AZs, IGW, S3 GW EP | plan shows 0 NAT |
 | 00.3 | `modules/security` | SG matrix §3 aws-architecture; OIDC; IAM; IMDSv2 | no :22; CI policy check |
 | 00.4 | `modules/storage` + `secrets` + `monitoring` | S3, SSM placeholders, CW+SNS billing | apply-able |
 | 00.5 | `modules/database` | RDS t4g.medium SA + Redis t4g.small | no public IP |

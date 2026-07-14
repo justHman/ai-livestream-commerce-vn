@@ -1,27 +1,27 @@
 # services/ — Docker images (code + deps only)
 
-Hub namespace: `justhman/ai-live-{svc}`. Weights on S3, never in layers.
+Hub namespace: `imjusthman/ai-live-{svc}`. Weights on S3, never in layers.
 
 | Dir | Image | Port | Arch |
 |-----|-------|------|------|
-| `backend/` | `justhman/ai-live-backend` | 8800 | arm64 |
-| `llm/` | `justhman/ai-live-llm` | 8001 | amd64+GPU |
-| `tts/` | `justhman/ai-live-tts` | 8002 | amd64+GPU |
-| `avatar/` | `justhman/ai-live-avatar` | 8080 | amd64+GPU |
-| `livekit/` | `justhman/ai-live-livekit` | 7880 + UDP 50000-60000 | arm64 |
-| `lmcache/` | `justhman/ai-live-lmcache` | 5555 + 8080 | arm64 |
+| `backend/` | `imjusthman/ai-live-backend` | 8800 | arm64 |
+| `llm/` | `imjusthman/ai-live-llm` | 8001 | amd64+GPU |
+| `tts/` | `imjusthman/ai-live-tts` | 8002 | amd64+GPU |
+| `avatar/` | `imjusthman/ai-live-avatar` | 8080 | amd64+GPU |
+| `livekit/` | `imjusthman/ai-live-livekit` | 7880 + UDP 50000-60000 | arm64 |
+| `lmcache/` | `imjusthman/ai-live-lmcache` | 5555 + 8080 | arm64 |
 | `llm-tts/` | (Task family docs only) | — | — |
 | `scripts/` | `fetch_weights.sh` shared helper | — | — |
 
 ## Build (from repo root)
 
 ```bash
-docker build -f services/backend/Dockerfile -t justhman/ai-live-backend:dev .
-docker build -f services/llm/Dockerfile -t justhman/ai-live-llm:dev .
-docker build -f services/tts/Dockerfile -t justhman/ai-live-tts:dev .
-docker build -f services/avatar/Dockerfile -t justhman/ai-live-avatar:dev .
-docker build -f services/livekit/Dockerfile -t justhman/ai-live-livekit:dev .
-docker build -f services/lmcache/Dockerfile -t justhman/ai-live-lmcache:dev .
+docker build -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
+docker build -f services/llm/Dockerfile -t imjusthman/ai-live-llm:dev .
+docker build -f services/tts/Dockerfile -t imjusthman/ai-live-tts:dev .
+docker build -f services/avatar/Dockerfile -t imjusthman/ai-live-avatar:dev .
+docker build -f services/livekit/Dockerfile -t imjusthman/ai-live-livekit:dev .
+docker build -f services/lmcache/Dockerfile -t imjusthman/ai-live-lmcache:dev .
 ```
 
 ## Weight entrypoint contract
