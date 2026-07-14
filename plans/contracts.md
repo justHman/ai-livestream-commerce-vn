@@ -1,19 +1,19 @@
 # Service contracts — AWS multi-service stack
 
 > Phase 0 freeze. Source: `plans/02-master-implement-roadmap.md` §5.  
-> Region: `ap-northeast-2`. Images: Docker Hub public (`justhman/*`).  
+> Region: `ap-northeast-2`. Images: Docker Hub public (`imjusthman/*`).  
 > Weights: S3 via entrypoint (`WEIGHTS_S3_URI`). Secrets: SSM SecureString.
 
 ## Port / health / image / arch
 
 | service | port | health | hub image | arch |
 |---|---|---|---|---|
-| backend | 8800 | `/api/v1/health/live`, `/api/v1/health/ready` | `imjusthman/ai-live-backend` | arm64 |
-| llm | 8001 | `/health` | `imjusthman/ai-live-llm` | amd64+gpu |
-| tts | 8002 | `/health` | `imjusthman/ai-live-tts` | amd64+gpu |
-| avatar | 8080 | `/health` | `imjusthman/ai-live-avatar` | amd64+gpu |
-| livekit | 7880 + UDP 50000-60000 | `/` or livekit health | `imjusthman/ai-live-livekit` | arm64 |
-| lmcache | 5555 zmq + 8080 metrics | `:8080/metrics` | `imjusthman/ai-live-lmcache` | arm64 |
+| backend | 8800 | `/api/v1/health/live`, `/api/v1/health/ready` | `imimjusthman/ai-live-backend` | arm64 |
+| llm | 8001 | `/health` | `imimjusthman/ai-live-llm` | amd64+gpu |
+| tts | 8002 | `/health` | `imimjusthman/ai-live-tts` | amd64+gpu |
+| avatar | 8080 | `/health` | `imimjusthman/ai-live-avatar` | amd64+gpu |
+| livekit | 7880 + UDP 50000-60000 | `/` or livekit health | `imimjusthman/ai-live-livekit` | arm64 |
+| lmcache | 5555 zmq + 8080 metrics | `:8080/metrics` | `imimjusthman/ai-live-lmcache` | arm64 |
 
 ## ECS task note
 
@@ -28,8 +28,8 @@
 
 ```
 APP_ENV                  # dev | staging | prod
-LLM_BASE_URL             # e.g. http://llm:8001
-TTS_BASE_URL             # e.g. http://tts:8002
+LLM_BASE_URL             # e.g. http://llm-tts.$ENV.ai-live.local:8001/v1
+TTS_BASE_URL             # e.g. http://llm-tts.$ENV.ai-live.local:8002/v1
 AVATAR_BASE_URL          # e.g. http://avatar:8080
 LIVEKIT_URL              # e.g. ws://livekit:7880
 REDIS_URL                # redis://...

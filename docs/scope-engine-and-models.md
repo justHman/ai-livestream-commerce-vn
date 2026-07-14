@@ -67,17 +67,15 @@ Target = **half-body + full-body ONLY**. Head-only/lip-sync models (MuseTalk, Di
 
 **Pre-render optional** (intro/promo, NOT livestream stream): EchoMimicV3-Flash, InfiniteTalk (Apache-2.0), LongCat-Video-Avatar-1.5 (MIT) — batch high-quality for 5-10s intro clips.
 
-`render_backend` enum (revised):
-| Value | Scope | Model | Phase |
+`render_backend` public enum:
+| Value | Scope | Model | Runtime state |
 |---|---|---|---|
-| `mock` | head (PIL, dev) | MockRenderBackend | P1-P3 |
-| `self_host_avatarforcing_half` | half/body | AvatarForcing | Phase F benchmark |
-| `self_host_echomimic_half_prerender` | half-body offline | EchoMimicV3-Flash | Phase F optional pre-render |
-| `self_host_echoavatar_full` | full-body | EchoAvatar | Phase F benchmark (license TBD) |
-| `self_host_infinitetalk_prerender` | full-body offline | InfiniteTalk | optional pre-render |
-| `self_host_longcat_prerender` | full-body offline | LongCat-Video-Avatar-1.5 | optional pre-render (MIT) |
-| `cloud_liveavatar` | full-body | LiveAvatar API | enterprise tier (>48GB) |
-| `cloud_other` | — | HeyGen/D-ID | future |
+| `mock` | offline/debug | MockRenderBackend | implemented |
+| `cloud_liveavatar` | cloud full-body | LiveAvatar API | implemented; backend-only API key |
+| `self_host_avatarforcing_half` | half/body | AvatarForcing | benchmark target; fails loud until selected adapter exists |
+| `self_host_echoavatar_full` | full-body | EchoAvatar | benchmark target; fails loud until selected adapter exists |
+
+Internal backend-to-avatar ECS HTTP remains an implementation detail, not a `RENDER_BACKEND` value.
 
 **SyncCache** (ECCV 2026, training-free 4.12× speedup, drop-in DiT accelerator): apply when porting AvatarForcing/EchoAvatar DiT models to fit tighter VRAM — Phase F benchmark with and without SyncCache.
 
@@ -266,7 +264,7 @@ ECS technique (spec-03 §2.2):
 
 **LMCache MP mode architecture** (official recommendation, NOT in-process):
 ```text
-Service: lmcache-server (4th Service, Fargate c7g.2xlarge Spot test / c7g.4xlarge prod)
+Service: lmcache-server (4th Service, **EC2 c7g.2xlarge Spot** test / c7g.4xlarge on-demand prod)
   └─ Task: 1 container CPU-only (no GPU)
        lmcache server --host 0.0.0.0 --port 5555 \
          --l1-size-gb 8 --eviction-policy LRU --chunk-size 256
@@ -395,7 +393,7 @@ REST = default (no `rest/` prefix). WS + media have prefix (different protocol, 
 
 No MJPEG. LiveKit from day 1. Idle loop = pre-rendered frames pushed into LiveKit VideoSource (not MJPEG endpoint).
 
-- **avatar-server container** has LiveKit SDK + mock/MuseTalk/EchoMimic backend. Publishes video track directly (Cách B). Swap mock→MuseTalk = swap backend class, no flow change.
+- **avatar-server container** has LiveKit SDK plus selected renderer adapter. Cloud LiveAvatar is the current real baseline; AvatarForcing and EchoAvatar remain benchmark candidates until one is selected and integrated. Publishes video track directly (Cách B).
 - **API backend** publishes audio track (TTS PCM → Opus via livekit-rtc AudioSource).
 - 2 publishers in room, LiveKit SFU merges for subscriber.
 - FE team SE: `livekit-client` JS SDK subscribe both tracks, render `<video>` + `<audio>`.
@@ -409,7 +407,7 @@ No MJPEG. LiveKit from day 1. Idle loop = pre-rendered frames pushed into LiveKi
 - `core/tts/adapters/vieneu.py` — keep native adapter as offline fallback.
 - `core/store/postgres.py`, `core/store/redis.py`, `core/store/vector.py` — NEW runtime data layer.
 - `core/api/v1.py` — rename `/lite/*` → `/sessions/*`, `/ws/*` → `/api/v1/ws/*`, `/mock/*` → `/api/v1/media/*`, add `/avatars/*`, `/engines/llm`, `/admin/*`.
-- `services/llm/Dockerfile`, `services/tts/Dockerfile` (vllm-omni fork + `[vieneu]` extra), `services/avatar/Dockerfile` (FastAPI + LiveKit SDK + mock/MuseTalk/EchoMimic), `services/backend/Dockerfile` (ARM64 Graviton).
+- `services/llm/Dockerfile`, `services/tts/Dockerfile` (official vLLM 0.22 base; TTS adds vLLM-Omni fork + `[vieneu]` extra), `services/avatar/Dockerfile` (FastAPI + LiveKit SDK + selected renderer after benchmark), `services/backend/Dockerfile` (ARM64 Graviton).
 - `ecs/cluster.tf`, `ecs/capacity-providers.tf`, `ecs/task-definitions.tf`, `ecs/services.tf` — Terraform for ECS.
 - `docker-compose.yml` — for local dev only (Colab gone).
 - `architecture.md` — update model table, 3-instance diagram, LiveKit flow.
@@ -451,7 +449,7 @@ No MJPEG. LiveKit from day 1. Idle loop = pre-rendered frames pushed into LiveKi
 - Media: LiveKit WebRTC from P1 (Cách B avatar-server publish directly, API via Pipecat publish audio). No MJPEG.
 - Region: Seoul (ap-northeast-2) both MVP + prod. Verified AWS Pricing API 2026-07-10. Malaysia lacks g4dn → Avatar would need L4 ($286/mo more).
 - Orchestration platform: ECS (free control plane, GPU via EC2 launch type). No K8s, no Colab, no Docker Compose for runtime.
-- Instances: LLM+TTS g6.xlarge (colocate, GPU share 0.6/0.25), Avatar g4dn.xlarge, Backend Fargate ARM. Support: LiveKit Fargate + Postgres RDS + Redis ElastiCache + **LMCache-server Fargate c7g.2xlarge Spot (env-togglable)**.
+- Instances: LLM+TTS g6.xlarge (colocate, GPU share 0.6/0.25), Avatar g4dn.xlarge, Backend Fargate ARM. Support: LiveKit Fargate + Postgres RDS + Redis ElastiCache + **LMCache-server EC2 c7g.2xlarge Spot (env-togglable)**.
 - GPU sharing: NVIDIA_VISIBLE_DEVICES + 1 container declares GPU resource.
 - Autoscaling: `num_requests_waiting` + `gpu_cache_usage_perc` (NOT %VRAM), MaxCapacity + Billing Alarm.
 - ARM: Backend Graviton Fargate Spot. NOT ARM for GPU. LMCache-server also Graviton (CPU+RAM only).

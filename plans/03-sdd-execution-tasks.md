@@ -35,12 +35,12 @@ Write the port/env/image contract table exactly:
 
 | service | port | health | hub image | arch |
 |---|---|---|---|---|
-| backend | 8800 | `/api/v1/health/live`, `/api/v1/health/ready` | `justhman/ai-live-backend` | arm64 |
-| llm | 8001 | `/health` | `justhman/ai-live-llm` | amd64+gpu |
-| tts | 8002 | `/health` | `justhman/ai-live-tts` | amd64+gpu |
-| avatar | 8080 | `/health` | `justhman/ai-live-avatar` | amd64+gpu |
-| livekit | 7880 + UDP 50000-60000 | `/` or livekit health | `justhman/ai-live-livekit` | arm64 |
-| lmcache | 5555 zmq + 8080 metrics | `:8080/metrics` | `justhman/ai-live-lmcache` | arm64 |
+| backend | 8800 | `/api/v1/health/live`, `/api/v1/health/ready` | `imjusthman/ai-live-backend` | arm64 |
+| llm | 8001 | `/health` | `imjusthman/ai-live-llm` | amd64+gpu |
+| tts | 8002 | `/health` | `imjusthman/ai-live-tts` | amd64+gpu |
+| avatar | 8080 | `/health` | `imjusthman/ai-live-avatar` | amd64+gpu |
+| livekit | 7880 + UDP 50000-60000 | `/` or livekit health | `imjusthman/ai-live-livekit` | arm64 |
+| lmcache | 5555 zmq + 8080 metrics | `:8080/metrics` | `imjusthman/ai-live-lmcache` | arm64 |
 
 Include minimum env vars from master roadmap §5. No code.
 
@@ -89,7 +89,7 @@ Include minimum env vars from master roadmap §5. No code.
 
 Per `docs/terraform-layout.md` + SG matrix `docs/aws-architecture.md` §3.
 
-- network: VPC, 1 public subnet, IGW, public route, **aws_vpc_endpoint** Gateway S3, tags env
+- network: VPC, 2 public subnets across AZs, IGW, public routes, **aws_vpc_endpoint** Gateway S3, tags env
 - security: SG alb/backend/llm/tts/avatar/rds/redis/lmcache/livekit; variables for cloudflare optional; no :22; outputs sg ids
 - storage: S3 bucket weights+idle+replays (or one bucket prefixes); block public ACL
 - secrets: aws_ssm_parameter SecureString placeholders (overwrite false)
@@ -255,7 +255,7 @@ Then stop for optional user check OR continue Wave B LiveKit (Tasks 12+ in follo
 ### Task 14 — Remote Avatar HTTP client (StreamingAvatarBackend)
 
 **Domain:** D-core  
-**Files:** `core/render/remote_avatar.py` (new), wire in `config.build_render_backend` when `RENDER_BACKEND=remote_avatar` or `AVATAR_BASE_URL` set, tests
+**Files:** `core/render/remote_avatar.py` (new), retain as internal avatar-service HTTP client; public selectors remain explicit self-host model names, tests
 
 - Implements StreamingAvatarBackend: start/stop/interrupt/stream_audio call `AVATAR_BASE_URL` HTTP
 - stream_audio may POST audio window metadata; mock server in tests

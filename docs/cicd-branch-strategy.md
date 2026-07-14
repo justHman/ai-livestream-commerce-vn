@@ -76,9 +76,9 @@ jobs:
         run: |
           TAG=dev-${GITHUB_SHA::7}
           for svc in backend llm-tts avatar lmcache; do
-            docker build -f services/$svc/Dockerfile -t justhman/ai-live-$svc:$TAG -t justhman/ai-live-$svc:dev .
-            docker push justhman/ai-live-$svc:$TAG
-            docker push justhman/ai-live-$svc:dev
+            docker build -f services/$svc/Dockerfile -t imimjusthman/ai-live-$svc:$TAG -t imimjusthman/ai-live-$svc:dev .
+            docker push imimjusthman/ai-live-$svc:$TAG
+            docker push imimjusthman/ai-live-$svc:dev
           done
       - name: ECS rolling update DEV
         run: |
@@ -119,9 +119,9 @@ jobs:
         run: |
           TAG=${GITHUB_REF_NAME}   # e.g. v1.2.3
           for svc in backend llm-tts avatar lmcache; do
-            docker build -f services/$svc/Dockerfile -t justhman/ai-live-$svc:$TAG -t justhman/ai-live-$svc:latest .
-            docker push justhman/ai-live-$svc:$TAG
-            docker push justhman/ai-live-$svc:latest
+            docker build -f services/$svc/Dockerfile -t imimjusthman/ai-live-$svc:$TAG -t imimjusthman/ai-live-$svc:latest .
+            docker push imimjusthman/ai-live-$svc:$TAG
+            docker push imimjusthman/ai-live-$svc:latest
           done
       - name: ECS rolling update PROD
         run: |
@@ -215,7 +215,7 @@ Debug fail:
 | Env | Tags |
 |---|---|
 | CI only | local `backend:ci` (not pushed) |
-| DEV | `justhman/ai-live-{svc}:dev` + `dev-{sha7}` |
-| PROD | `justhman/ai-live-{svc}:latest` + `vX.Y.Z` |
+| DEV | `imimjusthman/ai-live-{svc}:dev` + `dev-{sha7}` |
+| PROD | `imimjusthman/ai-live-{svc}:latest` + `vX.Y.Z` |
 
 Weights **never** in image — S3 `s3://ai-livestream-{env}/weights/` pulled at container start.

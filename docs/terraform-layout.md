@@ -140,10 +140,11 @@ module "compute" {
   env                 = var.env
   subnet_ids          = module.network.public_subnet_ids
   sg_map              = module.security.sg_map
-  image_backend       = "justhman/ai-live-backend:latest"
-  image_llm_tts       = "justhman/ai-live-llm-tts:latest"
-  image_avatar        = "justhman/ai-live-avatar:latest"
-  image_lmcache       = "justhman/ai-live-lmcache:latest"
+  image_backend       = "imjusthman/ai-live-backend:latest"
+  image_llm           = "imjusthman/ai-live-llm:latest"
+  image_tts           = "imjusthman/ai-live-tts:latest"
+  image_avatar        = "imjusthman/ai-live-avatar:latest"
+  image_lmcache       = "imjusthman/ai-live-lmcache:latest"
   lmcache_enabled     = var.lmcache_enabled
   weights_s3_uri      = module.storage.weights_uri
   secrets_arns        = module.secrets.parameter_arns

@@ -150,7 +150,7 @@ desired_lmcache     = 0
 lmcache_enabled     = false
 create_ec2_capacity = false   # no GPU ASG until Tier G
 
-image_backend = "imjusthman/ai-live-backend:dev"
+image_backend = "imimjusthman/ai-live-backend:dev"
 ```
 
 ```powershell
@@ -170,14 +170,14 @@ Capture outputs: `alb_dns`, `rds_endpoint`, `redis_endpoint`, `ecs_cluster`, `s3
 cd <implementations root>
 docker login -u imjusthman
 # ARM64 for Fargate Spot (Graviton)
-docker build --platform linux/arm64 -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
+docker build --platform linux/arm64 -f services/backend/Dockerfile -t imimjusthman/ai-live-backend:dev .
 # Quick import check (mock path)
 docker run --rm --platform linux/arm64 `
   -e RENDER_BACKEND=mock -e LLM_ENGINE=none -e TTS_ENGINE=tone `
   -e SESSION_STORE=memory -e APP_ENV=dev `
-  --entrypoint python imjusthman/ai-live-backend:dev `
+  --entrypoint python imimjusthman/ai-live-backend:dev `
   -c "from core.server import app; print(type(app).__name__)"
-docker push imjusthman/ai-live-backend:dev
+docker push imimjusthman/ai-live-backend:dev
 # Dockerfile: multi-stage uv → /opt/venv, non-root appuser, copies core/ + providers/
 ```
 

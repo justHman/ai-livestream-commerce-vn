@@ -1,4 +1,4 @@
-# livekit — `justhman/ai-live-livekit`
+# livekit — `imjusthman/ai-live-livekit`
 
 LiveKit SFU on Fargate Spot **ARM64**. Media UDP **50000–60000** public (SG).
 
@@ -13,7 +13,7 @@ LiveKit SFU on Fargate Spot **ARM64**. Media UDP **50000–60000** public (SG).
 ## Build
 
 ```bash
-docker build -f services/livekit/Dockerfile -t justhman/ai-live-livekit:dev .
+docker build -f services/livekit/Dockerfile -t imjusthman/ai-live-livekit:dev .
 ```
 
 Prefer `--platform linux/arm64` for Fargate ARM.
@@ -23,7 +23,7 @@ Prefer `--platform linux/arm64` for Fargate ARM.
 ```bash
 docker run --rm -p 7880:7880 -p 7881:7881 \
   -e LIVEKIT_KEYS="devkey: devsecret" \
-  justhman/ai-live-livekit:dev
+  imjusthman/ai-live-livekit:dev
 ```
 
 ## Notes

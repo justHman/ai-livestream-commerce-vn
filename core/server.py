@@ -38,7 +38,7 @@ App factory:
       - If ``deps`` is provided (tests), uses the injected ``V1Deps`` as-is
         and does NOT build/load LLM/TTS engines — the caller owns the deps.
       - Otherwise builds backend/store/hub/engine_manager from ``config``,
-        runs the cloud engine-loading block when ``render_backend == "cloud"``
+        runs the cloud engine-loading block when ``render_backend == "cloud_liveavatar"``
         (identical to the previous module-level wiring), and constructs
         ``V1Deps`` from those built components.
 
@@ -137,7 +137,7 @@ def create_app(config: AppConfig | None = None,
         # echo/tone stubs. Only the cloud-specific wiring (the ``cloud`` import
         # + ``reconfigure_cloud()``) stays cloud-only — the mock backend does
         # not call backend.say(), so reconfigure is not needed there.
-        if config.render_backend == "cloud":
+        if config.render_backend == "cloud_liveavatar":
             from .render import cloud  # noqa: F401  (side-effect import kept)
 
         _llm_engine = None
@@ -164,7 +164,7 @@ def create_app(config: AppConfig | None = None,
                   f"({type(exc).__name__}: {exc}); using tone stub.")
             _tts_engine = None
 
-        if config.render_backend == "cloud":
+        if config.render_backend == "cloud_liveavatar":
             engine_mgr.reconfigure_cloud()
             if engine_mgr.llm:
                 print(f"[server] LLM  engine={engine_mgr.llm.name}")

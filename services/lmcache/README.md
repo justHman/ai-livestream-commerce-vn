@@ -1,4 +1,4 @@
-# lmcache — `justhman/ai-live-lmcache`
+# lmcache — `imjusthman/ai-live-lmcache`
 
 Optional LMCache server on **c7g.2xlarge Spot ARM**. Stateful warm KV in RAM — not Fargate.
 
@@ -31,13 +31,13 @@ Ops:
 ## Build
 
 ```bash
-docker build -f services/lmcache/Dockerfile -t justhman/ai-live-lmcache:dev .
+docker build -f services/lmcache/Dockerfile -t imjusthman/ai-live-lmcache:dev .
 ```
 
 ## Run
 
 ```bash
-docker run --rm -p 8080:8080 -p 5555:5555 justhman/ai-live-lmcache:dev
+docker run --rm -p 8080:8080 -p 5555:5555 imjusthman/ai-live-lmcache:dev
 ```
 
 ## Notes
