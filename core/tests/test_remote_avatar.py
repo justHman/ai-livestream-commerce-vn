@@ -106,15 +106,6 @@ def test_requires_base_url(monkeypatch):
         RemoteAvatarBackend(base_url="")
 
 
-def test_build_render_backend_remote_avatar(monkeypatch):
-    monkeypatch.setenv("RENDER_BACKEND", "remote_avatar")
-    monkeypatch.setenv("AVATAR_BASE_URL", "http://avatar:8080")
-    cfg = AppConfig.from_env()
-    backend = cfg.build_render_backend()
-    assert isinstance(backend, RemoteAvatarBackend)
-    assert backend.name == "remote_avatar"
-
-
 def test_default_backends_unchanged(monkeypatch):
     monkeypatch.setenv("RENDER_BACKEND", "mock")
     monkeypatch.delenv("AVATAR_BASE_URL", raising=False)

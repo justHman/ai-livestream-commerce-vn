@@ -4,7 +4,8 @@
 Colab sets them inline; AWS sets them via task definition / secrets manager.
 
 Engine selection (the production seam):
-  RENDER_BACKEND   cloud | self_host(future)
+  RENDER_BACKEND   cloud_liveavatar | self_host_avatarforcing_half |
+                   self_host_echoavatar_full | mock
   SESSION_STORE    memory(Colab) | redis(AWS)
   LLM_ENGINE       vllm | llamacpp | sglang | hf | none(default echo)
   TTS_ENGINE       transformers(default) | vieneu | cosyvoice | tone
@@ -197,7 +198,7 @@ class AppConfig:
     app_env: str = "dev"
 
     # Renderer backend
-    render_backend: str = "cloud"
+    render_backend: str = "cloud_liveavatar"
 
     # Session storage
     store_backend: str = "memory"
@@ -258,7 +259,7 @@ class AppConfig:
     def from_env(cls) -> "AppConfig":
         return cls(
             app_env=os.environ.get("APP_ENV", "dev").lower(),
-            render_backend=os.environ.get("RENDER_BACKEND", "cloud").lower(),
+            render_backend=os.environ.get("RENDER_BACKEND", "cloud_liveavatar").lower(),
             store_backend=os.environ.get("SESSION_STORE", "memory").lower(),
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             cors_origins=os.environ.get("CORS_ORIGINS", "*"),
@@ -317,17 +318,23 @@ class AppConfig:
                 width=self.mock_avatar_width,
                 height=self.mock_avatar_height,
             )
-        if self.render_backend in ("remote_avatar", "remote"):
-            from .render.remote_avatar import RemoteAvatarBackend
+        if self.render_backend == "cloud_liveavatar":
+            from .render.cloud import CloudRenderBackend
 
-            return RemoteAvatarBackend(base_url=self.avatar_base_url)
-        if self.render_backend == "self_host":
+            return CloudRenderBackend()
+        if self.render_backend in (
+            "self_host_avatarforcing_half",
+            "self_host_echoavatar_full",
+        ):
             from .render.self_host import SelfHostRenderBackend
 
-            return SelfHostRenderBackend()
-        from .render.cloud import CloudRenderBackend
-
-        return CloudRenderBackend()
+            model = self.render_backend.removeprefix("self_host_").split("_")[0]
+            return SelfHostRenderBackend(model=model)
+        raise ValueError(
+            "unknown RENDER_BACKEND "
+            f"{self.render_backend!r}; expected cloud_liveavatar, "
+            "self_host_avatarforcing_half, self_host_echoavatar_full, or mock"
+        )
 
     def build_llm_engine(self):
         """Build the LLM engine from env. Returns None if LLM_ENGINE=none."""

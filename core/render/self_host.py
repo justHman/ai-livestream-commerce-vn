@@ -1,16 +1,7 @@
-"""SelfHostRenderBackend — future self-host diffusion renderer (STUB).
+"""Selected self-host avatar renderer placeholder.
 
-When the avatar video model is chosen (research agent in progress — Wan2.2-S2V /
-EchoMimic / OmniHuman class, multi-image anti-drift), this backend will:
-  - load the diffusion model on the GPU (1-2x A100/4090)
-  - run the coarse-grained batch-streaming producer-consumer loop
-    (gen batch N+1 while streaming batch N), with first-frame anchor +
-    last-frame continuity for anti-drift
-  - expose the SAME RenderBackend contract so core/api stays unchanged
-
-Selected via RENDER_BACKEND=self_host. Until implemented, every method raises
-NotImplementedError with a clear message — this is intentional and proves the
-seam: the API can route to it without any other code change.
+AvatarForcing and EchoAvatar stay unavailable until the benchmark selects one
+and the avatar ECS service implements the internal AvatarServiceClient protocol.
 """
 
 from __future__ import annotations
@@ -20,30 +11,32 @@ from typing import Iterator
 from .base import StreamingAvatarBackend, StartOptions, StartResult
 from .windows import AudioWindow, VideoWindow
 
-_MSG = (
-    "Self-host renderer not implemented yet. The avatar video model is still "
-    "being selected (multi-image anti-drift, batch-streaming on 1-2 GPUs). "
-    "Use RENDER_BACKEND=cloud for now."
-)
-
 
 class SelfHostRenderBackend(StreamingAvatarBackend):
-    """Placeholder for the future diffusion renderer."""
+    """Fail-loud placeholder for one explicit self-host model target."""
 
-    name = "self_host"
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.name = f"self_host_{model}"
+
+    def _unavailable(self) -> NotImplementedError:
+        return NotImplementedError(
+            f"Self-host {self.model} renderer is not integrated yet. "
+            "Run its benchmark before enabling this renderer."
+        )
 
     def start(self, opts: StartOptions) -> StartResult:
-        raise NotImplementedError(_MSG)
+        raise self._unavailable()
 
     def stream_audio(
         self,
         session_id: str,
         audio_window: AudioWindow,
     ) -> Iterator[VideoWindow]:
-        raise NotImplementedError(_MSG)
+        raise self._unavailable()
 
     def interrupt(self, session_id: str) -> None:
-        raise NotImplementedError(_MSG)
+        raise self._unavailable()
 
     def stop(self, session_id: str) -> None:
-        raise NotImplementedError(_MSG)
+        raise self._unavailable()

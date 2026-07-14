@@ -45,9 +45,11 @@ codegraph/
 CLAUDE.local.md
 
 # ── claude-mem MCP context artifacts (auto-generated, never commit) ──
-# Keep root CLAUDE.md; ignore claude-mem's per-folder copies.
-.claude/**/CLAUDE.md
-.github/**/CLAUDE.md
+# Keep root CLAUDE.md; ignore claude-mem's per-folder copies everywhere.
+# The root CLAUDE.md is the only one committed; every nested CLAUDE.md is
+# an auto-generated claude-mem artifact.
+**/CLAUDE.md
+!/CLAUDE.md
 
 # ── Terraform ────────────────────────────────────────────────
 **/.terraform/
