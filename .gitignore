@@ -38,7 +38,16 @@ Thumbs.db
 .idea/
 .vscode/
 codegraph/
+.codegraph/
 .superpowers/
+
+# ── Claude Code local override (per-developer, never commit) ──
+CLAUDE.local.md
+
+# ── claude-mem MCP context artifacts (auto-generated, never commit) ──
+# Keep root CLAUDE.md; ignore claude-mem's per-folder copies.
+.claude/**/CLAUDE.md
+.github/**/CLAUDE.md
 
 # ── Terraform ────────────────────────────────────────────────
 **/.terraform/
