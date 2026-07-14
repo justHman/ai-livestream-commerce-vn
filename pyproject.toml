@@ -28,6 +28,8 @@ test = [
   "pytest-timeout",
   "async_timeout",
 ]
+livekit = ["livekit"]
+postgres = ["asyncpg"]
 
 [build-system]
 requires = ["setuptools>=68"]

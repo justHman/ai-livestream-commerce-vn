@@ -112,6 +112,7 @@ class DirectorCoordinator:
         hub: Optional["ControlHub"] = None,
         orchestrator_registry: Optional[dict] = None,
         max_queue_windows: int = 5,
+        pg_store: Any = None,
     ) -> None:
         self._runtime = runtime
         # Factory inputs for building a FRESH StreamOrchestrator + queue +
@@ -138,6 +139,9 @@ class DirectorCoordinator:
         self._stats: dict[str, _SessionStats] = {}
         self._active_score: dict[str, float] = {}
         self._embedder = None  # lazy
+        # Optional Postgres runtime store (durable rows). None/disabled -> no
+        # persistence. Fire-and-forget: a failure must never break the speak loop.
+        self._pg_store = pg_store
 
     async def _emit(self, session_id: str, event: dict) -> None:
         """Send a WS event via the ControlHub if one is wired. No-op otherwise."""
@@ -148,8 +152,9 @@ class DirectorCoordinator:
         except Exception:
             logger.debug("hub.emit failed for %s", session_id, exc_info=True)
 
-    def _register_speaking(self, session_id: str, orchestrator: StreamOrchestrator,
-                           queue: BoundedVideoQueue) -> None:
+    def _register_speaking(
+        self, session_id: str, orchestrator: StreamOrchestrator, queue: BoundedVideoQueue
+    ) -> None:
         """Publish the active orchestrator+queue so MJPEG can drain utterance frames.
 
         Per-call: the orchestrator+queue are fresh for each _maybe_speak()
@@ -318,9 +323,7 @@ class DirectorCoordinator:
                 # Should not happen, but guard.
                 vec = embedder.encode([ic.text])[0]
                 state.embeddings_cache[ic.id] = list(vec)
-            director_comments.append(
-                Comment(text=ic.text, embedding=vec, t=ic.ts)
-            )
+            director_comments.append(Comment(text=ic.text, embedding=vec, t=ic.ts))
         state.add_comments(director_comments)
 
         # 4. Director decides.
@@ -330,10 +333,13 @@ class DirectorCoordinator:
 
         # Emit the decision to the WS hub (frontend ticker). Best-effort; the
         # loop continues regardless.
-        await self._emit(session_id, {
-            "type": "director.decision",
-            **_decision_to_event(decision),
-        })
+        await self._emit(
+            session_id,
+            {
+                "type": "director.decision",
+                **_decision_to_event(decision),
+            },
+        )
 
         # 5. Skip?
         if decision.action in ("idle", "skip"):
@@ -415,23 +421,31 @@ class DirectorCoordinator:
         )
         self._register_speaking(session_id, orchestrator, queue)
         try:
-            await self._emit(session_id, {
-                "type": "coordinator.speak_started",
-                "text": text,
-                "utterance": text,
-                "action": decision.action,
-                "product": decision.product_id,
-            })
+            await self._emit(
+                session_id,
+                {
+                    "type": "coordinator.speak_started",
+                    "text": text,
+                    "utterance": text,
+                    "action": decision.action,
+                    "product": decision.product_id,
+                },
+            )
             await orchestrator.run(session_id, text)
             st.decisions_emitted += 1
             st.last_decision_ts = time.monotonic()
+            # M3: persist the Director decision to the runtime DB (fire-and-forget).
+            await self._persist_decision(session_id, decision, text)
             # M3: coverage + cursor advance after proactive speak.
             self._after_speak(session_id, decision, text)
-            await self._emit(session_id, {
-                "type": "coordinator.speak_finished",
-                "text": text,
-                "utterance": text,
-            })
+            await self._emit(
+                session_id,
+                {
+                    "type": "coordinator.speak_finished",
+                    "text": text,
+                    "utterance": text,
+                },
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -441,9 +455,32 @@ class DirectorCoordinator:
             self._active_score.pop(session_id, None)
             self._unregister_speaking(session_id)
 
-    def _after_speak(
-        self, session_id: str, decision: Decision, speech: str
-    ) -> None:
+    async def _persist_decision(self, session_id: str, decision: Decision, speech: str) -> None:
+        """Persist a Director decision row to the runtime DB (fire-and-forget).
+
+        No-op when pg_store is None/disabled. A failure is logged at debug and
+        swallowed — a broken runtime DB must never stall the speak loop.
+        """
+        if self._pg_store is None or not getattr(self._pg_store, "enabled", False):
+            return
+        try:
+            phase = None
+            ds = self._runtime._sessions.get(session_id)
+            if ds is not None:
+                phase = ds.director.state.cursor.phase if ds.director.state.cursor else None
+            await self._pg_store.insert_director_decision(
+                session_id,
+                decision.action,
+                product_id=decision.product_id,
+                score=decision.score,
+                phase=phase,
+                utterance=speech,
+                reason=decision.reason,
+            )
+        except Exception:
+            logger.debug("pg insert_director_decision failed for %s", session_id, exc_info=True)
+
+    def _after_speak(self, session_id: str, decision: Decision, speech: str) -> None:
         """Update covered_points + advance talking_point_idx on proactive speak."""
         ds = self._runtime._sessions.get(session_id)
         if ds is None:
@@ -488,9 +525,7 @@ class DirectorCoordinator:
             "introduce_product",
             "answer_fact",
             "close",
-        ) or (
-            decision.action == "answer_cluster" and not decision.may_interrupt
-        ):
+        ) or (decision.action == "answer_cluster" and not decision.may_interrupt):
             n = len(key_points) if key_points else 1
             state.advance_talking_point(n)
             # Keep cursor phase in sync with FSM phase.

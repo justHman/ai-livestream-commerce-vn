@@ -49,6 +49,8 @@ uvicorn compatibility (``uvicorn core.server:app``). Tests can call
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -63,8 +65,7 @@ from .render.queue import BoundedVideoQueue, CoordinatorMetrics
 CONFIG = AppConfig.from_env()
 
 
-def create_app(config: AppConfig | None = None,
-               deps: v1.V1Deps | None = None) -> FastAPI:
+def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -> FastAPI:
     """Build a FastAPI app wired with the given or env-driven dependencies.
 
     Parameters
@@ -103,7 +104,38 @@ def create_app(config: AppConfig | None = None,
             "CORS_ORIGINS='*' is forbidden outside APP_ENV=dev; set explicit origins"
         )
 
-    app = FastAPI(title="VN Live-Commerce Host — core API")
+    # Resolve the optional Postgres runtime store. The injected-deps path
+    # carries its own pg_store (or None); the env-driven path builds one from
+    # DATABASE_URL when set. Persistence is fire-and-forget; the lifespan
+    # connects + applies the schema on startup and closes the pool on shutdown.
+    if deps is not None:
+        pg = deps.pg_store
+    elif config.database_url:
+        from .db.postgres_store import PostgresRuntimeStore
+
+        pg = PostgresRuntimeStore(config.database_url)
+    else:
+        pg = None
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        if pg is not None and getattr(pg, "enabled", False):
+            try:
+                await pg.connect()
+                await pg.apply_schema()
+            except Exception as exc:
+                # Fail loud but do not crash the control plane: a broken
+                # runtime DB should not take the server down. /health/ready
+                # surfaces it; rows simply won't persist until it recovers.
+                print(f"[server] Postgres runtime store unavailable: {exc}")
+        yield
+        if pg is not None and getattr(pg, "enabled", False):
+            try:
+                await pg.close()
+            except Exception:
+                pass
+
+    app = FastAPI(title="VN Live-Commerce Host — core API", lifespan=_lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.cors_list(),
@@ -151,8 +183,10 @@ def create_app(config: AppConfig | None = None,
             # not-ready (Finding 2). Dev still falls back to the echo stub so
             # the server starts; prod readiness is reported honestly.
             engine_mgr.llm_load_error = f"{type(exc).__name__}: {exc}"
-            print(f"[server] LLM engine '{config.llm.engine}' unavailable "
-                  f"({type(exc).__name__}: {exc}); using echo stub.")
+            print(
+                f"[server] LLM engine '{config.llm.engine}' unavailable "
+                f"({type(exc).__name__}: {exc}); using echo stub."
+            )
             _llm_engine = None
 
         try:
@@ -160,8 +194,10 @@ def create_app(config: AppConfig | None = None,
                 _tts_engine = engine_mgr.load_tts(config.tts.to_engine_cfg())
         except Exception as exc:
             engine_mgr.tts_load_error = f"{type(exc).__name__}: {exc}"
-            print(f"[server] TTS engine '{config.tts.engine}' unavailable "
-                  f"({type(exc).__name__}: {exc}); using tone stub.")
+            print(
+                f"[server] TTS engine '{config.tts.engine}' unavailable "
+                f"({type(exc).__name__}: {exc}); using tone stub."
+            )
             _tts_engine = None
 
         if config.render_backend == "cloud_liveavatar":
@@ -169,8 +205,7 @@ def create_app(config: AppConfig | None = None,
             if engine_mgr.llm:
                 print(f"[server] LLM  engine={engine_mgr.llm.name}")
             if engine_mgr.tts:
-                print(f"[server] TTS  engine={engine_mgr.tts.name} "
-                      f"sr={engine_mgr.tts.sample_rate}")
+                print(f"[server] TTS  engine={engine_mgr.tts.name} sr={engine_mgr.tts.sample_rate}")
         # Mock backend: no reconfigure_cloud (mock does not call backend.say;
         # /lite/say reads engine_mgr.llm/.tts directly via _streaming_say).
 
@@ -218,26 +253,34 @@ def create_app(config: AppConfig | None = None,
                 hub=hub,
                 orchestrator_registry=orchestrators,
                 max_queue_windows=max_q,
+                pg_store=pg,
             )
 
-        v1.init_deps(v1.V1Deps(
-            backend=backend,
-            store=store,
-            hub=hub,
-            director=director,
-            engine_manager=engine_mgr,
-            config=config,
-            locks=lock_registry,
-            orchestrators=orchestrators,
-            coordinator=coordinator,
-        ))
+        v1.init_deps(
+            v1.V1Deps(
+                backend=backend,
+                store=store,
+                hub=hub,
+                director=director,
+                engine_manager=engine_mgr,
+                config=config,
+                locks=lock_registry,
+                orchestrators=orchestrators,
+                coordinator=coordinator,
+                pg_store=pg,
+            )
+        )
 
     app.include_router(v1.router)
 
     @app.get("/")
     async def root() -> dict:
-        llm_name = engine_mgr.llm.name if engine_mgr is not None and engine_mgr.llm else "none(stub)"
-        tts_name = engine_mgr.tts.name if engine_mgr is not None and engine_mgr.tts else "tone(stub)"
+        llm_name = (
+            engine_mgr.llm.name if engine_mgr is not None and engine_mgr.llm else "none(stub)"
+        )
+        tts_name = (
+            engine_mgr.tts.name if engine_mgr is not None and engine_mgr.tts else "tone(stub)"
+        )
         return {
             "service": "vn-live-commerce-host",
             "api": "/api/v1",

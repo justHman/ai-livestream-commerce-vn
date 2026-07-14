@@ -44,19 +44,23 @@ async def test_publisher_noop_without_env():
 
 
 @pytest.mark.asyncio
-async def test_publisher_stub_path_when_enabled():
+async def test_publisher_enabled_requires_sdk_or_factory(monkeypatch):
+    """Enabled + no rtc_factory + no livekit-rtc -> start() raises loud.
+
+    Replaces the old silent stub path: enabled publish without the SDK is a
+    configuration error, not a silent no-op. The real publish path is exercised
+    via the rtc_factory seam in test_livekit_publish_sdk.py.
+    """
     env = {
         "LIVEKIT_PUBLISH": "1",
         "LIVEKIT_URL": "ws://lk:7880",
         "LIVEKIT_API_KEY": "k",
         "LIVEKIT_API_SECRET": "s",
     }
-    pub = AudioTrackPublisher("sess-2", env=env)
+    import sys
+
+    monkeypatch.setitem(sys.modules, "livekit.rtc", None)
+    pub = AudioTrackPublisher("sess-2", env=env, rtc_factory=None)
     assert pub.enabled is True
-    await pub.start()
-    assert pub.started is True
-    await pub.publish_pcm(b"\x01\x02", sample_rate=16000)
-    await pub.publish_pcm(b"\x03\x04", sample_rate=16000)
-    assert pub.frames_published == 2
-    await pub.stop()
-    assert pub.started is False
+    with pytest.raises(RuntimeError, match="livekit-rtc"):
+        await pub.start()

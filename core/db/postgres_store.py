@@ -113,10 +113,44 @@ class PostgresRuntimeStore:
     async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
         pool = self._require_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM sessions WHERE session_id = $1", session_id
-            )
+            row = await conn.fetchrow("SELECT * FROM sessions WHERE session_id = $1", session_id)
         return dict(row) if row is not None else None
+
+    async def insert_product_snapshot(
+        self,
+        session_id: str,
+        products: list[dict[str, Any]],
+    ) -> None:
+        """Persist the frozen product snapshot for a session (idempotent upsert).
+
+        Called once at /lite/attach. Rows are frozen for the livestream lifetime
+        (replay correctness + price integrity) — never mutated mid-stream.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            for idx, p in enumerate(products):
+                pid = str(p.get("id") or p.get("product_id") or "")
+                name = p.get("name")
+                price = p.get("price")
+                payload = {k: v for k, v in p.items() if k not in ("id", "name", "price")}
+                await conn.execute(
+                    """
+                    INSERT INTO session_products (
+                        session_id, product_id, name, price, payload, sort_order
+                    ) VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+                    ON CONFLICT (session_id, product_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        price = EXCLUDED.price,
+                        payload = EXCLUDED.payload,
+                        sort_order = EXCLUDED.sort_order
+                    """,
+                    session_id,
+                    pid,
+                    name,
+                    price,
+                    json.dumps(payload),
+                    idx,
+                )
 
     async def insert_viewer_msg(
         self,
