@@ -11,6 +11,18 @@ on:
   push:
     branches:
       - develop
+    # Only deploy when deployment-relevant code changes. Config-only PRs
+    # (.claude/, CLAUDE.md, docs, plans, .gitignore) skip the image build/deploy
+    # and only run ci.yml (offline test).
+    paths:
+      - "services/**"
+      - "core/**"
+      - "infra/**"
+      - "providers/**"
+      - "frontend/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/deploy-dev.yml"
 
 permissions:
   id-token: write
