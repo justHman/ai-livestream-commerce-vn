@@ -292,6 +292,32 @@ def deps() -> V1Deps:
     return _deps
 
 
+async def _persist_viewer_msgs(
+    d: V1Deps, session_id: str, comments, *, author: str = "viewer"
+) -> None:
+    """Persist ingested viewer comments to the runtime DB (fire-and-forget).
+
+    No-op when pg_store is None/disabled. Swallows errors so a broken runtime
+    DB never breaks the ingest/chat response.
+    """
+    if d.pg_store is None or not getattr(d.pg_store, "enabled", False):
+        return
+    for c in comments:
+        text = getattr(c, "text", None)
+        if not text:
+            continue
+        try:
+            await d.pg_store.insert_viewer_msg(
+                session_id,
+                text,
+                author=author,
+                comment_id=None,
+                source="platform",
+            )
+        except Exception:
+            pass
+
+
 def _mock_or_debug_allowed() -> None:
     """404 /mock/* when not debug_enabled and APP_ENV != dev."""
     cfg = deps().config
@@ -505,6 +531,17 @@ async def lite_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str,
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     await d.store.set(result.session_id, {"status": "active", "mode": result.mode})
+    if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
+        try:
+            await d.pg_store.upsert_session(
+                result.session_id,
+                status="active",
+                mode=result.mode,
+                render_backend=d.config.render_backend if d.config else None,
+                avatar_id=req.avatar_id,
+            )
+        except Exception:
+            pass  # fire-and-forget runtime persistence; /health/ready surfaces DB state
     return result.public_dict()  # frontend-safe only
 
 
@@ -668,6 +705,14 @@ async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[st
         info = await asyncio.to_thread(d.director.attach, req.session_id, products)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # M3: freeze the product snapshot into the runtime DB (fire-and-forget).
+    if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
+        try:
+            await d.pg_store.insert_product_snapshot(
+                req.session_id, [p.model_dump() for p in req.products]
+            )
+        except Exception:
+            pass
     # Wave 2: also start the DirectorCoordinator for this session.
     if d.coordinator is not None:
         d.coordinator.start(session_id=req.session_id, products=products)
@@ -691,6 +736,7 @@ async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[st
     if d.coordinator is not None and d.coordinator.has(req.session_id):
         for c in req.comments:
             d.coordinator.ingest(req.session_id, c.text, author="viewer", ts=c.t)
+        await _persist_viewer_msgs(d, req.session_id, req.comments, author="viewer")
         return {"ok": True, "accepted": True, "queue_stats": d.coordinator.stats(req.session_id)}
 
     # Fallback: original sync Director path.
@@ -707,6 +753,7 @@ async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[st
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
+    await _persist_viewer_msgs(d, req.session_id, req.comments, author="viewer")
     await d.hub.emit(req.session_id, {"type": "director.spoke", **result})
     return {"ok": True, **result}
 
@@ -732,6 +779,12 @@ async def lite_chat(payload: ChatIn, _: None = Depends(viewer_auth)) -> dict[str
         text=payload.text,
         author=payload.author,
         ts=payload.ts,
+    )
+    await _persist_viewer_msgs(
+        d,
+        payload.session_id,
+        [CommentIn(text=payload.text, t=payload.ts)],
+        author=payload.author,
     )
     return {
         "accepted": True,

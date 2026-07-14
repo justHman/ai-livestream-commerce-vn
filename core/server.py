@@ -253,6 +253,7 @@ def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -
                 hub=hub,
                 orchestrator_registry=orchestrators,
                 max_queue_windows=max_q,
+                pg_store=pg,
             )
 
         v1.init_deps(
