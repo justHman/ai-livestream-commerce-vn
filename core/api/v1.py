@@ -132,6 +132,7 @@ class IngestReq(BaseModel):
 
 class ChatIn(BaseModel):
     """Wave 2: single chat comment from a viewer (Phase B coordinator path)."""
+
     session_id: str
     text: str
     author: str
@@ -140,6 +141,7 @@ class ChatIn(BaseModel):
 
 class TTSPresetIn(BaseModel):
     """Wave 2: select a TTS preset by id (Phase A dropdown)."""
+
     preset_id: str
 
 
@@ -241,18 +243,26 @@ class AvatarStore:
 class V1Deps:
     """Dependencies injected by the server at startup."""
 
-    def __init__(self, backend: RenderBackend, store, hub: ControlHub, director=None,
-                 engine_manager=None, config: AppConfig | None = None,
-                 locks: SessionLockRegistry | None = None,
-                 orchestrators: dict | None = None,
-                 coordinator: DirectorCoordinator | None = None,
-                 avatars: AvatarStore | None = None) -> None:
+    def __init__(
+        self,
+        backend: RenderBackend,
+        store,
+        hub: ControlHub,
+        director=None,
+        engine_manager=None,
+        config: AppConfig | None = None,
+        locks: SessionLockRegistry | None = None,
+        orchestrators: dict | None = None,
+        coordinator: DirectorCoordinator | None = None,
+        avatars: AvatarStore | None = None,
+        pg_store: Any = None,
+    ) -> None:
         self.backend = backend
         self.store = store
         self.hub = hub
-        self.director = director       # DirectorRuntime (optional)
+        self.director = director  # DirectorRuntime (optional)
         self.engine_manager = engine_manager  # EngineManager (optional, for runtime swap)
-        self.config = config           # AppConfig (optional, for auth gates)
+        self.config = config  # AppConfig (optional, for auth gates)
         # Task 8: per-session lock registry + active orchestrator map. Lazy
         # defaults so existing tests that build V1Deps directly still work.
         self.locks = locks if locks is not None else SessionLockRegistry()
@@ -263,6 +273,9 @@ class V1Deps:
         # /lite/stop also drive the coordinator lifecycle.
         self.coordinator = coordinator
         self.avatars = avatars if avatars is not None else AvatarStore()
+        # Optional Postgres runtime store (durable rows). None/disabled when
+        # DATABASE_URL is unset. Persistence is fire-and-forget at route sites.
+        self.pg_store = pg_store
 
 
 _deps: Optional[V1Deps] = None
@@ -558,7 +571,12 @@ async def _streaming_say(d: V1Deps, req: SayReq) -> dict[str, Any]:
     # locked (every future /lite/say -> 409) and the entry would leak.
     try:
         orchestrator = StreamOrchestrator(
-            llm=llm, tts=tts, backend=d.backend, queue=queue, metrics=metrics, config=orch_cfg,
+            llm=llm,
+            tts=tts,
+            backend=d.backend,
+            queue=queue,
+            metrics=metrics,
+            config=orch_cfg,
         )
         # Register the orchestrator so /lite/interrupt can cancel it.
         d.orchestrators[sid] = {"orchestrator": orchestrator, "queue": queue}
@@ -575,12 +593,15 @@ async def _streaming_say(d: V1Deps, req: SayReq) -> dict[str, Any]:
         while queue.qsize() > 0:
             vw = await queue.get()
             windows_emitted += 1
-            await d.hub.emit(sid, {
-                "type": "avatar.video_window",
-                "seq": vw.seq,
-                "is_final": vw.is_final,
-                "duration_ms": vw.duration_ms,
-            })
+            await d.hub.emit(
+                sid,
+                {
+                    "type": "avatar.video_window",
+                    "seq": vw.seq,
+                    "is_final": vw.is_final,
+                    "duration_ms": vw.duration_ms,
+                },
+            )
         await d.hub.emit(sid, {"type": "avatar.speak_ended", "reply": spoken})
         return {
             "ok": True,
@@ -670,8 +691,7 @@ async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[st
     if d.coordinator is not None and d.coordinator.has(req.session_id):
         for c in req.comments:
             d.coordinator.ingest(req.session_id, c.text, author="viewer", ts=c.t)
-        return {"ok": True, "accepted": True,
-                "queue_stats": d.coordinator.stats(req.session_id)}
+        return {"ok": True, "accepted": True, "queue_stats": d.coordinator.stats(req.session_id)}
 
     # Fallback: original sync Director path.
     if d.director is None:
@@ -771,14 +791,18 @@ async def swap_llm(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[st
         "quantization": req.quantization,
     }
     cfg.update(req.extra)
-    await d.hub.broadcast({"type": "engine.llm_swap_started", "engine": req.engine, "model": req.model})
+    await d.hub.broadcast(
+        {"type": "engine.llm_swap_started", "engine": req.engine, "model": req.model}
+    )
     try:
         info = await asyncio.to_thread(d.engine_manager.load_llm, cfg)
         d.engine_manager.reconfigure_cloud()
     except Exception as exc:
         await d.hub.broadcast({"type": "engine.llm_swap_failed", "error": str(exc)})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    await d.hub.broadcast({"type": "engine.llm_swapped", "engine": info.engine, "model": info.model})
+    await d.hub.broadcast(
+        {"type": "engine.llm_swapped", "engine": info.engine, "model": info.model}
+    )
     return {"ok": True, "engine": info.engine, "model": info.model, "name": info.name}
 
 
@@ -798,17 +822,30 @@ async def swap_tts(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[st
         "ref_audio": req.ref_audio,
     }
     cfg.update(req.extra)
-    await d.hub.broadcast({"type": "engine.tts_swap_started", "engine": req.engine, "model": req.model})
+    await d.hub.broadcast(
+        {"type": "engine.tts_swap_started", "engine": req.engine, "model": req.model}
+    )
     try:
         info = await asyncio.to_thread(d.engine_manager.load_tts, cfg)
         d.engine_manager.reconfigure_cloud()
     except Exception as exc:
         await d.hub.broadcast({"type": "engine.tts_swap_failed", "error": str(exc)})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    await d.hub.broadcast({"type": "engine.tts_swapped", "engine": info.engine, "model": info.model,
-                           "sample_rate": info.sample_rate})
-    return {"ok": True, "engine": info.engine, "model": info.model, "name": info.name,
-            "sample_rate": info.sample_rate}
+    await d.hub.broadcast(
+        {
+            "type": "engine.tts_swapped",
+            "engine": info.engine,
+            "model": info.model,
+            "sample_rate": info.sample_rate,
+        }
+    )
+    return {
+        "ok": True,
+        "engine": info.engine,
+        "model": info.model,
+        "name": info.name,
+        "sample_rate": info.sample_rate,
+    }
 
 
 @router.post("/engines/tts/preset")
@@ -831,8 +868,8 @@ async def set_tts_preset(payload: TTSPresetIn, _: None = Depends(admin_auth)) ->
 
 class DebugStartReq(BaseModel):
     session_id: str
-    interval_sec: float = 5.0       # how often to feed mock comments
-    traffic_mode: str = "random"    # "random" | "low" | "medium" | "high" | "ramp"
+    interval_sec: float = 5.0  # how often to feed mock comments
+    traffic_mode: str = "random"  # "random" | "low" | "medium" | "high" | "ramp"
 
 
 @router.post("/debug/start")
@@ -849,17 +886,28 @@ async def debug_start(
         raise HTTPException(status_code=409, detail="call /lite/attach first")
     from ..debug.traffic_sim import TrafficSimulator
 
-    sim = TrafficSimulator(director=d.director, hub=d.hub, session_id=req.session_id,
-                           interval_sec=req.interval_sec, mode=req.traffic_mode)
+    sim = TrafficSimulator(
+        director=d.director,
+        hub=d.hub,
+        session_id=req.session_id,
+        interval_sec=req.interval_sec,
+        mode=req.traffic_mode,
+    )
     sim.start()
     # Store the sim so we can stop it later
     if not hasattr(deps(), "_debug_sims"):
         d._debug_sims = {}
     d._debug_sims[req.session_id] = sim
-    await d.hub.emit(req.session_id, {"type": "debug.started", "mode": req.traffic_mode,
-                                      "interval_sec": req.interval_sec})
-    return {"ok": True, "session_id": req.session_id, "mode": req.traffic_mode,
-            "interval_sec": req.interval_sec}
+    await d.hub.emit(
+        req.session_id,
+        {"type": "debug.started", "mode": req.traffic_mode, "interval_sec": req.interval_sec},
+    )
+    return {
+        "ok": True,
+        "session_id": req.session_id,
+        "mode": req.traffic_mode,
+        "interval_sec": req.interval_sec,
+    }
 
 
 class DebugStopReq(BaseModel):
@@ -892,8 +940,13 @@ async def debug_status(
     d = deps()
     sim = getattr(d, "_debug_sims", {}).get(session_id)
     if sim is not None:
-        return {"running": True, "mode": sim.mode, "interval_sec": sim.interval_sec,
-                "msgs_sent": sim.msgs_sent, "cycles": sim.cycles}
+        return {
+            "running": True,
+            "mode": sim.mode,
+            "interval_sec": sim.interval_sec,
+            "msgs_sent": sim.msgs_sent,
+            "cycles": sim.cycles,
+        }
     return {"running": False}
 
 
@@ -1043,9 +1096,7 @@ async def mock_video_mjpeg(
                 await asyncio.sleep(frame_interval_s)
 
             header = (
-                f"--{boundary}\r\n"
-                f"Content-Type: image/jpeg\r\n"
-                f"Content-Length: {len(jpeg)}\r\n\r\n"
+                f"--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
             ).encode("ascii")
             yield header + jpeg + b"\r\n"
 
@@ -1087,16 +1138,12 @@ async def sessions_say(
 
 
 @router.post("/sessions/{session_id}/interrupt")
-async def sessions_interrupt(
-    session_id: str, _: None = Depends(viewer_auth)
-) -> dict[str, Any]:
+async def sessions_interrupt(session_id: str, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     return await lite_interrupt(SessionReq(session_id=session_id), _)
 
 
 @router.post("/sessions/{session_id}/stop")
-async def sessions_stop(
-    session_id: str, _: None = Depends(viewer_auth)
-) -> dict[str, Any]:
+async def sessions_stop(session_id: str, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     return await lite_stop(SessionReq(session_id=session_id), _)
 
 
@@ -1104,9 +1151,7 @@ async def sessions_stop(
 async def sessions_attach(
     session_id: str, req: PathAttachReq, _: None = Depends(viewer_auth)
 ) -> dict[str, Any]:
-    return await lite_attach(
-        AttachReq(session_id=session_id, products=req.products), _
-    )
+    return await lite_attach(AttachReq(session_id=session_id, products=req.products), _)
 
 
 @router.post("/sessions/{session_id}/ingest")
@@ -1177,9 +1222,7 @@ async def sessions_plan_create(
 
 
 @router.post("/avatars")
-async def avatars_create(
-    req: AvatarCreateReq, _: None = Depends(viewer_auth)
-) -> dict[str, Any]:
+async def avatars_create(req: AvatarCreateReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     return deps().avatars.create(
         scope=req.scope,
         ref_photo_url=req.ref_photo_url,
@@ -1193,9 +1236,7 @@ async def avatars_list(_: None = Depends(viewer_auth)) -> dict[str, Any]:
 
 
 @router.get("/avatars/{avatar_id}")
-async def avatars_get(
-    avatar_id: str, _: None = Depends(viewer_auth)
-) -> dict[str, Any]:
+async def avatars_get(avatar_id: str, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     item = deps().avatars.get(avatar_id)
     if item is None:
         raise HTTPException(status_code=404, detail="unknown avatar_id")
@@ -1218,9 +1259,7 @@ async def avatars_put(
 
 
 @router.delete("/avatars/{avatar_id}")
-async def avatars_delete(
-    avatar_id: str, _: None = Depends(viewer_auth)
-) -> dict[str, Any]:
+async def avatars_delete(avatar_id: str, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     ok = deps().avatars.delete(avatar_id)
     if not ok:
         raise HTTPException(status_code=404, detail="unknown avatar_id")
@@ -1228,9 +1267,7 @@ async def avatars_delete(
 
 
 @router.post("/avatars/{avatar_id}/idle/regenerate")
-async def avatars_idle_regenerate(
-    avatar_id: str, _: None = Depends(viewer_auth)
-) -> dict[str, Any]:
+async def avatars_idle_regenerate(avatar_id: str, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     item = deps().avatars.get(avatar_id)
     if item is None:
         raise HTTPException(status_code=404, detail="unknown avatar_id")
@@ -1262,9 +1299,7 @@ async def ws_platform(ws: WebSocket, session_id: str) -> None:
             ts = msg.get("ts")
             if d.coordinator is not None and d.coordinator.has(session_id):
                 try:
-                    comment = d.coordinator.ingest(
-                        session_id, text, author=author, ts=ts
-                    )
+                    comment = d.coordinator.ingest(session_id, text, author=author, ts=ts)
                     await ws.send_json(
                         {
                             "type": "platform.accepted",
@@ -1272,9 +1307,7 @@ async def ws_platform(ws: WebSocket, session_id: str) -> None:
                         }
                     )
                 except KeyError:
-                    await ws.send_json(
-                        {"type": "error", "detail": "session not attached"}
-                    )
+                    await ws.send_json({"type": "error", "detail": "session not attached"})
             else:
                 # Store pending message on session meta when coordinator absent.
                 meta = await d.store.get(session_id) or {}
@@ -1282,9 +1315,7 @@ async def ws_platform(ws: WebSocket, session_id: str) -> None:
                 pending.append({"text": text, "author": author, "ts": ts})
                 meta["pending_platform_chat"] = pending[-100:]
                 await d.store.set(session_id, meta)
-                await ws.send_json(
-                    {"type": "platform.stored", "pending": len(pending)}
-                )
+                await ws.send_json({"type": "platform.stored", "pending": len(pending)})
     except WebSocketDisconnect:
         return
 
@@ -1296,6 +1327,7 @@ async def ws_platform(ws: WebSocket, session_id: str) -> None:
 async def admin_config(_: None = Depends(admin_auth)) -> dict[str, Any]:
     """Sanitized config dump: present/missing for secrets, no secret values."""
     cfg = deps().config or AppConfig.from_env()
+
     def _present(val: str) -> str:
         return "present" if (val or "").strip() else "missing"
 
