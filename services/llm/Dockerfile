@@ -20,10 +20,15 @@ ENV PORT=8001 \
 
 WORKDIR /app
 
-# awscli for S3 weight sync (base image lacks it). curl already present.
+# awscli v2 for S3 weight sync (apt awscli v1 broken on some base images —
+# KeyError 'opsworkscm' in awscli/customizations/opsworkscm.py). Install v2 binary.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends awscli \
+    && apt-get install -y --no-install-recommends curl unzip ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
+    && curl -fsS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
     && mkdir -p /models \
     && chown appuser:appuser /models

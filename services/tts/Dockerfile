@@ -38,9 +38,14 @@ WORKDIR /app
 # uv is pre-installed in the vllm base image; editable install lands in the
 # base venv's site-packages so it persists into runtime (single-stage build).
 # --branch + checkout FORK_COMMIT pins reproducibly without full history.
+# awscli v2 binary (apt awscli v1 broken — KeyError 'opsworkscm').
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git jq awscli \
+    && apt-get install -y --no-install-recommends git jq curl unzip ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
+    && curl -fsS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip \
     && git clone --branch "${FORK_BRANCH}" "${FORK_REPO}" /opt/vllm-omni \
     && cd /opt/vllm-omni \
     && git fetch --tags --depth 1 origin "${OMNI_TAG}" \
