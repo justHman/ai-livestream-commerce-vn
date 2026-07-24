@@ -15,7 +15,7 @@
 - [x] 2.6 Confirm Fargate backend capacity provider strategy prefers `FARGATE_SPOT` and tasks stay `arm64`; confirm Stage 2/3 engine+avatar ASG uses Spot `price-capacity-optimized`
 - [x] 2.7 Confirm GPU AZ availability for chosen Stage 2/3 instance types (`g6.xlarge` 2a/2c/2d, `g4dn.xlarge` 2a/2b/2c) before any plan; stay within 8 vCPU G/VT Spot quota (Stage 3 peak = g6 engine 4vCPU + g4dn avatar 4vCPU = 8vCPU = quota ceiling)
 - [x] 2.8 Pin vllm-omni fork `github.com/justHman/vllm-omni@feat/vieneu-tts-v0.22` (HEAD `e3d48e0a`) in the TTS image build; do not pull upstream unstable; the fork already contains the VieNeu adapter
-- [ ] 2.9 Seed VieNeu-TTS-v2 weights to S3 from local `.git` repo via `upload_weights_s3.py` (model is NOT public on HF; S3 is the runtime source, never HF cold pull during a billable window)
+- [ ] 2.9 Seed VieNeu-TTS-v2 weights to S3 via `upload_weights_s3.py` (HF `pnnbao-ump/VieNeu-TTS-v2` verified public 2026-07-24, 13 files; S3 is the runtime source, never HF cold pull during a billable window)
 
 ## 3. Stage verification tooling
 
@@ -56,7 +56,7 @@
 ## 5. Live Stage 2 — Real LLM/TTS (self-host g6) + LiveAvatar cloud, no LiveKit (billable; human-gated)
 
 - [ ] 5.1 Require Stage 1 PASS report + teardown verification before any Stage 2 plan
-- [ ] 5.2 Confirm `LIVEAVATAR_API_KEY` present (env/SSM); confirm vllm-omni fork `e3d48e0a` pinned in TTS image; confirm Qwen3.5-4B-AWQ + VieNeu-TTS-v2 weights seeded to S3 (local .git source, not HF); default `LIVEAVATAR_SANDBOX_AVATAR_ID` for first smoke
+- [ ] 5.2 Confirm `LIVEAVATAR_API_KEY` present (env/SSM); confirm vllm-omni fork `e3d48e0a` pinned in TTS image; confirm Qwen3.5-4B-AWQ + VieNeu-TTS-v2 weights seeded to S3 (HF public source); default `LIVEAVATAR_SANDBOX_AVATAR_ID` for first smoke
 - [ ] 5.3 Money-safe boot: Phase 0 apply (cost-driving desired=0, engines off) → verify healthy → build/push SHA images via GitHub Actions → seed weights → put SSM secrets
 - [ ] 5.4 User confirms cost window (AWS g6 Spot + LiveAvatar credits) → Phase 1 apply (`desired_llm_tts=1` on Spot g6, `desired_livekit=0`, `desired_avatar=0`, `desired_lmcache=0`, `render_backend=cloud_liveavatar`, LLM gpu_mem_util=0.55, TTS=0.35)
 - [ ] 5.5 Run Stage 2 smoke/bench (LLM→TTS→LiveAvatar cloud avatar, video direct to browser, no LiveKit); on FAIL: scale-to-0/destroy+verify → offline fix → redo Phase 0→1; on PASS: report → destroy+verify
