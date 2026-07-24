@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from providers.liveavatar_cloud.sdk import colab_server
+from providers.liveavatar_cloud.service import colab_server
 
 
 def main() -> None:

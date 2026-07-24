@@ -32,14 +32,16 @@ results/
 tmp/
 .runtime/
 
-# ── OS / editor ──────────────────────────────────────────────
+# ── OS / editor / tooling ────────────────────────────────────
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 codegraph/
 .codegraph/
+.codegraph-version.tmp
 .superpowers/
+.claude/worktrees/
 
 # ── Claude Code local override (per-developer, never commit) ──
 CLAUDE.local.md

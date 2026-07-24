@@ -31,6 +31,20 @@ output "ecs_service_names" {
   value = module.compute.service_names
 }
 
+output "desired_optional_services" {
+  description = "Effective desired counts: EC2-gated services are 0 when capacity is absent."
+  value = {
+    llm_tts = var.create_ec2_capacity ? var.desired_llm_tts : 0
+    avatar  = var.create_ec2_capacity ? var.desired_avatar : 0
+    livekit = var.desired_livekit
+    lmcache = var.create_ec2_capacity && var.lmcache_enabled ? var.desired_lmcache : 0
+  }
+}
+
+output "alb_url_scheme" {
+  value = "https"
+}
+
 output "weights_uri" {
   value = module.storage.weights_uri
 }

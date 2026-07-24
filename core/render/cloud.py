@@ -118,5 +118,9 @@ class CloudRenderBackend(FullPipelineBackend):
             raise KeyError(session_id)
         convo.stop()
 
+    def stop_all(self) -> None:
+        for session_id in list(self._convos):
+            self.stop(session_id)
+
     def has(self, session_id: str) -> bool:
         return session_id in self._convos

@@ -9,18 +9,34 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Ruff check (production sources)
+        run: >
+          uvx ruff check
+          core/api core/db core/debug core/director core/llm core/render
+          core/schemas core/stream core/tts
+          core/config.py core/engine_manager.py core/livekit_publish.py
+          core/livekit_tokens.py core/pipecat_bridge.py core/server.py
+          core/store.py
+          providers
+          scripts/bench_api.py scripts/upload_weights_s3.py
+
   offline-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
+          enable-cache: true
           python-version: '3.11'
-          cache: pip
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[test]"
+      - name: Sync
+        run: uv sync --frozen --extra test
       - name: Pytest
         env:
           RENDER_BACKEND: mock
@@ -28,7 +44,33 @@ jobs:
           TTS_ENGINE: tone
           DIRECTOR_ENABLED: '0'
           APP_ENV: dev
-        run: python -m pytest core/tests/ -q
+        run: uv run python -m pytest core/tests/ -q
+
+  terraform-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.8'
+      - name: Format check
+        run: terraform fmt -check -recursive infra
+
+  terraform-validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        workspace: [global, dev, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.8'
+      - name: Init (no backend)
+        run: terraform -chdir=infra/environments/${{ matrix.workspace }} init -backend=false
+      - name: Validate
+        run: terraform -chdir=infra/environments/${{ matrix.workspace }} validate
+
   docker-build-backend:
     runs-on: ubuntu-latest
     needs: []

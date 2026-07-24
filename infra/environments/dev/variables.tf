@@ -69,7 +69,53 @@ variable "db_password" {
   description = "RDS master password. Set via TF_VAR_db_password or terraform.tfvars.local — never commit."
   type        = string
   sensitive   = true
-  default     = "CHANGE_ME_via_TF_VAR"
+
+  validation {
+    condition     = length(var.db_password) >= 8 && length(var.db_password) <= 128 && var.db_password != "CHANGE_ME"
+    error_message = "db_password must be 8-128 chars and not a placeholder."
+  }
+}
+
+variable "backend_api_token" {
+  description = "Backend API bearer token. Set via TF_VAR_backend_api_token — never commit."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.backend_api_token) >= 32 && var.backend_api_token != "CHANGE_ME"
+    error_message = "backend_api_token must be at least 32 chars and not a placeholder."
+  }
+}
+
+variable "admin_api_token" {
+  description = "Admin API bearer token. Set via TF_VAR_admin_api_token — never commit."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.admin_api_token) >= 32 && var.admin_api_token != "CHANGE_ME"
+    error_message = "admin_api_token must be at least 32 chars and not a placeholder."
+  }
+}
+
+variable "enable_database_url" {
+  description = "Inject DATABASE_URL from an existing SSM SecureString parameter."
+  type        = bool
+  default     = false
+}
+
+variable "database_url_parameter_arn" {
+  description = "Existing SSM SecureString ARN containing DATABASE_URL; provide the ARN only."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (trimspace(var.database_url_parameter_arn) == "" && !var.enable_database_url) || can(regex(
+      "^arn:[a-z0-9-]+:ssm:[a-z0-9-]+:[0-9]{12}:parameter/[A-Za-z0-9_.+=,@-]+(/[A-Za-z0-9_.+=,@-]+)*$",
+      trimspace(var.database_url_parameter_arn),
+    ))
+    error_message = "database_url_parameter_arn must be empty or an existing SSM Parameter Store ARN."
+  }
 }
 
 variable "db_instance_class" {
@@ -96,26 +142,51 @@ variable "lmcache_enabled" {
 variable "desired_backend" {
   type    = number
   default = 1
+
+  validation {
+    condition     = var.desired_backend >= 0 && floor(var.desired_backend) == var.desired_backend
+    error_message = "desired_backend must be a nonnegative integer."
+  }
 }
 
 variable "desired_llm_tts" {
   type    = number
-  default = 0 # keep 0 until GPU Spot budget approved
+  default = 0
+
+  validation {
+    condition     = var.desired_llm_tts >= 0 && floor(var.desired_llm_tts) == var.desired_llm_tts
+    error_message = "desired_llm_tts must be a nonnegative integer."
+  }
 }
 
 variable "desired_avatar" {
   type    = number
   default = 0
+
+  validation {
+    condition     = var.desired_avatar >= 0 && floor(var.desired_avatar) == var.desired_avatar
+    error_message = "desired_avatar must be a nonnegative integer."
+  }
 }
 
 variable "desired_livekit" {
   type    = number
   default = 0
+
+  validation {
+    condition     = var.desired_livekit >= 0 && floor(var.desired_livekit) == var.desired_livekit
+    error_message = "desired_livekit must be a nonnegative integer."
+  }
 }
 
 variable "desired_lmcache" {
   type    = number
   default = 0
+
+  validation {
+    condition     = var.desired_lmcache >= 0 && floor(var.desired_lmcache) == var.desired_lmcache
+    error_message = "desired_lmcache must be a nonnegative integer."
+  }
 }
 
 variable "image_backend" {
@@ -136,13 +207,13 @@ variable "image_tts" {
 variable "render_backend" {
   description = "Render backend: mock (no GPU), cloud (LiveAvatar), self_host (MuseTalk future)"
   type        = string
-  default     = "cloud"
+  default     = "mock"
 }
 
 variable "llm_engine" {
   description = "LLM engine: none (stub), openai_compat (remote vLLM GPU)"
   type        = string
-  default     = "openai_compat"
+  default     = "none"
 }
 
 variable "llm_base_url" {
@@ -154,7 +225,7 @@ variable "llm_base_url" {
 variable "tts_engine" {
   description = "TTS engine: tone (stub), remote_http (remote vllm-omni GPU)"
   type        = string
-  default     = "remote_http"
+  default     = "tone"
 }
 
 variable "tts_base_url" {
@@ -173,6 +244,11 @@ variable "image_lmcache" {
   default = "imjusthman/ai-live-lmcache:latest"
 }
 
+variable "image_livekit" {
+  type    = string
+  default = "imjusthman/ai-live-livekit:dev"
+}
+
 variable "alert_email" {
   description = "SNS alert email (empty = topic only)"
   type        = string
@@ -188,26 +264,12 @@ variable "enable_billing_alarms" {
 variable "create_ec2_capacity" {
   description = "Create GPU/ARM ASG capacity providers"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "tags" {
   type    = map(string)
   default = {}
-}
-
-variable "backend_api_token" {
-  description = "Backend API bearer token. Set via TF_VAR_backend_api_token — never commit."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "admin_api_token" {
-  description = "Admin API bearer token. Set via TF_VAR_admin_api_token — never commit."
-  type        = string
-  sensitive   = true
-  default     = ""
 }
 
 variable "debug_enabled" {
@@ -242,4 +304,9 @@ variable "spot_capacity_percentage" {
   description = "Spot capacity % (0=On-Demand for smoke when Spot quota=0, 100=Spot prod)"
   type        = number
   default     = 100
+
+  validation {
+    condition     = var.spot_capacity_percentage >= 0 && var.spot_capacity_percentage <= 100 && floor(var.spot_capacity_percentage) == var.spot_capacity_percentage
+    error_message = "spot_capacity_percentage must be an integer from 0 to 100."
+  }
 }

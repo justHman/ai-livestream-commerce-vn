@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
-import statistics
 import sys
 import time
 import urllib.request

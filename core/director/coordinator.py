@@ -30,8 +30,7 @@ import asyncio
 import logging
 import os
 import time
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 from .catalog import Product
@@ -42,7 +41,7 @@ from .embedder import build_embedder
 from .hooks import HookPool
 from .config import StreamConfig
 from .runtime import DirectorRuntime
-from .state import ProductState, StreamState
+from .state import StreamState
 
 from ..render.orchestrator import StreamOrchestrator
 from ..render.locks import SessionLockRegistry
@@ -138,6 +137,7 @@ class DirectorCoordinator:
         self._tasks: dict[str, asyncio.Task] = {}
         self._stats: dict[str, _SessionStats] = {}
         self._active_score: dict[str, float] = {}
+        self._last_tick: dict[str, float] = {}
         self._embedder = None  # lazy
         # Optional Postgres runtime store (durable rows). None/disabled -> no
         # persistence. Fire-and-forget: a failure must never break the speak loop.
@@ -202,6 +202,8 @@ class DirectorCoordinator:
 
         self._queues[session_id] = ChatQueue(session_id)
         self._stats[session_id] = _SessionStats()
+        ds = self._runtime._sessions.get(session_id)
+        self._last_tick[session_id] = ds.now() if ds is not None else 0.0
         task = asyncio.create_task(
             self._tick_loop(session_id),
             name=f"coordinator-tick-{session_id}",
@@ -221,8 +223,14 @@ class DirectorCoordinator:
         self._queues.pop(session_id, None)
         self._stats.pop(session_id, None)
         self._active_score.pop(session_id, None)
+        self._last_tick.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
+
+    def stop_all(self) -> None:
+        """Cancel every active coordinator session."""
+        for session_id in list(self._tasks):
+            self.stop(session_id)
 
     def ingest(
         self,
@@ -259,6 +267,16 @@ class DirectorCoordinator:
     def has(self, session_id: str) -> bool:
         """True if a coordinator session is active for this session_id."""
         return session_id in self._tasks
+
+    def _advance_timers(self, session_id: str, now: float, state: StreamState) -> None:
+        """Increment all three elapsed counters by delta since last tick."""
+        prev = self._last_tick.get(session_id, now)
+        delta = max(0.0, now - prev)
+        # Preserve the high-water mark after a backward clock jump.
+        self._last_tick[session_id] = max(now, prev)
+        state.phase_elapsed_sec += delta
+        state.product_elapsed_sec += delta
+        state.sec_since_relevant_msg += delta
 
     # ------------------------------------------------------------------
     # Background tick loop
@@ -301,7 +319,7 @@ class DirectorCoordinator:
         if not fresh:
             # Even with no comments, run decide() so phase timers and hooks fire.
             now = ds.now()
-            state.phase_elapsed_sec = now
+            self._advance_timers(session_id, now, state)
             decision = director.decide(state.rolling_comments, now=now)
             if decision.action != "idle":
                 await self._maybe_speak(session_id, decision)
@@ -328,7 +346,7 @@ class DirectorCoordinator:
 
         # 4. Director decides.
         now = ds.now()
-        state.phase_elapsed_sec = now
+        self._advance_timers(session_id, now, state)
         decision = director.decide(state.rolling_comments, now=now)
 
         # Emit the decision to the WS hub (frontend ticker). Best-effort; the
@@ -478,7 +496,10 @@ class DirectorCoordinator:
                 reason=decision.reason,
             )
         except Exception:
-            logger.debug("pg insert_director_decision failed for %s", session_id, exc_info=True)
+            logger.warning(
+                "Postgres persistence failed session=%s operation=insert_director_decision",
+                session_id,
+            )
 
     def _after_speak(self, session_id: str, decision: Decision, speech: str) -> None:
         """Update covered_points + advance talking_point_idx on proactive speak."""

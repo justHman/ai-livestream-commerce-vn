@@ -1,62 +1,328 @@
-# deploy-prod — deploy to PROD on tag v* with manual approval gate
-# Requires GitHub secrets: AWS_ROLE_ARN_PROD, DOCKERHUB_USER, DOCKERHUB_TOKEN
-# GitHub Environment "production" should have required reviewers
-# OIDC trust: repo:justHman/ai-livestream-commerce-vn:ref:refs/tags/v*
+# deploy-prod — build release images on tag push; deploy only from manual confirmation on main.
+# Tag push builds and publishes immutable release images. Manual dispatch from main deploys
+# those pre-built images after verifying all 6 manifests exist. No rebuild on manual dispatch.
 name: deploy-prod
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: "Deploy this validated release tag"
+        required: true
+        type: boolean
+        default: false
+      release_tag:
+        description: "Existing v-prefixed tag to deploy (vMAJOR.MINOR.PATCH)"
+        required: true
+        type: string
 
 permissions:
   id-token: write
   contents: read
 
+env:
+  AWS_REGION: ap-northeast-2
+  STATE_BUCKET: ai-livestream-tfstate-191918535424
+  STATE_LOCK_TABLE: ai-livestream-tf-lock
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
 jobs:
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Validate ref and release tag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          PUSH_REF: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+              echo "Manual PROD dispatch must run from main (got $GITHUB_REF)." >&2
+              exit 1
+            fi
+            tag="$INPUT_TAG"
+          else
+            tag="$PUSH_REF"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Release tag must match vMAJOR.MINOR.PATCH exactly: $tag" >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve-tag
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - svc: backend
+            image: imjusthman/ai-live-backend
+            platform: linux/arm64
+            needs_qemu: true
+          - svc: llm
+            image: imjusthman/ai-live-llm
+            platform: linux/amd64
+            needs_qemu: false
+          - svc: tts
+            image: imjusthman/ai-live-tts
+            platform: linux/amd64
+            needs_qemu: false
+          - svc: avatar
+            image: imjusthman/ai-live-avatar
+            platform: linux/amd64
+            needs_qemu: false
+          - svc: lmcache
+            image: imjusthman/ai-live-lmcache
+            platform: linux/arm64
+            needs_qemu: true
+          - svc: livekit
+            image: imjusthman/ai-live-livekit
+            platform: linux/arm64
+            needs_qemu: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
+          fetch-depth: 0
+      - name: Verify exact tag checkout
+        env:
+          RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || {
+            echo "Tag $RELEASE_TAG not present." >&2
+            exit 1
+          }
+          tag_commit=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          [[ "$tag_commit" == "$head_commit" ]] || {
+            echo "HEAD does not point to $RELEASE_TAG commit." >&2
+            exit 1
+          }
+          git describe --tags --exact-match HEAD >/dev/null || {
+            echo "HEAD is not an exact tagged commit." >&2
+            exit 1
+          }
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "Release tag commit is not reachable from origin/main." >&2
+            exit 1
+          }
+      - if: ${{ matrix.needs_qemu }}
+        uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.svc }}/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ matrix.image }}:${{ needs.resolve-tag.outputs.tag }}
+
   deploy:
+    needs: [resolve-tag, build]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.confirm_deploy == true && needs.resolve-tag.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
-          aws-region: ap-northeast-2
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+          ref: refs/tags/${{ needs.resolve-tag.outputs.tag }}
+          fetch-depth: 0
+      - name: Verify exact tag checkout
+        env:
+          RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || {
+            echo "Tag $RELEASE_TAG not present." >&2
+            exit 1
+          }
+          tag_commit=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          [[ "$tag_commit" == "$head_commit" ]] || {
+            echo "HEAD does not point to $RELEASE_TAG commit." >&2
+            exit 1
+          }
+          git describe --tags --exact-match HEAD >/dev/null || {
+            echo "HEAD is not an exact tagged commit." >&2
+            exit 1
+          }
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "Release tag commit is not reachable from origin/main." >&2
+            exit 1
+          }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push release images
+      - name: Verify all 6 release image manifests exist
+        env:
+          RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
         run: |
-          TAG=${GITHUB_REF_NAME#v}
-          docker build -f services/backend/Dockerfile \
-            -t imjusthman/ai-live-backend:$TAG \
-            -t imjusthman/ai-live-backend:latest .
-          docker push imjusthman/ai-live-backend:$TAG
-          docker push imjusthman/ai-live-backend:latest
-
-      - name: ECS rolling update PROD
-        if: ${{ false }}
-        run: |
-          for svc in backend llm-tts avatar livekit lmcache; do
-            aws ecs update-service --cluster ai-livestream-prod-cluster --service ai-livestream-prod-$svc --force-new-deployment || true
+          set -euo pipefail
+          for image in \
+            imjusthman/ai-live-backend \
+            imjusthman/ai-live-llm \
+            imjusthman/ai-live-tts \
+            imjusthman/ai-live-avatar \
+            imjusthman/ai-live-lmcache \
+            imjusthman/ai-live-livekit; do
+            docker buildx imagetools inspect "$image:$RELEASE_TAG" >/dev/null || {
+              echo "Image $image:$RELEASE_TAG manifest not found." >&2
+              exit 1
+            }
           done
-
-      - name: Wait for services stable
-        if: ${{ false }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Read production Terraform outputs
+        id: tf
         run: |
-          aws ecs wait services-stable --cluster ai-livestream-prod-cluster \
-            --services ai-livestream-prod-backend
-        timeout-minutes: 15
-
-      - name: Rollback on failure
-        if: failure()
+          set -euo pipefail
+          aws s3api head-bucket --bucket "$STATE_BUCKET"
+          aws dynamodb describe-table --table-name "$STATE_LOCK_TABLE" >/dev/null
+          terraform -chdir=infra/environments/prod init -input=false
+          output=$(terraform -chdir=infra/environments/prod output -json)
+          cluster=$(jq -r '.ecs_cluster_name.value // empty' <<<"$output")
+          backend_svc=$(jq -r '.ecs_service_names.value.backend // empty' <<<"$output")
+          backend_tg=$(jq -r '.backend_target_group_arn.value // empty' <<<"$output")
+          llm_tts_svc=$(jq -r '.ecs_service_names.value.llm_tts // empty' <<<"$output")
+          avatar_svc=$(jq -r '.ecs_service_names.value.avatar // empty' <<<"$output")
+          livekit_svc=$(jq -r '.ecs_service_names.value.livekit // empty' <<<"$output")
+          lmcache_svc=$(jq -r '.ecs_service_names.value.lmcache // empty' <<<"$output")
+          [[ -n "$cluster" && -n "$backend_svc" && -n "$backend_tg" ]] || {
+            echo "Terraform outputs incomplete (cluster/backend/target group required)." >&2
+            exit 1
+          }
+          echo "ecs_cluster=$cluster" >> "$GITHUB_OUTPUT"
+          echo "backend_service=$backend_svc" >> "$GITHUB_OUTPUT"
+          echo "backend_target_group_arn=$backend_tg" >> "$GITHUB_OUTPUT"
+          echo "llm_tts_service=$llm_tts_svc" >> "$GITHUB_OUTPUT"
+          echo "avatar_service=$avatar_svc" >> "$GITHUB_OUTPUT"
+          echo "livekit_service=$livekit_svc" >> "$GITHUB_OUTPUT"
+          echo "lmcache_service=$lmcache_svc" >> "$GITHUB_OUTPUT"
+      - name: Deploy services with rollback and smoke
+        env:
+          RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
+          ECS_CLUSTER: ${{ steps.tf.outputs.ecs_cluster }}
+          BACKEND_SERVICE: ${{ steps.tf.outputs.backend_service }}
+          LLM_TTS_SERVICE: ${{ steps.tf.outputs.llm_tts_service }}
+          AVATAR_SERVICE: ${{ steps.tf.outputs.avatar_service }}
+          LIVEKIT_SERVICE: ${{ steps.tf.outputs.livekit_service }}
+          LMCACHE_SERVICE: ${{ steps.tf.outputs.lmcache_service }}
+          BACKEND_TARGET_GROUP: ${{ steps.tf.outputs.backend_target_group_arn }}
         run: |
-          echo "Manual rollback: aws ecs update-service --task-definition <prev-revision-arn>"
+          set -euo pipefail
+          updated_services=()
+          rollback_stack=()
+          rollback() {
+            trap - ERR
+            local svc old_task entry
+            for ((i=${#rollback_stack[@]}-1; i>=0; i--)); do
+              entry="${rollback_stack[$i]}"
+              IFS='|' read -r svc old_task <<<"$entry"
+              aws ecs update-service --cluster "$ECS_CLUSTER" --service "$svc" --task-definition "$old_task" >/dev/null || echo "Rollback failed for $svc" >&2
+            done
+            if [[ ${#rollback_stack[@]} -gt 0 ]]; then
+              local services=()
+              for ((i=${#rollback_stack[@]}-1; i>=0; i--)); do
+                IFS='|' read -r svc _ <<<"${rollback_stack[$i]}"
+                services+=("$svc")
+              done
+              aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${services[@]}" || echo "Rollback stability wait failed" >&2
+            fi
+            exit 1
+          }
+          trap rollback ERR
+          deploy_service() {
+            local role="$1" service="$2" mandatory="$3"
+            if [[ -z "$service" ]]; then
+              if [[ "$mandatory" == mandatory ]]; then
+                echo "$role service name is empty." >&2
+                return 1
+              fi
+              return 0
+            fi
+            local details status failures old_task task new_task
+            details=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$service")
+            status=$(jq -r '.services[0].status // empty' <<<"$details")
+            failures=$(jq '.failures | length' <<<"$details")
+            if [[ "$status" != ACTIVE || "$failures" -gt 0 ]]; then
+              if [[ "$mandatory" == mandatory ]]; then
+                echo "Mandatory $role ($service) is not ACTIVE (status=$status, failures=$failures)." >&2
+                return 1
+              fi
+              echo "Optional $role ($service) not ACTIVE (status=$status, failures=$failures); state drift." >&2
+              return 1
+            fi
+            old_task=$(jq -r '.services[0].taskDefinition' <<<"$details")
+            task=$(aws ecs describe-task-definition --task-definition "$old_task" --query taskDefinition)
+            case "$role" in
+              backend)
+                task=$(jq --arg img "imjusthman/ai-live-backend:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="backend" then .image=$img else . end)' <<<"$task")
+                ;;
+              llm-tts)
+                task=$(jq --arg llm "imjusthman/ai-live-llm:$RELEASE_TAG" --arg tts "imjusthman/ai-live-tts:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="llm" then .image=$llm elif .name=="tts" then .image=$tts else . end)' <<<"$task")
+                ;;
+              avatar)
+                task=$(jq --arg img "imjusthman/ai-live-avatar:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="avatar" then .image=$img else . end)' <<<"$task")
+                ;;
+              livekit)
+                task=$(jq --arg img "imjusthman/ai-live-livekit:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="livekit" then .image=$img else . end)' <<<"$task")
+                ;;
+              lmcache)
+                task=$(jq --arg img "imjusthman/ai-live-lmcache:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="lmcache" then .image=$img else . end)' <<<"$task")
+                ;;
+              *)
+                echo "Unsupported ECS role: $role" >&2
+                return 1
+                ;;
+            esac
+            task=$(jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)' <<<"$task")
+            new_task=$(aws ecs register-task-definition --cli-input-json "$task" --query taskDefinition.taskDefinitionArn --output text)
+            aws ecs update-service --cluster "$ECS_CLUSTER" --service "$service" --task-definition "$new_task" >/dev/null
+            rollback_stack+=("$service|$old_task")
+            updated_services+=("$service")
+          }
+          target_group_healthy() {
+            aws elbv2 describe-target-health --target-group-arn "$BACKEND_TARGET_GROUP" | jq -e '[.TargetHealthDescriptions[].TargetHealth.State] | length > 0 and all(.[]; . == "healthy")' >/dev/null
+          }
+          deploy_service backend "$BACKEND_SERVICE" mandatory
+          deploy_service llm-tts "$LLM_TTS_SERVICE" optional
+          deploy_service avatar "$AVATAR_SERVICE" optional
+          deploy_service livekit "$LIVEKIT_SERVICE" optional
+          deploy_service lmcache "$LMCACHE_SERVICE" optional
+          if [[ ${#updated_services[@]} -gt 0 ]]; then
+            aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${updated_services[@]}"
+          fi
+          for _ in {1..12}; do
+            target_group_healthy && break
+            sleep 10
+          done
+          target_group_healthy
+          trap - ERR

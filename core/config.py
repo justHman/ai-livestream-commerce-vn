@@ -209,6 +209,12 @@ class AppConfig:
 
     # Server
     port: int = 8800
+    max_request_body_bytes: int = 65_536
+    api_rate_limit_requests: int = 30
+    api_rate_limit_window_seconds: float = 60.0
+    api_rate_limit_max_keys: int = 10_000
+    ws_rate_limit_messages: int = 60
+    ws_rate_limit_window_seconds: float = 60.0
 
     # LiveAvatar (cloud backend)
     api_key_present: bool = False
@@ -264,6 +270,16 @@ class AppConfig:
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             cors_origins=os.environ.get("CORS_ORIGINS", "*"),
             port=int(os.environ.get("PORT", "8800")),
+            max_request_body_bytes=int(os.environ.get("MAX_REQUEST_BODY_BYTES", "65536")),
+            api_rate_limit_requests=int(os.environ.get("API_RATE_LIMIT_REQUESTS", "30")),
+            api_rate_limit_window_seconds=float(
+                os.environ.get("API_RATE_LIMIT_WINDOW_SECONDS", "60")
+            ),
+            api_rate_limit_max_keys=int(os.environ.get("API_RATE_LIMIT_MAX_KEYS", "10000")),
+            ws_rate_limit_messages=int(os.environ.get("WS_RATE_LIMIT_MESSAGES", "60")),
+            ws_rate_limit_window_seconds=float(
+                os.environ.get("WS_RATE_LIMIT_WINDOW_SECONDS", "60")
+            ),
             api_key_present=bool(os.environ.get("LIVEAVATAR_API_KEY")),
             mock_avatar_fps=int(os.environ.get("MOCK_AVATAR_TARGET_FPS", "25")),
             mock_avatar_width=int(os.environ.get("MOCK_AVATAR_WIDTH", "640")),

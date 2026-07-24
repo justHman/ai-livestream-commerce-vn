@@ -163,10 +163,12 @@ class Director:
         for sc in ranked[1:]:
             sc.cluster.skips += 1
 
-        # bookkeeping for switch conditions
+        # Count selected clusters for switching; reset engagement only for a
+        # cluster retrieved to a known product.
         if cur is not None:
             cur.cluster_count += 1
-        s.sec_since_relevant_msg = 0.0
+        if top.cluster.product_id is not None:
+            s.sec_since_relevant_msg = 0.0
 
         # going back to a previous product? (challenge 4)
         if top.cluster.product_id and cur and top.cluster.product_id != cur.product_id:

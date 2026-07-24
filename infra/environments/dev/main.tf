@@ -22,15 +22,15 @@ module "network" {
 module "security" {
   source = "../../modules/security"
 
-  env                   = var.env
-  project               = var.project
-  vpc_id                = module.network.vpc_id
-  alb_ingress_cidrs     = var.alb_ingress_cidrs
+  env               = var.env
+  project           = var.project
+  vpc_id            = module.network.vpc_id
+  alb_ingress_cidrs = var.alb_ingress_cidrs
   # :80 always open in dev: forward when no cert, redirect→443 when cert set.
   alb_http_ingress_cidrs = ["0.0.0.0/0"]
-  certificate_arn       = var.certificate_arn
-  enable_oidc       = false # OIDC lives in environments/global
-  tags              = var.tags
+  certificate_arn        = var.certificate_arn
+  enable_oidc            = false # OIDC lives in environments/global
+  tags                   = var.tags
 }
 
 module "storage" {
@@ -45,10 +45,12 @@ module "storage" {
 module "secrets" {
   source = "../../modules/secrets"
 
-  env     = var.env
-  project = var.project
-  tags    = var.tags
-  # values set out-of-band: aws ssm put-parameter --overwrite
+  env               = var.env
+  project           = var.project
+  tags              = var.tags
+  backend_api_token = var.backend_api_token
+  admin_api_token   = var.admin_api_token
+  # other values set out-of-band: aws ssm put-parameter --overwrite
 }
 
 module "database" {
@@ -87,31 +89,32 @@ module "loadbalancer" {
 module "compute" {
   source = "../../modules/compute"
 
-  env                      = var.env
-  project                  = var.project
-  vpc_id                   = module.network.vpc_id
-  subnet_ids               = module.network.public_subnet_ids
-  sg_map                   = module.security.sg_map
-  image_backend            = var.image_backend
-  image_llm                = var.image_llm
-  image_tts                = var.image_tts
-  image_avatar             = var.image_avatar
-  image_lmcache            = var.image_lmcache
-  lmcache_enabled          = var.lmcache_enabled
-  desired_backend          = var.desired_backend
-  desired_llm_tts          = var.desired_llm_tts
-  desired_avatar           = var.desired_avatar
-  desired_livekit          = var.desired_livekit
-  desired_lmcache          = var.desired_lmcache
-  weights_s3_uri           = module.storage.weights_uri
-  secrets_arns             = module.secrets.parameter_arns
+  env             = var.env
+  project         = var.project
+  vpc_id          = module.network.vpc_id
+  subnet_ids      = module.network.public_subnet_ids
+  sg_map          = module.security.sg_map
+  image_backend   = var.image_backend
+  image_llm       = var.image_llm
+  image_tts       = var.image_tts
+  image_avatar    = var.image_avatar
+  image_lmcache   = var.image_lmcache
+  image_livekit   = var.image_livekit
+  lmcache_enabled = var.lmcache_enabled
+  desired_backend = var.desired_backend
+  desired_llm_tts = var.desired_llm_tts
+  desired_avatar  = var.desired_avatar
+  desired_livekit = var.desired_livekit
+  desired_lmcache = var.desired_lmcache
+  weights_s3_uri  = module.storage.weights_uri
+  secrets_arns = merge(module.secrets.parameter_arns, var.enable_database_url ? {
+    "backend/database_url" = var.database_url_parameter_arn
+  } : {})
   backend_target_group_arn = module.loadbalancer.backend_target_group_arn
   assign_public_ip         = true
   create_ec2_capacity      = var.create_ec2_capacity
   spot_capacity_percentage = var.spot_capacity_percentage
   log_group_prefix         = "/ecs/${var.project}-${var.env}"
-  backend_api_token        = var.backend_api_token
-  admin_api_token          = var.admin_api_token
   cors_origins             = var.cors_origins
   debug_enabled            = var.debug_enabled
   session_store            = var.session_store

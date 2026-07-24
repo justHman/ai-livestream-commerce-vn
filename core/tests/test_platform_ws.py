@@ -71,3 +71,92 @@ def test_platform_ws_auth_rejects_in_prod(mock_env: None) -> None:
             "/api/v1/ws/platform/s1?token=viewer-secret"
         ) as ws:
             assert ws.receive_json()["type"] == "platform.connected"
+
+
+def test_platform_ws_burst_closes_with_policy_violation(mock_env: None) -> None:
+    from core.server import create_app
+
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        ws_rate_limit_messages=1,
+        ws_rate_limit_window_seconds=60,
+    )
+    deps = v1.V1Deps(
+        backend=MockRenderBackend(),
+        store=InMemorySessionStore(),
+        hub=v1.ControlHub(),
+        engine_manager=EngineManager(),
+        config=cfg,
+    )
+    with TestClient(create_app(config=cfg, deps=deps)) as client:
+        with client.websocket_connect("/api/v1/ws/platform/s1") as ws:
+            ws.receive_json()
+            ws.send_json({"text": "first"})
+            ws.receive_json()
+            ws.send_json({"text": "second"})
+            with pytest.raises(Exception) as error:
+                ws.receive_json()
+
+    assert getattr(error.value, "code", None) == 1008
+
+
+def test_platform_ws_reconnect_keeps_session_budget(mock_env: None) -> None:
+    from core.server import create_app
+
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        ws_rate_limit_messages=2,
+        ws_rate_limit_window_seconds=60,
+    )
+    deps = v1.V1Deps(
+        backend=MockRenderBackend(),
+        store=InMemorySessionStore(),
+        hub=v1.ControlHub(),
+        engine_manager=EngineManager(),
+        config=cfg,
+    )
+    with TestClient(create_app(config=cfg, deps=deps)) as client:
+        with client.websocket_connect("/api/v1/ws/platform/s1") as ws:
+            ws.receive_json()
+            ws.send_json({"text": "first"})
+            ws.receive_json()
+        with client.websocket_connect("/api/v1/ws/platform/s1") as ws:
+            ws.receive_json()
+            ws.send_json({"text": "second"})
+            ws.receive_json()
+            ws.send_json({"text": "third"})
+            with pytest.raises(Exception) as error:
+                ws.receive_json()
+
+    assert getattr(error.value, "code", None) == 1008
+
+
+def test_platform_ws_connections_have_separate_budgets(mock_env: None) -> None:
+    from core.server import create_app
+
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        ws_rate_limit_messages=1,
+        ws_rate_limit_window_seconds=60,
+    )
+    deps = v1.V1Deps(
+        backend=MockRenderBackend(),
+        store=InMemorySessionStore(),
+        hub=v1.ControlHub(),
+        engine_manager=EngineManager(),
+        config=cfg,
+    )
+    with TestClient(create_app(config=cfg, deps=deps)) as client:
+        with client.websocket_connect("/api/v1/ws/platform/first") as first:
+            first.receive_json()
+            first.send_json({"text": "first"})
+            first.receive_json()
+        with client.websocket_connect("/api/v1/ws/platform/second") as second:
+            second.receive_json()
+            second.send_json({"text": "second"})
+            response = second.receive_json()
+
+    assert response["type"] == "platform.stored"

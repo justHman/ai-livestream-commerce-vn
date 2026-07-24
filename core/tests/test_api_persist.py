@@ -6,6 +6,9 @@ the routes behave exactly as before (no persistence, no errors).
 
 from __future__ import annotations
 
+import logging
+
+import pytest
 from fastapi.testclient import TestClient
 
 from core.api import v1
@@ -75,6 +78,33 @@ def test_lite_start_persists_session(monkeypatch):
         sid = r.json()["session_id"]
     assert len(pg.sessions) == 1
     assert pg.sessions[0][0] == sid
+
+
+@pytest.mark.asyncio
+async def test_persistence_failure_log_excludes_comment_content(caplog):
+    class _BrokenPgStore:
+        enabled = True
+
+        async def insert_viewer_msg(self, *args, **kwargs):
+            raise RuntimeError("database failure")
+
+    comment = "private-comment"
+    deps = v1.V1Deps(
+        backend=None,
+        store=None,
+        hub=v1.ControlHub(),
+        pg_store=_BrokenPgStore(),
+    )
+    with caplog.at_level(logging.WARNING, logger="core.api.v1"):
+        await v1._persist_viewer_msgs(
+            deps,
+            "session-safe",
+            [v1.CommentIn(text=comment)],
+        )
+
+    assert "session-safe" in caplog.text
+    assert "operation=insert_viewer_msg" in caplog.text
+    assert comment not in caplog.text
 
 
 def test_lite_ingest_no_pg_behaves_unchanged(monkeypatch):

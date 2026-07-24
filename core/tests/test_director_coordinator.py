@@ -17,8 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Iterator, Optional
-from unittest.mock import MagicMock
+from typing import Iterator
 
 import pytest
 
@@ -27,14 +26,11 @@ os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
 
 from core.director.catalog import Product
 from core.director.coordinator import CoordinatorConfig, DirectorCoordinator
-from core.director.config import StreamConfig
 from core.director.director import Decision
 from core.director.runtime import DirectorRuntime
 from core.render.locks import SessionLockRegistry
 from core.render.mock import MockRenderBackend, _MockSession
-from core.render.orchestrator import StreamOrchestrator
-from core.render.queue import BoundedVideoQueue, CoordinatorMetrics
-from core.render.windows import AudioWindow, TextChunk, VideoWindow
+from core.render.windows import AudioWindow, TextChunk
 from core.llm.base import LLMEngine, LLMRequest, LLMResponse
 from core.tts.base import AudioChunk, TTSEngine, TTSRequest
 
@@ -220,6 +216,19 @@ async def test_stop_cancels_task_and_drops_queue():
     await asyncio.sleep(0.1)
 
 
+async def test_stop_all_cancels_every_active_session():
+    first, runtime, locks, backend = _make_coordinator(session_id="first")
+    products = _make_products()
+    first.start("first", products)
+    first.start("second", products)
+
+    first.stop_all()
+
+    assert first.has("first") is False
+    assert first.has("second") is False
+    await asyncio.sleep(0)
+
+
 async def test_loop_survives_decide_exception():
     """If decide() raises once, the next tick continues normally."""
     sid = "test-sess-3"
@@ -383,7 +392,7 @@ async def test_coordinator_without_hub_is_noop():
     assert coord._hub is None
     assert coord._orchestrator_registry is None
 
-    coord.start(sid, products := _make_products())
+    coord.start(sid, _make_products())
     coord.ingest(sid, "hello", "user1")
     await asyncio.sleep(0.25)
 

@@ -10,8 +10,6 @@ All tests offline (Pillow + numpy only). No network, no model downloads.
 
 from __future__ import annotations
 
-import io
-
 import pytest
 
 from core.render.base import StartOptions
@@ -106,6 +104,17 @@ def test_stop_then_session_status_raises_keyerror():
     backend.stop(sid)
     with pytest.raises(KeyError):
         backend.session_status(sid)
+
+
+def test_stop_all_stops_each_active_session():
+    backend = MockRenderBackend()
+    first = backend.start(StartOptions())
+    second = backend.start(StartOptions())
+
+    backend.stop_all()
+
+    assert first.session_id not in backend._sessions
+    assert second.session_id not in backend._sessions
 
 
 # ---------- session_status on started session ----------

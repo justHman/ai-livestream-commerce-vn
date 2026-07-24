@@ -60,7 +60,7 @@ variable "image_lmcache" {
 variable "image_livekit" {
   description = "LiveKit server image URI"
   type        = string
-  default     = "livekit/livekit-server:latest"
+  default     = "imjusthman/ai-live-livekit:latest"
 }
 
 # --- desired counts ---
@@ -158,7 +158,7 @@ variable "weights_s3_uri" {
 }
 
 variable "secrets_arns" {
-  description = "Map of secret key → SSM parameter ARN (for task secrets block later)"
+  description = "Map of secret key → SSM parameter ARN for ECS secrets injection"
   type        = map(string)
   default     = {}
 }
@@ -191,20 +191,6 @@ variable "tags" {
   description = "Extra tags merged onto all resources"
   type        = map(string)
   default     = {}
-}
-
-variable "backend_api_token" {
-  description = "Backend API bearer token (injected as env; rotate via SSM in prod)"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "admin_api_token" {
-  description = "Admin API bearer token (injected as env; rotate via SSM in prod)"
-  type        = string
-  default     = ""
-  sensitive   = true
 }
 
 variable "debug_enabled" {

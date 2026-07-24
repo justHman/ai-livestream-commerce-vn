@@ -76,12 +76,9 @@ resource "aws_iam_role_policy" "ecs_execution_ssm" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
-          "ssm:GetParameters",
-          "ssm:GetParameter",
-        ]
-        Resource = "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.env}/*"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = values(var.secrets_arns)
       },
       {
         Effect   = "Allow"
@@ -618,16 +615,24 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "CORS_ORIGINS", value = var.cors_origins },
         { name = "REDIS_URL", value = var.redis_url },
       ]
-      secrets = [
-        {
-          name      = "BACKEND_API_TOKEN",
-          valueFrom = var.secrets_arns["backend/api_token"]
-        },
-        {
-          name      = "ADMIN_API_TOKEN",
-          valueFrom = var.secrets_arns["admin/api_token"]
-        },
-      ]
+      secrets = concat(
+        [
+          {
+            name      = "BACKEND_API_TOKEN"
+            valueFrom = var.secrets_arns["backend/api_token"]
+          },
+          {
+            name      = "ADMIN_API_TOKEN"
+            valueFrom = var.secrets_arns["admin/api_token"]
+          },
+        ],
+        lookup(var.secrets_arns, "backend/database_url", "") != "" ? [
+          {
+            name      = "DATABASE_URL"
+            valueFrom = var.secrets_arns["backend/database_url"]
+          },
+        ] : [],
+      )
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -911,7 +916,8 @@ resource "aws_ecs_service" "backend" {
   tags = merge(local.common_tags, { Role = "backend" })
 
   lifecycle {
-    ignore_changes = [desired_count]
+    # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
+    ignore_changes = [desired_count, task_definition]
   }
 }
 
@@ -929,7 +935,7 @@ resource "aws_ecs_service" "llm_tts" {
   # Cloud Map: register the task ENI under llm-tts.<env>.ai-live.local.
   # Both LLM (:8001) and TTS (:8002) share this A record (same task ENI).
   service_registries {
-    registry_arn = aws_service_discovery_service.llm_tts[0].arn
+    registry_arn   = aws_service_discovery_service.llm_tts[0].arn
     container_name = "llm"
   }
 
@@ -955,7 +961,8 @@ resource "aws_ecs_service" "llm_tts" {
   tags = merge(local.common_tags, { Role = "llm-tts" })
 
   lifecycle {
-    ignore_changes = [desired_count]
+    # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
+    ignore_changes = [desired_count, task_definition]
   }
 }
 
@@ -985,7 +992,8 @@ resource "aws_ecs_service" "avatar" {
   tags = merge(local.common_tags, { Role = "avatar" })
 
   lifecycle {
-    ignore_changes = [desired_count]
+    # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
+    ignore_changes = [desired_count, task_definition]
   }
 }
 
@@ -1015,7 +1023,8 @@ resource "aws_ecs_service" "lmcache" {
   tags = merge(local.common_tags, { Role = "lmcache" })
 
   lifecycle {
-    ignore_changes = [desired_count]
+    # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
+    ignore_changes = [desired_count, task_definition]
   }
 }
 
@@ -1043,6 +1052,7 @@ resource "aws_ecs_service" "livekit" {
   tags = merge(local.common_tags, { Role = "livekit" })
 
   lifecycle {
-    ignore_changes = [desired_count]
+    # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
+    ignore_changes = [desired_count, task_definition]
   }
 }

@@ -77,6 +77,10 @@ class RenderBackend(ABC):
         """Tear down a session."""
         ...
 
+    def stop_all(self) -> None:
+        """Stop all tracked sessions; stateless backends need no cleanup."""
+        return None
+
     def session_status(self, session_id: str) -> str:
         """Return a status string for a session.
 

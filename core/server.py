@@ -49,20 +49,136 @@ uvicorn compatibility (``uvicorn core.server:app``). Tests can call
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .api import v1
+from .api.limits import MaxBodySizeMiddleware, SlidingWindowLimiter, WebSocketLimiters
 from .config import AppConfig
 from .engine_manager import EngineManager
 from .render.locks import SessionLockRegistry
-from .render.queue import BoundedVideoQueue, CoordinatorMetrics
 
 # Module-level config — used by ``main()`` for the port and as the default
 # for ``create_app()``. Built once at import time from env.
 CONFIG = AppConfig.from_env()
+logger = logging.getLogger(__name__)
+_POSTGRES_STARTUP_ATTEMPTS = 3
+_POSTGRES_RETRY_DELAYS = (0.1, 0.2)
+_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
+
+async def _connect_postgres(pg) -> None:
+    for attempt in range(_POSTGRES_STARTUP_ATTEMPTS):
+        try:
+            await pg.connect()
+            await pg.apply_schema()
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            try:
+                await pg.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception as close_exc:
+                logger.warning(
+                    "Postgres cleanup failed after startup attempt=%s error_type=%s",
+                    attempt + 1,
+                    type(close_exc).__name__,
+                )
+            if attempt == _POSTGRES_STARTUP_ATTEMPTS - 1:
+                logger.error(
+                    "Postgres startup failed after %s attempts error_type=%s",
+                    _POSTGRES_STARTUP_ATTEMPTS,
+                    type(exc).__name__,
+                )
+                return
+            delay = _POSTGRES_RETRY_DELAYS[attempt]
+            logger.warning("Postgres startup failed attempt=%s retry_in_seconds=%s", attempt + 1, delay)
+            await asyncio.sleep(delay)
+
+
+async def _shutdown(deps: v1.V1Deps, pg) -> None:
+    stage = "orchestrators"
+
+    async def run_stage(name: str, operation) -> None:
+        nonlocal stage
+        stage = name
+        try:
+            await operation()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "Server shutdown cleanup failed stage=%s error_type=%s",
+                name,
+                type(exc).__name__,
+            )
+
+    async def cancel_orchestrators() -> None:
+        for session_id, entry in list(deps.orchestrators.items()):
+            orchestrator = entry.get("orchestrator")
+            if orchestrator is None:
+                continue
+            try:
+                await orchestrator.cancel(session_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Server shutdown cleanup failed stage=orchestrators error_type=%s",
+                    type(exc).__name__,
+                )
+        deps.orchestrators.clear()
+
+    async def stop_coordinator() -> None:
+        if deps.coordinator is not None:
+            deps.coordinator.stop_all()
+
+    async def stop_backend() -> None:
+        await asyncio.to_thread(deps.backend.stop_all)
+
+    async def close_backend() -> None:
+        close = getattr(deps.backend, "close", None)
+        if close is None:
+            return
+        if inspect.iscoroutinefunction(close):
+            await close()
+            return
+        result = await asyncio.to_thread(close)
+        if inspect.isawaitable(result):
+            await result
+
+    async def close_postgres() -> None:
+        if pg is not None and getattr(pg, "enabled", False):
+            await pg.close()
+
+    async def cleanup() -> None:
+        await run_stage("orchestrators", cancel_orchestrators)
+        await run_stage("coordinator", stop_coordinator)
+        await run_stage("render.stop_all", stop_backend)
+        await run_stage("render.close", close_backend)
+        await run_stage("postgres", close_postgres)
+
+    task = asyncio.create_task(cleanup())
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+    except TimeoutError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        logger.error("Server shutdown cleanup timed out unfinished=%s", stage)
 
 
 def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -> FastAPI:
@@ -120,27 +236,34 @@ def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
         if pg is not None and getattr(pg, "enabled", False):
-            try:
-                await pg.connect()
-                await pg.apply_schema()
-            except Exception as exc:
-                # Fail loud but do not crash the control plane: a broken
-                # runtime DB should not take the server down. /health/ready
-                # surfaces it; rows simply won't persist until it recovers.
-                print(f"[server] Postgres runtime store unavailable: {exc}")
+            await _connect_postgres(pg)
         yield
-        if pg is not None and getattr(pg, "enabled", False):
-            try:
-                await pg.close()
-            except Exception:
-                pass
+        await _shutdown(v1.deps(), pg)
 
     app = FastAPI(title="VN Live-Commerce Host — core API", lifespan=_lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation(request: Request, exc: RequestValidationError):
+        if any(error["type"] == "string_too_long" for error in exc.errors()):
+            return JSONResponse(status_code=413, content={"detail": "input too long"})
+        return await request_validation_exception_handler(request, exc)
+
+    app.add_middleware(MaxBodySizeMiddleware, max_bytes=config.max_request_body_bytes)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.cors_list(),
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+    app.state.api_limiter = SlidingWindowLimiter(
+        limit=config.api_rate_limit_requests,
+        window_seconds=config.api_rate_limit_window_seconds,
+        max_keys=config.api_rate_limit_max_keys,
+    )
+    app.state.ws_limiter = WebSocketLimiters(
+        limit=config.ws_rate_limit_messages,
+        window_seconds=config.ws_rate_limit_window_seconds,
+        max_keys=config.api_rate_limit_max_keys,
     )
 
     if deps is not None:

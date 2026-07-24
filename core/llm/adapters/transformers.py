@@ -21,7 +21,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Iterator, Optional
+from typing import Iterator
 
 from ..base import LLMEngine, LLMRequest, LLMResponse, register_engine
 

@@ -15,7 +15,6 @@ Traffic modes:
 
 from __future__ import annotations
 
-import asyncio
 import random
 import threading
 from typing import Optional

@@ -1,12 +1,12 @@
-# Remote state — same bucket as dev, different key.
-# Bootstrap: see environments/dev/README.md or environments/global.
+# Remote state is created by environments/global bootstrap.
+# Do not initialize this backend until the bootstrap bucket and lock table exist.
 
 terraform {
-  # backend "s3" {
-  #   bucket         = "ai-livestream-tfstate"
-  #   key            = "env:/prod/terraform.tfstate"
-  #   region         = "ap-northeast-2"
-  #   dynamodb_table = "ai-livestream-tf-lock"
-  #   encrypt        = true
-  # }
+  backend "s3" {
+    bucket         = "ai-livestream-tfstate-191918535424"
+    key            = "prod/terraform.tfstate"
+    region         = "ap-northeast-2"
+    dynamodb_table = "ai-livestream-tf-lock"
+    encrypt        = true
+  }
 }

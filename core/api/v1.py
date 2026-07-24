@@ -19,16 +19,28 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import uuid
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
+if TYPE_CHECKING:
+    from ..schemas.run_plan import RunPlan
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import AppConfig
-from ..llm.base import LLMEngine, LLMRequest, _NoopEngine
+from ..llm.base import LLMEngine, _NoopEngine
 from ..render.base import FullPipelineBackend, RenderBackend, StartOptions, StreamingAvatarBackend
 from ..render.mock import MockRenderBackend
 from ..render.orchestrator import StreamOrchestrator
@@ -42,6 +54,7 @@ from .auth import admin_auth, debug_enabled_dep, validate_ws_token, viewer_auth
 from ..director.coordinator import DirectorCoordinator
 
 router = APIRouter(prefix="/api/v1")
+logger = logging.getLogger(__name__)
 
 
 # ── Control-plane WS hub (one connection per session) ───────────────
@@ -82,50 +95,50 @@ class ControlHub:
 
 
 class StartReq(BaseModel):
-    avatar_id: Optional[str] = None
+    avatar_id: Optional[str] = Field(default=None, max_length=128)
     is_sandbox: bool = True
 
 
 class SayReq(BaseModel):
-    session_id: str
-    text: str
+    session_id: str = Field(max_length=128)
+    text: str = Field(min_length=1, max_length=2_000)
 
 
 class SessionReq(BaseModel):
-    session_id: str
+    session_id: str = Field(max_length=128)
 
 
 class ProductIn(BaseModel):
-    id: str
-    name: str
-    description: str = ""
+    id: str = Field(max_length=128)
+    name: str = Field(max_length=256)
+    description: str = Field(default="", max_length=2_000)
     price: Optional[int] = None
     original_price: Optional[int] = None
-    promotion: Optional[str] = None
-    colors: list[str] = []
-    sizes: list[str] = []
-    material: Optional[str] = None
-    shipping: Optional[str] = None
-    warranty: Optional[str] = None
+    promotion: Optional[str] = Field(default=None, max_length=500)
+    colors: list[str] = Field(default_factory=list, max_length=32)
+    sizes: list[str] = Field(default_factory=list, max_length=32)
+    material: Optional[str] = Field(default=None, max_length=256)
+    shipping: Optional[str] = Field(default=None, max_length=500)
+    warranty: Optional[str] = Field(default=None, max_length=500)
     in_stock: bool = True
     stock_total: Optional[int] = None
-    ref_image: Optional[str] = None
-    features: list[str] = []
+    ref_image: Optional[str] = Field(default=None, max_length=2_048)
+    features: list[str] = Field(default_factory=list, max_length=32)
 
 
 class AttachReq(BaseModel):
-    session_id: str
-    products: list[ProductIn]
+    session_id: str = Field(max_length=128)
+    products: list[ProductIn] = Field(max_length=100)
 
 
 class CommentIn(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=500)
     t: Optional[float] = None
 
 
 class IngestReq(BaseModel):
-    session_id: str
-    comments: list[CommentIn]
+    session_id: str = Field(max_length=128)
+    comments: list[CommentIn] = Field(max_length=100)
     viewer_count: Optional[int] = None
     msg_rate: Optional[float] = None
 
@@ -133,55 +146,55 @@ class IngestReq(BaseModel):
 class ChatIn(BaseModel):
     """Wave 2: single chat comment from a viewer (Phase B coordinator path)."""
 
-    session_id: str
-    text: str
-    author: str
+    session_id: str = Field(max_length=128)
+    text: str = Field(min_length=1, max_length=500)
+    author: str = Field(min_length=1, max_length=128)
     ts: Optional[float] = None
 
 
 class TTSPresetIn(BaseModel):
     """Wave 2: select a TTS preset by id (Phase A dropdown)."""
 
-    preset_id: str
+    preset_id: str = Field(min_length=1, max_length=128)
 
 
 class AvatarCreateReq(BaseModel):
     scope: Literal["half", "full"] = "half"
-    ref_photo_url: Optional[str] = None
-    voice: Optional[str] = None
+    ref_photo_url: Optional[str] = Field(default=None, max_length=2_048)
+    voice: Optional[str] = Field(default=None, max_length=128)
 
 
 class AvatarUpdateReq(BaseModel):
     scope: Optional[Literal["half", "full"]] = None
-    ref_photo_url: Optional[str] = None
-    voice: Optional[str] = None
+    ref_photo_url: Optional[str] = Field(default=None, max_length=2_048)
+    voice: Optional[str] = Field(default=None, max_length=128)
 
 
 class PlanCreateReq(BaseModel):
     """Optional products/persona for deterministic offline run-plan generation."""
 
-    products: list[ProductIn] = Field(default_factory=list)
-    persona: Optional[str] = None
+    products: list[ProductIn] = Field(default_factory=list, max_length=100)
+    persona: Optional[str] = Field(default=None, max_length=1_000)
 
 
 class PathSayReq(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=2_000)
 
 
 class PathChatIn(BaseModel):
-    text: str
-    author: str = "viewer"
+    text: str = Field(min_length=1, max_length=500)
+    author: str = Field(default="viewer", min_length=1, max_length=128)
     ts: Optional[float] = None
 
 
 class PathIngestReq(BaseModel):
-    comments: list[CommentIn]
+    comments: list[CommentIn] = Field(max_length=100)
     viewer_count: Optional[int] = None
     msg_rate: Optional[float] = None
 
 
 class PathAttachReq(BaseModel):
-    products: list[ProductIn]
+    products: list[ProductIn] = Field(max_length=100)
 
 
 # ── In-memory avatar store ──────────────────────────────────────────
@@ -292,6 +305,53 @@ def deps() -> V1Deps:
     return _deps
 
 
+def _request_limit_key(request: Request, scope: str, session_id: str = "") -> str:
+    host = request.client.host if request.client is not None else "unknown"
+    return f"{host}:{scope}:{session_id}"
+
+
+async def _request_session_id(request: Request) -> str:
+    session_id = request.path_params.get("session_id", "")
+    if session_id:
+        return session_id
+    try:
+        body = await request.json()
+    except ValueError:
+        return ""
+    return str(body.get("session_id", "")) if isinstance(body, dict) else ""
+
+
+async def rate_limit_viewer(request: Request) -> None:
+    session_id = await _request_session_id(request)
+    if not request.app.state.api_limiter.allow(_request_limit_key(request, "viewer", session_id)):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+
+async def rate_limit_admin(request: Request) -> None:
+    if not request.app.state.api_limiter.allow(_request_limit_key(request, "admin")):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+
+def _ws_limit_keys(
+    ws: WebSocket, scope: str, session_id: str, connection_id: str
+) -> tuple[str, str]:
+    host = ws.client.host if ws.client is not None else "unknown"
+    session_key = f"{host}:{scope}:{session_id}"
+    return f"{session_key}:{connection_id}", session_key
+
+
+_WS_RATE_LIMIT_CLOSE_CODE = 1008
+"""WebSocket policy violation: close when a connection exceeds its message budget."""
+
+
+async def _allow_ws_message(ws: WebSocket, scope: str, session_id: str, connection_id: str) -> bool:
+    connection_key, session_key = _ws_limit_keys(ws, scope, session_id, connection_id)
+    allowed = ws.app.state.ws_limiter.allow(connection_key, session_key)
+    if not allowed:
+        await ws.close(code=_WS_RATE_LIMIT_CLOSE_CODE, reason="message rate limit exceeded")
+    return allowed
+
+
 async def _persist_viewer_msgs(
     d: V1Deps, session_id: str, comments, *, author: str = "viewer"
 ) -> None:
@@ -314,8 +374,10 @@ async def _persist_viewer_msgs(
                 comment_id=None,
                 source="platform",
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            logger.warning("Postgres persistence failed session=%s operation=insert_viewer_msg", session_id)
 
 
 def _mock_or_debug_allowed() -> None:
@@ -331,7 +393,7 @@ def _mock_or_debug_allowed() -> None:
 def build_run_plan(
     products: list[ProductIn] | list[dict[str, Any]] | None = None,
     persona: Optional[str] = None,
-) -> "RunPlan":
+) -> RunPlan:
     """Deterministic offline RunPlan from products (no LLM)."""
     from ..schemas.run_plan import (
         ClosingPhase,
@@ -477,6 +539,20 @@ async def health_ready() -> dict[str, Any]:
         resp["llm_load_error"] = llm_load_error
     if tts_load_error:
         resp["tts_load_error"] = tts_load_error
+    pg = d.pg_store
+    if pg is not None and getattr(pg, "enabled", False):
+        try:
+            pg_ok, pg_error = await pg.health()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Postgres readiness check failed error_type=%s", type(exc).__name__)
+            pg_ok, pg_error = False, type(exc).__name__
+        resp["postgres"] = "ready" if pg_ok else "not_ready"
+        if not pg_ok:
+            resp["ok"] = False
+            resp["status"] = "not_ready"
+            resp["postgres_error"] = pg_error
     return resp
 
 
@@ -518,7 +594,11 @@ async def media_livekit_room(
 
 
 @router.post("/lite/start")
-async def lite_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+async def lite_start(
+    req: StartReq,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
+) -> dict[str, Any]:
     d = deps()
     try:
         result = await asyncio.to_thread(
@@ -540,13 +620,19 @@ async def lite_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str,
                 render_backend=d.config.render_backend if d.config else None,
                 avatar_id=req.avatar_id,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass  # fire-and-forget runtime persistence; /health/ready surfaces DB state
+            logger.warning("Postgres persistence failed session=%s operation=upsert_session", result.session_id)
     return result.public_dict()  # frontend-safe only
 
 
 @router.post("/lite/say")
-async def lite_say(req: SayReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+async def lite_say(
+    req: SayReq,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
+) -> dict[str, Any]:
     d = deps()
     # Phase E: streaming coordinator path for StreamingAvatarBackend (mock +
     # future self-host). FullPipelineBackend (cloud) keeps backend.say().
@@ -711,8 +797,13 @@ async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[st
             await d.pg_store.insert_product_snapshot(
                 req.session_id, [p.model_dump() for p in req.products]
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            logger.warning(
+                "Postgres persistence failed session=%s operation=insert_product_snapshot",
+                req.session_id,
+            )
     # Wave 2: also start the DirectorCoordinator for this session.
     if d.coordinator is not None:
         d.coordinator.start(session_id=req.session_id, products=products)
@@ -720,7 +811,11 @@ async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[st
 
 
 @router.post("/lite/ingest")
-async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+async def lite_ingest(
+    req: IngestReq,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
+) -> dict[str, Any]:
     """Feed viewer comments to the Director; it decides + the avatar speaks.
 
     This is the closed loop: comments -> cluster/score -> Decision ->
@@ -762,7 +857,11 @@ async def lite_ingest(req: IngestReq, _: None = Depends(viewer_auth)) -> dict[st
 
 
 @router.post("/lite/chat", status_code=202)
-async def lite_chat(payload: ChatIn, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+async def lite_chat(
+    payload: ChatIn,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
+) -> dict[str, Any]:
     """Accept a single viewer chat comment via the DirectorCoordinator.
 
     Returns 202 Accepted immediately; the coordinator's tick loop processes
@@ -772,8 +871,6 @@ async def lite_chat(payload: ChatIn, _: None = Depends(viewer_auth)) -> dict[str
     d = deps()
     if d.coordinator is None or not d.coordinator.has(payload.session_id):
         raise HTTPException(404, "session not attached to coordinator")
-    if len(payload.text) > 500:
-        raise HTTPException(413, "text too long")
     comment = d.coordinator.ingest(
         session_id=payload.session_id,
         text=payload.text,
@@ -825,7 +922,11 @@ async def engines_status(_: None = Depends(admin_auth)) -> dict[str, Any]:
 
 
 @router.post("/engines/llm")
-async def swap_llm(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[str, Any]:
+async def swap_llm(
+    req: EngineSwapReq,
+    _: None = Depends(admin_auth),
+    _limit: None = Depends(rate_limit_admin),
+) -> dict[str, Any]:
     """Swap the LLM engine at runtime. Unloads the old model (frees VRAM),
     loads the new one, re-configures the cloud RenderBackend."""
     d = deps()
@@ -860,7 +961,11 @@ async def swap_llm(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[st
 
 
 @router.post("/engines/tts")
-async def swap_tts(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[str, Any]:
+async def swap_tts(
+    req: EngineSwapReq,
+    _: None = Depends(admin_auth),
+    _limit: None = Depends(rate_limit_admin),
+) -> dict[str, Any]:
     """Swap the TTS engine at runtime. Unloads the old model (frees VRAM),
     loads the new one, re-configures the cloud RenderBackend."""
     d = deps()
@@ -902,7 +1007,11 @@ async def swap_tts(req: EngineSwapReq, _: None = Depends(admin_auth)) -> dict[st
 
 
 @router.post("/engines/tts/preset")
-async def set_tts_preset(payload: TTSPresetIn, _: None = Depends(admin_auth)) -> dict[str, Any]:
+async def set_tts_preset(
+    payload: TTSPresetIn,
+    _: None = Depends(admin_auth),
+    _limit: None = Depends(rate_limit_admin),
+) -> dict[str, Any]:
     """Select a TTS preset by id (Phase A dropdown). Updates the EngineManager's
     in-memory TTS config without loading the model. The next ``POST /engines/tts``
     or full reload will apply it."""
@@ -920,9 +1029,9 @@ async def set_tts_preset(payload: TTSPresetIn, _: None = Depends(admin_auth)) ->
 
 
 class DebugStartReq(BaseModel):
-    session_id: str
+    session_id: str = Field(max_length=128)
     interval_sec: float = 5.0  # how often to feed mock comments
-    traffic_mode: str = "random"  # "random" | "low" | "medium" | "high" | "ramp"
+    traffic_mode: str = Field(default="random", max_length=32)
 
 
 @router.post("/debug/start")
@@ -930,6 +1039,7 @@ async def debug_start(
     req: DebugStartReq,
     _dbg: None = Depends(debug_enabled_dep),
     _adm: None = Depends(admin_auth),
+    _limit: None = Depends(rate_limit_admin),
 ) -> dict[str, Any]:
     """Start debug mode: feed mock viewer comments + simulated traffic to the Director."""
     d = deps()
@@ -964,7 +1074,7 @@ async def debug_start(
 
 
 class DebugStopReq(BaseModel):
-    session_id: str
+    session_id: str = Field(max_length=128)
 
 
 @router.post("/debug/stop")
@@ -972,6 +1082,7 @@ async def debug_stop(
     req: DebugStopReq,
     _dbg: None = Depends(debug_enabled_dep),
     _adm: None = Depends(admin_auth),
+    _limit: None = Depends(rate_limit_admin),
 ) -> dict[str, Any]:
     """Stop debug mode: stop the mock traffic simulator."""
     d = deps()
@@ -1035,10 +1146,13 @@ async def ws_control(ws: WebSocket, session_id: str) -> None:
         await ws.close(code=4401)
         return
     await d.hub.connect(session_id, ws)
+    connection_id = str(uuid.uuid4())
     await ws.send_json({"type": "control.connected", "session_id": session_id})
     try:
         while True:
             msg = await ws.receive_json()
+            if not await _allow_ws_message(ws, "viewer", session_id, connection_id):
+                return
             mtype = msg.get("type")
             if mtype == "interrupt":
                 try:
@@ -1129,12 +1243,13 @@ async def mock_video_mjpeg(
             entry = d.orchestrators.get(session_id)
             if entry is not None:
                 queue: BoundedVideoQueue = entry["queue"]
-                idle_fn = lambda: mb.get_idle_frame_jpeg(
-                    session_id, int(_time.monotonic_ns() // 1_000_000)
-                )
+                def _idle_fn() -> bytes:
+                    return mb.get_idle_frame_jpeg(
+                        session_id, int(_time.monotonic_ns() // 1_000_000)
+                    )
                 try:
                     jpeg, _is_idle = await queue.get_or_idle(
-                        idle_fn, timeout_ms=int(frame_interval_s * 1000)
+                        _idle_fn, timeout_ms=int(frame_interval_s * 1000)
                     )
                 except (KeyError, asyncio.CancelledError):
                     break
@@ -1179,13 +1294,20 @@ async def mock_status(
 
 
 @router.post("/sessions")
-async def sessions_start(req: StartReq, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+async def sessions_start(
+    req: StartReq,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
+) -> dict[str, Any]:
     return await lite_start(req, _)
 
 
 @router.post("/sessions/{session_id}/say")
 async def sessions_say(
-    session_id: str, req: PathSayReq, _: None = Depends(viewer_auth)
+    session_id: str,
+    req: PathSayReq,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
 ) -> dict[str, Any]:
     return await lite_say(SayReq(session_id=session_id, text=req.text), _)
 
@@ -1209,7 +1331,10 @@ async def sessions_attach(
 
 @router.post("/sessions/{session_id}/ingest")
 async def sessions_ingest(
-    session_id: str, req: PathIngestReq, _: None = Depends(viewer_auth)
+    session_id: str,
+    req: PathIngestReq,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
 ) -> dict[str, Any]:
     return await lite_ingest(
         IngestReq(
@@ -1224,7 +1349,10 @@ async def sessions_ingest(
 
 @router.post("/sessions/{session_id}/chat", status_code=202)
 async def sessions_chat(
-    session_id: str, req: PathChatIn, _: None = Depends(viewer_auth)
+    session_id: str,
+    req: PathChatIn,
+    _: None = Depends(viewer_auth),
+    _limit: None = Depends(rate_limit_viewer),
 ) -> dict[str, Any]:
     return await lite_chat(
         ChatIn(
@@ -1340,15 +1468,24 @@ async def ws_platform(ws: WebSocket, session_id: str) -> None:
         await ws.close(code=4401)
         return
     await ws.accept()
+    connection_id = str(uuid.uuid4())
     await ws.send_json({"type": "platform.connected", "session_id": session_id})
     try:
         while True:
             msg = await ws.receive_json()
-            text = (msg.get("text") or "").strip()
-            if not text:
+            if not await _allow_ws_message(ws, "viewer", session_id, connection_id):
+                return
+            text = msg.get("text")
+            if not isinstance(text, str) or not (text := text.strip()):
                 await ws.send_json({"type": "error", "detail": "text required"})
                 continue
+            if len(text) > 500:
+                await ws.send_json({"type": "error", "detail": "text too long"})
+                continue
             author = msg.get("author") or "viewer"
+            if not isinstance(author, str) or not author or len(author) > 128:
+                await ws.send_json({"type": "error", "detail": "invalid author"})
+                continue
             ts = msg.get("ts")
             if d.coordinator is not None and d.coordinator.has(session_id):
                 try:

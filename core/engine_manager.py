@@ -20,8 +20,8 @@ a warm-standby pool (load new BEFORE unloading old) — future work.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 from .llm import LLMEngine, load_engine as load_llm_engine, to_llm_fn
 from .tts import TTSEngine, load_engine as load_tts_engine, to_tts_fn

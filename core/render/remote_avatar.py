@@ -185,6 +185,10 @@ class RemoteAvatarBackend(StreamingAvatarBackend):
         _raise_http(resp, "stop")
         self._sessions.discard(session_id)
 
+    def stop_all(self) -> None:
+        for session_id in list(self._sessions):
+            self.stop(session_id)
+
     def session_status(self, session_id: str) -> str:
         if session_id not in self._sessions:
             raise KeyError(session_id)

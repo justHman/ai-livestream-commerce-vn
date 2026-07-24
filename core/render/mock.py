@@ -281,7 +281,6 @@ def _synthesize_idle_frame(
     img = Image.new("RGB", (width, height), (245, 240, 230))
     draw = ImageDraw.Draw(img)
 
-    mouth_open = 0.0
     blink = (frame_idx % 50) == 0
 
     # We want a seamless loop, so we re-implement the body-draw with bob that
@@ -498,6 +497,10 @@ class MockRenderBackend(StreamingAvatarBackend):
         sess = self._sessions.pop(session_id, None)
         if sess is None:
             raise KeyError(session_id)
+
+    def stop_all(self) -> None:
+        for session_id in list(self._sessions):
+            self.stop(session_id)
 
     def session_status(self, session_id: str) -> str:
         """Return the current status string for a session.

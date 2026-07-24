@@ -1,6 +1,6 @@
-# LiveAvatar API Integration — `liveavatar_api/`
+# LiveAvatar Cloud provider — `providers/liveavatar_cloud/`
 
-> **Role update (2026-06-22):** `liveavatar_api/` is no longer the product root — it is now **one
+> **Role update (2026-06-22):** `providers/liveavatar_cloud/` is no longer the product root — it is now **one
 > render-backend option** (LiveAvatar cloud) behind the `core/` RenderBackend seam. The production
 > entrypoint is **`core.server:app`** serving **`/api/v1`** (see `../PRODUCTION.md`). A future
 > self-host diffusion renderer plugs in as a second backend without changing the API. This folder
@@ -15,23 +15,21 @@ API key lives in `../.env` (`LIVEAVATAR_API_KEY`, gitignored). Verified working
 against the sandbox on 2026-06-22 (FULL + LITE lifecycle both pass).
 
 ```
-liveavatar_api/
-├── backend/
+providers/liveavatar_cloud/
+├── sdk/
 │   ├── client.py        # LiveAvatarClient — REST wrapper, holds X-API-KEY (backend only)
 │   ├── audio.py         # PCM resample/chunk to 16-bit 24kHz mono (LITE requirement)
+├── service/
 │   ├── lite_agent.py    # LiteAudioAgent — LITE audio WebSocket (agent.speak/...)
 │   ├── conversation.py  # LiteConversation — viewer → LLM → TTS → avatar turn cycle
 │   ├── server.py        # FastAPI token broker (FULL + LITE) — frontend-safe endpoints
-│   └── colab_server.py  # Public LITE backend for Colab + ngrok (push-to-git target)
-├── frontend/
-│   ├── index.html       # FULL-mode LiveKit test viewer
-│   └── lite.html        # LITE viewer → talks to the Colab backend
+│   ├── colab_server.py  # Public LITE backend for Colab + ngrok (push-to-git target)
 ├── examples/
-│   ├── smoke_test.py              # FULL+LITE lifecycle (token/start/stop)
-│   ├── lite_smoke_test.py         # LITE audio WebSocket path (test tone)
-│   ├── conversation_smoke_test.py # full LITE turn cycle (stub LLM+TTS)
-│   └── colab_deploy.py            # Colab launcher: load models + serve + ngrok
-├── requirements.txt
+│   ├── smoke_test.py
+│   ├── lite_smoke_test.py
+│   ├── conversation_smoke_test.py
+│   ├── server_ws_smoke_test.py
+│   └── colab_deploy.py
 └── README.md
 ```
 
@@ -46,29 +44,26 @@ conversation turn cycle, and the Colab backend endpoints (no secret leak).
 ```powershell
 cd projects/ai-livestream-commerce-vn/implementations
 
-# 1. Verify the key + run full sandbox lifecycle (free, no credits)
-python -m liveavatar_api.examples.smoke_test
+# Live sandbox smoke tests require LIVEAVATAR_API_KEY and may contact the API.
+uv run python -m providers.liveavatar_cloud.examples.smoke_test
 
-# 2. Start the backend token broker (holds the API key)
-uv run uvicorn liveavatar_api.backend.server:app --port 8800
-#   or: python -m liveavatar_api.backend.server
+# Standalone provider server: its public contract is /api and /ws/control/{session_id}.
+uv run uvicorn providers.liveavatar_cloud.service.colab_server:app --port 8800
 
-# 3. Open the test viewer
-#   Serve frontend/index.html (any static server) and click ▶ Start (FULL).
-python -m http.server 8901 --directory liveavatar_api/frontend
-#   -> http://127.0.0.1:8901
+# Application frontend: paste the core.server origin into frontend/lite.html; it appends /api/v1 itself.
+uv run uvicorn core.server:app --port 8800
 ```
 
 Dependencies (already in the repo env): `requests`, `fastapi`, `uvicorn`,
-`pydantic`. No `python-dotenv` needed — `client.py` has a minimal `.env` loader.
+`pydantic`. The SDK loads an ignored `.env` file only as a fallback; environment variables take precedence.
 
 ---
 
-## 1b. Pricing — and why LITE is cheaper
+## 1b. Historical pricing snapshot (verified 2026-06-22)
 
-Billing is **credit-based, per minute of active session** (setup time before the
-client token is free; the meter starts when the session actually begins). Polled
-every minute across all concurrent sessions.
+The rates and account details below were recorded on 2026-06-22. They are not a
+current pricing claim; check the provider documentation before budgeting. The
+snapshot described credit-based, per-minute active-session billing after setup.
 
 ────
 FULL / Embed ── **2 credits / minute**
@@ -88,7 +83,7 @@ Pro ────── $99/mo ──── 1,000 (+10) ────── overag
 Scale ──── $475/mo ─── 5,000 (+10) ────── overage $0.10/credit
 ────
 
-Your account right now: **Free tier, 10 credits left** (verified via
+Historical account snapshot verified on 2026-06-22: **Free tier, 10 credits left** (verified via
 `GET /v1/users/credits`). At LITE's 1 credit/min that's ~10 minutes of live
 avatar; FULL would burn it in ~5. Sandbox sessions cost **0 credits**, so do all
 development against sandbox (as the smoke tests do).
@@ -209,29 +204,14 @@ We are building **LITE + self-hosted LLM + TTS** (your choice) — see §4 and �
 
 ## 4. Self-hosted models for LITE (researched 2026-06-22, slugs verified)
 
-### LLM — fastest open models for VN on free Colab
+### LLM runtime
 
-Your hunch "fast = MoE" is **half right**. MoE lowers compute *per token* (only a
-few experts fire), so on a **big GPU (A100)** an MoE like Qwen3-30B-A3B is fastest.
-But on a **free Colab T4 (16GB)** the *entire* expert set must still fit in VRAM,
-so a 30B MoE OOMs — a small **dense** model is faster there. Pick by the GPU you get.
+Use the approved OpenAI-compatible vLLM route for this project:
+`cyankiwi/Qwen3.5-4B-AWQ-4bit`. Configure the core control plane with
+`LLM_ENGINE=vllm` and `LLM_MODEL=cyankiwi/Qwen3.5-4B-AWQ-4bit`.
 
-────
-SeaLLMs/SeaLLMs-v3-7B-Chat ── 7.6B dense ── ⭐ best VN on T4 (SEA-tuned) ── 4-bit ~5GB ── vLLM/GGUF
-google/gemma-3-4b-it ──────── 4B dense ──── lowest latency on T4, VN OK ── 4-bit ~3GB ── vLLM/GGUF
-Qwen/Qwen3-30B-A3B-Instruct-2507 ── 30.5B/3.3B MoE ── best when you GET an A100 ── needs A100 ── vLLM
-deepseek-ai/DeepSeek-V2-Lite-Chat ── 15.7B/2.4B MoE ── only MoE that fits T4, VN weaker ── 4-bit ~9GB ── vLLM
-────
-
-Default pick: **SeaLLMs-v3-7B-Chat** on T4 (strongest Vietnamese that runs
-real-time); upgrade to **Qwen3-30B-A3B (MoE)** only when Colab gives you an A100.
-Serve with **vLLM** (or SGLang — its RadixAttention caches the repeated system
-prompt, ideal for a fixed live-commerce persona). `colab_deploy.py` defaults to
-SeaLLMs via transformers+4bit; swap to vLLM for higher throughput.
-
-> The earlier proposal mentioned Qwen3-4B — there is **no `Qwen3-4B` MoE**; the
-> small Qwen3 is dense and the MoE variant is `Qwen3-30B-A3B`. SeaLLMs-v3-7B beats
-> a 4B dense model on Vietnamese, so it's the better same-class choice.
+The provider's LITE mode receives server-side PCM TTS audio and renders video;
+it does not prescribe a local model-loader implementation.
 
 ### TTS — fastest open VN models (no fine-tuning needed)
 
@@ -300,14 +280,14 @@ audio yourTTS→LiveAvatar (WebSocket, server-side). No per-frame HTTP streaming
 ### Flow
 
 ```
-[git push]  liveavatar_api/  ──►  [Colab cell]
-                                    pip install -r requirements.txt
-                                    python -m liveavatar_api.examples.colab_deploy
-                                      ├─ load SeaLLMs (LLM) + Kokoro-VN (TTS) on GPU
+[git push]  providers/liveavatar_cloud/  ──►  [Colab cell]
+                                    pip install -e . vllm pyngrok
+                                    python -m providers.liveavatar_cloud.examples.colab_deploy
+                                      ├─ connect the configured vLLM and TTS backends
                                       ├─ uvicorn colab_server:app  (subprocess/thread)
                                       └─ pyngrok tunnel → prints https://xxxx.ngrok-free.app
                                                                    │
-[frontend/lite.html] ── paste ngrok URL ── POST /api/lite/* ───────┘
+[standalone provider viewer] ── paste ngrok URL ── POST /api/lite/* ───────┘
         ▲                                                          │
         └──────────── avatar VIDEO via LiveKit (WebRTC) ◄── LiveAvatar cloud
 ```
@@ -315,15 +295,15 @@ audio yourTTS→LiveAvatar (WebSocket, server-side). No per-frame HTTP streaming
 ### Deploy steps
 
 ```python
-# In a Colab cell (GPU runtime):
+# In a Colab cell (GPU runtime), set secrets through google.colab.userdata:
 !git clone <your-repo> && cd <repo>/projects/ai-livestream-commerce-vn/implementations
-!pip install -r liveavatar_api/requirements.txt torch transformers accelerate bitsandbytes kokoro
-import os; os.environ["LIVEAVATAR_API_KEY"] = "..."   # or upload .env
-os.environ["NGROK_AUTHTOKEN"] = "..."                  # from ngrok dashboard
-!python -m liveavatar_api.examples.colab_deploy        # prints the public URL
+!pip install -e . vllm pyngrok
+# The notebook loads LIVEAVATAR_API_KEY and NGROK_AUTHTOKEN without printing them.
+!python -m providers.liveavatar_cloud.examples.colab_deploy
 ```
 
-Then open `frontend/lite.html`, paste the ngrok URL, click **Start session**.
+Use a standalone provider viewer for this `/api` server. For core.server, paste
+the origin into `frontend/lite.html`; the frontend appends `/api/v1` itself.
 
 ---
 
@@ -336,7 +316,7 @@ livekit_client_token ── Frontend-safe. Joins the LiveKit room (video).
 ws_url ─────────────── Backend/agent (LITE only). Streams PCM audio.
 ────
 
-The `server.py` broker enforces this split: the browser only ever receives
+The `service/colab_server.py` broker enforces this split: the browser only ever receives
 `livekit_url` + `livekit_client_token`; the `session_token` and `ws_url` stay
 server-side, keyed by `session_id`.
 

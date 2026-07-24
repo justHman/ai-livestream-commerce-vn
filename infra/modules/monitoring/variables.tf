@@ -43,7 +43,7 @@ variable "billing_alarm_thresholds" {
 variable "enable_billing_alarms" {
   description = "Create billing EstimatedCharges alarms (requires us-east-1 metrics enabled)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "billing_currency" {

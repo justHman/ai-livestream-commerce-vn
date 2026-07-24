@@ -34,7 +34,7 @@ variable "create_tfstate_bucket" {
 
 variable "tfstate_bucket_name" {
   type    = string
-  default = "ai-livestream-tfstate"
+  default = "ai-livestream-tfstate-191918535424"
 }
 
 variable "create_tf_lock_table" {

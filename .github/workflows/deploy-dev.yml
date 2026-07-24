@@ -1,19 +1,10 @@
-# deploy-dev — auto deploy to DEV on push to develop
-# Requires GitHub secrets: AWS_ROLE_ARN_DEV, DOCKERHUB_USER, DOCKERHUB_TOKEN
-# OIDC provider must exist in AWS account: https://token.actions.githubusercontent.com
-# IAM trust: repo:justHman/ai-livestream-commerce-vn:ref:refs/heads/develop
-#
-# Images are built in PARALLEL jobs (matrix) — each on its own runner so the
-# vLLM base images (~5-8GB each) do not exhaust a single runner's 14GB disk.
+# deploy-dev — auto deploy to DEV on push to develop.
+# Global Terraform bootstrap must exist before this runs.
 name: deploy-dev
 
 on:
   push:
-    branches:
-      - develop
-    # Only deploy when deployment-relevant code changes. Config/doc-only PRs
-    # (.claude/, CLAUDE.md, docs, plans, .gitignore, workflow yaml) skip the
-    # image build/deploy and only run ci.yml (offline test).
+    branches: [develop]
     paths:
       - "services/**"
       - "core/**"
@@ -27,59 +18,309 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  AWS_REGION: ap-northeast-2
+  STATE_BUCKET: ai-livestream-tfstate-191918535424
+  STATE_LOCK_TABLE: ai-livestream-tf-lock
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
 jobs:
-  build:
+  preflight:
     runs-on: ubuntu-latest
     environment: development
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - svc: backend
-            dockerfile: services/backend/Dockerfile
-          - svc: llm
-            dockerfile: services/llm/Dockerfile
-          - svc: tts
-            dockerfile: services/tts/Dockerfile
-          - svc: livekit
-            dockerfile: services/livekit/Dockerfile
+    outputs:
+      ecs_cluster: ${{ steps.tf.outputs.ecs_cluster }}
+      backend_service: ${{ steps.tf.outputs.backend_service }}
+      backend_target_group_arn: ${{ steps.tf.outputs.backend_target_group_arn }}
+      llm_tts_service: ${{ steps.tf.outputs.llm_tts_service }}
+      avatar_service: ${{ steps.tf.outputs.avatar_service }}
+      livekit_service: ${{ steps.tf.outputs.livekit_service }}
+      lmcache_service: ${{ steps.tf.outputs.lmcache_service }}
+      has_llm_tts: ${{ steps.tf.outputs.has_llm_tts }}
+      has_avatar: ${{ steps.tf.outputs.has_avatar }}
+      has_livekit: ${{ steps.tf.outputs.has_livekit }}
+      has_lmcache: ${{ steps.tf.outputs.has_lmcache }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push ${{ matrix.svc }} image
-        run: |
-          TAG=dev-${GITHUB_SHA}
-          docker build -f ${{ matrix.dockerfile }} \
-            -t imjusthman/ai-live-${{ matrix.svc }}:$TAG \
-            -t imjusthman/ai-live-${{ matrix.svc }}:dev .
-          docker push imjusthman/ai-live-${{ matrix.svc }}:$TAG
-          docker push imjusthman/ai-live-${{ matrix.svc }}:dev
-
-  deploy:
-    runs-on: ubuntu-latest
-    environment: development
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
-          aws-region: ap-northeast-2
-
-      - name: ECS rolling update DEV
-        # Skips services not yet created (infra not applied) via || true.
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Verify Terraform bootstrap
         run: |
-          for svc in backend llm-tts avatar livekit lmcache; do
-            aws ecs update-service --cluster ai-livestream-dev-cluster --service ai-livestream-dev-$svc --force-new-deployment || true
-          done
+          set -euo pipefail
+          aws s3api head-bucket --bucket "$STATE_BUCKET" || {
+            echo "Missing or inaccessible Terraform state bucket $STATE_BUCKET." >&2
+            exit 1
+          }
+          aws dynamodb describe-table --table-name "$STATE_LOCK_TABLE" >/dev/null || {
+            echo "Missing or inaccessible Terraform lock table $STATE_LOCK_TABLE." >&2
+            exit 1
+          }
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Read deployed Terraform contract
+        id: tf
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/environments/dev init -input=false
+          output=$(terraform -chdir=infra/environments/dev output -json)
+          cluster=$(jq -r '.ecs_cluster_name.value // empty' <<<"$output")
+          backend_svc=$(jq -r '.ecs_service_names.value.backend // empty' <<<"$output")
+          backend_tg=$(jq -r '.backend_target_group_arn.value // empty' <<<"$output")
+          llm_tts_svc=$(jq -r '.ecs_service_names.value.llm_tts // empty' <<<"$output")
+          avatar_svc=$(jq -r '.ecs_service_names.value.avatar // empty' <<<"$output")
+          livekit_svc=$(jq -r '.ecs_service_names.value.livekit // empty' <<<"$output")
+          lmcache_svc=$(jq -r '.ecs_service_names.value.lmcache // empty' <<<"$output")
+          llm_tts_desired=$(jq -e '.desired_optional_services.value.llm_tts // 0 | if type == "number" then . else error("llm_tts not number") end' <<<"$output")
+          avatar_desired=$(jq -e '.desired_optional_services.value.avatar // 0 | if type == "number" then . else error("avatar not number") end' <<<"$output")
+          livekit_desired=$(jq -e '.desired_optional_services.value.livekit // 0 | if type == "number" then . else error("livekit not number") end' <<<"$output")
+          lmcache_desired=$(jq -e '.desired_optional_services.value.lmcache // 0 | if type == "number" then . else error("lmcache not number") end' <<<"$output")
+          [[ -n "$cluster" && -n "$backend_svc" && -n "$backend_tg" ]] || {
+            echo "Terraform outputs incomplete (cluster/backend/target group required)." >&2
+            exit 1
+          }
+          echo "ecs_cluster=$cluster" >> "$GITHUB_OUTPUT"
+          echo "backend_service=$backend_svc" >> "$GITHUB_OUTPUT"
+          echo "backend_target_group_arn=$backend_tg" >> "$GITHUB_OUTPUT"
+          echo "llm_tts_service=$llm_tts_svc" >> "$GITHUB_OUTPUT"
+          echo "avatar_service=$avatar_svc" >> "$GITHUB_OUTPUT"
+          echo "livekit_service=$livekit_svc" >> "$GITHUB_OUTPUT"
+          echo "lmcache_service=$lmcache_svc" >> "$GITHUB_OUTPUT"
+          check_optional() {
+            local desired="$1" service="$2" role="$3"
+            if [[ "$desired" -gt 0 ]]; then
+              [[ -n "$service" ]] || {
+                echo "$role: effective desired count is positive but service name is empty." >&2
+                exit 1
+              }
+              echo "has_$role=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_$role=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          check_optional "$llm_tts_desired" "$llm_tts_svc" llm_tts
+          check_optional "$avatar_desired" "$avatar_svc" avatar
+          check_optional "$livekit_desired" "$livekit_svc" livekit
+          check_optional "$lmcache_desired" "$lmcache_svc" lmcache
 
-      - name: Smoke test
-        run: curl -fsS https://api.livento.me/api/v1/health/ready
+  build-backend:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/backend/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: imjusthman/ai-live-backend:dev-${{ github.sha }}
+
+  build-llm-tts:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.has_llm_tts == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    strategy:
+      matrix:
+        include:
+          - service: llm
+            image: imjusthman/ai-live-llm
+          - service: tts
+            image: imjusthman/ai-live-tts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ matrix.image }}:dev-${{ github.sha }}
+
+  build-avatar:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.has_avatar == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/avatar/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: imjusthman/ai-live-avatar:dev-${{ github.sha }}
+
+  build-livekit:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.has_livekit == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/livekit/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: imjusthman/ai-live-livekit:dev-${{ github.sha }}
+
+  build-lmcache:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.has_lmcache == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/lmcache/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: imjusthman/ai-live-lmcache:dev-${{ github.sha }}
+
+  deploy:
+    needs: [preflight, build-backend, build-llm-tts, build-avatar, build-livekit, build-lmcache]
+    if: ${{ always() && needs.preflight.result == 'success' && needs.build-backend.result == 'success' && (needs.build-llm-tts.result == 'success' || needs.build-llm-tts.result == 'skipped') && (needs.build-avatar.result == 'success' || needs.build-avatar.result == 'skipped') && (needs.build-livekit.result == 'success' || needs.build-livekit.result == 'skipped') && (needs.build-lmcache.result == 'success' || needs.build-lmcache.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: development
+    env:
+      IMAGE_TAG: dev-${{ github.sha }}
+      ECS_CLUSTER: ${{ needs.preflight.outputs.ecs_cluster }}
+      BACKEND_SERVICE: ${{ needs.preflight.outputs.backend_service }}
+      BACKEND_TARGET_GROUP: ${{ needs.preflight.outputs.backend_target_group_arn }}
+      LLM_TTS_SERVICE: ${{ needs.preflight.outputs.llm_tts_service }}
+      AVATAR_SERVICE: ${{ needs.preflight.outputs.avatar_service }}
+      LIVEKIT_SERVICE: ${{ needs.preflight.outputs.livekit_service }}
+      LMCACHE_SERVICE: ${{ needs.preflight.outputs.lmcache_service }}
+      HAS_LLM_TTS: ${{ needs.preflight.outputs.has_llm_tts }}
+      HAS_AVATAR: ${{ needs.preflight.outputs.has_avatar }}
+      HAS_LIVEKIT: ${{ needs.preflight.outputs.has_livekit }}
+      HAS_LMCACHE: ${{ needs.preflight.outputs.has_lmcache }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy services with rollback and target health gate
+        run: |
+          set -euo pipefail
+          updated_services=()
+          rollback_stack=()
+          rollback() {
+            trap - ERR
+            local i service old_task entry
+            for ((i=${#rollback_stack[@]}-1; i>=0; i--)); do
+              entry="${rollback_stack[$i]}"
+              IFS='|' read -r service old_task <<<"$entry"
+              aws ecs update-service --cluster "$ECS_CLUSTER" --service "$service" --task-definition "$old_task" >/dev/null || echo "Rollback failed for $service" >&2
+            done
+            if [[ ${#rollback_stack[@]} -gt 0 ]]; then
+              local services=()
+              for ((i=${#rollback_stack[@]}-1; i>=0; i--)); do
+                IFS='|' read -r service _ <<<"${rollback_stack[$i]}"
+                services+=("$service")
+              done
+              aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${services[@]}" || echo "Rollback stability wait failed" >&2
+            fi
+            exit 1
+          }
+          trap rollback ERR
+          deploy_service() {
+            local role="$1" service="$2" mandatory="$3" details status failures old_task task new_task
+            if [[ -z "$service" ]]; then
+              [[ "$mandatory" != mandatory ]] && return 0
+              echo "$role service name is empty." >&2
+              return 1
+            fi
+            details=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$service")
+            status=$(jq -r '.services[0].status // empty' <<<"$details")
+            failures=$(jq '.failures | length' <<<"$details")
+            if [[ "$status" != ACTIVE || "$failures" -gt 0 ]]; then
+              echo "$role ($service) not ACTIVE (status=$status, failures=$failures)." >&2
+              return 1
+            fi
+            old_task=$(jq -r '.services[0].taskDefinition' <<<"$details")
+            task=$(aws ecs describe-task-definition --task-definition "$old_task" --query taskDefinition)
+            case "$role" in
+              backend)
+                task=$(jq --arg image "imjusthman/ai-live-backend:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "backend" then .image = $image else . end)' <<<"$task")
+                ;;
+              llm-tts)
+                task=$(jq --arg llm "imjusthman/ai-live-llm:$IMAGE_TAG" --arg tts "imjusthman/ai-live-tts:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "llm" then .image = $llm elif .name == "tts" then .image = $tts else . end)' <<<"$task")
+                ;;
+              avatar)
+                task=$(jq --arg image "imjusthman/ai-live-avatar:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "avatar" then .image = $image else . end)' <<<"$task")
+                ;;
+              livekit)
+                task=$(jq --arg image "imjusthman/ai-live-livekit:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "livekit" then .image = $image else . end)' <<<"$task")
+                ;;
+              lmcache)
+                task=$(jq --arg image "imjusthman/ai-live-lmcache:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "lmcache" then .image = $image else . end)' <<<"$task")
+                ;;
+              *)
+                echo "Unsupported ECS role: $role" >&2
+                return 1
+                ;;
+            esac
+            task=$(jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)' <<<"$task")
+            new_task=$(aws ecs register-task-definition --cli-input-json "$task" --query taskDefinition.taskDefinitionArn --output text)
+            aws ecs update-service --cluster "$ECS_CLUSTER" --service "$service" --task-definition "$new_task" >/dev/null
+            rollback_stack+=("$service|$old_task")
+            updated_services+=("$service")
+          }
+          target_group_healthy() {
+            aws elbv2 describe-target-health --target-group-arn "$BACKEND_TARGET_GROUP" | jq -e '[.TargetHealthDescriptions[].TargetHealth.State] | length > 0 and all(.[]; . == "healthy")' >/dev/null
+          }
+          deploy_service backend "$BACKEND_SERVICE" mandatory
+          [[ "$HAS_LLM_TTS" == true ]] && deploy_service llm-tts "$LLM_TTS_SERVICE" optional
+          [[ "$HAS_AVATAR" == true ]] && deploy_service avatar "$AVATAR_SERVICE" optional
+          [[ "$HAS_LIVEKIT" == true ]] && deploy_service livekit "$LIVEKIT_SERVICE" optional
+          [[ "$HAS_LMCACHE" == true ]] && deploy_service lmcache "$LMCACHE_SERVICE" optional
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${updated_services[@]}"
+          for _ in {1..12}; do
+            target_group_healthy && break
+            sleep 10
+          done
+          target_group_healthy
+          trap - ERR

@@ -4,6 +4,52 @@ variable "env" {
   default     = "prod"
 }
 
+variable "cors_origins" {
+  description = "Comma-separated allowed browser origins"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = !strcontains(var.cors_origins, "*")
+    error_message = "cors_origins must not contain wildcard origins in prod."
+  }
+}
+
+variable "debug_enabled" {
+  description = "Enable verbose backend logging"
+  type        = bool
+  default     = false
+}
+
+variable "session_store" {
+  description = "Session store backend: memory or redis"
+  type        = string
+  default     = "memory"
+}
+
+variable "redis_url" {
+  description = "Redis URL for SESSION_STORE=redis; empty derives from ElastiCache"
+  type        = string
+  default     = ""
+}
+
+variable "app_env" {
+  description = "APP_ENV runtime flag; empty falls back to env"
+  type        = string
+  default     = ""
+}
+
+variable "spot_capacity_percentage" {
+  description = "Percentage of EC2 capacity supplied by Spot"
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.spot_capacity_percentage >= 0 && var.spot_capacity_percentage <= 100 && floor(var.spot_capacity_percentage) == var.spot_capacity_percentage
+    error_message = "spot_capacity_percentage must be an integer from 0 to 100."
+  }
+}
+
 variable "project" {
   description = "Project tag / name prefix"
   type        = string
@@ -59,16 +105,65 @@ variable "alb_ingress_cidrs" {
 }
 
 variable "certificate_arn" {
-  description = "ACM cert ARN for ALB HTTPS (required for prod)"
+  description = "ACM cert ARN for ALB HTTPS (required for prod). Set via TF_VAR_certificate_arn."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:ap-northeast-2:[0-9]{12}:certificate/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.certificate_arn))
+    error_message = "certificate_arn must be a valid ACM certificate ARN in ap-northeast-2."
+  }
 }
 
 variable "db_password" {
   description = "RDS master password via TF_VAR / tfvars.local — never commit"
   type        = string
   sensitive   = true
-  default     = "CHANGE_ME_via_TF_VAR"
+
+  validation {
+    condition     = length(var.db_password) >= 8 && length(var.db_password) <= 128 && var.db_password != "CHANGE_ME"
+    error_message = "db_password must be 8-128 chars and not a placeholder."
+  }
+}
+
+variable "backend_api_token" {
+  description = "Backend API bearer token. Set via TF_VAR_backend_api_token — never commit."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.backend_api_token) >= 32 && var.backend_api_token != "CHANGE_ME"
+    error_message = "backend_api_token must be at least 32 chars and not a placeholder."
+  }
+}
+
+variable "admin_api_token" {
+  description = "Admin API bearer token. Set via TF_VAR_admin_api_token — never commit."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.admin_api_token) >= 32 && var.admin_api_token != "CHANGE_ME"
+    error_message = "admin_api_token must be at least 32 chars and not a placeholder."
+  }
+}
+
+variable "enable_database_url" {
+  description = "Explicitly enable DATABASE_URL injection from an existing SSM SecureString parameter."
+  type        = bool
+}
+
+variable "database_url_parameter_arn" {
+  description = "Existing SSM SecureString ARN containing DATABASE_URL; provide the ARN only."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (trimspace(var.database_url_parameter_arn) == "" && !var.enable_database_url) || can(regex(
+      "^arn:[a-z0-9-]+:ssm:[a-z0-9-]+:[0-9]{12}:parameter/[A-Za-z0-9_.+=,@-]+(/[A-Za-z0-9_.+=,@-]+)*$",
+      trimspace(var.database_url_parameter_arn),
+    ))
+    error_message = "database_url_parameter_arn must be empty or an existing SSM Parameter Store ARN."
+  }
 }
 
 variable "db_instance_class" {
@@ -94,26 +189,51 @@ variable "lmcache_enabled" {
 variable "desired_backend" {
   type    = number
   default = 1
+
+  validation {
+    condition     = var.desired_backend >= 1 && floor(var.desired_backend) == var.desired_backend
+    error_message = "desired_backend must be an integer of at least 1 in prod."
+  }
 }
 
 variable "desired_llm_tts" {
   type    = number
-  default = 1
+  default = 0
+
+  validation {
+    condition     = var.desired_llm_tts >= 0 && floor(var.desired_llm_tts) == var.desired_llm_tts
+    error_message = "desired_llm_tts must be a nonnegative integer."
+  }
 }
 
 variable "desired_avatar" {
   type    = number
-  default = 1
+  default = 0
+
+  validation {
+    condition     = var.desired_avatar >= 0 && floor(var.desired_avatar) == var.desired_avatar
+    error_message = "desired_avatar must be a nonnegative integer."
+  }
 }
 
 variable "desired_livekit" {
   type    = number
-  default = 1
+  default = 0
+
+  validation {
+    condition     = var.desired_livekit >= 0 && floor(var.desired_livekit) == var.desired_livekit
+    error_message = "desired_livekit must be a nonnegative integer."
+  }
 }
 
 variable "desired_lmcache" {
   type    = number
   default = 0
+
+  validation {
+    condition     = var.desired_lmcache >= 0 && floor(var.desired_lmcache) == var.desired_lmcache
+    error_message = "desired_lmcache must be a nonnegative integer."
+  }
 }
 
 variable "image_backend" {
@@ -121,9 +241,14 @@ variable "image_backend" {
   default = "imjusthman/ai-live-backend:latest"
 }
 
-variable "image_llm_tts" {
+variable "image_llm" {
   type    = string
-  default = "imjusthman/ai-live-llm-tts:latest"
+  default = "imjusthman/ai-live-llm:latest"
+}
+
+variable "image_tts" {
+  type    = string
+  default = "imjusthman/ai-live-tts:latest"
 }
 
 variable "image_avatar" {
@@ -134,6 +259,36 @@ variable "image_avatar" {
 variable "image_lmcache" {
   type    = string
   default = "imjusthman/ai-live-lmcache:latest"
+}
+
+variable "image_livekit" {
+  type    = string
+  default = "imjusthman/ai-live-livekit:latest"
+}
+
+variable "render_backend" {
+  type    = string
+  default = "mock"
+}
+
+variable "llm_engine" {
+  type    = string
+  default = "none"
+}
+
+variable "llm_base_url" {
+  type    = string
+  default = ""
+}
+
+variable "tts_engine" {
+  type    = string
+  default = "tone"
+}
+
+variable "tts_base_url" {
+  type    = string
+  default = ""
 }
 
 variable "alert_email" {
@@ -148,7 +303,7 @@ variable "enable_billing_alarms" {
 
 variable "create_ec2_capacity" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "tags" {

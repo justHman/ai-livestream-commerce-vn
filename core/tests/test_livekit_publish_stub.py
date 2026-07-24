@@ -11,7 +11,7 @@ def test_publish_disabled_without_flag(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("LIVEKIT_PUBLISH", raising=False)
     monkeypatch.setenv("LIVEKIT_URL", "ws://lk:7880")
     monkeypatch.setenv("LIVEKIT_API_KEY", "k")
-    monkeypatch.setenv("LIVEKIT_API_SECRET", "s")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret-32-characters-harmless")
     assert publish_enabled() is False
 
 
@@ -27,7 +27,7 @@ def test_publish_enabled_with_flag_and_creds(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LIVEKIT_PUBLISH", "1")
     monkeypatch.setenv("LIVEKIT_URL", "ws://lk:7880")
     monkeypatch.setenv("LIVEKIT_API_KEY", "k")
-    monkeypatch.setenv("LIVEKIT_API_SECRET", "s")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret-32-characters-harmless")
     assert publish_enabled() is True
 
 
@@ -55,7 +55,7 @@ async def test_publisher_enabled_requires_sdk_or_factory(monkeypatch):
         "LIVEKIT_PUBLISH": "1",
         "LIVEKIT_URL": "ws://lk:7880",
         "LIVEKIT_API_KEY": "k",
-        "LIVEKIT_API_SECRET": "s",
+        "LIVEKIT_API_SECRET": "test-secret-32-characters-harmless",
     }
     import sys
 

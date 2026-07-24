@@ -19,14 +19,27 @@ variable "parameters" {
   description = "Map of relative path → placeholder SecureString value"
   type        = map(string)
   default = {
-    "db/password"        = "CHANGE_ME"
-    "redis/auth"         = "CHANGE_ME"
+    "db/password" = "CHANGE_ME"
+    "redis/auth"  = "CHANGE_ME"
+    # Rotate both values before enabling the LiveKit service.
     "livekit/api_key"    = "CHANGE_ME"
     "livekit/api_secret" = "CHANGE_ME"
     "jwt/secret"         = "CHANGE_ME"
     "backend/api_token"  = "CHANGE_ME"
     "admin/api_token"    = "CHANGE_ME"
   }
+}
+
+variable "backend_api_token" {
+  description = "Initial backend API token"
+  type        = string
+  sensitive   = true
+}
+
+variable "admin_api_token" {
+  description = "Initial admin API token"
+  type        = string
+  sensitive   = true
 }
 
 variable "ignore_value_changes" {

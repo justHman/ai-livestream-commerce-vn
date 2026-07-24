@@ -1,0 +1,49 @@
+# Tier-S skeleton validation profile: no GPU, no optional services.
+# Keep create_ec2_capacity=false because compute supports this switch.
+env                 = "dev"
+project             = "ai-livestream"
+aws_region          = "ap-northeast-2"
+
+vpc_cidr             = "10.20.0.0/16"
+public_subnet_cidr   = "10.20.1.0/24"
+public_subnet_cidr_b = "10.20.2.0/24"
+az                   = "ap-northeast-2a"
+az_b                 = "ap-northeast-2b"
+alb_ingress_cidrs    = ["0.0.0.0/0"]
+certificate_arn      = ""
+
+db_instance_class       = "db.t4g.medium"
+db_allocated_storage_gb = 100
+redis_node_type         = "cache.t4g.small"
+lmcache_enabled         = false
+
+desired_backend     = 1
+desired_llm_tts     = 0
+desired_avatar      = 0
+desired_livekit      = 0
+desired_lmcache      = 0
+create_ec2_capacity = false
+
+image_backend = "imjusthman/ai-live-backend:dev"
+image_llm     = "imjusthman/ai-live-llm:dev"
+image_tts     = "imjusthman/ai-live-tts:dev"
+image_avatar  = "imjusthman/ai-live-avatar:dev"
+image_lmcache = "imjusthman/ai-live-lmcache:latest"
+image_livekit = "imjusthman/ai-live-livekit:dev"
+
+# Tokens: set via TF_VAR_backend_api_token / TF_VAR_admin_api_token (min 32 chars).
+# db_password: set via TF_VAR_db_password (8-128 chars)
+cors_origins      = "*"
+debug_enabled     = true
+session_store     = "memory"
+redis_url         = ""
+app_env           = "dev"
+render_backend    = "mock"
+llm_engine        = "none"
+llm_base_url      = ""
+tts_engine        = "tone"
+tts_base_url      = ""
+spot_capacity_percentage = 0
+
+alert_email           = ""
+enable_billing_alarms = false
