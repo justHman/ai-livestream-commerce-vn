@@ -177,6 +177,21 @@ data "aws_iam_policy_document" "github_deploy_dev" {
     ]
     resources = ["arn:aws:dynamodb:*:*:table/${var.tf_lock_table_name}"]
   }
+  # DEV assets bucket: seed-weights workflow uploads model weights to
+  # s3://ai-livestream-dev-assets-<acct>/weights/. Scoped to the dev env bucket.
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = [
+      "arn:aws:s3:::ai-livestream-dev-assets-*",
+      "arn:aws:s3:::ai-livestream-dev-assets-*/*",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "github_deploy_dev" {
