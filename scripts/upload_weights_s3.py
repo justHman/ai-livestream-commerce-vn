@@ -74,19 +74,23 @@ def main() -> int:
     # LLM: Qwen3.5-4B-AWQ-4bit (safetensors + config only, no gguf/onnx).
     if not args.skip_llm:
         llm_local = cache / "llm"
-        if not (llm_local / "config.json").exists():
+        # Check for safetensors weights, not just config.json — a prior partial
+        # run may have downloaded config + tokenizer but not the weight shards.
+        has_weights = any(llm_local.glob("*.safetensors"))
+        if not has_weights:
             download_hf("cyankiwi/Qwen3.5-4B-AWQ-4bit", llm_local,
                         patterns=["*.json", "*.safetensors", "*.model", "tokenizer*", "*.txt"])
         upload_s3(llm_local, f"{base}/llm/", args.region)
 
-    # TTS: VieNeu-TTS-v2 — local .git source (NOT public on HF).
+    # TTS: VieNeu-TTS-v2 — HF public (verified 2026-07-24, pnnbao-ump/VieNeu-TTS-v2,
+    # 13 files, not gated). --vieneu-local-dir is an optional fallback for offline/airgapped.
     tts_local = cache / "tts" / "vieneu"
     if args.vieneu_local_dir:
         stage_local(Path(args.vieneu_local_dir).resolve(), tts_local, "vieneu-local-dir")
     elif not (tts_local / "config.json").exists():
-        raise SystemExit(
-            "VieNeu-TTS-v2 is NOT public on HF. Pass --vieneu-local-dir <path to local .git checkout>."
-        )
+        download_hf("pnnbao-ump/VieNeu-TTS-v2", tts_local,
+                    patterns=["*.json", "*.safetensors", "*.model", "tokenizer*",
+                              "voices.json", "*.txt", "*.py", "*.wav"])
     upload_s3(tts_local, f"{base}/tts/vieneu/", args.region)
 
     # TTS: neucodec (codec decoder weights).

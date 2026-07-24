@@ -1,0 +1,101 @@
+# seed-weights — download model weights from HF and sync to S3 (offline prep).
+# Supports three-stage money-safe boot: seed S3 weights offline before any
+# billable GPU apply. Run on GitHub Actions runner (US, fast HF + S3 same-region)
+# because local VN -> HF is throttled to ~37KB/s for large safetensors.
+#
+# Trigger: workflow_dispatch (manual). Picks which models to seed.
+name: seed-weights
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed-llm:
+        description: "Seed LLM (cyankiwi/Qwen3.5-4B-AWQ-4bit)"
+        type: boolean
+        default: true
+      seed-vieneu:
+        description: "Seed TTS VieNeu (pnnbao-ump/VieNeu-TTS-v2)"
+        type: boolean
+        default: true
+      seed-neucodec:
+        description: "Seed codec (neuphonic/neucodec)"
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  STATE_BUCKET: ai-livestream-tfstate-191918535424
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install huggingface_hub + awscli
+        run: |
+          python -m pip install --upgrade pip
+          pip install huggingface_hub
+      - name: Resolve assets bucket
+        id: bucket
+        run: |
+          # Bucket name is deterministic: project-env-assets-account
+          acct=$(aws sts get-caller-identity --query Account --output text)
+          echo "bucket=ai-livestream-dev-assets-${acct}" >> "$GITHUB_OUTPUT"
+      - name: Seed LLM (Qwen3.5-4B-AWQ-4bit)
+        if: ${{ inputs.seed-llm }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          dest = "/tmp/weights/llm"
+          snapshot_download(
+              "cyankiwi/Qwen3.5-4B-AWQ-4bit", local_dir=dest,
+              allow_patterns=["*.json", "*.safetensors", "*.model", "tokenizer*", "*.txt"],
+          )
+          print(f"LLM downloaded to {dest}")
+          PY
+          aws s3 sync /tmp/weights/llm "s3://${{ steps.bucket.outputs.bucket }}/weights/llm/" --only-show-errors
+      - name: Seed TTS VieNeu (pnnbao-ump/VieNeu-TTS-v2)
+        if: ${{ inputs.seed-vieneu }}
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          dest = "/tmp/weights/tts/vieneu"
+          snapshot_download(
+              "pnnbao-ump/VieNeu-TTS-v2", local_dir=dest,
+              allow_patterns=["*.json", "*.safetensors", "*.model", "tokenizer*",
+                              "voices.json", "*.txt", "*.py", "*.wav"],
+          )
+          print(f"VieNeu downloaded to {dest}")
+          PY
+          aws s3 sync /tmp/weights/tts/vieneu "s3://${{ steps.bucket.outputs.bucket }}/weights/tts/vieneu/" --only-show-errors
+      - name: Seed codec (neuphonic/neucodec)
+        if: ${{ inputs.seed-neucodec }}
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          dest = "/tmp/weights/tts/neucodec"
+          snapshot_download(
+              "neuphonic/neucodec", local_dir=dest,
+              allow_patterns=["*.json", "*.safetensors", "*.bin", "*.py", "*.txt"],
+          )
+          print(f"neucodec downloaded to {dest}")
+          PY
+          aws s3 sync /tmp/weights/tts/neucodec "s3://${{ steps.bucket.outputs.bucket }}/weights/tts/neucodec/" --only-show-errors
+      - name: Verify S3 weights
+        run: |
+          echo "=== weights/ recursive ==="
+          aws s3 ls "s3://${{ steps.bucket.outputs.bucket }}/weights/" --recursive --human-readable --summarize
