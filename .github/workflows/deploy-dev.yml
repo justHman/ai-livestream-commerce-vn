@@ -220,7 +220,11 @@ jobs:
 
   deploy:
     needs: [preflight, build-backend, build-llm-tts, build-avatar, build-livekit, build-lmcache]
-    if: ${{ always() && needs.preflight.result == 'success' && needs.build-backend.result == 'success' && (needs.build-llm-tts.result == 'success' || needs.build-llm-tts.result == 'skipped') && (needs.build-avatar.result == 'success' || needs.build-avatar.result == 'skipped') && (needs.build-livekit.result == 'success' || needs.build-livekit.result == 'skipped') && (needs.build-lmcache.result == 'success' || needs.build-lmcache.result == 'skipped') }}
+    # Skip auto-deploy when repo variable SKIP_AUTO_DEPLOY=true (build-only run:
+    # push arm64 SHA images to Docker Hub, let operator deploy manually). This
+    # supports the three-stage money-safe boot: build images offline, then
+    # manual Phase 1 scale-up after verifying the stack at zero cost.
+    if: ${{ always() && vars.SKIP_AUTO_DEPLOY != 'true' && needs.preflight.result == 'success' && needs.build-backend.result == 'success' && (needs.build-llm-tts.result == 'success' || needs.build-llm-tts.result == 'skipped') && (needs.build-avatar.result == 'success' || needs.build-avatar.result == 'skipped') && (needs.build-livekit.result == 'success' || needs.build-livekit.result == 'skipped') && (needs.build-lmcache.result == 'success' || needs.build-lmcache.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: development
     env:

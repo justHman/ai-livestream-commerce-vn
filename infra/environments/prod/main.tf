@@ -37,7 +37,10 @@ module "storage" {
   project           = var.project
   force_destroy     = false
   enable_versioning = true
-  tags              = var.tags
+  # Iron rule (no backup pile-up): keep current object only; expire noncurrent
+  # versions after 1 day so overwritten uploads do not pile up storage cost.
+  lifecycle_noncurrent_days = 1
+  tags                      = var.tags
 }
 
 module "secrets" {

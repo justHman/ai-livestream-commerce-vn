@@ -11,12 +11,17 @@
 ARG BASE_IMAGE=vllm/vllm-openai:v0.22.0
 ARG FORK_REPO=https://github.com/justHman/vllm-omni.git
 ARG FORK_BRANCH=feat/vieneu-tts-v0.22
+# Pin the exact fork commit (HEAD of feat/vieneu-tts-v0.22 as of 2026-07-24).
+# The fork already contains the VieNeu adapter (vieneu.py + vieneu/pipeline.yaml).
+# Do NOT pull upstream unstable; bump this pin only after verifying a new HEAD.
+ARG FORK_COMMIT=e3d48e0a
 ARG OMNI_TAG=v0.22.0
 
 FROM ${BASE_IMAGE}
 
 ARG FORK_REPO
 ARG FORK_BRANCH
+ARG FORK_COMMIT
 ARG OMNI_TAG
 ENV PORT=8002 \
     WEIGHTS_LOCAL_DIR=/models \
@@ -29,15 +34,17 @@ ENV PORT=8002 \
 
 WORKDIR /app
 
-# Clone fork (shallow, tags for setuptools-scm) + editable install [vieneu].
+# Clone fork, checkout pinned commit (not just the branch tip), editable install [vieneu].
 # uv is pre-installed in the vllm base image; editable install lands in the
 # base venv's site-packages so it persists into runtime (single-stage build).
+# --branch + checkout FORK_COMMIT pins reproducibly without full history.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git jq awscli \
     && rm -rf /var/lib/apt/lists/* \
-    && git clone --depth 1 --branch "${FORK_BRANCH}" "${FORK_REPO}" /opt/vllm-omni \
+    && git clone --branch "${FORK_BRANCH}" "${FORK_REPO}" /opt/vllm-omni \
     && cd /opt/vllm-omni \
     && git fetch --tags --depth 1 origin "${OMNI_TAG}" \
+    && git checkout "${FORK_COMMIT}" \
     && uv pip install --system --no-cache-dir -e "/opt/vllm-omni[vieneu]" \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser \
     && mkdir -p /models \

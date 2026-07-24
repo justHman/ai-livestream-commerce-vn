@@ -67,9 +67,14 @@ module "database" {
   allocated_storage_gb = var.db_allocated_storage_gb
   multi_az             = false
   redis_node_type      = var.redis_node_type
-  skip_final_snapshot  = true
-  deletion_protection  = false
-  tags                 = var.tags
+  # Iron rule (no backup pile-up): DEV keeps no multi-day RDS backup pile.
+  # backup_retention_days=0 disables automated backups; skip_final_snapshot=true
+  # leaves no final snapshot on destroy; deletion_protection=false lets teardown
+  # proceed. No manual RDS snapshots for DEV stages.
+  backup_retention_days = 0
+  skip_final_snapshot   = true
+  deletion_protection   = false
+  tags                  = var.tags
 }
 
 module "loadbalancer" {

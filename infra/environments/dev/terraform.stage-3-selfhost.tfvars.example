@@ -1,0 +1,72 @@
+# Stage 3 — self-host avatar (AvatarForcing half) + real LLM/TTS + LiveKit full media.
+# Same LLM/TTS engine path as Stage 2 (vLLM Qwen3.5-4B-AWQ + vllm-omni VieNeu)
+# so the only Stage 2→3 variable is the avatar backend (true ablation).
+# Self-host avatar publishes video through LiveKit SFU → browser FE.
+#
+# Spot quota ceiling: g6 engine (4 vCPU) + g4dn avatar (4 vCPU) = 8 vCPU G/VT
+# Spot = exactly the approved quota. Single-avatar smoke only. g4dn.xlarge in
+# 2a/2b/2c, g6.xlarge in 2a/2c/2d.
+#
+# MONEY-SAFE BOOT: copy to terraform.tfvars, Phase 0 apply with all cost-driving
+# desired=0, verify healthy, complete offline setup (SHA images, S3 weights incl.
+# avatar weights, SSM secrets for LiveKit), then Phase 1 apply with desired
+# values below. See docs/runbook-live-smoke-and-teardown.md.
+#
+# Stage 2 PASS report + teardown verification REQUIRED before any Stage 3 plan.
+# If self_host_avatarforcing_half is not code-complete, Stage 3 MUST fail loud
+# + teardown (no silent mock fallback).
+
+env                 = "dev"
+project             = "ai-livestream"
+aws_region          = "ap-northeast-2"
+
+vpc_cidr             = "10.20.0.0/16"
+public_subnet_cidr   = "10.20.1.0/24"
+public_subnet_cidr_b = "10.20.2.0/24"
+az                   = "ap-northeast-2a"
+az_b                 = "ap-northeast-2b"
+alb_ingress_cidrs    = ["0.0.0.0/0"]
+certificate_arn      = ""
+
+db_instance_class       = "db.t4g.medium"
+db_allocated_storage_gb = 100
+redis_node_type         = "cache.t4g.small"
+lmcache_enabled         = false
+
+# Money-safe boot Phase 1 values. Phase 0: set all desired_llm_tts/avatar/livekit=0.
+desired_backend     = 1
+desired_llm_tts     = 1
+desired_avatar      = 1
+desired_livekit     = 1
+desired_lmcache     = 0
+create_ec2_capacity = true
+spot_capacity_percentage = 100
+
+# Images: SHA-tagged from GitHub Actions (replace <sha> with the build SHA).
+image_backend = "imjusthman/ai-live-backend:dev-<sha>"
+image_llm     = "imjusthman/ai-live-llm:dev-<sha>"
+image_tts     = "imjusthman/ai-live-tts:dev-<sha>"
+image_avatar  = "imjusthman/ai-live-avatar:dev-<sha>"
+image_lmcache = "imjusthman/ai-live-lmcache:dev-<sha>"
+image_livekit = "imjusthman/ai-live-livekit:dev-<sha>"
+
+# Tokens: TF_VAR_backend_api_token / TF_VAR_admin_api_token (min 32 chars).
+# db_password: TF_VAR_db_password (8-128 chars).
+# LiveKit API key/secret: SSM SecureString (livekit/api_key, livekit/api_secret)
+# injected into the livekit task via secrets_arns. Never commit.
+# WEIGHTS_S3_URI: wired by compute module from storage output
+# (s3://ai-livestream-dev-assets-<acct>/weights/). Avatar weights MUST be
+# seeded to S3 offline (local .git source for VieNeu; HF for Qwen + neucodec).
+cors_origins      = "*"
+debug_enabled     = true
+session_store     = "redis"
+redis_url         = ""
+app_env           = "dev"
+render_backend    = "self_host_avatarforcing_half"
+llm_engine        = "vllm"
+llm_base_url      = ""
+tts_engine        = "vieneu"
+tts_base_url      = ""
+
+alert_email           = ""
+enable_billing_alarms = false

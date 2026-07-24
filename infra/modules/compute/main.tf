@@ -632,6 +632,15 @@ resource "aws_ecs_task_definition" "backend" {
             valueFrom = var.secrets_arns["backend/database_url"]
           },
         ] : [],
+        # Stage 2 only: LiveAvatar cloud API key (backend-only secret).
+        # Injected when the secrets module exposes liveavatar/api_key;
+        # absent in Stage 1 (mock) and Stage 3 (self-host avatar).
+        lookup(var.secrets_arns, "liveavatar/api_key", "") != "" ? [
+          {
+            name      = "LIVEAVATAR_API_KEY"
+            valueFrom = var.secrets_arns["liveavatar/api_key"]
+          },
+        ] : [],
       )
       logConfiguration = {
         logDriver = "awslogs"
