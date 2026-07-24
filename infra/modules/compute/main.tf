@@ -239,6 +239,18 @@ resource "aws_launch_template" "llm" {
   image_id      = data.aws_ssm_parameter.ecs_gpu_ami[0].value
   instance_type = var.instance_type_llm
 
+  # GPU images are large (vLLM ~9GB + vllm-omni ~9GB + triton); the default
+  # ECS-optimized AMI root volume is ~30GB and runs out of space on pull.
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 100
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
+    }
+  }
+
   iam_instance_profile {
     arn = aws_iam_instance_profile.ecs[0].arn
   }
@@ -284,6 +296,17 @@ resource "aws_launch_template" "avatar" {
   name_prefix   = "${local.name_prefix}-lt-avatar-"
   image_id      = data.aws_ssm_parameter.ecs_gpu_ami[0].value
   instance_type = var.instance_type_avatar
+
+  # Avatar GPU image is large; default AMI root volume too small for pull.
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 100
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
+    }
+  }
 
   iam_instance_profile {
     arn = aws_iam_instance_profile.ecs[0].arn
