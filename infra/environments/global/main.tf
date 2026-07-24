@@ -152,6 +152,31 @@ data "aws_iam_policy_document" "github_deploy_dev" {
     actions   = ["logs:DescribeLogGroups", "logs:DescribeLogStreams"]
     resources = ["*"]
   }
+  # Terraform state bucket + lock table: preflight verifies both, terraform
+  # init/output reads state objects. Scope to the single tfstate bucket + lock
+  # table managed by this stack.
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetObject",
+      "s3:HeadBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::${var.tfstate_bucket_name}",
+      "arn:aws:s3:::${var.tfstate_bucket_name}/*",
+    ]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeTable",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+    ]
+    resources = ["arn:aws:dynamodb:*:*:table/${var.tf_lock_table_name}"]
+  }
 }
 
 resource "aws_iam_role_policy" "github_deploy_dev" {
