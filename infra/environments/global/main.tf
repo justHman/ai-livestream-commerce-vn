@@ -104,10 +104,12 @@ data "aws_iam_policy_document" "github_oidc_assume" {
       type        = "Federated"
       identifiers = [aws_iam_openid_connect_provider.github[0].arn]
     }
+    # StringLike with wildcard so push events AND workflow_dispatch/manual reruns
+    # can both assume the role. StringEquals on the exact ref fails for reruns.
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:justHman/ai-livestream-commerce-vn:ref:refs/heads/develop"]
+      values   = ["repo:justHman/ai-livestream-commerce-vn:*"]
     }
     condition {
       test     = "StringEquals"
