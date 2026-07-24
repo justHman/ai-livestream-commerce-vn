@@ -38,14 +38,14 @@ import asyncio
 import queue
 import threading
 import uuid
-from typing import Any, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from ..llm.base import LLMEngine, LLMRequest
+from ..render.windows import AudioWindow, TextChunk, VideoWindow
 from ..stream.chunker import TextChunker
 from ..tts.base import TTSEngine
-from ..render.windows import TextChunk, VideoWindow
 from .queue import BoundedVideoQueue, CoordinatorMetrics
-
 
 # Default TextChunker config (mirrors AppConfig.text_chunk_* defaults). The
 # orchestrator reads these from the ``config`` dict if provided, else uses these
@@ -55,6 +55,7 @@ _DEFAULT_TARGET_CHARS = 40
 _DEFAULT_MAX_CHARS = 80
 _DEFAULT_FLUSH_TIMEOUT_MS = 350
 _BRIDGE_SENTINEL = object()
+AudioWindowCallback = Callable[[AudioWindow], Awaitable[None]]
 
 
 class StreamOrchestrator:
@@ -72,7 +73,8 @@ class StreamOrchestrator:
         backend: Any,
         queue: BoundedVideoQueue,
         metrics: CoordinatorMetrics,
-        config: Optional[dict] = None,
+        config: dict | None = None,
+        audio_window_callback: AudioWindowCallback | None = None,
     ) -> None:
         self._llm = llm
         self._tts = tts
@@ -85,13 +87,15 @@ class StreamOrchestrator:
         self._max_chars = int(cfg.get("text_chunk_max_chars", _DEFAULT_MAX_CHARS))
         self._flush_timeout_ms = int(cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS))
         self._cancel_event = threading.Event()
-        self._running_session: Optional[str] = None
+        self._running_session: str | None = None
+        self._audio_window_callback = audio_window_callback
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def run(self, session_id: str, text: str, system_prompt: Optional[str] = None) -> str:
+    async def run(self, session_id: str, text: str, system_prompt: str | None = None) -> str:
         """Run one LLM->chunker->TTS->backend turn for ``session_id``.
 
         Puts each emitted ``VideoWindow`` into the bounded queue as soon as the
@@ -100,6 +104,7 @@ class StreamOrchestrator:
         called on the first successful queue put.
         """
         self._running_session = session_id
+        self._loop = asyncio.get_running_loop()
         self._cancel_event.clear()
         self._metrics.record_start()
 
@@ -146,6 +151,7 @@ class StreamOrchestrator:
                 self._cancel_event.set()
                 await worker
             self._running_session = None
+            self._loop = None
 
     async def cancel(self, session_id: str) -> None:
         """Barge-in: stop the running turn for ``session_id`` and drain the queue.
@@ -228,6 +234,13 @@ class StreamOrchestrator:
                 ):
                     if self._cancel_event.is_set():
                         break
+                    if self._audio_window_callback is not None:
+                        loop = self._loop
+                        if loop is None:
+                            raise RuntimeError("orchestrator event loop is unavailable")
+                        asyncio.run_coroutine_threadsafe(
+                            self._audio_window_callback(audio_window), loop
+                        ).result()
                     for vw in self._backend.stream_audio(session_id, audio_window):
                         if self._cancel_event.is_set():
                             break

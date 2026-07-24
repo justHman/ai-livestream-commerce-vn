@@ -9,7 +9,7 @@ Preflight checks before running the Colab vLLM demo.
 - [ ] `LIVEAVATAR_API_KEY` is set only when cloud mode is enabled.
 - [ ] Preflight confirms execution inside Colab and loads secrets without printing them.
 - [ ] Repository URL and branch are intentional.
-- [ ] `LLM_MODEL=cyankiwi/Qwen3.5-4B-AWQ-4bit` is configured for vLLM.
+- [ ] `VLLM_MODEL_ID=cyankiwi/Qwen3.5-4B-AWQ-4bit` is configured for the notebook; its launch cell exports it as `LLM_MODEL`.
 
 ## Notebook cell validation
 

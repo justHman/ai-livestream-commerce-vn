@@ -1,77 +1,61 @@
-# Service contracts — AWS multi-service stack
+# Service contracts
 
-> Phase 0 freeze. Source: `plans/02-master-implement-roadmap.md` §5.  
-> Region: `ap-northeast-2`. Images: Docker Hub public (`imjusthman/*`).  
-> Weights: S3 via entrypoint (`WEIGHTS_S3_URI`). Secrets: SSM SecureString.
+> Current deployment contract. It names Terraform/workflow artifacts; it is not
+> evidence that a service is deployed.
 
-## Port / health / image / arch
+## Ports, health, images, platforms
 
-| service | port | health | hub image | arch |
+| Service | Port / health | Image | Platform | Tier S |
 |---|---|---|---|---|
-| backend | 8800 | `/api/v1/health/live`, `/api/v1/health/ready` | `imimjusthman/ai-live-backend` | arm64 |
-| llm | 8001 | `/health` | `imimjusthman/ai-live-llm` | amd64+gpu |
-| tts | 8002 | `/health` | `imimjusthman/ai-live-tts` | amd64+gpu |
-| avatar | 8080 | `/health` | `imimjusthman/ai-live-avatar` | amd64+gpu |
-| livekit | 7880 + UDP 50000-60000 | `/` or livekit health | `imimjusthman/ai-live-livekit` | arm64 |
-| lmcache | 5555 zmq + 8080 metrics | `:8080/metrics` | `imimjusthman/ai-live-lmcache` | arm64 |
+| backend | `8800`, `/api/v1/health/live`, `/api/v1/health/ready` | `imjusthman/ai-live-backend` | arm64 | enabled |
+| llm | `8001`, `/health` | `imjusthman/ai-live-llm` | amd64 GPU | disabled |
+| tts | `8002`, `/health` | `imjusthman/ai-live-tts` | amd64 GPU | disabled |
+| avatar | `8080`, `/health` | `imjusthman/ai-live-avatar` | amd64 GPU | disabled |
+| livekit | `7880`, UDP media | `imjusthman/ai-live-livekit` | arm64 | disabled |
+| lmcache | `5555`, metrics `8080` | `imjusthman/ai-live-lmcache` | arm64 | disabled |
 
-## ECS task note
+LLM/TTS share one EC2 GPU task. LLM requests the ECS GPU resource; TTS shares
+it process-side. Backend/LiveKit use Fargate Spot ARM. Avatar/LMCache exist
+only when `create_ec2_capacity=true`.
 
-- **LLM + TTS** = 2 containers / 1 ECS Task / 1 GPU (`g6.xlarge`).
-- Only the LLM container declares the GPU resource; TTS shares via `NVIDIA_VISIBLE_DEVICES`.
-- GPU memory utilization: **LLM 0.6 / TTS 0.25** (~0.15 buffer).
-- Backend + LiveKit = Fargate Spot ARM. Avatar = separate GPU task (`g4dn`). LMCache = EC2 Spot ARM (desired_count=0 when disabled).
+## Backend environment
 
-## Minimum environment variables
-
-### backend
-
-```
-APP_ENV                  # dev | staging | prod
-LLM_BASE_URL             # e.g. http://llm-tts.$ENV.ai-live.local:8001/v1
-TTS_BASE_URL             # e.g. http://llm-tts.$ENV.ai-live.local:8002/v1
-AVATAR_BASE_URL          # e.g. http://avatar:8080
-LIVEKIT_URL              # e.g. ws://livekit:7880
-REDIS_URL                # redis://...
-DATABASE_URL             # postgresql://...
-LMCACHE_ENABLED          # true | false
-# + SSM-injected secrets (API tokens, DB password, LiveAvatar key, etc.)
-```
-
-### llm
-
-```
-MODEL_ID=cyankiwi/Qwen3.5-4B-AWQ-4bit
-ENABLE_PREFIX_CACHING=1
-GPU_MEMORY_UTILIZATION=0.6
-WEIGHTS_S3_URI=s3://ai-livestream-{env}/weights/...
-# when LMCACHE_ENABLED=true:
-#   PYTHONHASHSEED=0
-#   LMCACHE_CONFIG_FILE=/app/lmcache_config.yaml
-#   vLLM --kv-transfer-config LMCacheMPConnector
+```text
+APP_ENV=dev|prod
+RENDER_BACKEND=mock|cloud_liveavatar|remote_avatar|self_host_*
+LLM_ENGINE=none|openai_compat|vllm|sglang|hf|llamacpp
+LLM_BASE_URL=
+TTS_ENGINE=tone|remote_http|transformers|vieneu|cosyvoice
+TTS_BASE_URL=
+SESSION_STORE=memory|redis
+REDIS_URL=
+DATABASE_URL=                         # configured SSM ARN only
+LIVEKIT_URL=
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+LIVEKIT_PUBLISH=0                     # fixed in current Tier S task definition
+PIPECAT_ENABLED=0
+LMCACHE_ENABLED=false
+BACKEND_API_TOKEN=                    # SSM
+ADMIN_API_TOKEN=                      # SSM
 ```
 
-### tts
+`DATABASE_URL` is durable runtime persistence, not `SESSION_STORE`.
+`LIVEKIT_PUBLISH=1` is supported by backend code but outside default Terraform
+Tier S.
 
-```
-MODEL_ID=pnnbao-ump/VieNeu-TTS-v2
-GPU_MEMORY_UTILIZATION=0.25
-WEIGHTS_S3_URI=s3://ai-livestream-{env}/weights/...
-```
+## Tier S values
 
-### avatar / livekit / lmcache
-
-```
-# avatar
-WEIGHTS_S3_URI=s3://ai-livestream-{env}/weights/...
-# livekit — LIVEKIT_* keys via SSM
-# lmcache — only scheduled when LMCACHE_ENABLED=true
+```text
+backend=1; llm_tts=0; avatar=0; livekit=0; lmcache=0
+create_ec2_capacity=false
+mock + none + tone + memory
 ```
 
-## Out of contract (do not reintroduce)
+The profile is `infra/environments/dev/terraform.tier-s.tfvars.example`. Copy
+it to ignored `terraform.tfvars` only for an explicitly approved run.
 
-- NAT gateway / private subnet modules for MVP
-- ECR (use Docker Hub public)
-- Secrets Manager (use SSM SecureString)
-- Route53 / AWS WAF modules
-- torch/vLLM pins in root backend packaging (GPU images own those)
+## MVP exclusions
+
+No NAT, private subnet, ECR, Secrets Manager, Route53, AWS WAF, weights in
+images, `/user/*`, or `/shop/*`.

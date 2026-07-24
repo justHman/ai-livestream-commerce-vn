@@ -112,6 +112,7 @@ class DirectorCoordinator:
         orchestrator_registry: Optional[dict] = None,
         max_queue_windows: int = 5,
         pg_store: Any = None,
+        audio_window_callback: Any = None,
     ) -> None:
         self._runtime = runtime
         # Factory inputs for building a FRESH StreamOrchestrator + queue +
@@ -142,6 +143,7 @@ class DirectorCoordinator:
         # Optional Postgres runtime store (durable rows). None/disabled -> no
         # persistence. Fire-and-forget: a failure must never break the speak loop.
         self._pg_store = pg_store
+        self._audio_window_callback = audio_window_callback
 
     async def _emit(self, session_id: str, event: dict) -> None:
         """Send a WS event via the ControlHub if one is wired. No-op otherwise."""
@@ -436,6 +438,7 @@ class DirectorCoordinator:
             queue=queue,
             metrics=metrics,
             config=self._chunker_config,
+            audio_window_callback=self._audio_window_callback,
         )
         self._register_speaking(session_id, orchestrator, queue)
         try:

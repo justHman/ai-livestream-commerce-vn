@@ -44,41 +44,43 @@ plans/                 active implement plans (00 AWS stack, 01 app backlog)
 archive/               legacy demo + docs-historical/
 ```
 
-## Quick start (local / sandbox — free, no credits)
+## Quick start (offline)
 
-```bash
-# 1. secret (backend-only; never sent to the browser)
-export LIVEAVATAR_API_KEY=...          # or put it in .env (gitignored)
-export RENDER_BACKEND=cloud SESSION_STORE=memory
-
-# 2. verify the API end-to-end against the LiveAvatar sandbox
-python -m core.tests.v1_smoke_test
-
-# 3. run the backend
+```powershell
+uv sync --extra test
+$env:RENDER_BACKEND = "mock"
+$env:LLM_ENGINE = "none"
+$env:TTS_ENGINE = "tone"
+$env:DIRECTOR_ENABLED = "0"
+$env:APP_ENV = "dev"
+uv run pytest core/tests/ -q
 uv run uvicorn core.server:app --port 8800
-#   or: python -m core.server
-
-# 4. open the demo frontend, paste the backend URL, click Start
-python -m http.server 8901 --directory frontend
 ```
 
-Director loop (cluster comments → decide → avatar speaks):
-```bash
-DIRECTOR_ENABLED=1 python -m core.tests.director_api_smoke_test
+Open `frontend/lite.html` through a static server and paste the server origin;
+the page appends `/api/v1` itself. The mock path needs no LiveAvatar key.
+
+## Runtime configuration
+
+```text
+APP_ENV=dev|prod
+RENDER_BACKEND=mock|cloud_liveavatar|remote_avatar|self_host_*
+SESSION_STORE=memory|redis
+LLM_ENGINE=none|openai_compat|vllm|sglang|hf|llamacpp
+TTS_ENGINE=tone|remote_http|transformers|vieneu|cosyvoice
+DATABASE_URL=postgresql://...              # optional runtime persistence
+LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
+LIVEKIT_PUBLISH=0|1                        # requires valid LiveKit credentials
 ```
 
-## Colab (GPU) — see `notebooks/bootstrap_colab.ipynb`
-Clone this repo → install deps → download LLM (gemma-3-4b / Qwen3-4B Q4_K_M GGUF) + TTS
-(VieNeu-TTS) weights → run `core.server` → expose via ngrok → connect the frontend.
+LiveKit room-token minting, frontend subscription, and backend PCM publishing
+are implemented and offline-covered. A real SFU/browser media smoke, avatar
+video publishing, Pipecat cutover, Redis Streams, and GPU benchmarks remain
+unverified. Keep `LIVEKIT_PUBLISH=0` for API-only Tier S.
 
-## Config (env)
+## References
 
-```
-RENDER_BACKEND   cloud | self_host(future)
-SESSION_STORE    memory(Colab) | redis(AWS)
-DIRECTOR_ENABLED 0 | 1
-TTS_ENGINE       vieneu(default) | kokoro | cosyvoice | xtts | tone
-LIVEAVATAR_API_KEY   backend-only secret (gitignored .env)
-```
-
-See `PRODUCTION.md` for the full architecture, portability (Colab → AWS), and model choices.
+- Current backend state: [docs/architecture.md](docs/architecture.md)
+- Colab vLLM demo: [docs/runbook-colab.md](docs/runbook-colab.md)
+- Deployment preparation: [docs/runbook-deploy-prep.md](docs/runbook-deploy-prep.md)
+- Tier S apply/smoke/teardown: [docs/runbook-live-smoke-and-teardown.md](docs/runbook-live-smoke-and-teardown.md)

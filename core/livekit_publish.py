@@ -10,7 +10,11 @@ import asyncio
 import inspect
 import logging
 import os
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
+
+from .render.windows import AudioWindow
 
 log = logging.getLogger(__name__)
 
@@ -322,6 +326,105 @@ class AudioTrackPublisher:
         log.info(
             "livekit_publish stopped session=%s frames=%s", self.session_id, self._frames_published
         )
+
+
+@dataclass
+class _RegistryEntry:
+    publisher: Any
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+class LiveKitPublisherRegistry:
+    """Own one lazily-created publisher for each active session."""
+
+    def __init__(
+        self,
+        publisher_factory: Callable[[str], Any] | None = None,
+        *,
+        enabled_predicate: Callable[[], bool] = publish_enabled,
+    ) -> None:
+        self._publisher_factory = publisher_factory or AudioTrackPublisher
+        self._enabled_predicate = enabled_predicate
+        self._entries: dict[str, _RegistryEntry] = {}
+        self._active_sessions: set[str] = set()
+        self._lock = asyncio.Lock()
+
+    @property
+    def session_ids(self) -> tuple[str, ...]:
+        return tuple(self._entries)
+
+    def activate(self, session_id: str) -> None:
+        self._active_sessions.add(session_id)
+
+    async def publish(self, window: AudioWindow) -> None:
+        if not window.pcm or not self._enabled_predicate():
+            return
+        async with self._lock:
+            if window.session_id not in self._active_sessions:
+                return
+            entry = self._entries.get(window.session_id)
+            if entry is None:
+                entry = _RegistryEntry(self._publisher_factory(window.session_id))
+                self._entries[window.session_id] = entry
+        try:
+            async with entry.lock:
+                async with self._lock:
+                    if (
+                        window.session_id not in self._active_sessions
+                        or self._entries.get(window.session_id) is not entry
+                    ):
+                        return
+                await entry.publisher.publish_pcm(
+                    window.pcm,
+                    sample_rate=window.sample_rate,
+                    num_channels=1,
+                )
+        except BaseException:
+            await self._remove_after_failure(window.session_id, entry)
+            raise
+
+    async def _remove_after_failure(self, session_id: str, entry: _RegistryEntry) -> None:
+        async with self._lock:
+            if self._entries.get(session_id) is entry:
+                self._entries.pop(session_id, None)
+        try:
+            async with entry.lock:
+                await entry.publisher.stop()
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            log.error(
+                "LiveKit publisher cleanup failed session=%s error_type=%s",
+                session_id,
+                type(exc).__name__,
+            )
+
+    async def stop(self, session_id: str) -> None:
+        async with self._lock:
+            self._active_sessions.discard(session_id)
+            entry = self._entries.pop(session_id, None)
+        if entry is None:
+            return
+        async with entry.lock:
+            await entry.publisher.stop()
+
+    async def stop_all(self) -> None:
+        async with self._lock:
+            self._active_sessions.clear()
+            entries = list(self._entries.items())
+            self._entries.clear()
+        for session_id, entry in entries:
+            try:
+                async with entry.lock:
+                    await entry.publisher.stop()
+            except asyncio.CancelledError:
+                raise
+            except (OSError, RuntimeError, ValueError) as exc:
+                log.error(
+                    "LiveKit publisher cleanup failed session=%s error_type=%s",
+                    session_id,
+                    type(exc).__name__,
+                )
 
 
 class _RealRoomCtx:

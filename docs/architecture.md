@@ -1,362 +1,96 @@
 # Architecture — VN Live-Commerce Host
 
-Living architecture reference for the production backend. Design intent, module
-layout, key seams, and deployment model. Source of truth; outdated docs in this
-directory point here.
+> Current code reference. Target decisions are in `scope-engine-and-models.md`.
+> External media is complete only after its stated smoke is observed.
 
-## 1. Two planes (control vs media)
+## Two planes
 
-```
-                CONTROL plane (this backend)               MEDIA plane (NOT this backend)
-  Frontend ──HTTP /api/v1 + WS──>  core server  ──>  Renderer (LiveAvatar cloud / self-host)
- (browser) <──WS events──────────  (control)               │
-     ^                                                      │
-     └────────────── WebRTC video via LiveKit ◄────────────┘
+```text
+CONTROL: browser -- HTTP /api/v1 + WS --> core FastAPI --> renderer control API
+MEDIA:   renderer -- video --> LiveKit --> browser
+                          ^
+                    backend PCM audio when LIVEKIT_PUBLISH=1
 ```
 
-- **Control plane** = `core/` FastAPI app: session lifecycle, say, interrupt, events, Director decisions. JSON + WebSocket.
-- **Media plane** = avatar video. Flows renderer -> LiveKit -> browser directly. Frames never transit our backend.
-- Browser receives only frontend-safe creds: `livekit_url` + `livekit_client_token`. Secrets stay backend-side.
-- The frontend (`frontend/lite.html`) is a thin client of the API + a LiveKit token.
+`core/` owns session lifecycle, Director decisions, API auth, persistence, and
+control events. Renderers and LiveKit carry media directly to the browser;
+frames do not transit FastAPI. Browser responses carry only a LiveKit URL and
+room-join token, never server credentials.
 
-## 2. Module layout
+## Current modules
 
-```
-implementations/
-+-- core/                           # Production surface (transport-agnostic)
-|   +-- __init__.py
-|   +-- config.py                   # AppConfig, LLMConfig, TTSConfig (env-driven)
-|   +-- server.py                   # create_app() factory + module-level app for uvicorn
-|   +-- store.py                    # SessionStore: InMemorySessionStore | RedisSessionStore
-|   +-- engine_manager.py           # EngineManager (runtime swap + preset registry)
-|   +-- api/
-|   |   +-- __init__.py
-|   |   +-- auth.py                 # viewer_auth, admin_auth, validate_ws_token (Task 7)
-|   |   +-- v1.py                   # /api/v1 router, ControlHub, V1Deps, all endpoints
-|   +-- render/
-|   |   +-- __init__.py             # Exports RenderBackend, FullPipelineBackend, StreamingAvatarBackend
-|   |   +-- base.py                 # ABCs: RenderBackend, FullPipelineBackend, StreamingAvatarBackend
-|   |   +-- cloud.py                # CloudRenderBackend (FullPipelineBackend) -- LiveAvatar cloud
-|   |   +-- self_host.py            # SelfHostRenderBackend stub (future diffusion model)
-|   |   +-- mock.py                 # MockRenderBackend (StreamingAvatarBackend) -- PIL frames, offline
-|   |   +-- windows.py              # TextChunk, AudioWindow, VideoWindow dataclasses + helpers
-|   |   +-- locks.py                # SessionLockRegistry (per-session non-blocking lock)
-|   |   +-- queue.py                # BoundedVideoQueue + CoordinatorMetrics
-|   |   +-- orchestrator.py         # StreamOrchestrator (LLM->chunker->TTS->backend streaming pipeline)
-|   +-- tts/
-|   |   +-- __init__.py             # TTSEngine ABC + load_engine + to_tts_fn
-|   |   +-- base.py                 # TTSEngine, ToneEngine, TTSRequest, AudioChunk
-|   |   +-- adapters/
-|   |       +-- vieneu.py           # VieNeu-TTS adapter (Apache, VN-native)
-|   |       +-- cosyvoice.py        # CosyVoice2 adapter (Apache, streaming)
-|   |       +-- transformers.py     # HF transformers TTS adapter (universal fallback)
-|   +-- llm/
-|   |   +-- __init__.py             # LLMEngine ABC + load_engine + to_llm_fn
-|   |   +-- base.py                 # LLMEngine, LLMRequest, LLMResponse, _NoopEngine
-|   |   +-- adapters/
-|   |       +-- llamacpp.py         # llama.cpp GGUF adapter (Colab T4, low VRAM)
-|   |       +-- vllm.py             # vLLM adapter (production, continuous batching)
-|   |       +-- sglang.py           # SGLang adapter (RadixAttention prefix cache)
-|   |       +-- transformers.py     # HF transformers adapter (universal fallback)
-|   +-- stream/
-|   |   +-- __init__.py
-|   |   +-- chunker.py              # TextChunker (token deltas -> phrase-sized TextChunks)
-|   +-- director/
-|   |   +-- __init__.py             # Director FSM, Decision, StreamState, etc.
-|   |   +-- director.py             # Director core FSM
-|   |   +-- runtime.py              # DirectorRuntime (wraps Director + per-session state)
-|   |   +-- coordinator.py          # DirectorCoordinator (background tick loop)
-|   |   +-- state.py                # Phase, ProductState, StreamState, TrafficMode
-|   |   +-- config.py               # StreamConfig (dashboard-writable policy)
-|   |   +-- embedder.py             # VN bi-encoder embeddings
-|   |   +-- cluster.py              # Comment clustering
-|   |   +-- scorer.py               # rank_clusters, retrieve_product
-|   |   +-- catalog.py              # Product, ProductVariant, route_intent_to_field
-|   |   +-- hooks.py                # HookPool (pre-generated engagement lines)
-|   |   +-- chat_queue.py           # ChatQueue (per-session rolling window)
-|   +-- debug/
-|   |   +-- __init__.py
-|   |   +-- mock_data.py            # MOCK_PRODUCTS, MOCK_VIEWER_MSGS
-|   |   +-- traffic_sim.py          # TrafficSimulator
-|   |   +-- smoke.py                # Smoke test runner
-|   +-- tests/
-|       +-- v1_smoke_test.py
-|       +-- director_smoke_test.py
-|       +-- director_api_smoke_test.py
-|       +-- test_app_factory.py
-|       +-- test_api_auth.py / test_ws_auth.py
-|       +-- test_mock_render_lifecycle.py / test_mock_frame_generation.py
-|       +-- test_llm_streaming.py / test_tts_streaming.py
-|       +-- test_text_chunker.py / test_audio_windowing.py
-|       +-- test_session_concurrency.py / test_queue_coordinator.py
-|       +-- test_chat_queue.py / test_director_coordinator.py
-|       +-- test_engines_endpoint.py / test_mjpeg_continuous.py
-|       +-- test_lite_chat_integration.py / test_idle_loop.py
-+-- providers/
-|   +-- __init__.py
-|   +-- liveavatar_cloud/           # LiveAvatar cloud SDK (behind CloudRenderBackend adapter)
-|       +-- backend/                # client.py, conversation.py, lite_agent.py, audio.py, etc.
-|       +-- examples/               # smoke tests, colab_deploy.py
-+-- frontend/
-|   +-- lite.html                   # Primary frontend demo
-|   +-- index.html                  # Static landing page
-+-- notebooks/
-|   +-- bootstrap_colab.ipynb       # Step-by-step Colab bootstrap
-|   +-- colab_demo.ipynb            # Interactive demo notebook
-+-- archive/
-|   +-- legacy-liveavatar-demo/     # Pre-refactor mock diffusion PoC (archived)
-+-- docs/                           # Confirmed design + pricing (see docs/README.md)
-|   +-- architecture.md             # THIS FILE (app/control-plane map)
-|   +-- aws-architecture.md         # AWS Seoul stack (confirmed)
-|   +-- brief-for-confirmation.md   # Product/system decisions (confirmed)
-|   +-- scope-engine-and-models.md  # LLM/TTS/Avatar detail
-|   +-- terraform-layout.md / cicd-branch-strategy.md
-|   +-- aws-pricing-seoul.*         # Validated Seoul cost
-|   +-- runbook-colab.md + checklists/
-+-- plans/                          # Active implementation plans only
-|   +-- 00-implement-aws-stack.md
-|   +-- 01-app-feature-backlog.md
-+-- archive/docs-historical/        # Superseded PLAN/TASKS/PRODUCTION/fix plans
+```text
+core/
+├── api/                auth, limits, v1 routes and WebSocket hubs
+├── db/                 optional Postgres runtime store and schema
+├── director/           FSM, clustering, run-plan cursor, coordinator
+├── llm/                local and openai_compat engine adapters
+├── render/             cloud, mock, remote avatar, self-host seam, orchestrator
+├── stream/             text chunker
+├── tts/                tone, local, and remote_http adapters
+├── livekit_publish.py  per-session backend PCM publisher registry
+├── livekit_tokens.py   room-join token minting
+├── server.py           app factory, readiness, lifespan cleanup
+└── store.py            memory/Redis session metadata store
 ```
 
-## 3. RenderBackend seam
+`providers/liveavatar_cloud/` is an independent provider SDK. Its standalone
+Colab service keeps a smaller `/api` contract; `frontend/lite.html` targets
+`core.server` and appends `/api/v1` to the origin.
 
-All renderers share a session-lifecycle base, then split by protocol:
+## Lifecycle
 
-```
-RenderBackend (ABC)
-  start(opts) -> StartResult      (blocking, off-loop via asyncio.to_thread)
-  interrupt(session_id) -> None
-  stop(session_id) -> None
-  session_status(session_id) -> str   (default "unknown")
-  |
-  +-- FullPipelineBackend(RenderBackend)
-  |     say(session_id, text, generate=True) -> str
-  |     CloudRenderBackend -- LiveAvatar cloud; owns LLM+TTS+avatar internally
-  |
-  +-- StreamingAvatarBackend(RenderBackend)
-        stream_audio(session_id, audio_window) -> Iterator[VideoWindow]
-        MockRenderBackend -- PIL-synthesized frames, fully offline, no LiveKit
-        SelfHostRenderBackend -- future diffusion model (stub, NotImplemented)
-```
+1. `POST /sessions` or compatible `/lite/start` creates a renderer session.
+2. `attach`, `plan/create`, `chat`, and `ingest` configure Director state.
+3. A `StreamingAvatarBackend` runs LLM → text chunker → TTS → renderer in a
+   worker thread, with a bounded video queue. Cloud backends retain `say()`.
+4. With valid LiveKit configuration, the registry creates one audio publisher
+   per session, serializes PCM forwarding, and removes the entry on stop/error.
+5. Session stop cancels the orchestrator, stops Director, publisher, renderer,
+   and session state.
+6. FastAPI shutdown repeats cleanup with a bounded timeout and closes Postgres.
 
-Select with `RENDER_BACKEND=cloud_liveavatar|mock|self_host_avatarforcing_half|self_host_echoavatar_full`. The API layer (`/lite/say`)
-branches on `isinstance(backend, StreamingAvatarBackend)` to choose the streaming
-pipeline vs the cloud's `backend.say()` path.
+The LiveKit registry is offline-covered only. It does not prove an SFU
+connection, playback, browser audio, avatar video, or A/V sync.
 
-## 4. Streaming pipeline (mock + future self-host)
+## API surface
 
-When `RENDER_BACKEND=mock`, `/lite/say` routes through `_streaming_say`:
+All routes are under `/api/v1`.
 
-```
-LLM stream_chunks()
-  -> TextChunker (token deltas -> phrase-sized TextChunks)
-    -> TTS stream_audio() (TextChunk -> Iterator[AudioWindow])
-      -> backend.stream_audio() (AudioWindow -> Iterator[VideoWindow])
-        -> BoundedVideoQueue (drop-oldest on overflow)
-```
+| Surface | Current behavior |
+|---|---|
+| `/health`, `/health/live`, `/health/ready` | public liveness and dependency readiness |
+| `/sessions`, `/sessions/{id}/{say,interrupt,stop,attach,ingest,chat}` | preferred session aliases |
+| `/sessions/{id}/plan/create` | deterministic run-plan creation |
+| `/lite/*` | compatible legacy session paths |
+| `/media/livekit/room/{id}` | room-join token when configured |
+| `/avatars/*` | in-memory CRUD and idle-regenerate placeholder |
+| `/ws/control/{id}`, `/ws/platform/{id}` | viewer control and platform-comment input |
+| `/engines/*`, `/admin/*` | admin-authenticated engine/config/health operations |
+| `/mock/*`, `/debug/*` | development/debug-gated endpoints |
 
-All three stages are sync generators running in one `asyncio.to_thread` worker.
-A thread-safe `queue.Queue` bridge carries `VideoWindow` objects to the async
-side. `cancel()` sets a `threading.Event` checked between each stage step.
+Viewer routes use `BACKEND_API_TOKEN`; admin routes use `ADMIN_API_TOKEN`.
+Tokens may be empty only in `APP_ENV=dev`. HTTP bodies, fields, REST rates, and
+per-connection WebSocket messages are bounded in-process. Replace the limiter
+with Redis before backend replicas exceed one.
 
-For cloud (`FullPipelineBackend`), the orchestrator is NOT used -- the existing
-`backend.say()` path handles the whole turn internally.
+## Persistence and flags
 
-## 5. Director FSM
+`SESSION_STORE=memory|redis` stores session metadata. `DATABASE_URL` separately
+enables durable runtime Postgres; startup is bounded and readiness reports a
+configured failure. Persistence logs contain operation/session context only.
 
-Between viewer comments and the renderer sits the Director:
-
-```
-Viewer comments -> Comment clustering (VN bi-encoder, cosine)
-  -> Phase-aware scoring (opening / selling / closing)
-    -> Director FSM decides action (idle / skip / hook / answer / product / close)
-      -> StreamOrchestrator (for StreamingAvatarBackend) or backend.say()
-```
-
-Two-tier retrieval:
-- **TIER1**: semantic product match via vector cosine (bkai vietnamese-bi-encoder)
-- **TIER2**: O(1) structured-field lookup that grounds an LLM prompt
-
-Two operating modes:
-- **Sync path** (`/lite/ingest`): POST batch comments -> Director decides -> speaks
-- **Async coordinator** (`/lite/chat`): POST one comment -> ChatQueue -> background
-  tick loop (300ms) drains queue -> Director decides -> orchestrator runs
-
-The coordinator supports barge-in: if a higher-score cluster arrives while
-speaking and `may_interrupt` is set, the current utterance is cancelled.
-
-## 6. LLM engine seam
-
-```
-LLMEngine (ABC)
-  generate(req) -> LLMResponse     (full response)
-  stream_chunks(req) -> Iterator[TextChunk]   (token deltas, new in Wave 2)
-  unload() -> None                 (free VRAM)
-  warmup(system_prompt) -> None
-
-Engines: vllm | openai_compat | hf | none (echo stub)
+```text
+APP_ENV=dev|prod
+RENDER_BACKEND=mock|cloud_liveavatar|remote_avatar|self_host_*
+LLM_ENGINE=none|openai_compat|vllm|sglang|hf|llamacpp
+TTS_ENGINE=tone|remote_http|transformers|vieneu|cosyvoice
+SESSION_STORE=memory|redis
+DATABASE_URL=postgresql://...
+PIPECAT_ENABLED=0|1
+LIVEKIT_PUBLISH=0|1
+LMCACHE_ENABLED=0|1
 ```
 
-`to_llm_fn(engine)` wraps the engine as a `(text) -> str` callable for the cloud
-RenderBackend.
-
-Key env vars: `LLM_ENGINE`, `LLM_MODEL`, `LLM_MODEL_PATH`, `LLM_STREAM`.
-
-## 7. TTS engine seam
-
-```
-TTSEngine (ABC)
-  synthesize(req) -> AudioChunk                  (full waveform, blocking)
-  stream(req) -> Iterator[AudioChunk]             (optional, if model streams)
-  unload() -> None
-  warmup() -> None
-
-Adapters: vllm-omni remote | vieneu | cosyvoice | transformers | tone (no-deps stub)
-```
-
-`to_tts_fn(engine)` wraps as a `(text) -> (bytes, rate)` callable.
-
-6 presets registered in `engine_manager.py` for frontend dropdown (Phase A):
-vieneu-v3-turbo, vieneu-v2, cosyvoice2, kokoro, xtts-v2, transformers-mms-vi.
-
-## 8. EngineManager -- runtime swap
-
-`EngineManager` holds the loaded LLM/TTS singleton. When the user swaps from the
-UI (`POST /engines/llm` or `/engines/tts`):
-
-1. Load the new engine (slow: 10-30s for a 4B model).
-2. Unload the old engine (free VRAM).
-3. Reconfigure the cloud RenderBackend with the new engines.
-
-Swap is serialized via `threading.Lock`. During a swap, generation calls block
-briefly -- acceptable for demo.
-
-## 9. API surface
-
-All under `/api/v1`. `/lite/*` kept for compat; preferred product surface is `/sessions/*`.
-
-| Endpoint | Auth | Description |
-|------|------|-------------|
-| `GET /health` `/health/live` `/health/ready` | none | Liveness / readiness |
-| `POST /sessions` | viewer | Create session (alias of `/lite/start`) |
-| `POST /sessions/{id}/say\|interrupt\|stop\|attach\|ingest\|chat` | viewer | Session lifecycle (aliases of `/lite/*`) |
-| `POST /sessions/{id}/plan/create` | viewer | Deterministic RunPlan + store on session |
-| `POST /lite/*` | viewer | Legacy paths (still supported) |
-| `POST /media/livekit/room/{id}` | viewer | Mint LiveKit room-join token |
-| `POST/GET/PUT/DELETE /avatars[/{id}]` | viewer | In-memory avatar CRUD + idle regenerate stub |
-| `WS /ws/control/{id}` | viewer | Control events |
-| `WS /ws/platform/{id}` | viewer | Platform comments → ChatQueue |
-| `GET /engines` `POST /engines/llm\|tts\|tts/preset` | admin | Engine registry / swap |
-| `GET /admin/config` `/admin/health` | admin | Sanitized config + deep health |
-| `GET /mock/*` | debug/dev | MJPEG/PNG debug (gated when not dev) |
-| `POST/GET /debug/*` | admin+debug | Traffic simulator |
-
-Remote engines: `LLM_BASE_URL` / `TTS_BASE_URL` / `AVATAR_BASE_URL` + `backend-to-avatar internal HTTP -- not a public RENDER_BACKEND`.  
-Stubs (flags default off): `PIPECAT_ENABLED`, `LIVEKIT_PUBLISH`, `LMCACHE_ENABLED`.
-
-## 10. Auth model
-
-Two auth planes:
-- **VIEWER** (`BACKEND_API_TOKEN`): `/lite/*`, `/sessions/*`, `/avatars/*`, `/media/*`, `/ws/*`
-- **ADMIN** (`ADMIN_API_TOKEN`): `/engines/*`, `/admin/*`, `/debug/*`
-
-Rules:
-- `APP_ENV=dev` + token empty -> auth disabled (local dev + existing tests)
-- `APP_ENV=prod` + missing token -> 401
-- Valid viewer token on admin endpoint -> 403
-- WS token validated via query parameter BEFORE `ws.accept()`
-
-## 11. Portability -- same code, Colab -> AWS (env only)
-
-| Dimension | Colab (now) | AWS (later) |
-|-----------|-------------|-------------|
-| RENDER_BACKEND | cloud_liveavatar (or mock) | cloud_liveavatar (or self_host_avatarforcing_half/echoavatar_full) |
-| SESSION_STORE | memory (InMemorySessionStore) | redis (RedisSessionStore) |
-| Process model | 1 uvicorn process | N containers behind ALB (sticky sessions) |
-| LLM | llamacpp GGUF (local) | vLLM (shared endpoint, prefix cache) |
-| TTS | transformers/vieneu (local) | shared TTS endpoint |
-| Public access | ngrok tunnel | ALB + CloudFront |
-| Config | `AppConfig.from_env()` in Colab cell | Task definition env vars + Secrets Manager |
-
-## 12. Session store
-
-`SessionStore` ABC with two implementations:
-- **InMemorySessionStore**: dict-backed, single-process, no persistence.
-- **RedisSessionStore**: `redis.asyncio` client, TTL-based expiry, keyed as `session:{id}`.
-
-Stores only JSON session metadata (status, mode) -- NOT live WS/agent objects,
-which stay in-process on the owning instance. Cross-instance coordination
-(`owner_instance_id`, 409 wrong_instance, 410 session_lost) is deferred.
-
-## 13. Cost of LiveAvatar cloud
-
-| Mode | Cost | Notes |
-|------|------|-------|
-| Sandbox | 0 credits | All development |
-| FULL | 2 credits/min | Cloud runs LLM+TTS |
-| LITE | 1 credit/min | We run LLM+TTS, cloud only renders |
-| Free tier | 10 credits | ~10 min LITE |
-| Paid | ~$0.10/credit | LITE ~$0.10/min |
-
-## 14. KV cache + inference strategy
-
-For Colab T4 (low concurrency): llamacpp GGUF Q4_K_M (~3GB VRAM, low TTFT).
-For production (many sessions): vLLM with prefix caching + FP8 KV cache + chunked prefill.
-Prefix caching caches the persona + catalog system prompt KV once, reused across
-all user turns -- the main technical reason for vLLM/SGLang over llamacpp.
-
-FlashAttention-2/3 and SageAttention2 are not available on T4 (sm_75).
-
-## 15. Models
-
-| Role | Model | License | Notes |
-|------|-------|---------|-------|
-| LLM | gemma-3-4b-it (GGUF Q4_K_M) | Gemma terms, gated | Default on Colab |
-| LLM | Qwen3-4B (GGUF Q4_K_M) | Apache-2.0 | Alternative |
-| LLM | Qwen3.5-4B (GGUF Q4_K_M) | Apache-2.0 | Latest, 4K context default |
-| LLM | SeaLLMs-v3-7B-Chat | SeaLLMs terms | Stronger VN, ~1.6x slower |
-| TTS | VieNeu-TTS-v3-Turbo | Apache-2.0 | VN-native, 48kHz |
-| TTS | CosyVoice2-0.5B | Apache-2.0 | Streaming |
-| TTS | facebook/mms-tts-vie | Apache-2.0 | HF transformers fallback |
-| Embed | bkai vietnamese-bi-encoder | Apache | Clustering + retrieval |
-
-## 16. Run
-
-```bash
-# Offline demo (mock render, no API key, no model)
-RENDER_BACKEND=mock uv run uvicorn core.server:app --port 8800
-
-# Cloud mode (needs LIVEAVATAR_API_KEY)
-export LIVEAVATAR_API_KEY=...
-RENDER_BACKEND=cloud uv run uvicorn core.server:app --port 8800
-
-# Full production (with LLM + TTS)
-LLM_ENGINE=llamacpp LLM_MODEL_PATH=weights/llm TTS_ENGINE=vieneu \
-  TTS_WEIGHTS=weights/tts uv run uvicorn core.server:app --port 8800
-
-# Smoke test
-uv run python -m core.tests.v1_smoke_test
-
-# Offline pytest suite
-uv run pytest core/tests/ -v
-
-# Frontend: open frontend/lite.html, paste backend URL.
-```
-
-## 17. API contract for cloud vs streaming backends
-
-```
-cloud (FullPipelineBackend):
-  /lite/say -> backend.say(session_id, text) -> str    (blocking, off-loop)
-
-mock (StreamingAvatarBackend):
-  /lite/say -> StreamOrchestrator.run() -> str          (async streaming pipeline)
-    LLM.stream_chunks -> TextChunker -> TTS.stream_audio -> backend.stream_audio
-```
-
-The `_streaming_say` function in `v1.py` branches on `isinstance`. For the cloud
-backend, `say()` runs as a single `asyncio.to_thread` call. For the streaming
-backend, the orchestrator runs the four-stage pipeline in a worker thread,
-pushing `VideoWindow` objects into `BoundedVideoQueue` that the MJPEG endpoint
-drains for continuous playback.
+Pipecat remains a bridge, not the production orchestrator. Redis Streams,
+avatar video publishing, and self-host avatar implementations remain open.

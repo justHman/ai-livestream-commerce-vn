@@ -420,3 +420,49 @@ async def test_orchestrator_with_noop_llm_and_tone_tts_smoke():
     # Drain to ensure no hang.
     while queue.qsize() > 0:
         await queue.get()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_forwards_pcm_window_to_callback_before_rendering():
+    backend = MockRenderBackend()
+    result = backend.start(StartOptions())
+    received: list[AudioWindow] = []
+
+    async def capture(window: AudioWindow) -> None:
+        received.append(window)
+
+    orch = StreamOrchestrator(
+        llm=_StubLLM(["Xin chào."]),
+        tts=_StubTTS(),
+        backend=backend,
+        queue=BoundedVideoQueue(max_size=5),
+        metrics=CoordinatorMetrics(),
+        config={"text_chunk_min_chars": 4, "text_chunk_target_chars": 20, "text_chunk_max_chars": 40},
+        audio_window_callback=capture,
+    )
+
+    await orch.run(result.session_id, "hello")
+
+    assert received[0].sample_rate == 24_000
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_propagates_callback_failure():
+    backend = MockRenderBackend()
+    result = backend.start(StartOptions())
+
+    async def fail(_: AudioWindow) -> None:
+        raise RuntimeError("publisher failed")
+
+    orch = StreamOrchestrator(
+        llm=_StubLLM(["Xin chào."]),
+        tts=_StubTTS(),
+        backend=backend,
+        queue=BoundedVideoQueue(max_size=5),
+        metrics=CoordinatorMetrics(),
+        config={"text_chunk_min_chars": 4, "text_chunk_target_chars": 20, "text_chunk_max_chars": 40},
+        audio_window_callback=fail,
+    )
+
+    with pytest.raises(RuntimeError, match="publisher failed"):
+        await orch.run(result.session_id, "hello")

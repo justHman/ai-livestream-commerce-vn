@@ -1,110 +1,44 @@
-# Plan 01 — Application migration + feature backlog
+# Plan 01 — application migration backlog
 
-> Status: **ACTIVE backlog — wait for master roadmap approval** (`02-master-implement-roadmap.md`).  
-> Parent waves: A–G in master roadmap §7.  
-> Confirmed product decisions: `docs/brief-for-confirmation.md`, `docs/scope-engine-and-models.md`.
+> Code advanced through migration primitives. This record identifies offline
+> implementation boundaries; it does not claim external media or production
+> operations completed.
 
-AWS resources/Docker/CI live in **Plan 00**. This plan is **code inside `core/`, `frontend/`, `services/*` app layers**.
+## Current baseline
 
-## As-is summary
+- Director, deterministic timers, run-plan cursor/coverage, and compatible
+  `/lite/*` plus preferred `/sessions/*` routes are implemented.
+- `openai_compat`, `remote_http`, and remote-avatar seams coexist with local
+  and development engines.
+- Postgres runtime persistence is optional through `DATABASE_URL`; session KV
+  remains separately memory/Redis.
+- Input, body, REST, and WebSocket limits are bounded per process.
 
-Working **monolith**:
+## Migration status
 
-- Director + ChatQueue + Coordinator  
-- StreamOrchestrator in-process  
-- LLM/TTS loaded in-process via EngineManager  
-- Mock MJPEG + LiveAvatar cloud  
-- Routes `/api/v1/lite/*`  
-- Session store memory/redis KV only  
-
-Target: **Backend orchestrator** calling **remote** LLM/TTS/Avatar over HTTP/SSE, **LiveKit** media, **Pipecat**, **Outlines**, **run-plan**, **Postgres runtime**.
-
-## Waves (do in order unless noted)
-
-### Wave A — Remote engine clients (first code)
-
-| ID | Task | Exit |
+| Wave | State | Remaining exit |
 |---|---|---|
-| A1 | OpenAI-compat LLM client → `LLM_BASE_URL` SSE | stream_chunks works remote |
-| A2 | Omni TTS client → `TTS_BASE_URL` | PCM/stream windows |
-| A3 | Avatar HTTP client (start/stop speak) | StreamingAvatarBackend impl |
-| A4 | Env: `LLM_BASE_URL`/`TTS_BASE_URL`/`AVATAR_BASE_URL`; prod default remote | config tests |
-| A5 | Keep in-process engines for Colab/dev only | dual-mode documented |
-| A6 | Root `pyproject.toml` + lock for backend | image buildable |
+| A — remote engines | primitives implemented | integration smoke with deployed engines |
+| B — LiveKit | token mint, frontend subscribe path, PCM registry, debug-gated mock routes | real SFU audio/browser test; avatar video publisher/idle loop |
+| C — Pipecat/Outlines/run-plan | run-plan/cursor/coverage and schema hooks; Pipecat bridge is flag-only | production Pipecat cutover and vLLM guided-decoding config |
+| D — data plane | Postgres schema/store/lifecycle | Redis Streams, ownership, multi-instance coordination |
+| E — scale | Terraform desired-count flags | autoscaling and LMCache operational validation |
+| F — avatar benchmarks | deferred | approved benchmark and winner integration |
+| G — API surface | sessions, avatars, platform WS, admin surface | remove compatibility only after clients migrate |
 
-### Wave B — LiveKit media
+## Invariants
 
-| ID | Task | Exit |
-|---|---|---|
-| B1 | LiveKit room + token endpoint `/media/livekit/room/{sid}` | FE can join |
-| B2 | Avatar-server publishes video + idle loop 75@25fps | no black frames |
-| B3 | Backend publishes audio track (simple worker or Pipecat) | A/V sync via LiveKit |
-| B4 | FE LiveKit subscribe in `lite.html` | demo path |
-| B5 | MJPEG only if `DEBUG_ENABLED` | not primary |
+- Never implement `/user/*` or `/shop/*`.
+- MJPEG is a development/debug path, not production media.
+- LiveKit publisher code needs a publisher/SFU/browser observation before a
+  media claim.
+- Pipecat, Redis Streams, self-host avatar, and GPU work remain separate from
+  API-only Tier S.
 
-### Wave C — Pipecat + Outlines + run-plan
+## Next order
 
-| ID | Task | # |
-|---|---|---|
-| C1 | Pipecat replaces prod StreamOrchestrator path | #54 |
-| C2 | Custom Omni TTS Pipecat service | #54 |
-| C3 | Outlines Utterance schema on vLLM | #55 |
-| C4 | `POST /sessions/{id}/plan/create` | #60 |
-| C5 | Director cursor + BiEncoder coverage | #60 |
-| C6 | Reactive > proactive tick policy | #60 |
-
-### Wave D — Data plane
-
-| ID | Task |
-|---|---|
-| D1 | Postgres runtime schema (sessions, snapshots, logs, audit) |
-| D2 | asyncpg store |
-| D3 | Redis ChatQueue XADD + multi-instance locks |
-| D4 | WS hub remains; optional LISTEN/NOTIFY |
-
-### Wave E — Scale flags
-
-| ID | Task | # |
-|---|---|---|
-| E1 | `LMCACHE_ENABLED` wiring client + docs | #47 #56 |
-| E2 | Autoscale metric names documented for TF | brief §I |
-
-### Wave F — Avatar model benches (not MVP gate)
-
-| ID | Task | # |
-|---|---|---|
-| F1 | AvatarForcing T4/L4 | #51 |
-| F2 | EchoAvatar license + L4 | #52 |
-| F3 | AWQ INT4 vs INT8-INT4 | #48 |
-| F4 | Wire winner into avatar-server | — |
-
-### Wave G — API surface migration
-
-| ID | Task |
-|---|---|
-| G1 | `/lite/*` → `/sessions/*` (compat aliases) |
-| G2 | `/avatars/*`, `/ws/platform/{sid}`, `/admin/*` |
-| G3 | Never implement `/user/*` `/shop/*` (team SE) |
-
-## Closed (do not re-open)
-
-- Head-only MuseTalk/Ditto as commerce primary  
-- llama.cpp as AWS prod LLM  
-- MJPEG production media  
-- NAT/ECR/Secrets Manager/Route53/WAF MVP  
-
-## Historical
-
-`archived/docs-historical/` and `archive/docs-historical/` hold old PLAN/TASKS/PRODUCTION — not sources of truth.
-
-## Progress
-
-| Wave | Status |
-|---|---|
-| A | not started |
-| B | not started |
-| C | not started |
-| D | not started |
-| E | not started |
-| F | not started |
-| G | not started |
+1. Approved LiveKit audio/browser smoke.
+2. Avatar video publisher and idle-frame media test.
+3. Remote engine integration smoke.
+4. Pipecat production cutover and Redis multi-instance work.
+5. Cost-bounded GPU/avatar benchmarks.

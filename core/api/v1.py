@@ -269,6 +269,7 @@ class V1Deps:
         coordinator: DirectorCoordinator | None = None,
         avatars: AvatarStore | None = None,
         pg_store: Any = None,
+        livekit_publishers: Any = None,
     ) -> None:
         self.backend = backend
         self.store = store
@@ -289,6 +290,7 @@ class V1Deps:
         # Optional Postgres runtime store (durable rows). None/disabled when
         # DATABASE_URL is unset. Persistence is fire-and-forget at route sites.
         self.pg_store = pg_store
+        self.livekit_publishers = livekit_publishers
 
 
 _deps: Optional[V1Deps] = None
@@ -611,6 +613,8 @@ async def lite_start(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     await d.store.set(result.session_id, {"status": "active", "mode": result.mode})
+    if d.livekit_publishers is not None:
+        d.livekit_publishers.activate(result.session_id)
     if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
         try:
             await d.pg_store.upsert_session(
@@ -700,6 +704,9 @@ async def _streaming_say(d: V1Deps, req: SayReq) -> dict[str, Any]:
             queue=queue,
             metrics=metrics,
             config=orch_cfg,
+            audio_window_callback=d.livekit_publishers.publish
+            if d.livekit_publishers is not None
+            else None,
         )
         # Register the orchestrator so /lite/interrupt can cancel it.
         d.orchestrators[sid] = {"orchestrator": orchestrator, "queue": queue}
@@ -762,10 +769,16 @@ async def lite_stop(req: SessionReq, _: None = Depends(viewer_auth)) -> dict[str
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(req.session_id):
         d.coordinator.stop(req.session_id)
+    entry = d.orchestrators.get(req.session_id)
+    if entry is not None:
+        orchestrator: StreamOrchestrator = entry["orchestrator"]
+        await orchestrator.cancel(req.session_id)
     try:
         await asyncio.to_thread(d.backend.stop, req.session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
+    if d.livekit_publishers is not None:
+        await d.livekit_publishers.stop(req.session_id)
     if d.director is not None:
         d.director.detach(req.session_id)
     await d.store.delete(req.session_id)

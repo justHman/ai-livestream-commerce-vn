@@ -64,6 +64,7 @@ from .api import v1
 from .api.limits import MaxBodySizeMiddleware, SlidingWindowLimiter, WebSocketLimiters
 from .config import AppConfig
 from .engine_manager import EngineManager
+from .livekit_publish import LiveKitPublisherRegistry, publish_enabled
 from .render.locks import SessionLockRegistry
 
 # Module-level config — used by ``main()`` for the port and as the default
@@ -143,6 +144,10 @@ async def _shutdown(deps: v1.V1Deps, pg) -> None:
         if deps.coordinator is not None:
             deps.coordinator.stop_all()
 
+    async def stop_livekit_publishers() -> None:
+        if deps.livekit_publishers is not None:
+            await deps.livekit_publishers.stop_all()
+
     async def stop_backend() -> None:
         await asyncio.to_thread(deps.backend.stop_all)
 
@@ -164,6 +169,7 @@ async def _shutdown(deps: v1.V1Deps, pg) -> None:
     async def cleanup() -> None:
         await run_stage("orchestrators", cancel_orchestrators)
         await run_stage("coordinator", stop_coordinator)
+        await run_stage("livekit.stop_all", stop_livekit_publishers)
         await run_stage("render.stop_all", stop_backend)
         await run_stage("render.close", close_backend)
         await run_stage("postgres", close_postgres)
@@ -175,7 +181,7 @@ async def _shutdown(deps: v1.V1Deps, pg) -> None:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         raise
-    except TimeoutError:
+    except asyncio.TimeoutError:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         logger.error("Server shutdown cleanup timed out unfinished=%s", stage)
@@ -351,6 +357,7 @@ def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -
         coordinator = None
         lock_registry = SessionLockRegistry()
         orchestrators: dict = {}
+        livekit_publishers = LiveKitPublisherRegistry() if publish_enabled() else None
         if director is not None:
             from .director.coordinator import DirectorCoordinator, CoordinatorConfig
             from .llm.base import _NoopEngine
@@ -377,6 +384,9 @@ def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -
                 orchestrator_registry=orchestrators,
                 max_queue_windows=max_q,
                 pg_store=pg,
+                audio_window_callback=livekit_publishers.publish
+                if livekit_publishers is not None
+                else None,
             )
 
         v1.init_deps(
@@ -391,6 +401,7 @@ def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -
                 orchestrators=orchestrators,
                 coordinator=coordinator,
                 pg_store=pg,
+                livekit_publishers=livekit_publishers,
             )
         )
 

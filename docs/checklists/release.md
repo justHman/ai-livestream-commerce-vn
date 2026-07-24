@@ -3,11 +3,12 @@
 ## Pre-merge
 
 ### Code quality
-- [ ] `uv run pytest core/tests/ -v` passes (offline suite)
-- [ ] `uv run pytest core/tests/test_engines_endpoint.py` passes (preset registry)
-- [ ] `uv run python -m core.tests.v1_smoke_test` passes (sandbox, 0 credits)
-- [ ] `uv run python -m providers.liveavatar_cloud.examples.server_ws_smoke_test` passes (legacy, 0 credits)
-- [ ] No `liveavatar_api/` path references remain -- all imports use `providers/liveavatar_cloud/`
+- [ ] `uv lock --check` passes.
+- [ ] Production-source Ruff gate passes.
+- [ ] `uv run pytest core/tests/ -q` passes (offline suite, including LiveKit registry lifecycle).
+- [ ] Provider import checks pass without network access.
+- [ ] Terraform format and global/DEV/PROD `init -backend=false`/`validate` pass.
+- [ ] Provider imports resolve through `providers/liveavatar_cloud/`.
 
 ### Auth check
 - [ ] `APP_ENV=prod` + no tokens rejects with 401
@@ -21,17 +22,16 @@
 - [ ] `LLM_ENGINE=none TTS_ENGINE=tone` (defaults) boot without GPU
 
 ### Docs
-- [ ] `docs/architecture.md` reflects current module layout
-- [ ] `docs/aws-architecture.md` + pricing match live Seoul stack
-- [ ] Active work only in `plans/`; historical drafts only under `archive/docs-historical/`
-- [ ] `docs/runbook-colab.md` matches the current bootstrap notebook steps
-- [ ] Any new env vars are documented in `core/config.py` docstrings
+- [ ] `docs/architecture.md` reflects current module layout and cleanup order.
+- [ ] `docs/aws-architecture.md` describes an unverified AWS state until a live smoke exists.
+- [ ] Active plans state implemented primitives and remaining external gates.
+- [ ] `docs/runbook-colab.md` matches `notebooks/colab_demo.ipynb`.
+- [ ] Tier S runbook uses Terraform ALB outputs, not a remembered hostname.
+- [ ] New environment variables are documented at their active configuration boundary.
 
-## Release
+## External release gate
 
-- [ ] Branch merged to `main`
-- [ ] Changelog entry written
-- [ ] Git tag created (`v0.N.0` or similar)
-- [ ] Colab bootstrap notebook re-tested from clean runtime
-- [ ] ngrok URL verified with `frontend/lite.html`
-- [ ] Smoke test passes on sandbox (0 credits used)
+- [ ] Separate explicit approval covers AWS/LiveKit/DNS/release operations.
+- [ ] Tier S smoke logs and teardown record exist before GPU/media escalation.
+- [ ] Real LiveKit publisher, SFU, and browser subscriber have been observed before media readiness is claimed.
+- [ ] Branch merged to `main` and release tag created only after the required gate.

@@ -81,6 +81,26 @@ def test_create_app_default_returns_fastapi_with_expected_title(mock_env: None) 
     assert app.title == "VN Live-Commerce Host — core API"
 
 
+def test_create_app_wires_livekit_registry_only_when_publishing_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RENDER_BACKEND", "mock")
+    monkeypatch.setenv("LLM_ENGINE", "none")
+    monkeypatch.setenv("TTS_ENGINE", "tone")
+    monkeypatch.setenv("SESSION_STORE", "memory")
+    monkeypatch.setenv("DIRECTOR_ENABLED", "0")
+    monkeypatch.setenv("LIVEKIT_PUBLISH", "1")
+    monkeypatch.setenv("LIVEKIT_URL", "ws://livekit:7880")
+    monkeypatch.setenv("LIVEKIT_API_KEY", "key")
+    monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret-32-characters-harmless")
+
+    from core.server import create_app
+
+    create_app(config=AppConfig.from_env())
+
+    assert v1.deps().livekit_publishers is not None
+
+
 def test_module_level_app_is_fastapi_and_create_app_callable(mock_env: None) -> None:
     """Importing core.server must not raise; module-level `app` must exist."""
     import importlib
