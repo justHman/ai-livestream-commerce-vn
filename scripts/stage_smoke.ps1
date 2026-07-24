@@ -18,8 +18,10 @@ $logDir = ".runtime/stage-$Stage-$ts"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $h = @{ Authorization = "Bearer $Token"; "Content-Type" = "application/json" }
 
-function Get-Json($url, $name, $headers) {
-  $r = Invoke-RestMethod "$Base$url" -Headers $headers
+function Get-Json($url, $name, $headers, $method = "GET", $body = $null) {
+  $params = @{ Uri = "$Base$url"; Headers = $headers; Method = $method }
+  if ($body) { $params.Body = $body }
+  $r = Invoke-RestMethod @params
   $r | ConvertTo-Json -Depth 10 | Set-Content "$logDir/$name.json" -Encoding utf8
   return $r
 }
@@ -32,13 +34,14 @@ if ($AdminToken) {
   Get-Json "/api/v1/engines" "03-engines" $ah | Out-Null
 }
 
-# Session lifecycle
-$started = Get-Json "/api/v1/sessions" "04-session-start" $h
+# Session lifecycle (POST /api/v1/sessions)
+$started = Get-Json "/api/v1/sessions" "04-session-start" $h "POST" "{}"
 $sid = $started.session_id
 Invoke-RestMethod "$Base/api/v1/sessions/$sid/attach" -Method Post -Headers $h -Body '{"products":[]}' | ConvertTo-Json | Set-Content "$logDir/05-attach.json" -Encoding utf8
 Invoke-RestMethod "$Base/api/v1/sessions/$sid/plan/create" -Method Post -Headers $h -Body '{"products":[]}' | ConvertTo-Json | Set-Content "$logDir/06-plan.json" -Encoding utf8
 $speakStart = Get-Date
-Invoke-RestMethod "$Base/api/v1/sessions/$sid/chat" -Method Post -Headers $h -Body '{"text":"smoke","author":"stage-'$Stage'"}' | ConvertTo-Json | Set-Content "$logDir/07-chat.json" -Encoding utf8
+$chatBody = '{"text":"smoke","author":"stage-' + $Stage + '"}'
+Invoke-RestMethod "$Base/api/v1/sessions/$sid/chat" -Method Post -Headers $h -Body $chatBody | ConvertTo-Json | Set-Content "$logDir/07-chat.json" -Encoding utf8
 $speakMs = [int]((Get-Date) - $speakStart).TotalMilliseconds
 Invoke-RestMethod "$Base/api/v1/sessions/$sid/stop" -Method Post -Headers $h -Body "{}" | ConvertTo-Json | Set-Content "$logDir/08-session-stop.json" -Encoding utf8
 

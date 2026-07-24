@@ -48,10 +48,10 @@
 
 ## 4. Live Stage 1 — Mock (billable; human-gated)
 
-- [ ] 4.1 User confirms AWS account, time window, estimated residual cost (ALB/RDS/Redis), and full-destroy teardown route
-- [ ] 4.2 Offline gate green → copy Tier S example to ignored tfvars → `terraform plan` → human approve → apply (no auto-approve default)
-- [ ] 4.3 Run Stage 1 smoke; write SUMMARY; on FAIL: destroy+verify → offline fix → only then re-apply (loop)
-- [ ] 4.4 On PASS: write stage-exit report → full destroy+verify → stop or promote; never leave stack idle
+- [x] 4.1 User confirms AWS account, time window, estimated residual cost (ALB/RDS/Redis), and full-destroy teardown route
+- [x] 4.2 Offline gate green → copy Tier S example to ignored tfvars → `terraform plan` → human approve → apply (no auto-approve default)
+- [x] 4.3 Run Stage 1 smoke; write SUMMARY; on FAIL: destroy+verify → offline fix → only then re-apply (loop)
+- [x] 4.4 On PASS: write stage-exit report → full destroy+verify → stop or promote; never leave stack idle
 
 ## 5. Live Stage 2 — Real LLM/TTS (self-host g6) + LiveAvatar cloud, no LiveKit (billable; human-gated)
 
