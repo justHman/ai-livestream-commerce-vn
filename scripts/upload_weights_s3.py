@@ -1,19 +1,16 @@
 """Download model weights and upload to S3 for ECS GPU tasks.
 
-Models (per docs/scope-engine-and-models.md):
-  LLM:  cyankiwi/Qwen3.5-4B-AWQ-4bit      -> s3://.../weights/llm/        (HF, public)
-  TTS:  VieNeu-TTS-v2                      -> s3://.../weights/tts/vieneu/ (LOCAL .git, NOT public on HF)
-  TTS:  neuphonic/neucodec                 -> s3://.../weights/tts/neucodec/ (HF)
+Models:
+  LLM:  Qwen/Qwen3-4B-AWQ                 -> s3://.../weights/llm/        (HF, public, vLLM 0.22 native)
+  TTS:  pnnbao-ump/VieNeu-TTS-v2           -> s3://.../weights/tts/vieneu/ (HF, public)
+  TTS:  neuphonic/neucodec                 -> s3://.../weights/tts/neucodec/ (HF, public)
 
-VieNeu-TTS-v2 is NOT public on HuggingFace. Its source is a local `.git` repo
-(plus the registered adapter in the vllm-omni fork feat/vieneu-tts-v0.22).
-Pass --vieneu-local-dir <path> to seed VieNeu from the local checkout instead
-of attempting an HF pull that will fail. Qwen3.5-4B-AWQ and neucodec stay on HF
-(the offline seeding source).
+LLM switched from cyankiwi/Qwen3.5-4B-AWQ-4bit (custom Qwen3_5ForConditionalGeneration
+fork unsupported by vLLM 0.22 model registry) to Qwen/Qwen3-4B-AWQ (Qwen3ForCausalLM,
+vLLM 0.22 native support). All three repos are public on HF (verified 2026-07-24).
 
 Usage:
-  python scripts/upload_weights_s3.py --bucket ai-livestream-dev-assets-191918535424 --region ap-northeast-2 \
-      --vieneu-local-dir /path/to/VieNeu-TTS-v2
+  python scripts/upload_weights_s3.py --bucket ai-livestream-dev-assets-191918535424 --region ap-northeast-2
 
 Run OFFLINE (before any billable stage apply). NEVER run HF cold pulls or S3
 syncs inside a billable stage window — S3 is the runtime source via
@@ -71,14 +68,14 @@ def main() -> int:
     cache = Path(args.cache)
     base = f"s3://{args.bucket}/weights"
 
-    # LLM: Qwen3.5-4B-AWQ-4bit (safetensors + config only, no gguf/onnx).
+    # LLM: Qwen/Qwen3-4B-AWQ (arch Qwen3ForCausalLM — vLLM 0.22 native support).
+    # Replaces cyankiwi/Qwen3.5-4B-AWQ-4bit (custom Qwen3_5ForConditionalGeneration
+    # fork that vLLM 0.22 model registry cannot inspect -> subprocess crash).
     if not args.skip_llm:
         llm_local = cache / "llm"
-        # Check for safetensors weights, not just config.json — a prior partial
-        # run may have downloaded config + tokenizer but not the weight shards.
         has_weights = any(llm_local.glob("*.safetensors"))
         if not has_weights:
-            download_hf("cyankiwi/Qwen3.5-4B-AWQ-4bit", llm_local,
+            download_hf("Qwen/Qwen3-4B-AWQ", llm_local,
                         patterns=["*.json", "*.safetensors", "*.model", "tokenizer*", "*.txt"])
         upload_s3(llm_local, f"{base}/llm/", args.region)
 

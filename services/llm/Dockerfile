@@ -11,9 +11,13 @@ ARG BASE_IMAGE=vllm/vllm-openai:v0.22.0
 FROM ${BASE_IMAGE}
 
 # Runtime config. MODEL_ID downloaded at runtime to WEIGHTS_LOCAL_DIR (S3 sync).
+# Qwen/Qwen3-4B-AWQ (arch Qwen3ForCausalLM, model_type qwen3) — vLLM 0.22 supports
+# Qwen3ForCausalLM natively. cyankiwi/Qwen3.5-4B-AWQ-4bit uses a custom fork
+# arch (Qwen3_5ForConditionalGeneration) that vLLM 0.22 model registry cannot
+# inspect -> subprocess timeout -> container crash.
 ENV PORT=8001 \
     WEIGHTS_LOCAL_DIR=/models \
-    MODEL_ID=cyankiwi/Qwen3.5-4B-AWQ-4bit \
+    MODEL_ID=Qwen/Qwen3-4B-AWQ \
     GPU_MEMORY_UTILIZATION=0.6 \
     ENABLE_PREFIX_CACHING=1 \
     HF_HUB_ENABLE_HF_TRANSFER=1
