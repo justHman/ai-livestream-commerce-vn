@@ -202,6 +202,16 @@ class OpenAICompatEngine(LLMEngine):
                 raise RuntimeError(
                     "openai_compat generate returned non-JSON body"
                 )
+        # Debug: log raw response shape to diagnose empty reply.
+        import os as _os
+        if _os.environ.get("DEBUG_ENABLED") == "1":
+            choices = data.get("choices") or []
+            msg = (choices[0].get("message") or {}) if choices else {}
+            print(
+                f"[openai_compat] generate HTTP {resp.status_code} "
+                f"choices={len(choices)} content={msg.get('content','')[:120]!r} "
+                f"finish={choices[0].get('finish_reason') if choices else None}"
+            )
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         text = (message.get("content") or choice.get("text") or "").strip()
