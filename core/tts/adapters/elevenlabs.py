@@ -29,7 +29,9 @@ import numpy as np
 from ..base import AudioChunk, TTSEngine, TTSRequest, register_engine
 
 DEFAULT_BASE_URL = "https://api.elevenlabs.io"
-DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
+# Premade voice (free-tier API-usable; library voices like Rachel need paid plan).
+# Roger — laid-back, casual, resonant. Free tier only allows premade voices via API.
+DEFAULT_VOICE_ID = "CwhRBWXzGAHq8TQ4Fs17"  # Roger (premade, free-tier)
 DEFAULT_MODEL_ID = "eleven_turbo_v2_5"
 
 
