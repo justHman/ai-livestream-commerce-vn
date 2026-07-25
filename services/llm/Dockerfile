@@ -40,21 +40,21 @@ RUN apt-get update \
 COPY services/scripts/fetch_weights.sh /usr/local/bin/fetch_weights.sh
 COPY services/llm/entrypoint.sh /entrypoint.sh
 COPY scripts/gen_vllm_modelinfo_cache.py /tmp/gen_vllm_modelinfo_cache.py
-COPY scripts/patch_vllm_registry.py /tmp/patch_vllm_registry.py
 
-# Pre-generate _ModelInfo cache (PR #23558 pattern) + backport cache-read logic
-# into registry.py. vLLM 0.22 _LazyRegisteredModel.inspect_model_cls calls
-# _run_in_subprocess which hangs importing torch+CUDA on L4 + receives SIGINT
-# from ECS during long init -> KeyboardInterrupt -> container exit 1. With cache,
-# inspect reads the JSON and skips the subprocess (0.6s vs 10s, no SIGINT).
+# Pre-generate _ModelInfo cache (PR #23558, already merged in vLLM 0.22.0).
+# vLLM reads $VLLM_CACHE_ROOT/modelinfos/{module}-{class}.json and skips
+# _run_in_subprocess on cache hit. The subprocess hangs importing
+# torch+CUDA on L4 (~10s) + receives SIGINT from ECS during long init
+# -> KeyboardInterrupt -> exit 1. Cache hit = 0.6s, no SIGINT.
+# Bake into appuser HOME (task runs as appuser uid 10001), NOT /root.
 RUN python3 /tmp/gen_vllm_modelinfo_cache.py --out /tmp/modelinfos \
-    && mkdir -p /root/.cache/vllm/modelinfos \
-    && cp /tmp/modelinfos/*.json /root/.cache/vllm/modelinfos/ \
-    && python3 /tmp/patch_vllm_registry.py \
-    && rm /tmp/gen_vllm_modelinfo_cache.py /tmp/patch_vllm_registry.py /tmp/modelinfos
+    && mkdir -p /home/appuser/.cache/vllm/modelinfos \
+    && cp /tmp/modelinfos/*.json /home/appuser/.cache/vllm/modelinfos/ \
+    && chown -R appuser:appuser /home/appuser/.cache \
+    && rm /tmp/gen_vllm_modelinfo_cache.py /tmp/modelinfos
 
 RUN chmod +x /usr/local/bin/fetch_weights.sh /entrypoint.sh \
-    && chown -R appuser:appuser /app /root/.cache/vllm
+    && chown -R appuser:appuser /app
 
 USER appuser
 
