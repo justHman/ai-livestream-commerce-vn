@@ -33,7 +33,6 @@ Verify module_hash by fetching qwen3.py from the vLLM 0.22.0 tag:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
@@ -85,7 +84,7 @@ def main() -> int:
                     "Qwen3ForCausalLM", QWEN3_MODELINFO, QWEN3_MODULE_HASH)
     print(f"wrote {p}")
     print(f"  hash={QWEN3_MODULE_HASH}")
-    print(f"  bake into image at $VLLM_CACHE_ROOT/modelinfos/ (default ~/.cache/vllm/modelinfos)")
+    print("  bake into image at $VLLM_CACHE_ROOT/modelinfos/ (default ~/.cache/vllm/modelinfos)")
     return 0
 
 

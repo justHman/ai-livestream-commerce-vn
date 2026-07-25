@@ -14,9 +14,6 @@ Usage: python scripts/patch_vllm_registry.py
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import sys
 from pathlib import Path
 
