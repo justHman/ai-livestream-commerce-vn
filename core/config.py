@@ -91,7 +91,6 @@ class LLMConfig:
             device=os.environ.get("LLM_DEVICE", "auto"),
             max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "128")),
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7")),
-            system_prompt=os.environ.get("LLM_SYSTEM_PROMPT", _DEFAULT_PERSONA),
             max_model_len=int(os.environ.get("LLM_MAX_MODEL_LEN", "4096")),
             quantization=os.environ.get("LLM_QUANTIZATION") or None,
             n_ctx=int(os.environ.get("LLM_N_CTX", "4096")),
@@ -179,7 +178,8 @@ class TTSConfig:
     base_url: str = ""                 # remote TTS service URL (TTS_BASE_URL)
     extra: dict[str, Any] = field(default_factory=dict)
 
-            system_prompt=os.environ.get("LLM_SYSTEM_PROMPT", _DEFAULT_PERSONA),
+    @classmethod
+    def from_env(cls) -> "TTSConfig":
         preset_id = os.environ.get("TTS_PRESET_ID", "vieneu-v3-turbo")
         # Default fields (preserve offline behaviour when no TTS_* env is set).
         engine = os.environ.get("TTS_ENGINE", "transformers").lower()
