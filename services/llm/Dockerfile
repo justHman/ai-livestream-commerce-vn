@@ -51,7 +51,7 @@ RUN python3 /tmp/gen_vllm_modelinfo_cache.py --out /tmp/modelinfos \
     && mkdir -p /home/appuser/.cache/vllm/modelinfos \
     && cp /tmp/modelinfos/*.json /home/appuser/.cache/vllm/modelinfos/ \
     && chown -R appuser:appuser /home/appuser/.cache \
-    && rm /tmp/gen_vllm_modelinfo_cache.py /tmp/modelinfos
+    && rm -rf /tmp/gen_vllm_modelinfo_cache.py /tmp/modelinfos
 
 RUN chmod +x /usr/local/bin/fetch_weights.sh /entrypoint.sh \
     && chown -R appuser:appuser /app
