@@ -207,10 +207,15 @@ class OpenAICompatEngine(LLMEngine):
         if _os.environ.get("DEBUG_ENABLED") == "1":
             choices = data.get("choices") or []
             msg = (choices[0].get("message") or {}) if choices else {}
+            usage = data.get("usage") or {}
             print(
                 f"[openai_compat] generate HTTP {resp.status_code} "
                 f"choices={len(choices)} content={msg.get('content','')[:120]!r} "
-                f"finish={choices[0].get('finish_reason') if choices else None}"
+                f"reasoning={msg.get('reasoning_content','')[:80]!r} "
+                f"finish={choices[0].get('finish_reason') if choices else None} "
+                f"prompt_tokens={usage.get('prompt_tokens')} "
+                f"completion_tokens={usage.get('completion_tokens')} "
+                f"reasoning_tokens={usage.get('completion_tokens_details',{}).get('reasoning_tokens')}"
             )
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
