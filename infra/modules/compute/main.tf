@@ -241,10 +241,12 @@ resource "aws_launch_template" "llm" {
 
   # GPU images are large (vLLM ~9GB + vllm-omni ~9GB + triton); the default
   # ECS-optimized AMI root volume is ~30GB and runs out of space on pull.
+  # 200GB: docker images 18GB + extract layers ~36GB + /models weights ~7GB +
+  # SSM agent logs + headroom for image updates without prune.
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size           = 100
+      volume_size           = 200
       volume_type           = "gp3"
       delete_on_termination = true
       encrypted             = true
@@ -301,7 +303,7 @@ resource "aws_launch_template" "avatar" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size           = 100
+      volume_size           = 200
       volume_type           = "gp3"
       delete_on_termination = true
       encrypted             = true
@@ -713,7 +715,7 @@ resource "aws_ecs_task_definition" "llm_tts" {
       environment = [
         { name = "ENV", value = var.env },
         { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}llm/" },
-        { name = "MODEL_ID", value = "/models" },
+        { name = "MODEL_ID", value = "Qwen/Qwen3-4B-AWQ" },
         { name = "ROLE", value = "llm" },
         { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
       ]
@@ -911,6 +913,97 @@ resource "aws_ecs_task_definition" "livekit" {
 }
 
 # ---------------------------------------------------------------------------
+# Internal NLB for llm_tts (stable DNS for backend Fargate → GPU engines)
+# Fargate backend cannot resolve Cloud Map private namespace reliably; NLB
+# internal DNS (.elb.amazonaws.com) resolves from Fargate tasks. Two target
+# groups: llm:8001 (vLLM OpenAI-compat), tts:8002 (vllm-omni /v1/audio/speech).
+# ---------------------------------------------------------------------------
+resource "aws_lb" "llm_tts_internal" {
+  count = var.create_ec2_capacity ? 1 : 0
+
+  name               = "${var.project}-stg-llm-tts"
+  internal           = true
+  load_balancer_type = "network"
+  subnets            = var.subnet_ids
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-llm-tts-internal" })
+}
+
+resource "aws_lb_target_group" "llm" {
+  count = var.create_ec2_capacity ? 1 : 0
+
+  name        = "${var.project}-stg-llm"
+  port        = 8001
+  protocol    = "TCP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    protocol            = "HTTP"
+    path                = "/health"
+    port                = "8001"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+  }
+
+  tags = merge(local.common_tags, { Role = "llm" })
+}
+
+resource "aws_lb_target_group" "tts" {
+  count = var.create_ec2_capacity ? 1 : 0
+
+  name        = "${var.project}-stg-tts"
+  port        = 8002
+  protocol    = "TCP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    protocol            = "HTTP"
+    path                = "/health"
+    port                = "8002"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+  }
+
+  tags = merge(local.common_tags, { Role = "tts" })
+}
+
+resource "aws_lb_listener" "llm" {
+  count = var.create_ec2_capacity ? 1 : 0
+
+  load_balancer_arn = aws_lb.llm_tts_internal[0].arn
+  port              = 8001
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.llm[0].arn
+  }
+
+  tags = local.common_tags
+}
+
+resource "aws_lb_listener" "tts" {
+  count = var.create_ec2_capacity ? 1 : 0
+
+  load_balancer_arn = aws_lb.llm_tts_internal[0].arn
+  port              = 8002
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.tts[0].arn
+  }
+
+  tags = local.common_tags
+}
+
+# ---------------------------------------------------------------------------
 # Services
 # ---------------------------------------------------------------------------
 
@@ -969,6 +1062,21 @@ resource "aws_ecs_service" "llm_tts" {
   service_registries {
     registry_arn   = aws_service_discovery_service.llm_tts[0].arn
     container_name = "llm"
+  }
+
+  # Internal NLB target groups: stable DNS endpoint for backend (Fargate) to
+  # reach llm_tts without relying on Cloud Map private namespace resolution
+  # (Fargate ENI DNS does not reliably resolve Cloud Map private hosted zones).
+  # NLB DNS is AWS-internal and resolves from Fargate tasks.
+  load_balancer {
+    target_group_arn = aws_lb_target_group.llm[0].arn
+    container_name   = "llm"
+    container_port   = 8001
+  }
+  load_balancer {
+    target_group_arn = aws_lb_target_group.tts[0].arn
+    container_name   = "tts"
+    container_port   = 8002
   }
 
   capacity_provider_strategy {
