@@ -630,6 +630,10 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "LLM_ENGINE", value = var.llm_engine },
         { name = "LLM_BASE_URL", value = var.llm_base_url },
         { name = "LLM_MODEL", value = var.llm_model },
+        # DeepSeek reasoning model uses tokens for reasoning then content; default
+        # max_tokens=128 -> all tokens consumed by reasoning -> content="" +
+        # finish=length. Raise to 8192 so reasoning (2-4k) + content (1-2k) fit.
+        { name = "LLM_MAX_TOKENS", value = "8192" },
         { name = "TTS_ENGINE", value = var.tts_engine },
         { name = "TTS_BASE_URL", value = var.tts_base_url },
         { name = "TTS_VOICE_ID", value = var.tts_voice_id },

@@ -19,10 +19,14 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
-# Default livestream persona (Vietnamese MC). Overridable via LLM_SYSTEM_PROMPT.
-# Persona = shop MC (sale chuyên nghiệp + dí dỏm + vui + tự nhiên).
-# Text normalization = không icon, không kí tự đặc biệt, chỉ chữ + số + dấu câu.
-_DEFAULT_PERSONA = (
+# Default livestream persona — split into 2 layers:
+#   1. BASE_SALE_PERSONA (chung mọi shop): dạy AI làm sale chuyên nghiệp,
+#      dí dỏm, vui, text normalization (no icon/emoji/special chars).
+#   2. SHOP_PROFILE (riêng từng shop): tên shop, địa chỉ, SĐT, liên hệ, thông tin.
+# Backend ghép: system = BASE_SALE_PERSONA + "\n\n" + SHOP_PROFILE.
+# Override qua env LLM_SYSTEM_PROMPT (base) + SHOP_PROFILE (shop info).
+
+BASE_SALE_PERSONA = (
     "Bạn là MC bán hàng livestream tiếng Việt, chuyên nghiệp như người sale thật. "
     "Giọng điệu dí dỏm, vui tính, tự nhiên, gần gũi như con người, không giống máy. "
     "Tập trung sản phẩm, khuyến mãi, giá cả, đặt hàng. Trả lời ngắn gọn 1-3 câu. "
@@ -32,6 +36,30 @@ _DEFAULT_PERSONA = (
     "KHÔNG dùng icon, emoji, kí tự đặc biệt, markdown, hay ký hiệu. "
     "Text sạch để bộ đọc TTS phát âm đúng."
 )
+
+# Default shop profile (thay bằng thông tin shop thật qua env SHOP_PROFILE).
+_DEFAULT_SHOP_PROFILE = (
+    "Thông tin shop:\n"
+    "- Tên shop: Chưa cấu hình (set env SHOP_PROFILE)\n"
+    "- Liên hệ: Chưa cấu hình\n"
+    "Khi viewer hỏi thông tin shop (địa chỉ, SĐT, liên hệ), dùng SHOP_PROFILE trên."
+)
+
+# Composed persona (base + shop profile). Overridable via LLM_SYSTEM_PROMPT.
+_DEFAULT_PERSONA = BASE_SALE_PERSONA + "\n\n" + _DEFAULT_SHOP_PROFILE
+
+
+def _build_persona(shop_profile: str = "") -> str:
+    """Compose system prompt: base sale persona + shop profile.
+
+    - LLM_SYSTEM_PROMPT (if set) overrides the BASE sale persona.
+    - shop_profile (if passed via session attach from FE) is the per-shop info
+      (name, address, phone, ...). Falls back to env SHOP_PROFILE or default.
+    - Default: BASE_SALE_PERSONA + _DEFAULT_SHOP_PROFILE.
+    """
+    base = os.environ.get("LLM_SYSTEM_PROMPT") or BASE_SALE_PERSONA
+    shop = shop_profile or os.environ.get("SHOP_PROFILE") or _DEFAULT_SHOP_PROFILE
+    return base + "\n\n" + shop
 
 
 @dataclass
@@ -72,6 +100,7 @@ class LLMConfig:
             base_url=os.environ.get("LLM_BASE_URL", ""),
             guided_json=os.environ.get("LLM_GUIDED_JSON", "0").lower()
             in ("1", "true", "on", "yes"),
+            system_prompt=_build_persona(),
         )
 
     def to_engine_cfg(self) -> dict:
@@ -150,8 +179,7 @@ class TTSConfig:
     base_url: str = ""                 # remote TTS service URL (TTS_BASE_URL)
     extra: dict[str, Any] = field(default_factory=dict)
 
-    @classmethod
-    def from_env(cls) -> "TTSConfig":
+            system_prompt=os.environ.get("LLM_SYSTEM_PROMPT", _DEFAULT_PERSONA),
         preset_id = os.environ.get("TTS_PRESET_ID", "vieneu-v3-turbo")
         # Default fields (preserve offline behaviour when no TTS_* env is set).
         engine = os.environ.get("TTS_ENGINE", "transformers").lower()

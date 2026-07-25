@@ -134,6 +134,59 @@
     // livekit-client UMD exposes window.LiveKit (capital K), NOT LivekitRoom.
     function hasLivekitClient() { return typeof window.LiveKit !== "undefined" && !!window.LiveKit.Room; }
 
+    // ── Mock shop profiles (per-shop info, loaded like mock prods) ──
+    // In prod: team SE sends shop profile via API; FE loads it like mock data.
+    const MOCK_SHOP_PROFILES = {
+      "default": {
+        name: "Shop Nam Beauty",
+        address: "123 Nguyễn Huệ, Q.1, TP.HCM",
+        phone: "0909.123.456",
+        contact: "Zalo: 0909.123.456 · IG: @shopnambeauty",
+        hours: "8:00 - 22:00 mỗi ngày",
+        shipping: "Freeship ĐB từ 99k · Giao 2-4h TP.HCM, 1-3 ngày toàn quốc",
+        return_policy: "Đổi trả 7 ngày nếu lỗi nhà sản xuất",
+        payment: "COD · chuyển khoản · QR · Momo",
+        note: "Shop chính hãng 100%, cam kết giả tiền nếu phát hiện hàng giả."
+      },
+      "tech": {
+        name: "NamTech Store",
+        address: "45 Lê Lợi, Q.BT, TP.HCM",
+        phone: "0901.987.654",
+        contact: "Zalo: 0901.987.654 · Fanpage: NamTech Store",
+        hours: "9:00 - 21:00 T2-CN",
+        shipping: "Freeship ĐB từ 199k · Giao 1-3 ngày",
+        return_policy: "Bảo hành 12 tháng chính hãng",
+        payment: "COD · chuyển khoản · QR · trả góp 0%",
+        note: "Phân phối chính hãng Apple, Samsung, Xiaomi."
+      },
+      "fashion": {
+        name: "Nam Fashion",
+        address: "78 Trần Hưng Đạo, Q.5, TP.HCM",
+        phone: "0908.555.123",
+        contact: "Hotline 0908.555.123 · Shopee: Nam Fashion Official",
+        hours: "9:00 - 22:00 mỗi ngày",
+        shipping: "Freeship ĐB từ 79k · Giao 2-5 ngày",
+        return_policy: "Đổi size/màu trong 3 ngày, hàng nguyên tag",
+        payment: "COD · chuyển khoản · QR · Momo · ZaloPay",
+        note: "Hàng thiết kế riêng, chất cotton linen, size S-XL."
+      }
+    };
+
+    function buildShopProfileText(profile) {
+      // Compose shop profile text for LLM system prompt (base persona + shop info).
+      // FE sends this via attach/start; backend prepends BASE_SALE_PERSONA.
+      const lines = ["Thông tin shop:"];
+      lines.push("- Tên shop: " + (profile.name || "Chưa cấu hình"));
+      lines.push("- Địa chỉ: " + (profile.address || "Chưa cấu hình"));
+      lines.push("- Liên hệ: " + (profile.contact || profile.phone || "Chưa cấu hình"));
+      if (profile.hours) lines.push("- Giờ mở cửa: " + profile.hours);
+      if (profile.shipping) lines.push("- Vận chuyển: " + profile.shipping);
+      if (profile.return_policy) lines.push("- Đổi trả: " + profile.return_policy);
+      if (profile.payment) lines.push("- Thanh toán: " + profile.payment);
+      if (profile.note) lines.push("- Lưu ý: " + profile.note);
+      return lines.join("\n");
+    }
+
     // ── Mock viewer comment pool (Vietnamese live-commerce) ────────
     const MOCK_COMMENTS = [
       "shop ơi giá bao nhiêu vậy",
