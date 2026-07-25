@@ -67,4 +67,4 @@ ENTRYPOINT ["/entrypoint.sh"]
 # --enforce-eager: skip CUDA graph capture (faster init, less VRAM, avoids
 # subprocess inspect path that hangs on L4 + receives SIGINT from ECS during
 # long init). vLLM 0.22 `serve` does NOT support --task generate (newer arg).
-CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --host 0.0.0.0 --port \"${PORT}\" --download-dir \"${WEIGHTS_LOCAL_DIR}\" --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\" --enforce-eager $( [ \"${ENABLE_PREFIX_CACHING}\" = \"1\" ] && echo --enable-prefix-caching )"]
+CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --host 0.0.0.0 --port \"${PORT}\" --download-dir \"${WEIGHTS_LOCAL_DIR}\" --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\" --enforce-eager --quantization awq_marlin $( [ \"${ENABLE_PREFIX_CACHING}\" = \"1\" ] && echo --enable-prefix-caching )"]
