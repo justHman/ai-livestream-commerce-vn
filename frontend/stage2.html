@@ -131,7 +131,8 @@
       const ts = new Date().toLocaleTimeString("vi-VN");
       $("log").textContent = `[${ts}] ${msg}\n` + $("log").textContent;
     }
-    function hasLivekitClient() { return typeof window.LivekitRoom !== "undefined" || !!(window.livekit && window.livekit.Room); }
+    // livekit-client UMD exposes window.LiveKit (capital K), NOT LivekitRoom.
+    function hasLivekitClient() { return typeof window.LiveKit !== "undefined" && !!window.LiveKit.Room; }
 
     // ── Mock viewer comment pool (Vietnamese live-commerce) ────────
     const MOCK_COMMENTS = [
@@ -259,26 +260,27 @@
       if (!hasLivekitClient()) { log("⚠ livekit-client SDK not loaded (check CDN)"); return false; }
       log("→ LiveKit connect: " + url);
       try {
-        const RoomCtor = window.livekit ? window.livekit.Room : window.LivekitRoom;
+        const RoomCtor = window.LiveKit.Room;
         livekitRoom = new RoomCtor({ adaptiveStream: true, dynacast: true });
         await livekitRoom.connect(url, token);
         log("✓ LiveKit connected, room=" + (livekitRoom.name || "?"));
         $("livekitStatus").textContent = "connected ✓";
-        livekitRoom.on("trackSubscribed", (track) => {
+        // livekit-client v2+ API: trackSubscribed(track, publication, participant)
+        livekitRoom.on("trackSubscribed", (track, publication, participant) => {
           if (track.kind === "video") {
             const el = $("avatarVideo");
-            el.srcObject = track.mediaStream;
+            track.attach(el);  // livekit-client API: attach track to element
             el.style.display = "block";
             $("noVideo").style.display = "none";
             log("✓ avatar video track attached");
           } else if (track.kind === "audio") {
-            track.attach();
+            // audio: create <audio> element, attach (no UI needed)
+            const a = document.createElement("audio");
+            a.autoplay = true;
+            document.body.appendChild(a);
+            track.attach(a);
             log("✓ audio track attached");
           }
-        });
-        // already-published tracks
-        livekitRoom.remoteParticipants.forEach(p => {
-          p.tracks.forEach(pub => { if (pub.track) handleTrack(pub.track); });
         });
         return true;
       } catch (e) {
@@ -288,14 +290,8 @@
       }
     }
 
-    function handleTrack(track) {
-      if (track.kind === "video") {
-        const el = $("avatarVideo");
-        el.srcObject = track.mediaStream;
-        el.style.display = "block";
-        $("noVideo").style.display = "none";
-      } else if (track.kind === "audio") { track.attach(); }
-    }
+    // (handleTrack removed — trackSubscribed handler inlines track.attach per
+    // livekit-client v2+ API; old mediaStream approach was wrong.)
 
     // ── Speak (LLM → TTS → avatar) ─────────────────────────────────
     async function speak() {

@@ -174,10 +174,34 @@ class OpenAICompatEngine(LLMEngine):
         _raise_http(resp, "generate")
         try:
             data = resp.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                "openai_compat generate returned non-JSON body"
-            ) from exc
+        except ValueError:
+            # Some free endpoints (e.g. DeepSeek flash-free) return a JSON body
+            # followed by SSE trailers ("data: [DONE]" / "HTTP ... time=..." from
+            # curl proxies) even with stream=false. Strip everything after the
+            # first complete JSON object so resp.json() can parse it.
+            raw = resp.text or ""
+            # Find the end of the first JSON object (matching braces).
+            depth, end = 0, 0
+            for i, ch in enumerate(raw):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if end > 0:
+                import json as _json
+                try:
+                    data = _json.loads(raw[:end])
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "openai_compat generate returned non-JSON body"
+                    ) from exc
+            else:
+                raise RuntimeError(
+                    "openai_compat generate returned non-JSON body"
+                )
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         text = (message.get("content") or choice.get("text") or "").strip()
