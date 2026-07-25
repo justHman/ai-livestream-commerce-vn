@@ -245,6 +245,12 @@ variable "llm_base_url" {
   default     = ""
 }
 
+variable "llm_model" {
+  description = "LLM model id passed to OpenAI-compat endpoint (e.g. oc/deepseek-v4-flash-free). Empty = default."
+  type        = string
+  default     = ""
+}
+
 variable "tts_engine" {
   description = "Backend TTS engine: tone (stub), remote_http (remote vllm-omni), vieneu"
   type        = string
@@ -256,6 +262,13 @@ variable "tts_base_url" {
   type        = string
   default     = ""
 }
+
+variable "tts_voice_id" {
+  description = "ElevenLabs voice_id (when tts_engine=elevenlabs). Empty = default Rachel."
+  type        = string
+  default     = ""
+}
+
 variable "spot_capacity_percentage" {
   description = "Percentage of capacity from Spot (0-100). 0 = all On-Demand (smoke when Spot quota=0), 100 = all Spot (prod)."
   type        = number

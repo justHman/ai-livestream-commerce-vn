@@ -1,6 +1,8 @@
 # Root module wiring — docs/terraform-layout.md §3
 # Order: network → security → storage → secrets → database → loadbalancer → compute → monitoring
 
+data "aws_caller_identity" "current" {}
+
 locals {
   # ALB + RDS need >=2 AZ subnets. Merge network output with optional extra subnets.
   public_subnet_ids = concat(module.network.public_subnet_ids, var.extra_public_subnet_ids)
@@ -112,8 +114,19 @@ module "compute" {
   desired_livekit = var.desired_livekit
   desired_lmcache = var.desired_lmcache
   weights_s3_uri  = module.storage.weights_uri
-  secrets_arns = merge(module.secrets.parameter_arns, var.enable_database_url ? {
-    "backend/database_url" = var.database_url_parameter_arn
+  secrets_arns = merge(module.secrets.parameter_arns,
+    # Stage 2: LiveAvatar cloud API key (backend-only secret, put out-of-band
+    # in SSM /dev/liveavatar/api_key). Injected into backend task as
+    # LIVEAVATAR_API_KEY when present.
+    { "liveavatar/api_key" = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/dev/liveavatar/api_key" },
+    # Remote OpenAI-compat LLM API key (optional, when llm_engine=openai_compat
+    # and base_url is a remote endpoint needing auth). Put in SSM
+    # /dev/llm/api_key out-of-band.
+    { "llm/api_key" = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/dev/llm/api_key" },
+    # Stage 2 ship-fast: ElevenLabs remote TTS API key (backend-only secret).
+    { "tts/api_key" = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/dev/tts/api_key" },
+    var.enable_database_url ? {
+      "backend/database_url" = var.database_url_parameter_arn
   } : {})
   backend_target_group_arn = module.loadbalancer.backend_target_group_arn
   assign_public_ip         = true
@@ -128,8 +141,10 @@ module "compute" {
   render_backend           = var.render_backend
   llm_engine               = var.llm_engine
   llm_base_url             = var.llm_base_url
+  llm_model                = var.llm_model
   tts_engine               = var.tts_engine
   tts_base_url             = var.tts_base_url
+  tts_voice_id             = var.tts_voice_id
   tags                     = var.tags
 }
 

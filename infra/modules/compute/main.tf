@@ -632,6 +632,8 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "LLM_MODEL", value = var.llm_model },
         { name = "TTS_ENGINE", value = var.tts_engine },
         { name = "TTS_BASE_URL", value = var.tts_base_url },
+        { name = "TTS_VOICE_ID", value = var.tts_voice_id },
+        { name = "TTS_MODEL_ID", value = "eleven_turbo_v2_5" },
         { name = "SESSION_STORE", value = var.session_store },
         { name = "DIRECTOR_ENABLED", value = "1" },
         { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
@@ -675,6 +677,14 @@ resource "aws_ecs_task_definition" "backend" {
             valueFrom = var.secrets_arns["llm/api_key"]
           },
         ] : [],
+        # Stage 2 ship-fast: ElevenLabs remote TTS API key (optional, when
+        # tts_engine=elevenlabs). Put in SSM /dev/tts/api_key out-of-band.
+        lookup(var.secrets_arns, "tts/api_key", "") != "" ? [
+          {
+            name      = "TTS_API_KEY"
+            valueFrom = var.secrets_arns["tts/api_key"]
+          },
+        ] : [],
       )
       logConfiguration = {
         logDriver = "awslogs"
@@ -697,8 +707,10 @@ resource "aws_ecs_task_definition" "llm_tts" {
   requires_compatibilities = ["EC2"]
   network_mode             = "awsvpc"
   # Host resources come from the EC2 instance; cpu/memory are soft limits here.
+  # memory 14336 -> 24576: vLLM init + fetch_weights sync + CUDA context + Qwen3-4B-AWQ
+  # (2.68GB) + vllm-omni TTS + KV cache can exceed 14GB container limit -> OOM kill (137).
   cpu                = 4096
-  memory             = 14336
+  memory             = 24576
   execution_role_arn = aws_iam_role.ecs_execution.arn
   task_role_arn      = aws_iam_role.ecs_task.arn
 

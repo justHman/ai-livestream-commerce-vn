@@ -222,6 +222,12 @@ variable "llm_base_url" {
   default     = ""
 }
 
+variable "llm_model" {
+  description = "LLM model id for OpenAI-compat endpoint (e.g. oc/deepseek-v4-flash-free). Empty = default."
+  type        = string
+  default     = ""
+}
+
 variable "tts_engine" {
   description = "TTS engine: tone (stub), remote_http (remote vllm-omni GPU)"
   type        = string
@@ -230,6 +236,12 @@ variable "tts_engine" {
 
 variable "tts_base_url" {
   description = "Remote TTS base URL via service discovery. Empty when tts_engine=tone."
+  type        = string
+  default     = ""
+}
+
+variable "tts_voice_id" {
+  description = "ElevenLabs voice_id (when tts_engine=elevenlabs). Empty = default Rachel."
   type        = string
   default     = ""
 }
