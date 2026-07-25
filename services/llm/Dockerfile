@@ -46,8 +46,11 @@ USER appuser
 
 EXPOSE 8001
 
-HEALTHCHECK --interval=20s --timeout=5s --start-period=90s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=8 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --host 0.0.0.0 --port \"${PORT}\" --download-dir \"${WEIGHTS_LOCAL_DIR}\" --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\" $( [ \"${ENABLE_PREFIX_CACHING}\" = \"1\" ] && echo --enable-prefix-caching )"]
+# --enforce-eager: skip CUDA graph capture (faster init, less VRAM).
+# --task generate: skip multimodal auto-detect (avoids _run_in_subprocess
+# inspect that hangs on L4 + receives SIGINT from ECS during long init).
+CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --task generate --host 0.0.0.0 --port \"${PORT}\" --download-dir \"${WEIGHTS_LOCAL_DIR}\" --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\" --enforce-eager $( [ \"${ENABLE_PREFIX_CACHING}\" = \"1\" ] && echo --enable-prefix-caching )"]
