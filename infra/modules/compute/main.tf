@@ -629,6 +629,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "RENDER_BACKEND", value = var.render_backend },
         { name = "LLM_ENGINE", value = var.llm_engine },
         { name = "LLM_BASE_URL", value = var.llm_base_url },
+        { name = "LLM_MODEL", value = var.llm_model },
         { name = "TTS_ENGINE", value = var.tts_engine },
         { name = "TTS_BASE_URL", value = var.tts_base_url },
         { name = "SESSION_STORE", value = var.session_store },
@@ -664,6 +665,14 @@ resource "aws_ecs_task_definition" "backend" {
           {
             name      = "LIVEAVATAR_API_KEY"
             valueFrom = var.secrets_arns["liveavatar/api_key"]
+          },
+        ] : [],
+        # Remote OpenAI-compat LLM API key (optional, when llm_engine=openai_compat
+        # and base_url points to a remote endpoint needing auth).
+        lookup(var.secrets_arns, "llm/api_key", "") != "" ? [
+          {
+            name      = "LLM_API_KEY"
+            valueFrom = var.secrets_arns["llm/api_key"]
           },
         ] : [],
       )
@@ -715,9 +724,23 @@ resource "aws_ecs_task_definition" "llm_tts" {
       environment = [
         { name = "ENV", value = var.env },
         { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}llm/" },
-        { name = "MODEL_ID", value = "Qwen/Qwen3-4B-AWQ" },
+        # Local dir (vLLM 0.22 supports --model <local-dir> when Path exists + config.json).
+        # HF repo ID would phone home to HF (throttle VN -> hang -> SIGINT -> crash).
+        # fetch_weights.sh syncs S3 weights/llm/* -> /models/qwen3-4b-awq/ (atomic,
+        # validated, .ready marker) before vLLM starts.
+        { name = "MODEL_ID", value = "/models/qwen3-4b-awq" },
+        { name = "MODEL_SUBDIR", value = "qwen3-4b-awq" },
         { name = "ROLE", value = "llm" },
         { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
+        # Air-gapped: vLLM must NOT phone home (HF throttle VN -> connect hang -> SIGINT).
+        # HF_HOME separated from model dir (do NOT mix).
+        { name = "HF_HUB_OFFLINE", value = "1" },
+        { name = "TRANSFORMERS_OFFLINE", value = "1" },
+        { name = "HF_HUB_DISABLE_TELEMETRY", value = "1" },
+        { name = "VLLM_NO_USAGE_STATS", value = "1" },
+        { name = "DO_NOT_TRACK", value = "1" },
+        { name = "HF_HOME", value = "/var/cache/huggingface" },
+        { name = "HF_HUB_CACHE", value = "/var/cache/huggingface/hub" },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -743,8 +766,20 @@ resource "aws_ecs_task_definition" "llm_tts" {
       environment = [
         { name = "ENV", value = var.env },
         { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}tts/" },
+        # Local dir (vLLM 0.22 supports --model <local-dir> via Path.exists()).
+        # fetch_weights.sh syncs S3 weights/tts/vieneu/* -> /models/vieneu/
+        # (atomic, validated, .ready) before vllm-omni starts.
         { name = "MODEL_ID", value = "/models/vieneu" },
+        { name = "MODEL_SUBDIR", value = "vieneu" },
         { name = "ROLE", value = "tts" },
+        # Air-gapped + HF cache separated from model dir.
+        { name = "HF_HUB_OFFLINE", value = "1" },
+        { name = "TRANSFORMERS_OFFLINE", value = "1" },
+        { name = "HF_HUB_DISABLE_TELEMETRY", value = "1" },
+        { name = "VLLM_NO_USAGE_STATS", value = "1" },
+        { name = "DO_NOT_TRACK", value = "1" },
+        { name = "HF_HOME", value = "/var/cache/huggingface" },
+        { name = "HF_HUB_CACHE", value = "/var/cache/huggingface/hub" },
       ]
       logConfiguration = {
         logDriver = "awslogs"

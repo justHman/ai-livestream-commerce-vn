@@ -6,18 +6,17 @@
 #   docker build -f services/llm/Dockerfile -t imjusthman/ai-live-llm:dev .
 # NEVER bake model weights — entrypoint syncs from WEIGHTS_S3_URI.
 
-ARG BASE_IMAGE=vllm/vllm-openai:v0.22.0
+ARG BASE_IMAGE=vllm/vllm-openai:v0.22.1
 
 FROM ${BASE_IMAGE}
 
-# Runtime config. MODEL_ID downloaded at runtime to WEIGHTS_LOCAL_DIR (S3 sync).
-# Qwen/Qwen3-4B-AWQ (arch Qwen3ForCausalLM, model_type qwen3) — vLLM 0.22 supports
-# Qwen3ForCausalLM natively. cyankiwi/Qwen3.5-4B-AWQ-4bit uses a custom fork
-# arch (Qwen3_5ForConditionalGeneration) that vLLM 0.22 model registry cannot
-# inspect -> subprocess timeout -> container crash.
+# Runtime config. MODEL_ID is a LOCAL dir (vLLM 0.22 supports --model <local-dir>
+# via Path.exists() — root cause fix: path must exist + contain config.json at
+# resolve time, no HF repo ID, no phone home). fetch_weights.sh syncs S3 →
+# staging → validate → atomic publish to /models/qwen3-4b-awq before exec vllm.
 ENV PORT=8001 \
     WEIGHTS_LOCAL_DIR=/models \
-    MODEL_ID=Qwen/Qwen3-4B-AWQ \
+    MODEL_SUBDIR=qwen3-4b-awq \
     GPU_MEMORY_UTILIZATION=0.6 \
     ENABLE_PREFIX_CACHING=1 \
     HF_HUB_ENABLE_HF_TRANSFER=1
@@ -67,4 +66,4 @@ ENTRYPOINT ["/entrypoint.sh"]
 # --enforce-eager: skip CUDA graph capture (faster init, less VRAM, avoids
 # subprocess inspect path that hangs on L4 + receives SIGINT from ECS during
 # long init). vLLM 0.22 `serve` does NOT support --task generate (newer arg).
-CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --host 0.0.0.0 --port \"${PORT}\" --download-dir \"${WEIGHTS_LOCAL_DIR}\" --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\" --enforce-eager --quantization awq_marlin $( [ \"${ENABLE_PREFIX_CACHING}\" = \"1\" ] && echo --enable-prefix-caching )"]
+CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --tokenizer \"${MODEL_ID}\" --config-format hf --model-impl auto --served-model-name qwen3-4b-awq --host 0.0.0.0 --port \"${PORT}\" --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\" --enforce-eager --quantization awq_marlin $( [ \"${ENABLE_PREFIX_CACHING}\" = \"1\" ] && echo --enable-prefix-caching )"]

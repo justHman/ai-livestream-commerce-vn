@@ -8,7 +8,7 @@
 #   docker build -f services/tts/Dockerfile -t imjusthman/ai-live-tts:dev .
 # NEVER bake model weights — entrypoint syncs from WEIGHTS_S3_URI.
 
-ARG BASE_IMAGE=vllm/vllm-openai:v0.22.0
+ARG BASE_IMAGE=vllm/vllm-openai:v0.22.1
 ARG FORK_REPO=https://github.com/justHman/vllm-omni.git
 ARG FORK_BRANCH=feat/vieneu-tts-v0.22
 # Pin the exact fork commit (HEAD of feat/vieneu-tts-v0.22 as of 2026-07-24).
@@ -23,10 +23,13 @@ ARG FORK_REPO
 ARG FORK_BRANCH
 ARG FORK_COMMIT
 ARG OMNI_TAG
+# MODEL_ID is a LOCAL dir (vLLM 0.22 supports --model <local-dir> via Path.exists()).
+# fetch_weights.sh syncs S3 → staging → validate → atomic publish to
+# /models/vieneu before exec vllm-omni. Same root cause fix as LLM.
 ENV PORT=8002 \
     WEIGHTS_LOCAL_DIR=/models \
-    MODEL_ID=pnnbao-ump/VieNeu-TTS-v2 \
-    GPU_MEMORY_UTILIZATION=0.25 \
+    MODEL_SUBDIR=vieneu \
+    GPU_MEMORY_UTILIZATION=0.35 \
     NVIDIA_VISIBLE_DEVICES=all \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     SETUPTOOLS_SCM_PRETEND_VERSION=${OMNI_TAG} \
@@ -64,8 +67,8 @@ USER appuser
 
 EXPOSE 8002
 
-HEALTHCHECK --interval=20s --timeout=5s --start-period=120s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=8 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --omni --host 0.0.0.0 --port \"${PORT}\" --download-dir \"${WEIGHTS_LOCAL_DIR}\" --dtype half --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\""]
+CMD ["sh", "-c", "exec vllm serve \"${MODEL_ID}\" --omni --tokenizer \"${MODEL_ID}\" --config-format hf --host 0.0.0.0 --port \"${PORT}\" --dtype half --gpu-memory-utilization \"${GPU_MEMORY_UTILIZATION}\" --enforce-eager"]
