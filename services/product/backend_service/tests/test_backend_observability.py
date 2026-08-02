@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from avatar.observability import (
+from backend.observability import (
     bind,
     extract_from_headers,
     get_all,
@@ -22,13 +22,10 @@ from avatar.observability import (
     setup_logging,
     validate_config,
 )
-from avatar.observability.logging.filters import (
-    REDACTED,
-    ContextFilter,
-    StructuredFieldsFilter,
-)
-from avatar.observability.logging.formatter import ContextFormatter
-from avatar.observability.logging.setup import reset_logging
+from backend.observability.logging.config import REDACTION_FIELD, REDACTION_MARKER
+from backend.observability.logging.filters import ContextFilter, StructuredFieldsFilter
+from backend.observability.logging.formatter import ContextFormatter
+from backend.observability.logging.setup import reset_logging
 
 
 @contextmanager
@@ -49,10 +46,10 @@ def make_record(**extra: object) -> logging.LogRecord:
 def render(extra: dict[str, object]) -> str:
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
-    handler.setFormatter(ContextFormatter(service="avatar"))
+    handler.setFormatter(ContextFormatter(service="backend"))
     handler.addFilter(ContextFilter())
     handler.addFilter(StructuredFieldsFilter())
-    logger = logging.getLogger("avatar.observability.test.render")
+    logger = logging.getLogger("backend.observability.test.render")
     old_handlers, old_propagate = logger.handlers[:], logger.propagate
     logger.handlers, logger.propagate = [handler], False
     logger.setLevel(logging.INFO)
@@ -62,6 +59,32 @@ def render(extra: dict[str, object]) -> str:
     finally:
         logger.handlers, logger.propagate = old_handlers, old_propagate
         handler.close()
+        stream.close()
+
+
+def render_with_downstream_handler(extra: dict[str, object]) -> tuple[str, logging.LogRecord]:
+    captured: list[logging.LogRecord] = []
+
+    class CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    stream = io.StringIO()
+    safe_handler = logging.StreamHandler(stream)
+    safe_handler.setFormatter(ContextFormatter(service="backend"))
+    safe_handler.addFilter(StructuredFieldsFilter())
+    downstream_handler = CaptureHandler()
+    logger = logging.getLogger("backend.observability.test.downstream")
+    old_handlers, old_propagate = logger.handlers[:], logger.propagate
+    logger.handlers, logger.propagate = [safe_handler, downstream_handler], False
+    logger.setLevel(logging.INFO)
+    try:
+        logger.info("event", extra=extra)
+        return stream.getvalue(), captured[0]
+    finally:
+        logger.handlers, logger.propagate = old_handlers, old_propagate
+        safe_handler.close()
+        downstream_handler.close()
         stream.close()
 
 
@@ -75,12 +98,12 @@ def clean_observability() -> Generator[None, None, None]:
 
 
 def test_context_identifiers_are_exact() -> None:
-    with scoped(session_id="s", request_id="r", trace_id="t", component="avatar"):
+    with scoped(session_id="s", request_id="r", trace_id="t", component="backend"):
         assert get_all() == {
             "session_id": "s",
             "request_id": "r",
             "trace_id": "t",
-            "component": "avatar",
+            "component": "backend",
         }
 
 
@@ -149,14 +172,14 @@ def test_inbound_metadata_is_case_insensitive_and_validated() -> None:
             "X-Session-ID": "session-1",
             "x-request-id": "request-1",
             "X-TRACE-ID": "trace/1",
-            "x-component": "avatar.api",
+            "x-component": "backend.api",
             "authorization": "not-context",
         }
     ) == {
         "session_id": "session-1",
         "request_id": "request-1",
         "trace_id": "trace/1",
-        "component": "avatar.api",
+        "component": "backend.api",
     }
 
 
@@ -179,13 +202,13 @@ def test_outbound_metadata_contains_only_validated_context() -> None:
         session_id="session-1",
         request_id="request-1",
         trace_id="trace-1",
-        component="avatar.client",
+        component="backend.client",
     ):
         assert outbound_headers() == {
             "x-session-id": "session-1",
             "x-request-id": "request-1",
             "x-trace-id": "trace-1",
-            "x-component": "avatar.client",
+            "x-component": "backend.client",
         }
 
 
@@ -201,6 +224,9 @@ def test_unsupported_level_fails_startup(level: str) -> None:
         ({"service": "other"}, "Invalid SERVICE_NAME"),
         ({"runtime_root": ""}, "LOG_ROOT"),
         ({"retention_days": 0}, "LOG_RETENTION_DAYS"),
+        ({"retention_days": True}, "LOG_RETENTION_DAYS"),
+        ({"retention_days": 1.0}, "LOG_RETENTION_DAYS"),
+        ({"retention_days": "30"}, "LOG_RETENTION_DAYS"),
         ({"color": "always"}, "LOG_COLOR"),
     ],
 )
@@ -209,13 +235,31 @@ def test_logging_configuration_is_validated(overrides: dict[str, object], messag
         validate_config(**overrides)
 
 
+def test_retention_accepts_integer_override() -> None:
+    assert validate_config(retention_days=7).retention_days == 7
+
+
+def test_retention_parses_digit_environment_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOG_RETENTION_DAYS", "7")
+    assert validate_config().retention_days == 7
+
+
+@pytest.mark.parametrize("value", ["7.0", "-1", "+7", " 7", "seven"])
+def test_retention_rejects_non_digit_environment_value(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("LOG_RETENTION_DAYS", value)
+    with pytest.raises(ValueError, match="LOG_RETENTION_DAYS"):
+        validate_config()
+
+
 def test_setup_is_idempotent_and_closes_owned_handler() -> None:
     with removable_temp_dir() as runtime_root:
         logger = setup_logging(validate_config(runtime_root=runtime_root))
         handler = logger.handlers[-1]
         setup_logging(validate_config(runtime_root=runtime_root))
         assert (
-            sum(getattr(item, "_avatar_observability_handler", False) for item in logger.handlers)
+            sum(getattr(item, "_backend_observability_handler", False) for item in logger.handlers)
             == 1
         )
         reset_logging()
@@ -233,18 +277,31 @@ def test_approved_context_overrides_untrusted_record_context() -> None:
     "key",
     [
         "token",
+        "_token",
         "api_key",
+        "_api_key",
         "apiKey",
+        "API-KEY",
         "provider_session_token",
+        "meta.auth.token",
         "password_hash",
         "cookie",
         "credentials",
     ],
 )
-def test_sensitive_field_values_are_redacted(key: str) -> None:
+def test_sensitive_field_is_replaced_by_stable_redaction_marker(key: str) -> None:
     record = make_record(**{key: "sensitive-value"})
     StructuredFieldsFilter().filter(record)
-    assert record.__dict__[key] == REDACTED
+    assert record.__dict__[REDACTION_FIELD] == REDACTION_MARKER
+    assert key not in record.__dict__
+
+
+def test_downstream_handler_cannot_see_raw_secret() -> None:
+    output, record = render_with_downstream_handler(
+        {"_api_key": "secret-value", "event": "started"}
+    )
+    assert REDACTION_MARKER in output and "secret-value" not in output
+    assert "_api_key" not in record.__dict__ and "secret-value" not in record.__dict__.values()
 
 
 @pytest.mark.parametrize(
@@ -275,6 +332,7 @@ def test_secret_and_freeform_values_do_not_reach_output() -> None:
             "viewer_message": "customer message",
         }
     )
+    assert REDACTION_MARKER in output
     assert all(
         value not in output for value in ("secret-value", "customer prompt", "customer message")
     )

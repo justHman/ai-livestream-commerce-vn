@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from backend.observability.logging.config import APPROVED_FIELDS
+from backend.observability.logging.config import APPROVED_FIELDS, REDACTION_FIELD
 
 
 class ContextFormatter(logging.Formatter):
@@ -18,7 +18,7 @@ class ContextFormatter(logging.Formatter):
         base = super().format(record)
         fields = " ".join(
             f"{key}={record.__dict__[key]}"
-            for key in sorted(APPROVED_FIELDS)
+            for key in sorted(APPROVED_FIELDS | {REDACTION_FIELD})
             if key in record.__dict__
         )
         return f"{base} service={self._service}{' ' + fields if fields else ''}"

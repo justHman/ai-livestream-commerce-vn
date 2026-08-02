@@ -28,6 +28,8 @@ SENSITIVE_KEY_PATTERN = re.compile(
     r"(?:^|_)(?:api_?key|auth(?:orization)?|cookie|credential|password|secret|token)(?:_|$)",
     re.IGNORECASE,
 )
+REDACTION_FIELD = "redacted"
+REDACTION_MARKER = "[REDACTED]"
 OMITTED_FIELDS = frozenset(
     {
         "prompt",
@@ -70,6 +72,16 @@ class LoggingConfig:
             raise ValueError("LOG_COLOR must be 'auto' or 'never'")
 
 
+def _parse_retention_days(value: object, *, from_env: bool) -> int:
+    if isinstance(value, bool):
+        raise ValueError("LOG_RETENTION_DAYS must be an integer")
+    if isinstance(value, int):
+        return value
+    if from_env and isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    raise ValueError("LOG_RETENTION_DAYS must be an integer")
+
+
 def validate_config(**overrides: object) -> LoggingConfig:
     """Build and validate backend logging configuration."""
     values: dict[str, object] = {
@@ -83,8 +95,7 @@ def validate_config(**overrides: object) -> LoggingConfig:
     if unknown:
         raise ValueError(f"Unknown logging configuration: {sorted(unknown)}")
     values.update(overrides)
-    try:
-        values["retention_days"] = int(values["retention_days"])
-    except (TypeError, ValueError) as exc:
-        raise ValueError("LOG_RETENTION_DAYS must be an integer") from exc
+    values["retention_days"] = _parse_retention_days(
+        values["retention_days"], from_env="retention_days" not in overrides
+    )
     return LoggingConfig(**values)  # type: ignore[arg-type]

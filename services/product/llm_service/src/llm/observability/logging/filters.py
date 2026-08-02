@@ -7,10 +7,14 @@ import math
 import re
 
 from llm.observability.context import CONTEXT_FIELDS, get_all
-from llm.observability.logging.config import APPROVED_FIELDS, OMITTED_FIELDS
+from llm.observability.logging.config import (
+    APPROVED_FIELDS,
+    OMITTED_FIELDS,
+    REDACTION_FIELD,
+    REDACTION_MARKER,
+)
 
-REDACTED = "[REDACTED]"
-_STANDARD_FIELDS = frozenset(logging.LogRecord("", logging.INFO, "", 0, "", (), None).__dict__)
+_STANDARD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -52,16 +56,20 @@ class StructuredFieldsFilter(logging.Filter):
     """Keep approved scalar fields, redact secrets, and omit free-form data."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        has_sensitive_field = False
         for key in tuple(record.__dict__):
-            if key in _STANDARD_FIELDS or key.startswith("_"):
+            if key in _STANDARD_FIELDS:
                 continue
             normalized = _normalized_key(key)
-            if _is_sensitive_key(key):
-                record.__dict__[key] = REDACTED
+            if _is_sensitive_key(normalized):
+                has_sensitive_field = True
+                record.__dict__.pop(key, None)
             elif normalized in OMITTED_FIELDS or key not in APPROVED_FIELDS:
                 record.__dict__.pop(key, None)
             elif not _is_safe_value(record.__dict__[key]):
                 record.__dict__.pop(key, None)
+        if has_sensitive_field:
+            record.__dict__[REDACTION_FIELD] = REDACTION_MARKER
         return True
 
 
