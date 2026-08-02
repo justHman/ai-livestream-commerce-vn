@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -49,18 +50,20 @@ def make_record(message: str) -> logging.LogRecord:
 
 
 class FailingStream:
-    """Stream that fails on write and records whether it was closed."""
+    """Stream with independently controlled flush and close failures."""
 
-    def __init__(self, *, fail_close: bool = False) -> None:
+    def __init__(self, *, fail_flush: bool = True, fail_close: bool = False) -> None:
         self.closed = False
         self.close_called = False
+        self._fail_flush = fail_flush
         self._fail_close = fail_close
 
     def write(self, _text: str) -> None:
         raise OSError("disk full")
 
     def flush(self) -> None:
-        raise OSError("disk full")
+        if self._fail_flush:
+            raise OSError("disk full")
 
     def close(self) -> None:
         self.close_called = True
@@ -243,7 +246,7 @@ def test_platform_group_and_platform_services() -> None:
 def test_product_services_are_rejected_for_platform_group() -> None:
     with removable_temp_dir() as active_root:
         with pytest.raises(ValueError, match="Unknown platform service"):
-            ActiveSessionHandler(service="backend", group="platform", active_root=active_root)
+            ActiveSessionHandler(service="avatar", group="platform", active_root=active_root)
 
 
 def test_unknown_service_is_rejected() -> None:
@@ -323,6 +326,22 @@ def test_end_session_flush_failure_closes_stream_and_re_raises() -> None:
             handler.close()
 
 
+def test_end_session_close_failure_re_raises_and_detaches() -> None:
+    with removable_temp_dir() as active_root:
+        handler = ActiveSessionHandler(service=SERVICE, active_root=active_root)
+        try:
+            handler.start_session()
+            fake = FailingStream(fail_flush=False, fail_close=True)
+            handler._close_stream()
+            handler._stream = fake
+            with pytest.raises(OSError, match="close also fails"):
+                handler.end_session()
+            assert handler._stream is None
+            assert handler.state == INACTIVE
+        finally:
+            handler.close()
+
+
 def test_end_session_flush_and_close_both_raise_keeps_flush_primary() -> None:
     with removable_temp_dir() as active_root:
         handler = ActiveSessionHandler(service=SERVICE, active_root=active_root)
@@ -331,31 +350,28 @@ def test_end_session_flush_and_close_both_raise_keeps_flush_primary() -> None:
             fake = FailingStream(fail_close=True)
             handler._close_stream()
             handler._stream = fake
-            with pytest.raises(OSError, match="disk full"):
+            with pytest.raises(OSError, match="disk full") as raised:
                 handler.end_session()
+            assert raised.value.__notes__ == [
+                "Secondary stream close failure: OSError: close also fails"
+            ]
             assert handler._stream is None
             assert handler.state == INACTIVE
-            handler.start_session()
-            assert handler.state == ACTIVE
-            logger, _ = make_logger(active_root)
-            logger.handlers.clear()
         finally:
             handler.close()
 
 
-def test_run_stream_drops_unstructured_and_redacts_secrets() -> None:
+def test_run_stream_keeps_only_semantic_allowlist() -> None:
     with removable_temp_dir() as active_root:
         collector = PlatformCollector(active_root=active_root)
         try:
             collector.run_stream(
                 [
-                    "evt=room-created room=main",
-                    "error=connection refused",
-                    "Bearer abc123",
-                    "sk-abcdef raw",
-                    'data={"customer":"vip"}',
-                    "ignored",
-                    '{"customer":"vip"}',
+                    "evt=room_created provider=livekit latency_ms=12.5 room=main status=ok",
+                    "error=ECONNREFUSED customer_id=vip token=Bearer.secret",
+                    'data={"customer":"vip","authorization":"Bearer abc123"}',
+                    '{"customer":"vip","api_key":"sk-abcdef"}',
+                    "ignored raw customer vip bearer sk-abcdef",
                 ],
                 service="livekit",
             )
@@ -365,14 +381,16 @@ def test_run_stream_drops_unstructured_and_redacts_secrets() -> None:
                 .splitlines()
             )
             joined = " ".join(content)
-            assert content[0] == "evt=room-created room=main"
-            assert content[1] == "error=connection"
-            assert "Bearer" not in joined
-            assert "abc123" not in joined
-            assert "sk-abcdef" not in joined
-            assert "customer" not in joined
-            assert "vip" not in joined
-            assert joined.count("evt=unstructured_line_dropped") >= 4
+            assert content == [
+                "evt=room_created provider=livekit latency_ms=12.5",
+                "error=ECONNREFUSED evt=sensitive_field_dropped",
+                "evt=sensitive_field_dropped",
+                "evt=unstructured_line_dropped",
+                "evt=unstructured_line_dropped",
+            ]
+            assert all(
+                secret not in joined.lower() for secret in ("customer", "vip", "bearer", "sk-")
+            )
         finally:
             collector.close()
 
@@ -389,7 +407,7 @@ def test_cli_help_succeeds() -> None:
 def test_cli_writes_platform_log_and_redacts() -> None:
     module = "avatar.observability.logging.platform_collector"
     with removable_temp_dir() as active_root:
-        payload = "evt=room-ready token=SECRET_VALUE\nerror=boom\n"
+        payload = "evt=room_ready token=SECRET_VALUE\nerror=boom\n"
         result = run_collector(
             module,
             ["--service", "livekit", "--active-root", str(active_root)],
@@ -399,7 +417,7 @@ def test_cli_writes_platform_log_and_redacts() -> None:
         content = (
             active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
         )
-        assert content == ["evt=room-ready token=[REDACTED]", "error=boom"]
+        assert content == ["evt=room_ready evt=sensitive_field_dropped", "error=boom"]
         assert "SECRET_VALUE" not in " ".join(content)
 
 
@@ -412,19 +430,37 @@ def test_cli_rejects_unknown_service_and_exits_cleanly() -> None:
             "evt=x\n",
         )
         assert result.returncode == 1
-        assert "Unknown platform service" in result.stderr
+        assert result.stderr.strip() == "platform-collector: command failed"
 
 
-def test_normalize_event_line_accepts_only_safe_tokens() -> None:
-    assert normalize_event_line("evt=ok message=customer-data") == "evt=ok"
-    assert normalize_event_line("evt=x api_key=hunter2") == "evt=x api_key=[REDACTED]"
-    assert normalize_event_line("error=ECONNREFUSED") == "error=ECONNREFUSED"
-    assert normalize_event_line("error=connection refused") == "error=connection"
-    assert normalize_event_line("plain text") == "evt=unstructured_line_dropped"
-    assert normalize_event_line("data=raw") == "evt=unstructured_line_dropped"
-    assert normalize_event_line('{"customer":"vip"}') == "evt=unstructured_line_dropped"
-    assert normalize_event_line("error=Bearer abc123") == "error=[REDACTED]"
-    assert normalize_event_line("sk-abcdef=value") == "evt=unstructured_line_dropped"
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "evt=ready error=NONE provider=livekit latency_ms=42.125 room=main status=ok",
+            "evt=ready error=NONE provider=livekit latency_ms=42.125",
+        ),
+        ("evt=x api_key=hunter2", "evt=x evt=sensitive_field_dropped"),
+        ("evt=x customer_payload=vip", "evt=x evt=sensitive_field_dropped"),
+        ("evt=x Authorization=Bearer.secret", "evt=x evt=sensitive_field_dropped"),
+        ("evt=Bearer.secret", "evt=sensitive_field_dropped"),
+        ("error=sk-abcdef", "evt=sensitive_field_dropped"),
+        ("latency_ms=0042", None),
+        ("latency_ms=-1", None),
+        ("latency_ms=nan", None),
+        ("latency_ms=1e3", None),
+        ("latency_ms=999999999", None),
+        ("provider=livekit/../../secret", None),
+        ('data={"customer":"vip"}', "evt=sensitive_field_dropped"),
+        ('{"customer":"vip","token":"sk-abcdef"}', "evt=unstructured_line_dropped"),
+        ("plain bearer sk-abcdef customer vip", "evt=unstructured_line_dropped"),
+        ("", None),
+    ],
+)
+def test_normalize_event_line_accepts_only_semantic_allowlist(
+    line: str, expected: str | None
+) -> None:
+    assert normalize_event_line(line) == expected
 
 
 def test_run_command_collects_stdout_and_stderr_concurrently() -> None:
@@ -466,17 +502,93 @@ def test_run_command_propagates_nonzero_exit() -> None:
         assert "evt=dying" in content
 
 
-def test_run_command_timeout_terminates_child() -> None:
+def test_run_command_invalid_service_fails_before_popen(monkeypatch: pytest.MonkeyPatch) -> None:
+    from avatar.observability.logging import platform_collector
+
+    def fail_popen(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Popen must not run")
+
+    monkeypatch.setattr(platform_collector.subprocess, "Popen", fail_popen)
+    with pytest.raises(ValueError, match="Unknown platform service"):
+        platform_collector.run_command([sys.executable, "-c", "pass"], service="bogus")
+
+
+def test_run_command_timeout_terminates_process_tree() -> None:
     from avatar.observability.logging.platform_collector import run_command
 
     with removable_temp_dir() as active_root:
+        descendant_pid_path = active_root / "descendant.pid"
+        grandchild_pid_path = active_root / "grandchild.pid"
+        grandchild = (
+            "import os,pathlib,subprocess,sys,time; "
+            f"path=pathlib.Path({str(grandchild_pid_path)!r}); "
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+            "path.write_text(str(child.pid),encoding='ascii'); time.sleep(30)"
+        )
+        child = (
+            "import pathlib, subprocess, sys, time\n"
+            f"path = pathlib.Path({str(descendant_pid_path)!r})\n"
+            f"descendant = subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+            "path.write_text(str(descendant.pid), encoding='ascii')\n"
+            "print('evt=ready', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        started = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
             run_command(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
+                [sys.executable, "-c", child],
                 service="livekit",
                 active_root=active_root,
-                timeout=0.5,
+                timeout=1.0,
             )
+        elapsed = time.monotonic() - started
+        assert descendant_pid_path.exists() and grandchild_pid_path.exists() and elapsed < 3.0
+
+
+def test_run_command_reader_exception_terminates_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from avatar.observability.logging import platform_collector
+
+    def fail_normalize(_line: str) -> str | None:
+        raise LookupError("reader failed")
+
+    monkeypatch.setattr(platform_collector, "normalize_event_line", fail_normalize)
+    started = time.monotonic()
+    with removable_temp_dir() as active_root:
+        with pytest.raises(LookupError, match="reader failed"):
+            platform_collector.run_command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import time; print('evt=ready', flush=True); time.sleep(30)",
+                ],
+                service="livekit",
+                active_root=active_root,
+                timeout=3.0,
+            )
+    assert time.monotonic() - started < 3.0
+
+
+def test_cli_run_timeout_message_contains_no_command_or_exception() -> None:
+    module = "avatar.observability.logging.platform_collector"
+    private_value = "customer-private-value"
+    result = run_collector(
+        module,
+        [
+            "--service",
+            "livekit",
+            "run",
+            "--timeout",
+            "0.1",
+            "--",
+            sys.executable,
+            "-c",
+            f"import time; value={private_value!r}; time.sleep(30)",
+        ],
+        "",
+    )
+    assert result.stderr.strip() == "platform-collector: command timed out"
 
 
 def test_cli_run_subcommand_launches_child_and_collects() -> None:
@@ -522,21 +634,21 @@ def test_flush_failure_closes_stream_and_deactivates() -> None:
             handler.close()
 
 
-def test_platform_collector_writes_observed_event_to_exact_platform_log() -> None:
+def test_platform_collector_writes_only_normalized_events_to_exact_log() -> None:
     with removable_temp_dir() as active_root:
         collector = PlatformCollector(active_root=active_root)
         try:
-            collector.emit_event("livekit", "room-created")
-            collector.emit_event("postgres", "connection-accepted")
+            collector.emit_event("livekit", "evt=room_created customer=vip")
+            collector.emit_event("postgres", "evt=connection_accepted latency_ms=7")
             assert (
                 active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-                == "room-created\n"
+                == "evt=room_created evt=sensitive_field_dropped\n"
             )
             assert (
                 active_root.joinpath("platform", "postgres.log").read_text(encoding="utf-8")
-                == "connection-accepted\n"
+                == "evt=connection_accepted latency_ms=7\n"
             )
-            assert not active_root.joinpath("platform", "backend.log").exists()
+            assert not active_root.joinpath("platform", "avatar.log").exists()
         finally:
             collector.close()
 
@@ -545,14 +657,14 @@ def test_platform_collector_rejects_unknown_service_and_closes_idempotently() ->
     with removable_temp_dir() as active_root:
         collector = PlatformCollector(active_root=active_root)
         try:
-            collector.emit_event("livekit", "ready")
+            collector.emit_event("livekit", "evt=ready")
             with pytest.raises(ValueError, match="Unknown platform service"):
-                collector.emit_event("backend", "boom")
+                collector.emit_event("avatar", "boom")
             collector.close()
             collector.close()
             assert (
                 active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-                == "ready\n"
+                == "evt=ready\n"
             )
         finally:
             collector.close()
