@@ -1,0 +1,24 @@
+[project]
+name = "ai-livestream-tts"
+version = "0.1.0"
+description = "Self-host text-to-speech service package"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+cosyvoice = ["torch"]
+transformers = ["torch", "transformers"]
+vieneu = ["vieneu"]
+test = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tts*"]

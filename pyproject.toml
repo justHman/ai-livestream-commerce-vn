@@ -43,7 +43,13 @@ exclude = ["core.tests*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core/tests"]
-pythonpath = ["."]
+pythonpath = [
+  ".",
+  "services/product/backend_service/src",
+  "services/product/llm_service/src",
+  "services/product/tts_service/src",
+  "services/product/avatar_service/src",
+]
 filterwarnings = [
   "ignore::DeprecationWarning:httpx.*",
   "ignore::DeprecationWarning:starlette.*",

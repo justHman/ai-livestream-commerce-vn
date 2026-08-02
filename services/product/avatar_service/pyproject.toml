@@ -1,0 +1,22 @@
+[project]
+name = "ai-livestream-avatar"
+version = "0.1.0"
+description = "Self-host avatar rendering service package"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn[standard]", "pydantic", "numpy", "Pillow"]
+
+[project.optional-dependencies]
+livekit = ["livekit"]
+test = ["pytest", "pytest-asyncio"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["avatar*"]
