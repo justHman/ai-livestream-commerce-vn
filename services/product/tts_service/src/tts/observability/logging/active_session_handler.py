@@ -76,13 +76,21 @@ class ActiveSessionHandler(logging.Handler):
             self._state = ACTIVE
 
     def end_session(self) -> None:
-        """Deactivate and retain the file; no-op unless active."""
+        """Deactivate and retain the file; no-op unless active.
+
+        The stream is closed and the state set to INACTIVE even when flush
+        raises; the flush error is preserved and re-raised afterwards.
+        """
         with self.lock:
             if self._state != ACTIVE:
                 return
-            self._flush()
-            self._close_stream()
-            self._state = INACTIVE
+            try:
+                self._flush()
+            finally:
+                try:
+                    self._close_stream()
+                finally:
+                    self._state = INACTIVE
 
     def emit(self, record: logging.LogRecord) -> None:
         # handle() already holds self.lock; RLock makes the re-entry safe.

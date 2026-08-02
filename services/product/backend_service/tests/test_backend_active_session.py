@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Generator
@@ -16,7 +19,10 @@ from backend.observability.logging.active_session_handler import (
     INACTIVE,
     ActiveSessionHandler,
 )
-from backend.observability.logging.platform_collector import PlatformCollector
+from backend.observability.logging.platform_collector import (
+    PlatformCollector,
+    normalize_event_line,
+)
 
 SERVICE = "backend"
 
@@ -62,6 +68,23 @@ class FailingStream:
 
 def product_path(active_root: Path) -> Path:
     return active_root.joinpath("product", f"{SERVICE}.log")
+
+
+def run_collector(
+    module: str, args: list[str], input_text: str
+) -> subprocess.CompletedProcess[str]:
+    src = Path(__file__).resolve().parents[1] / "src"
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(src) + (os.pathsep + existing if existing else "")
+    return subprocess.run(
+        [sys.executable, "-m", module, *args],
+        input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
 
 
 def test_first_start_truncates_empty_path() -> None:
@@ -277,6 +300,94 @@ def test_barrier_old_emit_cannot_survive_new_session_truncate() -> None:
         finally:
             logger.handlers.clear()
             handler.close()
+
+
+def test_end_session_flush_failure_closes_stream_and_re_raises() -> None:
+    with removable_temp_dir() as active_root:
+        handler = ActiveSessionHandler(service=SERVICE, active_root=active_root)
+        try:
+            handler.start_session()
+            fake = FailingStream()
+            handler._close_stream()
+            handler._stream = fake
+            with pytest.raises(OSError, match="disk full"):
+                handler.end_session()
+            assert fake.close_called
+            assert handler.state == INACTIVE
+            handler.start_session()
+            assert handler.state == ACTIVE
+        finally:
+            handler.close()
+
+
+def test_run_stream_normalizes_lines_with_redaction() -> None:
+    with removable_temp_dir() as active_root:
+        collector = PlatformCollector(active_root=active_root)
+        try:
+            collector.run_stream(
+                [
+                    "evt=room-created room=main",
+                    "error=connection refused",
+                    "token=super-secret",
+                    "ignored",
+                ],
+                service="livekit",
+            )
+            content = (
+                active_root.joinpath("platform", "livekit.log")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            )
+            assert content[0] == "evt=room-created room=main"
+            assert content[1] == "error=connection"
+            assert content[2] == "error=ignored"
+            assert "super-secret" not in " ".join(content)
+        finally:
+            collector.close()
+
+
+def test_cli_help_succeeds() -> None:
+    module = "backend.observability.logging.platform_collector"
+    result = run_collector(module, ["--help"], "")
+    assert result.returncode == 0
+    assert "--service" in result.stdout
+    assert "--active-root" in result.stdout
+
+
+def test_cli_writes_platform_log_and_redacts() -> None:
+    module = "backend.observability.logging.platform_collector"
+    with removable_temp_dir() as active_root:
+        payload = "evt=room-ready token=SECRET_VALUE\nerror=boom\n"
+        result = run_collector(
+            module,
+            ["--service", "livekit", "--active-root", str(active_root)],
+            payload,
+        )
+        assert result.returncode == 0
+        content = (
+            active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
+        )
+        assert content == ["evt=room-ready token=[REDACTED]", "error=boom"]
+        assert "SECRET_VALUE" not in " ".join(content)
+
+
+def test_cli_rejects_unknown_service_and_exits_cleanly() -> None:
+    module = "backend.observability.logging.platform_collector"
+    with removable_temp_dir() as active_root:
+        result = run_collector(
+            module,
+            ["--service", "bogus", "--active-root", str(active_root)],
+            "evt=x\n",
+        )
+        assert result.returncode == 1
+        assert "Unknown platform service" in result.stderr
+
+
+def test_normalize_event_line_drops_unsafe_fields() -> None:
+    assert normalize_event_line("evt=ok message=customer-data") == "evt=ok"
+    assert normalize_event_line("data=raw") == "error=data=raw"
+    assert normalize_event_line("plain text") == "error=plain text"
+    assert normalize_event_line("evt=x api_key=hunter2") == "evt=x api_key=[REDACTED]"
 
 
 def test_flush_failure_closes_stream_and_deactivates() -> None:
