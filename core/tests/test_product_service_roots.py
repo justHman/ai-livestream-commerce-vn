@@ -107,7 +107,7 @@ def test_isolated_root_imports_legacy_server_and_actual_canonical_app() -> None:
     assert result.stdout.strip()
 
 
-def test_backend_compatibility_registers_hosted_adapters() -> None:
+def test_backend_compatibility_preserves_engine_ownership() -> None:
     result = _isolated_root_import(
         "import sys; "
         f"sys.path.insert(0, {str(ROOT)!r}); "
@@ -115,7 +115,15 @@ def test_backend_compatibility_registers_hosted_adapters() -> None:
         "from core.tts.base import ENGINES as tts_engines; "
         "assert {'openai_compat', 'remote'} <= llm_engines.keys(); "
         "assert {'remote_http', 'remote', 'elevenlabs', 'openai_speech'} "
-        "<= tts_engines.keys()"
+        "<= tts_engines.keys(); "
+        "assert all(llm_engines[name].__module__.startswith('llm.engines.') "
+        "for name in ('llamacpp', 'sglang', 'hf', 'vllm')); "
+        "assert all(tts_engines[name].__module__.startswith('tts.engines.') "
+        "for name in ('transformers', 'vieneu', 'cosyvoice')); "
+        "assert llm_engines['openai_compat'].__module__ == "
+        "'core.llm.adapters.openai_compat'; "
+        "assert tts_engines['remote_http'].__module__ == "
+        "'core.tts.adapters.remote_http'"
     )
 
     assert result.returncode == 0
