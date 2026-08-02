@@ -14,10 +14,10 @@ def test_platform_roots_and_legacy_references() -> None:
     assert (PLATFORM / "lmcache" / "Dockerfile").is_file()
     assert (PLATFORM / "lmcache" / "metrics_app.py").is_file()
     assert (PLATFORM / "postgres" / "README.md").is_file()
-    assert (PLATFORM / "postgres" / "smoke.sh").is_file()
     assert (PLATFORM / "redis" / "README.md").is_file()
-    assert (PLATFORM / "redis" / "redis.conf").is_file()
-    assert (PLATFORM / "redis" / "smoke.sh").is_file()
+    assert not list((PLATFORM / "postgres").glob("smoke.*"))
+    assert not list((PLATFORM / "redis").glob("smoke.*"))
+    assert not (PLATFORM / "redis" / "redis.conf").exists()
     assert not any((PLATFORM / name / "src").exists() for name in ("livekit", "lmcache", "postgres", "redis"))
     assert not list(PLATFORM.rglob("*.sql"))
 

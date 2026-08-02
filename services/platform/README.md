@@ -6,8 +6,8 @@ This directory owns local and sandbox runtime configuration for platform depende
 | --- | --- | --- |
 | LiveKit | `services/platform/livekit/` | Docker wrapper, YAML config, entrypoint |
 | LMCache | `services/platform/lmcache/` | Docker wrapper, entrypoint, health/metrics surface |
-| Postgres | `services/platform/postgres/` | Usage notes and smoke command |
-| Redis | `services/platform/redis/` | Local configuration pointer and smoke command |
+| Postgres | `services/platform/postgres/` | Ownership and managed-RDS pointer |
+| Redis | `services/platform/redis/` | Ownership and managed-ElastiCache pointer |
 
 Build commands use the repository root as context:
 
