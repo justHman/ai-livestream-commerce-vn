@@ -1,6 +1,6 @@
-"""Smoke-test the canonical backend package import."""
+"""Smoke-test the actual canonical backend ASGI entrypoint."""
 
-import backend
+from services.product.backend_service.src.backend.main import app
 
-assert backend.__name__ == "backend"
-print("backend import: ok")
+assert app is not None
+print("backend app import: ok")

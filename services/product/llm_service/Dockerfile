@@ -55,7 +55,7 @@ RUN python3 /tmp/gen_vllm_modelinfo_cache.py --out /tmp/modelinfos \
     && chown -R appuser:appuser /home/appuser/.cache \
     && rm -rf /tmp/gen_vllm_modelinfo_cache.py /tmp/modelinfos
 
-RUN uv pip install --system --no-cache-dir --no-deps /app \
+RUN UV_PROJECT_ENVIRONMENT=/usr/local uv sync --frozen --no-dev --inexact \
     && chmod +x /usr/local/bin/fetch_weights.sh /entrypoint.sh \
     && chown -R appuser:appuser /app
 

@@ -14,3 +14,12 @@ Layout:
   core/store.py         SessionStore: InMemory (Colab) | Redis (AWS)
   core/director/        viewer-comment clustering + phase scoring + coordinator
 """
+
+import sys
+from pathlib import Path
+
+_PRODUCT_ROOT = Path(__file__).resolve().parents[1] / "services" / "product"
+for _service in ("backend_service", "llm_service", "tts_service", "avatar_service"):
+    _src = str(_PRODUCT_ROOT / _service / "src")
+    if _src not in sys.path:
+        sys.path.append(_src)

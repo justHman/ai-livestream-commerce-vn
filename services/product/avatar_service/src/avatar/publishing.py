@@ -208,24 +208,15 @@ class AudioTrackPublisher:
         log.info("livekit_publish started session=%s room=%s", self.session_id, self.room_name)
 
     def _mint_publish_token(self, key: str, secret: str) -> str:
-        try:
-            from livekit.api import AccessToken, VideoGrants
-        except ImportError as exc:
-            raise RuntimeError(
-                "livekit-api is required when LIVEKIT_PUBLISH=1; install the livekit extra"
-            ) from exc
-        return (
-            AccessToken(key, secret)
-            .with_identity(self.identity)
-            .with_grants(
-                VideoGrants(
-                    room_join=True,
-                    room=self.room_name,
-                    can_publish=True,
-                    can_subscribe=False,
-                )
-            )
-            .to_jwt()
+        from .livekit_tokens import mint_room_token
+
+        return mint_room_token(
+            api_key=key,
+            api_secret=secret,
+            room=self.room_name,
+            identity=self.identity,
+            can_publish=True,
+            can_subscribe=False,
         )
 
     def _connect(self, url: str, token: str) -> Any:

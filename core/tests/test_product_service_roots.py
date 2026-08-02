@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -72,14 +73,91 @@ def test_service_docker_and_start_script_use_canonical_package(
     assert package in start_script
 
 
+def _isolated_root_import(code: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+        "APP_ENV": "dev",
+        "DIRECTOR_ENABLED": "0",
+        "LLM_ENGINE": "none",
+        "RENDER_BACKEND": "mock",
+        "SESSION_STORE": "memory",
+        "TTS_ENGINE": "tone",
+    }
+    return subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        check=True,
+        capture_output=True,
+        cwd=ROOT,
+        env=env,
+        text=True,
+    )
+
+
+def test_isolated_root_imports_legacy_server_and_actual_canonical_app() -> None:
+    result = _isolated_root_import(
+        "import sys; "
+        f"sys.path.insert(0, {str(ROOT)!r}); "
+        "from core.server import app as legacy_app; "
+        "from services.product.backend_service.src.backend.main import app as canonical_app; "
+        "assert canonical_app is legacy_app; "
+        "print(canonical_app.title)"
+    )
+
+    assert result.stdout.strip()
+
+
+def test_backend_compatibility_registers_hosted_adapters() -> None:
+    result = _isolated_root_import(
+        "import sys; "
+        f"sys.path.insert(0, {str(ROOT)!r}); "
+        "from core.llm.base import ENGINES as llm_engines; "
+        "from core.tts.base import ENGINES as tts_engines; "
+        "assert {'openai_compat', 'remote'} <= llm_engines.keys(); "
+        "assert {'remote_http', 'remote', 'elevenlabs', 'openai_speech'} "
+        "<= tts_engines.keys()"
+    )
+
+    assert result.returncode == 0
+
+
+def test_service_dockerfiles_install_from_frozen_locks() -> None:
+    for service in ("llm_service", "tts_service"):
+        dockerfile = (_service_root(service) / "Dockerfile").read_text(encoding="utf-8")
+        assert "uv sync --frozen" in dockerfile
+        assert "uv pip install --system --no-cache-dir --no-deps /app" not in dockerfile
+
+
+def test_model_start_scripts_supply_default_commands() -> None:
+    llm_start = (_service_root("llm_service") / "scripts" / "start.sh").read_text(
+        encoding="utf-8"
+    )
+    tts_start = (_service_root("tts_service") / "scripts" / "start.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "if [[ $# -eq 0 ]]" in llm_start and "vllm serve" in llm_start
+    assert "if [[ $# -eq 0 ]]" in tts_start and "vllm serve" in tts_start and "--omni" in tts_start
+
+
 def test_legacy_imports_share_canonical_types() -> None:
     service_srcs = [str(_service_root(service) / "src") for service in SERVICES]
     sys.path[:0] = service_srcs
     importlib.invalidate_caches()
 
     from avatar.engines.base import RenderBackend as CanonicalRenderBackend
+    from avatar.engines.mock import MockRenderBackend as CanonicalMockRenderBackend
+    from avatar.engines.windows import TextChunk as CanonicalTextChunk
+    from avatar.locks import SessionLockRegistry as CanonicalSessionLockRegistry
+    from avatar.publishing import AudioTrackPublisher as CanonicalAudioTrackPublisher
+    from avatar.queue import BoundedVideoQueue as CanonicalBoundedVideoQueue
+    from core.livekit_publish import AudioTrackPublisher as LegacyAudioTrackPublisher
     from core.llm import LLMEngine as LegacyLlmEngine
     from core.render import RenderBackend as LegacyRenderBackend
+    from core.render.locks import SessionLockRegistry as LegacySessionLockRegistry
+    from core.render.mock import MockRenderBackend as LegacyMockRenderBackend
+    from core.render.queue import BoundedVideoQueue as LegacyBoundedVideoQueue
+    from core.render.windows import TextChunk as LegacyTextChunk
     from core.tts import TTSEngine as LegacyTtsEngine
     from llm import LLMEngine as CanonicalLlmEngine
     from tts import TTSEngine as CanonicalTtsEngine
@@ -88,8 +166,18 @@ def test_legacy_imports_share_canonical_types() -> None:
         LegacyLlmEngine,
         LegacyTtsEngine,
         LegacyRenderBackend,
+        LegacyMockRenderBackend,
+        LegacySessionLockRegistry,
+        LegacyBoundedVideoQueue,
+        LegacyTextChunk,
+        LegacyAudioTrackPublisher,
     ) == (
         CanonicalLlmEngine,
         CanonicalTtsEngine,
         CanonicalRenderBackend,
+        CanonicalMockRenderBackend,
+        CanonicalSessionLockRegistry,
+        CanonicalBoundedVideoQueue,
+        CanonicalTextChunk,
+        CanonicalAudioTrackPublisher,
     )

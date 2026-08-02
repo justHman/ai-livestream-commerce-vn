@@ -25,7 +25,7 @@ import asyncio
 import time
 from typing import Callable, Optional
 
-from .windows import VideoWindow
+from .engines.windows import VideoWindow
 
 
 # ---------------------------------------------------------------------------

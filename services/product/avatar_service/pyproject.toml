@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Self-host avatar rendering service package"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["fastapi", "uvicorn[standard]", "pydantic", "numpy", "Pillow"]
+dependencies = ["fastapi", "uvicorn[standard]", "pydantic", "numpy", "Pillow", "PyJWT"]
 
 [project.optional-dependencies]
 livekit = ["livekit"]
