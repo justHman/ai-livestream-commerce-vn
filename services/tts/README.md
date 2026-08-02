@@ -1,4 +1,6 @@
-# tts — `imjusthman/ai-live-tts`
+# tts compatibility shim — `imjusthman/ai-live-tts`
+
+Canonical source and build: `services/product/tts_service/`.
 
 vLLM-Omni / VieNeu TTS on the **same g6 Task** as LLM (GPU share).
 

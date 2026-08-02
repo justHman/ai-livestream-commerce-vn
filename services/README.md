@@ -4,10 +4,10 @@ Hub namespace: `imjusthman/ai-live-{svc}`. Weights on S3, never in layers.
 
 | Dir | Image | Port | Arch |
 |-----|-------|------|------|
-| `backend/` | `imjusthman/ai-live-backend` | 8800 | arm64 |
-| `llm/` | `imjusthman/ai-live-llm` | 8001 | amd64+GPU |
-| `tts/` | `imjusthman/ai-live-tts` | 8002 | amd64+GPU |
-| `avatar/` | `imjusthman/ai-live-avatar` | 8080 | amd64+GPU |
+| `product/backend_service/` | `imjusthman/ai-live-backend` | 8800 | arm64 |
+| `product/llm_service/` | `imjusthman/ai-live-llm` | 8001 | amd64+GPU |
+| `product/tts_service/` | `imjusthman/ai-live-tts` | 8002 | amd64+GPU |
+| `product/avatar_service/` | `imjusthman/ai-live-avatar` | 8080 | amd64+GPU |
 | `platform/livekit/` | `imjusthman/ai-live-livekit` | 7880 + UDP 50000-60000 | arm64 |
 | `platform/lmcache/` | `imjusthman/ai-live-lmcache` | 5555 + 8080 | arm64 |
 | `llm-tts/` | (Task family docs only) | — | — |
@@ -16,10 +16,10 @@ Hub namespace: `imjusthman/ai-live-{svc}`. Weights on S3, never in layers.
 ## Build (from repo root)
 
 ```bash
-docker build -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
-docker build -f services/llm/Dockerfile -t imjusthman/ai-live-llm:dev .
-docker build -f services/tts/Dockerfile -t imjusthman/ai-live-tts:dev .
-docker build -f services/avatar/Dockerfile -t imjusthman/ai-live-avatar:dev .
+docker build -f services/product/backend_service/Dockerfile -t imjusthman/ai-live-backend:dev .
+docker build -f services/product/llm_service/Dockerfile -t imjusthman/ai-live-llm:dev .
+docker build -f services/product/tts_service/Dockerfile -t imjusthman/ai-live-tts:dev .
+docker build -f services/product/avatar_service/Dockerfile -t imjusthman/ai-live-avatar:dev .
 docker build -f services/platform/livekit/Dockerfile -t imjusthman/ai-live-livekit:dev .
 docker build -f services/platform/lmcache/Dockerfile -t imjusthman/ai-live-lmcache:dev .
 ```
@@ -37,5 +37,6 @@ Task role must allow `s3:GetObject` + `s3:ListBucket` on that prefix. Image stay
 
 ## Ignore rules
 
-- Repo root `.dockerignore` — used for root-context builds.
-- `services/.dockerignore` — fallback if context is `services/`.
+- Each canonical built Dockerfile has adjacent `Dockerfile.dockerignore` for its root context.
+- Repo root `.dockerignore` remains the conservative fallback.
+- `services/.dockerignore` applies only to explicit legacy compatibility builds.

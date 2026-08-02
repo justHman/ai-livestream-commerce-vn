@@ -401,13 +401,12 @@ No MJPEG. LiveKit from day 1. Idle loop = pre-rendered frames pushed into LiveKi
 
 ## 12. Files affected
 
-- `core/config.py` — defaults: `LLM_ENGINE=vllm`, `LLM_MODEL=cyankiwi/Qwen3.5-4B-AWQ-4bit`, `TTS_ENGINE=vllm-omni`, `TTS_MODEL=pnnbao-ump/VieNeu-TTS-v2`, `RENDER_BACKEND=mock`, region/instance flags.
-- `core/engine_manager.py` — remove llamacpp presets; add `vllm-remote` LLM preset + `vllm-omni` TTS presets (remote gRPC/HTTP endpoints, no in-process load).
-- `core/llm/adapters/llamacpp.py` — keep as deprecated stub (same as sglang).
-- `core/tts/adapters/vieneu.py` — keep native adapter as offline fallback.
-- `core/store/postgres.py`, `core/store/redis.py`, `core/store/vector.py` — NEW runtime data layer.
-- `core/api/v1.py` — rename `/lite/*` → `/sessions/*`, `/ws/*` → `/api/v1/ws/*`, `/mock/*` → `/api/v1/media/*`, add `/avatars/*`, `/engines/llm`, `/admin/*`.
-- `services/llm/Dockerfile`, `services/tts/Dockerfile` (official vLLM 0.22 base; TTS adds vLLM-Omni fork + `[vieneu]` extra), `services/avatar/Dockerfile` (FastAPI + LiveKit SDK + selected renderer after benchmark), `services/backend/Dockerfile` (ARM64 Graviton).
+- `services/product/backend_service/src/backend/` is the canonical backend package; staged `core/` compatibility supplies current runtime behavior until later extraction tasks.
+- `services/product/llm_service/src/llm/` owns self-host LLM engines.
+- `services/product/tts_service/src/tts/` owns self-host TTS engines.
+- `services/product/avatar_service/src/avatar/` owns self-host avatar engines.
+- Canonical backend route and configuration extraction remains scheduled in subsequent OpenSpec tasks.
+- `services/product/llm_service/Dockerfile`, `services/product/tts_service/Dockerfile` (official vLLM 0.22 base; TTS adds vLLM-Omni fork + `[vieneu]` extra), `services/product/avatar_service/Dockerfile` (FastAPI + LiveKit SDK + selected renderer after benchmark), `services/product/backend_service/Dockerfile` (ARM64 Graviton).
 - `ecs/cluster.tf`, `ecs/capacity-providers.tf`, `ecs/task-definitions.tf`, `ecs/services.tf` — Terraform for ECS.
 - `docker-compose.yml` — for local dev only (Colab gone).
 - `architecture.md` — update model table, 3-instance diagram, LiveKit flow.

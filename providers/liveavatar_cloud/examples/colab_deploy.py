@@ -1,13 +1,13 @@
-"""Colab launcher — run the production core /api/v1 backend on a free Colab GPU + ngrok.
+"""Colab launcher — run the canonical backend /api/v1 application on a free Colab GPU + ngrok.
 
 Paste this into a Colab cell (or run as a script). It:
   1. installs deps + the LLM/TTS stacks
   2. loads the LLM + VN TTS via the unified engine seams (core.llm / core.tts)
   3. injects them into the cloud RenderBackend (core.render.cloud.configure)
-  4. starts `core.server:app` (serves /api/v1) in a background thread
+  4. starts `backend.main:app` (serves /api/v1) in a background thread
   5. opens an ngrok tunnel and prints the public URL
 
-Hand the printed ngrok URL to the static frontend (frontend/lite.html)
+Hand the printed ngrok URL to the static browser console (frontend/lite.html)
 as its "Backend URL". The browser talks JSON to /api/v1 and renders the
 avatar VIDEO directly from LiveKit — frames never transit this server.
 
@@ -91,7 +91,7 @@ def build_tts():
 def serve_background(port: int = 8800) -> None:
     import uvicorn
 
-    from core.server import app
+    from backend.main import app
 
     cfg = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(cfg)
@@ -118,12 +118,12 @@ def main() -> None:
     tts_fn = build_tts()
 
     cloud.configure(llm=llm_fn, tts=tts_fn)
-    print("[colab] serving core /api/v1 on :8800")
+    print("[colab] serving canonical backend /api/v1 on :8800")
     serve_background(8800)
 
     url = open_tunnel(8800)
     print(f"\n=== PUBLIC BACKEND URL ===\n{url}\n")
-    print("Paste this into frontend/lite.html as the Backend URL.")
+    print("Paste this into frontend/lite.html as the canonical backend URL.")
     # Keep the cell alive.
     while True:
         time.sleep(60)

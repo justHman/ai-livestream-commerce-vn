@@ -9,7 +9,7 @@ uv sync                                    # install backend deps from uv.lock
 uv run pytest core/tests/ -q               # offline test suite (mock/none/tone)
 uv run pytest core/tests/test_app_factory.py -q   # single file
 uv run python -m core.tests.v1_smoke_test  # end-to-end smoke vs LiveAvatar sandbox
-uv run uvicorn core.server:app --port 8800 # run backend (python -m core.server also works)
+uv run --project services/product/backend_service uvicorn backend.main:app --port 8800 # canonical backend entrypoint
 uvx ruff check . && uvx ruff format .      # lint + format
 ```
 

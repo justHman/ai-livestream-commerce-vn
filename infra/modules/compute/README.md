@@ -29,10 +29,12 @@ Only the **llm** container declares `resourceRequirements GPU=1`. TTS shares the
 |------|---------|-------|
 | `subnet_ids` | required | public subnets |
 | `sg_map` | required | from security module |
-| `image_backend` | `imjusthman/ai-live-backend:latest` | |
-| `image_llm_tts` | `imjusthman/ai-live-llm-tts:latest` | |
-| `image_avatar` | `imjusthman/ai-live-avatar:latest` | |
-| `image_lmcache` | `imjusthman/ai-live-lmcache:latest` | |
+| `image_backend` | `imjusthman/ai-live-backend:latest` | `services/product/backend_service/` image |
+| `image_llm` | `imjusthman/ai-live-llm:latest` | `services/product/llm_service/` image |
+| `image_tts` | `imjusthman/ai-live-tts:latest` | `services/product/tts_service/` image |
+| `image_avatar` | `imjusthman/ai-live-avatar:latest` | `services/product/avatar_service/` image |
+| `image_lmcache` | `imjusthman/ai-live-lmcache:latest` | `services/platform/lmcache/` image |
+| `image_livekit` | `imjusthman/ai-live-livekit:latest` | `services/platform/livekit/` image |
 | `desired_lmcache` | `0` | off by default |
 | `lmcache_enabled` | `false` | forces desired 0 when false |
 | `backend_target_group_arn` | `""` | wire from loadbalancer |
@@ -51,9 +53,11 @@ module "compute" {
   subnet_ids               = module.network.public_subnet_ids
   sg_map                   = module.security.sg_map
   image_backend            = "imjusthman/ai-live-backend:latest"
-  image_llm_tts            = "imjusthman/ai-live-llm-tts:latest"
+  image_llm                = "imjusthman/ai-live-llm:latest"
+  image_tts                = "imjusthman/ai-live-tts:latest"
   image_avatar             = "imjusthman/ai-live-avatar:latest"
   image_lmcache            = "imjusthman/ai-live-lmcache:latest"
+  image_livekit            = "imjusthman/ai-live-livekit:latest"
   lmcache_enabled          = var.lmcache_enabled
   weights_s3_uri           = module.storage.weights_uri
   secrets_arns             = module.secrets.parameter_arns

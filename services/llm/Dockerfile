@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1.7
+# Legacy compatibility Dockerfile; canonical build: services/product/llm_service/Dockerfile.
 # justhman/ai-live-llm — vLLM OpenAI-compat server, LLM ONLY (Qwen3.5-4B-AWQ-4bit).
 # EC2 Spot g6 L4 24GB. Base = official vLLM image (torch + CUDA 12 runtime + vllm
 # pre-built; NO manual torch/cuda install — prod standard, matches vllm-omni upstream).

@@ -1,6 +1,23 @@
 """Smoke-test the actual canonical backend ASGI entrypoint."""
 
-from services.product.backend_service.src.backend.main import app
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path[:0] = [str(ROOT / "services/product/backend_service/src"), str(ROOT)]
+os.environ.update(
+    APP_ENV="dev",
+    DIRECTOR_ENABLED="0",
+    LLM_ENGINE="none",
+    RENDER_BACKEND="mock",
+    SESSION_STORE="memory",
+    TTS_ENGINE="tone",
+)
+
+from backend.main import app  # noqa: E402,I001
+
+# ponytail: use a service-local app after Tasks 1.11–1.24 remove the compatibility seam.
 
 assert app is not None
 print("backend app import: ok")

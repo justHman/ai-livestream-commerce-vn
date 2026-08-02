@@ -1,6 +1,6 @@
 # Runbook: Colab vLLM demo
 
-Run the core FastAPI server on a Colab GPU for a development demo. This is not
+Run the canonical backend FastAPI application on a Colab GPU for a development demo. This is not
 an AWS deployment and does not validate a real LiveKit SFU/media path.
 
 ## Prerequisites

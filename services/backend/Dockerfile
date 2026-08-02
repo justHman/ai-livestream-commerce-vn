@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1.7
+# Legacy compatibility Dockerfile; canonical build: services/product/backend_service/Dockerfile.
 # justhman/ai-live-backend — FastAPI control plane (Fargate Spot ARM64).
 # Build from repo root:
 #   docker build --platform linux/arm64 -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .

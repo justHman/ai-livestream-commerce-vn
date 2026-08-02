@@ -1,4 +1,6 @@
-# llm — `imjusthman/ai-live-llm`
+# llm compatibility shim — `imjusthman/ai-live-llm`
+
+Canonical source and build: `services/product/llm_service/`.
 
 vLLM OpenAI-compatible server on **g6.xlarge L4** (shared ECS Task with TTS).
 

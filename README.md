@@ -13,14 +13,15 @@ what the host says.
 
 ```
             CONTROL plane (this backend)             MEDIA plane (NOT this backend)
- Frontend ──HTTP /api/v1 + WS──► core server ──► Renderer (LiveAvatar cloud / self-host)
+ Browser ────HTTP /api/v1 + WS──► backend_service ──► Renderer (LiveAvatar cloud / self-host)
 (browser) ◄──WS events─────────  (control)            │
     ▲                                                 │
     └──────────── WebRTC video via LiveKit ◄──────────┘
 ```
 
-- **Control plane** = `core/` FastAPI app (`/api/v1`, JSON + WebSocket): session lifecycle,
-  `say`, interrupt, Director ingest, events.
+- **Control plane** = `services/product/backend_service/src/backend/` FastAPI package
+  (`/api/v1`, JSON + WebSocket): session lifecycle, `say`, interrupt, Director ingest, events.
+  `core/` remains its explicit staged compatibility seam until Task 1.79 cleanup.
 - **Media plane** = avatar video, streamed renderer → LiveKit → browser directly. Frames
   never transit this backend. Browser only gets `livekit_url` + `livekit_client_token`;
   secrets stay server-side.
@@ -28,20 +29,18 @@ what the host says.
 ## Layout
 
 ```
-core/                  production surface (transport-agnostic)
-  server.py            FastAPI app; mounts /api/v1; env-wired
-  api/v1.py            /api/v1 routes + WS control hub + Director endpoints
-  render/              RenderBackend seam: base / cloud (LiveAvatar) / self_host (stub)
-  tts/                 TTSEngine seam: base + adapters (vieneu/kokoro/cosyvoice/xtts) + tone
-  director/            viewer-comment clustering + phase scoring + FSM (backend-agnostic)
-  config.py store.py   env-driven config + SessionStore (InMemory | Redis)
-  tests/               sandbox + offline smoke tests
+services/product/backend_service/  canonical FastAPI control-plane package
+services/product/llm_service/      self-host LLM package
+services/product/tts_service/      self-host TTS package
+services/product/avatar_service/   self-host avatar package
+services/platform/                 LiveKit, LMCache, Postgres, and Redis runtime assets
+core/                              explicit compatibility seam; current offline tests remain here
 providers/liveavatar_cloud/        LiveAvatar cloud SDK (behind the cloud RenderBackend)
-archive/legacy-liveavatar-demo/   earlier mock diffusion PoC (archived)
-notebooks/             bootstrap_colab.ipynb (clone → weights → run → ngrok)
-docs/                  confirmed design + Seoul pricing (see docs/README.md)
-plans/                 active implement plans (00 AWS stack, 01 app backlog)
-archive/               legacy demo + docs-historical/
+frontend/                           browser console compatibility surface pending Task 1.42
+notebooks/                          bootstrap_colab.ipynb (clone → weights → run → ngrok)
+docs/                               confirmed design + Seoul pricing (see docs/README.md)
+plans/                              active implement plans (00 AWS stack, 01 app backlog)
+archived/                           historical material
 ```
 
 ## Quick start (offline)
@@ -54,10 +53,10 @@ $env:TTS_ENGINE = "tone"
 $env:DIRECTOR_ENABLED = "0"
 $env:APP_ENV = "dev"
 uv run pytest core/tests/ -q
-uv run uvicorn core.server:app --port 8800
+uv run --project services/product/backend_service uvicorn backend.main:app --port 8800
 ```
 
-Open `frontend/lite.html` through a static server and paste the server origin;
+Open `frontend/lite.html` through a static server and paste the backend origin;
 the page appends `/api/v1` itself. The mock path needs no LiveAvatar key.
 
 ## Runtime configuration

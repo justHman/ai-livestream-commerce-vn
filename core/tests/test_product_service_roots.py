@@ -136,6 +136,16 @@ def test_service_dockerfiles_install_from_frozen_locks() -> None:
         assert "uv pip install --system --no-cache-dir --no-deps /app" not in dockerfile
 
 
+def test_canonical_backend_entrypoint_is_the_runtime_default() -> None:
+    dockerfile = (_service_root("backend_service") / "Dockerfile").read_text(encoding="utf-8")
+    start_script = (_service_root("backend_service") / "scripts" / "start.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'CMD ["uvicorn", "backend.main:app"' in dockerfile
+    assert "uvicorn backend.main:app" in start_script
+
+
 def test_model_start_scripts_supply_default_commands() -> None:
     llm_start = (_service_root("llm_service") / "scripts" / "start.sh").read_text(
         encoding="utf-8"

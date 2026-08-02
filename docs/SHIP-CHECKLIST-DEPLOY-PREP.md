@@ -30,7 +30,7 @@
 
 ```powershell
 uv lock --check
-uvx ruff check core/api core/db core/debug core/director core/llm core/render core/schemas core/stream core/tts core/config.py core/engine_manager.py core/livekit_publish.py core/livekit_tokens.py core/pipecat_bridge.py core/server.py core/store.py providers scripts/bench_api.py scripts/upload_weights_s3.py
+uvx ruff check services/product/backend_service/src services/product/llm_service/src services/product/tts_service/src services/product/avatar_service/src services/product/*_service/scripts scripts/bench_api.py scripts/upload_weights_s3.py
 uv run pytest core/tests/ -q
 terraform fmt -check -recursive infra
 terraform -chdir=infra/environments/global init -backend=false

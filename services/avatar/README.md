@@ -1,4 +1,6 @@
-# avatar — `imjusthman/ai-live-avatar`
+# avatar compatibility shim — `imjusthman/ai-live-avatar`
+
+Canonical source and build: `services/product/avatar_service/`.
 
 Avatar-server skeleton for **g4dn.xlarge T4**. Ships health + idle frame endpoints; LiveKit video publish + model runtime come later (Plan 01 Wave B/F).
 

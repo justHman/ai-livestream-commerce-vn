@@ -1,11 +1,9 @@
 # LiveAvatar Cloud provider — `providers/liveavatar_cloud/`
 
-> **Role update (2026-06-22):** `providers/liveavatar_cloud/` is no longer the product root — it is now **one
-> render-backend option** (LiveAvatar cloud) behind the `core/` RenderBackend seam. The production
-> entrypoint is **`core.server:app`** serving **`/api/v1`** (see `../PRODUCTION.md`). A future
-> self-host diffusion renderer plugs in as a second backend without changing the API. This folder
-> stays as the cloud SDK + examples + demo frontend; its modules are reused unchanged by
-> `core/render/cloud.py`.
+> **Role update (2026-06-22):** `providers/liveavatar_cloud/` is one render-backend
+> compatibility option. The canonical production entrypoint is **`backend.main:app`** from
+> `services/product/backend_service/src/`, serving **`/api/v1`**. This folder stays as the cloud
+> SDK, examples, and demo frontend; its modules are reused by the staged `core/` compatibility seam.
 
 Standalone LiveAvatar REST integration for the VN live-commerce host. Kept
 **separate** from `../archive/legacy-liveavatar-demo/` (archived mock diffusion PoC) — this
@@ -50,8 +48,8 @@ uv run python -m providers.liveavatar_cloud.examples.smoke_test
 # Standalone provider server: its public contract is /api and /ws/control/{session_id}.
 uv run uvicorn providers.liveavatar_cloud.service.colab_server:app --port 8800
 
-# Application frontend: paste the core.server origin into frontend/lite.html; it appends /api/v1 itself.
-uv run uvicorn core.server:app --port 8800
+# Application frontend: paste the backend.main origin into frontend/lite.html; it appends /api/v1 itself.
+uv run --project services/product/backend_service uvicorn backend.main:app --port 8800
 ```
 
 Dependencies (already in the repo env): `requests`, `fastapi`, `uvicorn`,
@@ -302,7 +300,7 @@ audio yourTTS→LiveAvatar (WebSocket, server-side). No per-frame HTTP streaming
 !python -m providers.liveavatar_cloud.examples.colab_deploy
 ```
 
-Use a standalone provider viewer for this `/api` server. For core.server, paste
+Use a standalone provider viewer for this `/api` server. For `backend.main`, paste
 the origin into `frontend/lite.html`; the frontend appends `/api/v1` itself.
 
 ---

@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1.7
+# Legacy compatibility Dockerfile; canonical build: services/product/tts_service/Dockerfile.
 # justhman/ai-live-tts — vLLM-Omni / VieNeu-TTS-v2 TTS server, TTS ONLY.
 # Fork: justHman/vllm-omni@feat/vieneu-tts-v0.22 (base tag v0.22.0).
 # EC2 Spot g6 L4 24GB (shares GPU with LLM via NVIDIA_VISIBLE_DEVICES).

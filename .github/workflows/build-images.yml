@@ -48,7 +48,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/backend/Dockerfile
+          file: services/product/backend_service/Dockerfile
           platforms: linux/arm64
           push: true
           tags: imjusthman/ai-live-backend:dev-${{ github.sha }}
@@ -75,7 +75,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/${{ matrix.service }}/Dockerfile
+          file: services/product/${{ matrix.service }}_service/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ matrix.image }}:dev-${{ github.sha }}
@@ -95,7 +95,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/avatar/Dockerfile
+          file: services/product/avatar_service/Dockerfile
           platforms: linux/amd64
           push: true
           tags: imjusthman/ai-live-avatar:dev-${{ github.sha }}

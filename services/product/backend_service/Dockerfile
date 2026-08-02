@@ -58,6 +58,7 @@ COPY --chown=appuser:appuser services/product/backend_service/src/backend/ ./ser
 COPY --chown=appuser:appuser services/product/llm_service/src/llm/ ./services/product/llm_service/src/llm/
 COPY --chown=appuser:appuser services/product/tts_service/src/tts/ ./services/product/tts_service/src/tts/
 COPY --chown=appuser:appuser services/product/avatar_service/src/avatar/ ./services/product/avatar_service/src/avatar/
+# ponytail: remove legacy sources once Tasks 1.11–1.24 complete their extraction.
 COPY --chown=appuser:appuser core/ ./core/
 COPY --chown=appuser:appuser providers/ ./providers/
 COPY --chown=appuser:appuser services/product/backend_service/entrypoint.sh /entrypoint.sh

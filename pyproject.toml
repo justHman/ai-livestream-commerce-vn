@@ -1,7 +1,7 @@
 [project]
 name = "ai-livestream-backend"
 version = "0.1.0"
-description = "VN AI livestream commerce backend (FastAPI core package)"
+description = "VN AI livestream commerce repository tools and compatibility tests"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,10 +13,9 @@ dependencies = [
   "python-dotenv",
   "redis",
   "PyJWT",
-  # Runtime deps imported by core/ (mock render + TTS base use numpy/Pillow).
+  # Compatibility-test dependencies for staged legacy imports.
   "numpy",
   "Pillow",
-  # providers/liveavatar_cloud SDK (cloud render backend).
   "requests",
   "websocket-client",
 ]
@@ -32,13 +31,8 @@ livekit = ["livekit"]
 postgres = ["asyncpg"]
 director = ["sentence-transformers>=5,<6"]
 
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-include = ["core*", "providers*"]
-exclude = ["core.tests*"]
+[tool.uv]
+package = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

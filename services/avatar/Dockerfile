@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1.7
+# Legacy compatibility Dockerfile; canonical build: services/product/avatar_service/Dockerfile.
 # justhman/ai-live-avatar — avatar-server (g4dn T4). Skeleton: health + optional weights.
 # Build from repo root:
 #   docker build -f services/avatar/Dockerfile -t justhman/ai-live-avatar:dev .

@@ -1,4 +1,6 @@
-# backend — `imjusthman/ai-live-backend`
+# backend compatibility shim — `imjusthman/ai-live-backend`
+
+Canonical source and build: `services/product/backend_service/`.
 
 FastAPI control plane for Fargate Spot **ARM64**.
 
@@ -12,11 +14,8 @@ FastAPI control plane for Fargate Spot **ARM64**.
 
 ## Build
 
-From **repo root** (needs `core/` + optional root `pyproject.toml`):
-
-```bash
-docker build -f services/backend/Dockerfile -t imjusthman/ai-live-backend:dev .
-```
+This compatibility shim remains only for callers pinned to the legacy path. Use
+`services/product/backend_service/Dockerfile` for every new build reference.
 
 ## Run
 
@@ -35,5 +34,5 @@ docker run --rm -p 8800:8800 \
 ## Notes
 
 - Multi-stage: deps install → slim runtime, non-root `appuser`.
-- CMD: `uvicorn core.server:app --host 0.0.0.0 --port 8800`.
+- Canonical CMD: `uvicorn backend.main:app --host 0.0.0.0 --port 8800`.
 - Prefer building with `--platform linux/arm64` for prod Fargate ARM.

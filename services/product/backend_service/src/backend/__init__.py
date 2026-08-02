@@ -1,4 +1,4 @@
-"""Canonical backend service package with staged legacy compatibility."""
+"""Canonical backend service package with an explicit staged compatibility seam."""
 
 from __future__ import annotations
 

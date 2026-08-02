@@ -70,26 +70,32 @@ jobs:
       matrix:
         include:
           - svc: backend
+            dockerfile: services/product/backend_service/Dockerfile
             image: imjusthman/ai-live-backend
             platform: linux/arm64
             needs_qemu: true
           - svc: llm
+            dockerfile: services/product/llm_service/Dockerfile
             image: imjusthman/ai-live-llm
             platform: linux/amd64
             needs_qemu: false
           - svc: tts
+            dockerfile: services/product/tts_service/Dockerfile
             image: imjusthman/ai-live-tts
             platform: linux/amd64
             needs_qemu: false
           - svc: avatar
+            dockerfile: services/product/avatar_service/Dockerfile
             image: imjusthman/ai-live-avatar
             platform: linux/amd64
             needs_qemu: false
           - svc: lmcache
+            dockerfile: services/platform/lmcache/Dockerfile
             image: imjusthman/ai-live-lmcache
             platform: linux/arm64
             needs_qemu: true
           - svc: livekit
+            dockerfile: services/platform/livekit/Dockerfile
             image: imjusthman/ai-live-livekit
             platform: linux/arm64
             needs_qemu: true
@@ -132,7 +138,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/${{ matrix.svc }}/Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ matrix.image }}:${{ needs.resolve-tag.outputs.tag }}

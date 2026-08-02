@@ -3,7 +3,7 @@
 - [x] 1.1 Map existing service code and runtime configuration to `services/product/` or `services/platform/` before moving files.
 - [x] 1.2 Move backend, LLM, TTS, and avatar ownership into `services/product/{backend_service,llm_service,tts_service,avatar_service}` with concise packages under each `src/` directory and independent `pyproject.toml` plus `uv.lock` files.
 - [x] 1.3 Move LiveKit, LMCache, Postgres, and Redis runtime configuration into `services/platform/{livekit,lmcache,postgres,redis}` without vendoring upstream source or adding product application packages.
-- [ ] 1.4 Update imports, repository-root build contexts, Dockerfile-specific ignore paths, scripts, locks, workflow paths, documentation, and Terraform references to the canonical service paths.
+- [x] 1.4 Update imports, repository-root build contexts, Dockerfile-specific ignore paths, scripts, locks, workflow paths, documentation, and Terraform references to the canonical service paths.
 - [ ] 1.5 Verify each product service build and each platform runtime's real configuration, image pin, readiness, and smoke behavior after the path migration.
 - [ ] 1.6 Add `observability/context.py` and `observability/logging/{__init__,config,setup,filters,formatter,daily_handler,active_session_handler}.py` to each product service, including validated transport propagation, idempotent setup, and guaranteed context cleanup.
 - [ ] 1.7 Implement `active_session_handler.py` under each product service and platform log collection under `{product,platform}/<service>.log`; truncate at session start, retain after completion, and create no file keyed by `session_id`.
