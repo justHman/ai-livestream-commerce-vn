@@ -13,7 +13,7 @@ LiveKit SFU on Fargate Spot **ARM64**. Media UDP **50000–60000** public (SG).
 ## Build
 
 ```bash
-docker build -f services/livekit/Dockerfile -t imjusthman/ai-live-livekit:dev .
+docker build -f services/platform/livekit/Dockerfile -t imjusthman/ai-live-livekit:dev .
 ```
 
 Prefer `--platform linux/arm64` for Fargate ARM.

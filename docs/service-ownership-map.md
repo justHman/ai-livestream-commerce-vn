@@ -63,8 +63,8 @@ path created by this task.
     {"category": "product/avatar", "source": "core/pipecat_bridge.py", "target": "services/product/avatar_service/src/avatar/sessions.py"},
     {"category": "product/avatar", "source": "services/avatar/", "target": "services/product/avatar_service/"},
 
-    {"category": "platform/livekit", "source": "services/livekit/", "target": "services/platform/livekit/"},
-    {"category": "platform/lmcache", "source": "services/lmcache/", "target": "services/platform/lmcache/"},
+    {"category": "platform/livekit", "source": "services/platform/livekit/", "target": "services/platform/livekit/"},
+    {"category": "platform/lmcache", "source": "services/platform/lmcache/", "target": "services/platform/lmcache/"},
     {"category": "platform/postgres", "source": "infra/modules/database/", "target": "infra/modules/database/ (retained; referenced by services/platform/postgres/)"},
     {"category": "platform/redis", "source": "infra/modules/database/", "target": "infra/modules/database/ (retained; referenced by services/platform/redis/)"},
 

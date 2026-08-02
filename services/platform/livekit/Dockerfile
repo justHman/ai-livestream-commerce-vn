@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # justhman/ai-live-livekit — LiveKit SFU (Fargate Spot ARM64).
 # Build from repo root:
-#   docker build -f services/livekit/Dockerfile -t justhman/ai-live-livekit:dev .
+#   docker build -f services/platform/livekit/Dockerfile -t justhman/ai-live-livekit:dev .
 # Thin wrapper around official image + config mount path.
 
 FROM livekit/livekit-server:latest
@@ -14,8 +14,8 @@ USER root
 RUN if ! command -v curl >/dev/null 2>&1; then \
       (apk add --no-cache curl 2>/dev/null || apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*) || true; \
     fi
-COPY services/livekit/livekit.yaml /etc/livekit.yaml
-COPY services/livekit/entrypoint.sh /entrypoint.sh
+COPY services/platform/livekit/livekit.yaml /etc/livekit.yaml
+COPY services/platform/livekit/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 USER 1000
 

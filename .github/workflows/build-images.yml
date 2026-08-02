@@ -116,7 +116,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/livekit/Dockerfile
+          file: services/platform/livekit/Dockerfile
           platforms: linux/arm64
           push: true
           tags: imjusthman/ai-live-livekit:dev-${{ github.sha }}
@@ -137,7 +137,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/lmcache/Dockerfile
+          file: services/platform/lmcache/Dockerfile
           platforms: linux/arm64
           push: true
           tags: imjusthman/ai-live-lmcache:dev-${{ github.sha }}

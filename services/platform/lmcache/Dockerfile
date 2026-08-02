@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # justhman/ai-live-lmcache — LMCache server (c7g.2xlarge Spot ARM, stateful KV).
 # Build from repo root:
-#   docker build -f services/lmcache/Dockerfile -t justhman/ai-live-lmcache:dev .
+#   docker build -f services/platform/lmcache/Dockerfile -t justhman/ai-live-lmcache:dev .
 # No model weights; warm KV lives in process RAM (desired_count toggled by LMCACHE_ENABLED).
 
 ARG PYTHON_VERSION=3.11
@@ -35,8 +35,8 @@ RUN apt-get update \
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-COPY services/lmcache/metrics_app.py ./metrics_app.py
-COPY services/lmcache/entrypoint.sh /entrypoint.sh
+COPY services/platform/lmcache/metrics_app.py ./metrics_app.py
+COPY services/platform/lmcache/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
     && chown -R appuser:appuser ${APP_HOME}
 

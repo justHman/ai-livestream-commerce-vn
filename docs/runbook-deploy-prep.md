@@ -116,8 +116,8 @@ terraform -chdir=infra/environments/prod validate
 | `imjusthman/ai-live-llm` | `services/llm/Dockerfile` | `linux/amd64` |
 | `imjusthman/ai-live-tts` | `services/tts/Dockerfile` | `linux/amd64` |
 | `imjusthman/ai-live-avatar` | `services/avatar/Dockerfile` | `linux/amd64` |
-| `imjusthman/ai-live-livekit` | `services/livekit/Dockerfile` | `linux/arm64` |
-| `imjusthman/ai-live-lmcache` | `services/lmcache/Dockerfile` | `linux/arm64` |
+| `imjusthman/ai-live-livekit` | `services/platform/livekit/Dockerfile` | `linux/arm64` |
+| `imjusthman/ai-live-lmcache` | `services/platform/lmcache/Dockerfile` | `linux/arm64` |
 
 DEV builds only backend when deployed Tier S outputs have zero effective optional
 service counts. PROD tag push builds six immutable images but does not deploy.

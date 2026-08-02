@@ -31,7 +31,7 @@ Ops:
 ## Build
 
 ```bash
-docker build -f services/lmcache/Dockerfile -t imjusthman/ai-live-lmcache:dev .
+docker build -f services/platform/lmcache/Dockerfile -t imjusthman/ai-live-lmcache:dev .
 ```
 
 ## Run
