@@ -1,116 +1,90 @@
-"""Pydantic-esque config validation for logging.
-
-Uses stdlib-only validation (no pydantic dependency at runtime).
-"""
+"""Validated stdlib logging configuration."""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
+SERVICE_NAME = "llm"
+APPROVED_FIELDS = frozenset(
+    {
+        "session_id",
+        "request_id",
+        "trace_id",
+        "component",
+        "event",
+        "method",
+        "path",
+        "status_code",
+        "latency_ms",
+        "provider",
+        "error",
+    }
+)
+SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?:^|_)(?:api_?key|auth(?:orization)?|cookie|credential|password|secret|token)(?:_|$)",
+    re.IGNORECASE,
+)
+OMITTED_FIELDS = frozenset(
+    {
+        "prompt",
+        "viewer_message",
+        "viewer_messages",
+        "shop_profile",
+        "provider_body",
+        "request_body",
+        "response_body",
+        "customer_payload",
+    }
+)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class LoggingConfig:
-    """Immutable logging configuration validated at startup."""
+    """Logging values validated before handler creation."""
 
     level: str = "INFO"
-    service: str = "llm"
-    environment: str = "dev"
-    log_dir: str = ""
-    json_format: bool = False
+    service: str = SERVICE_NAME
+    runtime_root: Path = Path(".runtime/logs")
     retention_days: int = 30
-    _validated: bool = field(default=False, repr=False, init=False)
+    color: str = "auto"
 
-    _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
-    _APPROVED_FIELDS = frozenset(
-        {
-            "request_id",
-            "session_id",
-            "user_id",
-            "shop_id",
-            "trace_id",
-            "span_id",
-            "service",
-            "environment",
-            "component",
-            "duration_ms",
-            "status_code",
-            "method",
-            "path",
-            "topic",
-            "event",
-            "error",
-            "warning",
-            "count",
-        }
-    )
-    _SECRET_KEYS = frozenset(
-        {
-            "password",
-            "secret",
-            "token",
-            "api_key",
-            "api-key",
-            "access_key",
-            "secret_key",
-            "authorization",
-            "auth",
-            "credential",
-            "jwt",
-            "refresh_token",
-        }
-    )
-
-    @classmethod
-    def from_env(cls) -> "LoggingConfig":
-        """Build from environment variables with defaults."""
-        return cls(
-            level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-            service=os.environ.get("SERVICE_NAME", "llm"),
-            environment=os.environ.get("APP_ENV", "dev"),
-            log_dir=os.environ.get("LOG_DIR", ""),
-            json_format=os.environ.get("LOG_JSON", "").lower() in ("1", "true", "yes"),
-            retention_days=int(os.environ.get("LOG_RETENTION_DAYS", "30")),
-        )
-
-    def validate(self) -> None:
-        """Validate config, raising ``ValueError`` on invalid values."""
-        if self.level not in self._VALID_LEVELS:
+    def __post_init__(self) -> None:
+        if self.level not in VALID_LEVELS:
             raise ValueError(
-                f"Invalid LOG_LEVEL={self.level!r}; expected one of {sorted(self._VALID_LEVELS)}"
+                f"Invalid LOG_LEVEL={self.level!r}; expected one of {sorted(VALID_LEVELS)}"
             )
-        if not self.service or not self.service.replace("-", "").replace("_", "").isalnum():
-            raise ValueError(f"Invalid SERVICE_NAME={self.service!r}")
-        if self.environment not in ("dev", "test", "staging", "production"):
-            raise ValueError(f"Invalid APP_ENV={self.environment!r}")
-        if self.log_dir:
-            p = Path(self.log_dir)
-            if not p.is_absolute():
-                raise ValueError(f"LOG_DIR must be absolute: {self.log_dir!r}")
+        if self.service != SERVICE_NAME:
+            raise ValueError(f"Invalid SERVICE_NAME={self.service!r}; expected {SERVICE_NAME!r}")
+        if not isinstance(self.runtime_root, (str, Path)) or not str(self.runtime_root).strip():
+            raise ValueError("LOG_ROOT must not be empty")
+        object.__setattr__(self, "runtime_root", Path(self.runtime_root))
+        if not isinstance(self.retention_days, int) or isinstance(self.retention_days, bool):
+            raise ValueError("LOG_RETENTION_DAYS must be an integer")
         if self.retention_days < 1:
-            raise ValueError(f"LOG_RETENTION_DAYS must be >= 1, got {self.retention_days}")
-
-    @staticmethod
-    def is_approved_field(key: str) -> bool:
-        """Return True if *key* is in the approved-field allowlist."""
-        return key in LoggingConfig._APPROVED_FIELDS
-
-    @staticmethod
-    def sanitize_extra(extra: dict[str, Any]) -> dict[str, Any]:
-        """Return a copy of *extra* with secret keys omitted."""
-        return {k: v for k, v in extra.items() if k.lower() not in LoggingConfig._SECRET_KEYS}
+            raise ValueError("LOG_RETENTION_DAYS must be >= 1")
+        if self.color not in {"auto", "never"}:
+            raise ValueError("LOG_COLOR must be 'auto' or 'never'")
 
 
-def validate_config(**overrides: Any) -> LoggingConfig:
-    """Build and validate a ``LoggingConfig`` from env + overrides.
-
-    Raises ``ValueError`` on invalid values.
-    """
-    cfg = LoggingConfig.from_env()
-    for k, v in overrides.items():
-        if hasattr(cfg, k):
-            setattr(cfg, k, v)
-    cfg.validate()
-    return cfg
+def validate_config(**overrides: object) -> LoggingConfig:
+    """Build and validate llm logging configuration."""
+    values: dict[str, object] = {
+        "level": os.getenv("LOG_LEVEL", "INFO"),
+        "service": SERVICE_NAME,
+        "runtime_root": Path(os.getenv("LOG_ROOT", ".runtime/logs")),
+        "retention_days": os.getenv("LOG_RETENTION_DAYS", "30"),
+        "color": os.getenv("LOG_COLOR", "auto").lower(),
+    }
+    unknown = set(overrides) - set(values)
+    if unknown:
+        raise ValueError(f"Unknown logging configuration: {sorted(unknown)}")
+    values.update(overrides)
+    try:
+        values["retention_days"] = int(values["retention_days"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LOG_RETENTION_DAYS must be an integer") from exc
+    return LoggingConfig(**values)  # type: ignore[arg-type]

@@ -1,326 +1,279 @@
-"""Tests for the backend observability module.
-
-Concurrent isolation, transport propagation, idempotent setup,
-invalid-level startup failure, secret-free output, and structure parity.
-"""
-
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
+import shutil
+import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest.mock import patch
 
 import pytest
 
 from llm.observability import (
     bind,
     extract_from_headers,
-    get,
+    get_all,
     outbound_headers,
     reset,
     scoped,
+    scoped_from_headers,
     setup_logging,
     validate_config,
 )
-from llm.observability.logging.config import LoggingConfig as _LoggingConfig
+from llm.observability.logging.filters import (
+    REDACTED,
+    ContextFilter,
+    StructuredFieldsFilter,
+)
+from llm.observability.logging.formatter import ContextFormatter
 from llm.observability.logging.setup import reset_logging
 
-# ---------------------------------------------------------------------------
-# Context tests
-# ---------------------------------------------------------------------------
+
+@contextmanager
+def removable_temp_dir() -> Generator[Path, None, None]:
+    path = Path(tempfile.mkdtemp())
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path)
 
 
-class TestContext:
-    def test_bind_and_get(self) -> None:
-        reset()
-        bind(request_id="r1", session_id="s1")
-        assert get("request_id") == "r1"
-        assert get("session_id") == "s1"
-        assert get("nonexistent") is None
-
-    def test_bind_invalid_field(self) -> None:
-        reset()
-        with pytest.raises(ValueError, match="Unknown context field"):
-            bind(invalid_field="x")
-
-    def test_reset_specific_keys(self) -> None:
-        reset()
-        bind(request_id="r1", session_id="s1")
-        reset("request_id")
-        assert get("request_id") is None
-        assert get("session_id") == "s1"
-
-    def test_reset_all(self) -> None:
-        reset()
-        bind(request_id="r1")
-        reset()
-        assert get("request_id") is None
-
-    def test_scoped_context_manager(self) -> None:
-        reset()
-        bind(request_id="outer")
-        with scoped(request_id="inner"):
-            assert get("request_id") == "inner"
-        assert get("request_id") == "outer"
-
-    def test_scoped_restore_on_error(self) -> None:
-        reset()
-        bind(request_id="outer")
-        try:
-            with scoped(request_id="inner"):
-                raise ValueError("boom")
-        except ValueError:
-            pass
-        assert get("request_id") == "outer"
-
-    def test_concurrent_isolation(self) -> None:
-        """ContextVars must be isolated across threads."""
-        reset()
-        import threading
-
-        results: list[str] = []
-
-        def worker(val: str) -> None:
-            bind(request_id=val)
-            results.append(get("request_id"))
-
-        t1 = threading.Thread(target=worker, args=("t1",))
-        t2 = threading.Thread(target=worker, args=("t2",))
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-        assert sorted(results) == ["t1", "t2"]
-
-    def test_nested_scoped_restore(self) -> None:
-        reset()
-        bind(request_id="a", session_id="s1")
-        with scoped(request_id="b"):
-            assert get("request_id") == "b"
-            assert get("session_id") == "s1"
-            with scoped(request_id="c"):
-                assert get("request_id") == "c"
-                assert get("session_id") == "s1"
-            assert get("request_id") == "b"
-        assert get("request_id") == "a"
-        assert get("session_id") == "s1"
+def make_record(**extra: object) -> logging.LogRecord:
+    record = logging.LogRecord("test", logging.INFO, __file__, 1, "event", (), None)
+    record.__dict__.update(extra)
+    return record
 
 
-# ---------------------------------------------------------------------------
-# Transport metadata tests
-# ---------------------------------------------------------------------------
+def render(extra: dict[str, object]) -> str:
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(ContextFormatter(service="llm"))
+    handler.addFilter(ContextFilter())
+    handler.addFilter(StructuredFieldsFilter())
+    logger = logging.getLogger("llm.observability.test.render")
+    old_handlers, old_propagate = logger.handlers[:], logger.propagate
+    logger.handlers, logger.propagate = [handler], False
+    logger.setLevel(logging.INFO)
+    try:
+        logger.info("event", extra=extra)
+        return stream.getvalue()
+    finally:
+        logger.handlers, logger.propagate = old_handlers, old_propagate
+        handler.close()
+        stream.close()
 
 
-class TestTransport:
-    def test_extract_from_headers(self) -> None:
-        headers = {
-            "x-request-id": "req-1",
-            "x-trace-id": "trace-1",
-            "x-session-id": "sess-1",
+@pytest.fixture(autouse=True)
+def clean_observability() -> Generator[None, None, None]:
+    reset()
+    reset_logging()
+    yield
+    reset()
+    reset_logging()
+
+
+def test_context_identifiers_are_exact() -> None:
+    with scoped(session_id="s", request_id="r", trace_id="t", component="llm"):
+        assert get_all() == {
+            "session_id": "s",
+            "request_id": "r",
+            "trace_id": "t",
+            "component": "llm",
         }
-        result = extract_from_headers(headers)
-        assert result["request_id"] == "req-1"
-        assert result["trace_id"] == "trace-1"
-        assert result["session_id"] == "sess-1"
-        assert "x-span-id" not in result
-
-    def test_outbound_headers(self) -> None:
-        reset()
-        bind(request_id="req-1", trace_id="trace-1")
-        headers = outbound_headers()
-        assert headers["x-request-id"] == "req-1"
-        assert headers["x-trace-id"] == "trace-1"
-
-    def test_outbound_headers_empty(self) -> None:
-        reset()
-        assert outbound_headers() == {}
 
 
-# ---------------------------------------------------------------------------
-# Config validation tests
-# ---------------------------------------------------------------------------
+def test_unknown_context_field_is_rejected_without_partial_binding() -> None:
+    with pytest.raises(ValueError, match="Unknown context field"):
+        bind(request_id="valid", user_id="customer")
+    assert get_all() == {}
 
 
-class TestConfig:
-    def test_valid_level(self) -> None:
-        cfg = validate_config(level="DEBUG")
-        assert cfg.level == "DEBUG"
-
-    def test_invalid_level(self) -> None:
-        with pytest.raises(ValueError, match="Invalid LOG_LEVEL"):
-            validate_config(level="TRACE")
-
-    def test_invalid_service(self) -> None:
-        with pytest.raises(ValueError, match="Invalid SERVICE_NAME"):
-            validate_config(service="")
-
-    def test_invalid_environment(self) -> None:
-        with pytest.raises(ValueError, match="Invalid APP_ENV"):
-            validate_config(environment="prod")
-
-    def test_invalid_log_dir_relative(self) -> None:
-        with pytest.raises(ValueError, match="LOG_DIR must be absolute"):
-            validate_config(log_dir="relative/path")
-
-    def test_invalid_retention(self) -> None:
-        with pytest.raises(ValueError, match="LOG_RETENTION_DAYS must be >= 1"):
-            validate_config(retention_days=0)
-
-    def test_valid_log_dir_absolute(self) -> None:
-        validate_config(log_dir=str(Path("/tmp/logs").resolve()))
-
-    def test_approved_field(self) -> None:
-        assert _LoggingConfig.is_approved_field("request_id")
-        assert _LoggingConfig.is_approved_field("session_id")
-        assert not _LoggingConfig.is_approved_field("credit_card")
-
-    def test_sanitize_extra(self) -> None:
-        extra = {"request_id": "r1", "password": "secret", "api_key": "abc"}
-        sanitized = _LoggingConfig.sanitize_extra(extra)
-        assert "request_id" in sanitized
-        assert "password" not in sanitized
-        assert "api_key" not in sanitized
+@pytest.mark.parametrize(
+    "value",
+    ["", " leading", "has space", "line\nbreak", "ü", "x" * 129, 123],
+)
+def test_invalid_identifier_is_rejected(value: object) -> None:
+    with pytest.raises(ValueError, match="Invalid request_id"):
+        bind(request_id=value)
+    assert get_all() == {}
 
 
-# ---------------------------------------------------------------------------
-# Idempotent setup tests
-# ---------------------------------------------------------------------------
+def test_nested_scope_restores_previous_context() -> None:
+    with scoped(request_id="outer", session_id="session"):
+        with scoped(request_id="inner", component="llm"):
+            assert get_all()["request_id"] == "inner"
+        assert get_all() == {"request_id": "outer", "session_id": "session"}
+    assert get_all() == {}
 
 
-class TestSetup:
-    def setup_method(self) -> None:
-        reset_logging()
+@pytest.mark.asyncio
+async def test_concurrent_tasks_keep_isolated_context() -> None:
+    async def worker(request_id: str) -> dict[str, str]:
+        with scoped(request_id=request_id):
+            await asyncio.sleep(0)
+            return get_all()
 
-    def teardown_method(self) -> None:
-        """Close all handlers (reset_logging closes streams) and reset flag."""
-        reset_logging()
-
-    def test_setup_logging_once(self) -> None:
-        setup_logging(level="DEBUG")
-        root = logging.getLogger()
-        assert root.level == logging.DEBUG
-        assert len(root.handlers) > 0
-
-    def test_setup_logging_idempotent(self) -> None:
-        setup_logging(level="DEBUG")
-        handler_count = len(logging.getLogger().handlers)
-        setup_logging(level="INFO")
-        assert len(logging.getLogger().handlers) == handler_count
-
-    def test_setup_logging_with_log_dir(self) -> None:
-        with TemporaryDirectory() as tmp:
-            setup_logging(level="DEBUG", log_dir=tmp)
-            logger = logging.getLogger()
-            # Should have console + daily + active = 3 handlers
-            assert len(logger.handlers) >= 1
-            reset_logging()
-            # reset_logging must close streams so tmpdir is removable
-        # If streams leaked, Windows raises PermissionError on cleanup here.
-
-    def test_log_output_contains_approved_fields(self) -> None:
-        with TemporaryDirectory() as tmp:
-            setup_logging(level="DEBUG", log_dir=tmp)
-            logger = logging.getLogger("test_logger")
-            bind(request_id="r1", session_id="s1")
-            logger.info("test message")
-            reset_logging()
-            # Active-session file written under config.log_dir/<service>.log
-            log_file = Path(tmp) / "llm.log"
-            assert log_file.exists()
-            content = log_file.read_text()
-            assert "test message" in content
-            # Context fields are injected (approved-field allowlist).
-            assert "request_id=r1" in content
-            assert "session_id=s1" in content
-
-    def test_log_output_no_secrets(self) -> None:
-        with TemporaryDirectory() as tmp:
-            setup_logging(level="DEBUG", log_dir=tmp, service="test")
-            logger = logging.getLogger("test_secret")
-            logger.info("user data", extra={"password": "hunter2", "api_key": "abc123"})
-            reset_logging()
-            log_file = Path(tmp) / "test.log"
-            assert log_file.exists()
-            content = log_file.read_text()
-            assert "user data" in content
-            assert "hunter2" not in content
-            assert "abc123" not in content
-
-    def test_setup_failure_closes_created_handlers(self) -> None:
-        """If a later handler fails, already-opened streams must be closed."""
-        with (
-            TemporaryDirectory() as tmp,
-            patch("llm.observability.logging.setup.ActiveSessionHandler") as mock_active,
-        ):
-            mock_active.side_effect = OSError("cannot create active handler")
-            with pytest.raises(OSError):
-                setup_logging(level="DEBUG", log_dir=tmp)
-            # reset_logging will itself close the leaked console/daily handlers.
-            if logging.getLogger().handlers:
-                reset_logging()
-
-
-# ---------------------------------------------------------------------------
-# Structure parity: all four services must have the same observability files
-# ---------------------------------------------------------------------------
-
-
-class TestStructureParity:
-    """Verify that all four product services have the same observability layout.
-
-    This test runs in the backend service context but checks sibling services.
-    Uses the worktree-relative path to find the services root.
-    """
-
-    OBS_FILES = frozenset(
-        {
-            "observability/__init__.py",
-            "observability/context.py",
-            "observability/logging/__init__.py",
-            "observability/logging/config.py",
-            "observability/logging/filters.py",
-            "observability/logging/formatter.py",
-            "observability/logging/daily_handler.py",
-            "observability/logging/active_session_handler.py",
-            "observability/logging/setup.py",
-        }
+    first, second = await asyncio.gather(worker("first"), worker("second"))
+    assert (first, second, get_all()) == (
+        {"request_id": "first"},
+        {"request_id": "second"},
+        {},
     )
 
-    def _service_root(self) -> Path:
-        # Walk up from this file until we reach the directory containing
-        # services/product/ — robust to the pytest cwd.
-        p = Path(__file__).resolve().parent
-        while p != p.parent:
-            if (p / "services" / "product").is_dir():
-                return p / "services" / "product"
-            p = p.parent
-        raise RuntimeError("could not locate services/product anchor")
 
-    def test_all_services_have_observability(self) -> None:
-        root = self._service_root()
-        expected = set(self.OBS_FILES)
-        for svc in ("llm_service", "llm_service", "tts_service", "avatar_service"):
-            pkg = svc.replace("_service", "")
-            src_dir = root / svc / "src" / pkg
-            actual = set()
-            for fpath in src_dir.rglob("*.py"):
-                rel = fpath.relative_to(src_dir).as_posix()
-                if rel in expected:
-                    actual.add(rel)
-            missing = expected - actual
-            assert not missing, f"{svc} missing: {missing}"
+def test_context_cleanup_after_success() -> None:
+    with scoped(request_id="request"):
+        pass
+    assert get_all() == {}
 
-    def test_no_cross_imports(self) -> None:
-        """Verify no service imports from another service's observability."""
-        root = self._service_root()
-        for svc in ("llm_service", "tts_service", "avatar_service"):
-            pkg = svc.replace("_service", "")
-            src_dir = root / svc / "src" / pkg
-            for fpath in src_dir.rglob("*.py"):
-                content = fpath.read_text()
-                for other_pkg in ("backend", "llm", "tts", "avatar"):
-                    if other_pkg == pkg:
-                        continue
-                    if f"from {other_pkg}." in content or f"import {other_pkg}." in content:
-                        pytest.fail(f"{fpath.relative_to(root / svc)} imports from {other_pkg}")
+
+def test_context_cleanup_after_error() -> None:
+    with pytest.raises(RuntimeError, match="boom"):
+        with scoped(request_id="request"):
+            raise RuntimeError("boom")
+    assert get_all() == {}
+
+
+def test_context_cleanup_after_cancellation() -> None:
+    with pytest.raises(asyncio.CancelledError):
+        with scoped(request_id="request"):
+            raise asyncio.CancelledError
+    assert get_all() == {}
+
+
+def test_inbound_metadata_is_case_insensitive_and_validated() -> None:
+    assert extract_from_headers(
+        {
+            "X-Session-ID": "session-1",
+            "x-request-id": "request-1",
+            "X-TRACE-ID": "trace/1",
+            "x-component": "llm.api",
+            "authorization": "not-context",
+        }
+    ) == {
+        "session_id": "session-1",
+        "request_id": "request-1",
+        "trace_id": "trace/1",
+        "component": "llm.api",
+    }
+
+
+def test_invalid_inbound_metadata_is_not_bound() -> None:
+    with pytest.raises(ValueError, match="Invalid request_id"):
+        with scoped_from_headers({"x-request-id": "bad value"}):
+            pass
+    assert get_all() == {}
+
+
+def test_scoped_inbound_metadata_restores_on_error() -> None:
+    with pytest.raises(RuntimeError, match="boom"):
+        with scoped_from_headers({"x-request-id": "request-1"}):
+            raise RuntimeError("boom")
+    assert get_all() == {}
+
+
+def test_outbound_metadata_contains_only_validated_context() -> None:
+    with scoped(
+        session_id="session-1",
+        request_id="request-1",
+        trace_id="trace-1",
+        component="llm.client",
+    ):
+        assert outbound_headers() == {
+            "x-session-id": "session-1",
+            "x-request-id": "request-1",
+            "x-trace-id": "trace-1",
+            "x-component": "llm.client",
+        }
+
+
+@pytest.mark.parametrize("level", ["CRITICAL", "TRACE", "", "info", "info "])
+def test_unsupported_level_fails_startup(level: str) -> None:
+    with pytest.raises(ValueError, match="Invalid LOG_LEVEL"):
+        validate_config(level=level)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"service": "other"}, "Invalid SERVICE_NAME"),
+        ({"runtime_root": ""}, "LOG_ROOT"),
+        ({"retention_days": 0}, "LOG_RETENTION_DAYS"),
+        ({"color": "always"}, "LOG_COLOR"),
+    ],
+)
+def test_logging_configuration_is_validated(overrides: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_config(**overrides)
+
+
+def test_setup_is_idempotent_and_closes_owned_handler() -> None:
+    with removable_temp_dir() as runtime_root:
+        logger = setup_logging(validate_config(runtime_root=runtime_root))
+        handler = logger.handlers[-1]
+        setup_logging(validate_config(runtime_root=runtime_root))
+        assert (
+            sum(getattr(item, "_llm_observability_handler", False) for item in logger.handlers) == 1
+        )
+        reset_logging()
+        assert handler._closed
+    assert not runtime_root.exists()
+
+
+def test_approved_context_overrides_untrusted_record_context() -> None:
+    with scoped(request_id="bound-request"):
+        output = render({"request_id": "forged-request", "event": "started"})
+    assert "request_id=bound-request" in output and "forged-request" not in output
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "token",
+        "api_key",
+        "apiKey",
+        "provider_session_token",
+        "password_hash",
+        "cookie",
+        "credentials",
+    ],
+)
+def test_sensitive_field_values_are_redacted(key: str) -> None:
+    record = make_record(**{key: "sensitive-value"})
+    StructuredFieldsFilter().filter(record)
+    assert record.__dict__[key] == REDACTED
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "prompt",
+        "viewer_message",
+        "shop_profile",
+        "provider_body",
+        "request_body",
+        "customer_payload",
+        "user_id",
+        "shop_id",
+    ],
+)
+def test_freeform_and_unapproved_fields_are_omitted(key: str) -> None:
+    record = make_record(**{key: "customer-value"})
+    StructuredFieldsFilter().filter(record)
+    assert key not in record.__dict__
+
+
+def test_secret_and_freeform_values_do_not_reach_output() -> None:
+    output = render(
+        {
+            "event": "started",
+            "api_key": "secret-value",
+            "prompt": "customer prompt",
+            "viewer_message": "customer message",
+        }
+    )
+    assert all(
+        value not in output for value in ("secret-value", "customer prompt", "customer message")
+    )

@@ -1,91 +1,50 @@
-"""Idempotent logging setup.
-
-Call ``setup_logging()`` once at startup to configure the root logger.
-Subsequent calls are no-ops.
-"""
+"""Idempotent service-logger setup with explicit resource cleanup."""
 
 from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
+from threading import Lock
 
 from tts.observability.logging.config import LoggingConfig, validate_config
-from tts.observability.logging.daily_handler import DailyHandler
-from tts.observability.logging.active_session_handler import ActiveSessionHandler
-from tts.observability.logging.filters import ContextFilter, SecretFilter
+from tts.observability.logging.filters import ContextFilter, StructuredFieldsFilter
 from tts.observability.logging.formatter import ContextFormatter
 
-_initialized: bool = False
+_HANDLER_MARKER = "_tts_observability_handler"
+_SETUP_LOCK = Lock()
 
 
-def setup_logging(config: LoggingConfig | None = None, **overrides: Any) -> None:
-    """Configure the root logger once.
-
-    Idempotent — only the first call has an effect.  If handler creation
-    fails midway, already-created handlers are closed and removed so no
-    stream is leaked.
-
-    Parameters
-    ----------
-    config
-        Pre-validated ``LoggingConfig``.  If ``None``, built from env + overrides.
-    **overrides
-        Override specific config keys (e.g. ``level="DEBUG"``).
-    """
-    global _initialized
-    if _initialized:
-        return
-
-    if config is None:
-        config = validate_config(**overrides)
-
-    root = logging.getLogger()
-    root.setLevel(getattr(logging, config.level, logging.INFO))
-    root.handlers.clear()
-
-    fmt = ContextFormatter(service=config.service, environment=config.environment)
-    created: list[logging.Handler] = []
-
-    try:
-        console = logging.StreamHandler(sys.stdout)
-        console.setLevel(getattr(logging, config.level, logging.INFO))
-        console.setFormatter(fmt)
-        console.addFilter(ContextFilter(service=config.service, environment=config.environment))
-        console.addFilter(SecretFilter())
-        created.append(console)
-
-        if config.log_dir:
-            daily = DailyHandler(config.log_dir, config.service, config.retention_days)
-            daily.setLevel(getattr(logging, config.level, logging.INFO))
-            daily.setFormatter(fmt)
-            daily.addFilter(SecretFilter())
-            created.append(daily)
-
-            active = ActiveSessionHandler(config.log_dir, config.service)
-            active.setLevel(getattr(logging, config.level, logging.INFO))
-            active.setFormatter(fmt)
-            active.addFilter(SecretFilter())
-            created.append(active)
-    except Exception:
-        for h in created:
-            h.close()
-        raise
-
-    for h in created:
-        root.addHandler(h)
-    _initialized = True
+def _owned_handlers(logger: logging.Logger) -> list[logging.Handler]:
+    return [handler for handler in logger.handlers if getattr(handler, _HANDLER_MARKER, False)]
 
 
-def reset_logging() -> None:
-    """Close and remove all root handlers, then reset the init flag.
+def setup_logging(config: LoggingConfig | None = None, **overrides: object) -> logging.Logger:
+    """Configure one service logger once without mutating unrelated handlers."""
+    if config is not None and overrides:
+        raise ValueError("Pass either config or overrides, not both")
+    resolved = config or validate_config(**overrides)
+    logger = logging.getLogger(resolved.service)
+    with _SETUP_LOCK:
+        if _owned_handlers(logger):
+            return logger
+        handler = logging.StreamHandler(sys.stderr)
+        setattr(handler, _HANDLER_MARKER, True)
+        handler.setLevel(resolved.level)
+        handler.setFormatter(ContextFormatter(service=resolved.service))
+        handler.addFilter(ContextFilter())
+        handler.addFilter(StructuredFieldsFilter())
+        logger.addHandler(handler)
+        logger.setLevel(resolved.level)
+        logger.propagate = False
+    return logger
 
-    Closes file streams so temporary log directories can be removed on
-    platforms that lock open files (Windows).
-    """
-    global _initialized
-    root = logging.getLogger()
-    for h in list(root.handlers):
-        h.close()
-        root.removeHandler(h)
-    _initialized = False
+
+def reset_logging(service: str = "tts") -> None:
+    """Remove and close only handlers owned by this observability package."""
+    logger = logging.getLogger(service)
+    with _SETUP_LOCK:
+        handlers = _owned_handlers(logger)
+        for handler in handlers:
+            logger.removeHandler(handler)
+        for handler in handlers:
+            handler.close()

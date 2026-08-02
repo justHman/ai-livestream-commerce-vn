@@ -1,32 +1,6 @@
-"""Observability context module.
+"""Service-owned structured logging API."""
 
-See ``tts.observability.context`` for the canonical implementation.
-"""
+from tts.observability.logging.config import LoggingConfig, validate_config
+from tts.observability.logging.setup import reset_logging, setup_logging
 
-from __future__ import annotations
-
-from tts.observability.context import (
-    INBOUND_HEADERS,
-    OUTBOUND_HEADERS,
-    bind,
-    context,
-    extract_from_headers,
-    get,
-    get_all,
-    outbound_headers,
-    reset,
-    scoped,
-)
-
-__all__ = [
-    "bind",
-    "context",
-    "get",
-    "get_all",
-    "reset",
-    "scoped",
-    "extract_from_headers",
-    "outbound_headers",
-    "INBOUND_HEADERS",
-    "OUTBOUND_HEADERS",
-]
+__all__ = ["LoggingConfig", "reset_logging", "setup_logging", "validate_config"]

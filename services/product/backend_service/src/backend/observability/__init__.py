@@ -1,21 +1,7 @@
-"""Observability: request context, structured logging, and transport metadata.
-
-Public API
-----------
-bind, reset, scoped, get, get_all
-    ContextVar-based request/session/user context.
-extract_from_headers, outbound_headers
-    Inbound/outbound transport metadata propagation.
-setup_logging, reset_logging, validate_config
-    Idempotent logging configuration and validation.
-
-Note: the ``context`` submodule is intentionally NOT re-exported here so the
-raw ContextVar never shadows the module name.
-"""
-
-from __future__ import annotations
+"""Service-owned observability context and logging API."""
 
 from backend.observability.context import (
+    ContextTokens,
     bind,
     extract_from_headers,
     get,
@@ -23,20 +9,25 @@ from backend.observability.context import (
     outbound_headers,
     reset,
     scoped,
+    scoped_from_headers,
+    validate_identifier,
 )
 from backend.observability.logging.config import LoggingConfig, validate_config
 from backend.observability.logging.setup import reset_logging, setup_logging
 
 __all__ = [
+    "ContextTokens",
+    "LoggingConfig",
     "bind",
     "extract_from_headers",
     "get",
     "get_all",
     "outbound_headers",
     "reset",
-    "scoped",
-    "LoggingConfig",
-    "validate_config",
-    "setup_logging",
     "reset_logging",
+    "scoped",
+    "scoped_from_headers",
+    "setup_logging",
+    "validate_config",
+    "validate_identifier",
 ]

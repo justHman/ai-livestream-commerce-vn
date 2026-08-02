@@ -1,161 +1,113 @@
-"""ContextVar-based request context with bind/reset and a context manager.
-
-Thread-safe, asyncio-safe.  Uses a sentinel object so ``get()`` never raises
-``LookupError`` (Python 3.11 compatible).
-"""
+"""Async-safe correlation context and transport metadata propagation."""
 
 from __future__ import annotations
 
-import contextvars
-import threading
-from collections.abc import Generator
+import re
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
-from typing import Any
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 
-# ---------------------------------------------------------------------------
-# Internal storage
-# ---------------------------------------------------------------------------
-
-_fields: tuple[str, ...] = (
-    "request_id",
-    "session_id",
-    "user_id",
-    "shop_id",
-    "trace_id",
-    "span_id",
-    "service",
-    "environment",
-)
-
-_SENTINEL: dict[str, Any] = {}  # unique sentinel — not the same object as {}
-_var = contextvars.ContextVar["dict[str, Any]"]("observability_context")
-_lock = threading.Lock()
+CONTEXT_FIELDS = ("session_id", "request_id", "trace_id", "component")
+TRANSPORT_FIELDS = {
+    "x-session-id": "session_id",
+    "x-request-id": "request_id",
+    "x-trace-id": "trace_id",
+    "x-component": "component",
+}
+_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z", re.ASCII)
+_CONTEXT_VARS: dict[str, ContextVar[str | None]] = {
+    field: ContextVar(f"observability_{field}", default=None) for field in CONTEXT_FIELDS
+}
 
 
-def _ensure() -> dict[str, Any]:
-    """Return the mutable dict for the current context, creating one if needed."""
-    try:
-        d = _var.get()
-    except LookupError:
-        d = _SENTINEL
-    if d is _SENTINEL:
-        d = {}
-        _var.set(d)
-    return d
+@dataclass(frozen=True, slots=True)
+class ContextTokens:
+    """Tokens required to restore a previous correlation context."""
+
+    values: tuple[tuple[str, Token[str | None]], ...]
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def validate_identifier(field: str, value: object) -> str:
+    """Validate one bounded, transport-safe correlation identifier."""
+    if field not in _CONTEXT_VARS:
+        raise ValueError(f"Unknown context field: {field!r}")
+    if not isinstance(value, str) or not _IDENTIFIER_PATTERN.fullmatch(value):
+        raise ValueError(f"Invalid {field}: expected 1-128 transport-safe ASCII characters")
+    return value
 
 
-def bind(**kwargs: Any) -> None:
-    """Bind key/value pairs into the current context.
-
-    Only keys in ``_fields`` are accepted.
-    All values are coerced to ``str``.
-    """
-    for k, v in kwargs.items():
-        if k not in _fields:
-            raise ValueError(f"Unknown context field: {k!r}")
-    d = _ensure()
-    d.update({k: str(v) for k, v in kwargs.items()})
+def bind(**identifiers: object) -> ContextTokens:
+    """Bind validated identifiers and return tokens for restoration."""
+    validated = {field: validate_identifier(field, value) for field, value in identifiers.items()}
+    return ContextTokens(
+        tuple((field, _CONTEXT_VARS[field].set(value)) for field, value in validated.items())
+    )
 
 
-def reset(*keys: str) -> None:
-    """Remove *keys* from the current context.
-
-    If no keys are given the entire context is cleared.
-    """
-    try:
-        d = _var.get()
-    except LookupError:
+def reset(tokens: ContextTokens | None = None) -> None:
+    """Restore tokenized values, or clear the complete current context."""
+    if tokens is None:
+        for variable in _CONTEXT_VARS.values():
+            variable.set(None)
         return
-    if d is _SENTINEL:
-        return
-    if keys:
-        for k in keys:
-            d.pop(k, None)
-    else:
-        d.clear()
+    for field, token in reversed(tokens.values):
+        _CONTEXT_VARS[field].reset(token)
 
 
-def get(key: str, default: Any = None) -> Any:
-    """Return the value for *key* or *default*."""
-    try:
-        d = _var.get()
-    except LookupError:
-        return default
-    if d is _SENTINEL:
-        return default
-    return d.get(key, default)
+def get(field: str, default: str | None = None) -> str | None:
+    """Return one context value."""
+    if field not in _CONTEXT_VARS:
+        raise ValueError(f"Unknown context field: {field!r}")
+    return _CONTEXT_VARS[field].get() or default
 
 
-def get_all() -> dict[str, Any]:
-    """Return a shallow copy of the current context."""
-    try:
-        d = _var.get()
-    except LookupError:
-        return {}
-    if d is _SENTINEL:
-        return {}
-    return dict(d)
-
-
-context = _var  # the raw ContextVar (useful for framework integration)
-
-
-# ---------------------------------------------------------------------------
-# Context manager
-# ---------------------------------------------------------------------------
+def get_all() -> dict[str, str]:
+    """Return all currently bound identifiers."""
+    return {
+        field: value
+        for field, variable in _CONTEXT_VARS.items()
+        if (value := variable.get()) is not None
+    }
 
 
 @contextmanager
-def scoped(**kwargs: Any) -> Generator[None, None, None]:
-    """Temporarily bind *kwargs* and restore the previous context on exit.
-
-    Usage::
-
-        with observability.scoped(request_id="abc"):
-            log.info("inside")
-    """
-    current = get_all()
-    current.update({k: str(v) for k, v in kwargs.items() if k in _fields})
-    token = _var.set(current)
+def scoped(**identifiers: object) -> Generator[None, None, None]:
+    """Bind identifiers temporarily and always restore prior values."""
+    tokens = bind(**identifiers)
     try:
         yield
     finally:
-        _var.reset(token)
+        reset(tokens)
 
 
-# ---------------------------------------------------------------------------
-# Inbound / outbound metadata helpers
-# ---------------------------------------------------------------------------
-
-# fmt: off
-INBOUND_HEADERS = {
-    "x-request-id": "request_id",
-    "x-trace-id": "trace_id",
-    "x-span-id": "span_id",
-    "x-session-id": "session_id",
-    "x-user-id": "user_id",
-}
-"""Mapping from inbound HTTP header names to context keys."""
-
-OUTBOUND_HEADERS = {v: k for k, v in INBOUND_HEADERS.items()}
-"""Reverse mapping from context keys to outbound header names."""
-
-
-def extract_from_headers(headers: dict[str, str]) -> dict[str, str]:
-    """Extract context fields from a dict of inbound headers."""
-    result: dict[str, str] = {}
-    for header, field in INBOUND_HEADERS.items():
-        if header in headers:
-            result[field] = headers[header]
-    return result
+def extract_from_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Extract and validate supported inbound transport metadata."""
+    extracted: dict[str, str] = {}
+    for raw_name, value in headers.items():
+        if not isinstance(raw_name, str):
+            raise ValueError("Transport metadata names must be strings")
+        field = TRANSPORT_FIELDS.get(raw_name.lower())
+        if field is None:
+            continue
+        if field in extracted:
+            raise ValueError(f"Duplicate transport metadata for {field}")
+        extracted[field] = validate_identifier(field, value)
+    return extracted
 
 
 def outbound_headers() -> dict[str, str]:
-    """Build outbound header dict from the current context."""
-    ctx = get_all()
-    return {OUTBOUND_HEADERS[f]: ctx[f] for f in OUTBOUND_HEADERS if f in ctx}
+    """Return validated transport metadata for the current context."""
+    current = get_all()
+    return {
+        header: validate_identifier(field, current[field])
+        for header, field in TRANSPORT_FIELDS.items()
+        if field in current
+    }
+
+
+@contextmanager
+def scoped_from_headers(headers: Mapping[str, str]) -> Generator[None, None, None]:
+    """Validate and bind inbound metadata for exactly one operation."""
+    with scoped(**extract_from_headers(headers)):
+        yield
