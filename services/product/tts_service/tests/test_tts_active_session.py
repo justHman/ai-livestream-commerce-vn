@@ -51,9 +51,10 @@ def make_record(message: str) -> logging.LogRecord:
 class FailingStream:
     """Stream that fails on write and records whether it was closed."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, fail_close: bool = False) -> None:
         self.closed = False
         self.close_called = False
+        self._fail_close = fail_close
 
     def write(self, _text: str) -> None:
         raise OSError("disk full")
@@ -64,6 +65,8 @@ class FailingStream:
     def close(self) -> None:
         self.close_called = True
         self.closed = True
+        if self._fail_close:
+            raise OSError("close also fails")
 
 
 def product_path(active_root: Path) -> Path:
@@ -320,7 +323,27 @@ def test_end_session_flush_failure_closes_stream_and_re_raises() -> None:
             handler.close()
 
 
-def test_run_stream_normalizes_lines_with_redaction() -> None:
+def test_end_session_flush_and_close_both_raise_keeps_flush_primary() -> None:
+    with removable_temp_dir() as active_root:
+        handler = ActiveSessionHandler(service=SERVICE, active_root=active_root)
+        try:
+            handler.start_session()
+            fake = FailingStream(fail_close=True)
+            handler._close_stream()
+            handler._stream = fake
+            with pytest.raises(OSError, match="disk full"):
+                handler.end_session()
+            assert handler._stream is None
+            assert handler.state == INACTIVE
+            handler.start_session()
+            assert handler.state == ACTIVE
+            logger, _ = make_logger(active_root)
+            logger.handlers.clear()
+        finally:
+            handler.close()
+
+
+def test_run_stream_drops_unstructured_and_redacts_secrets() -> None:
     with removable_temp_dir() as active_root:
         collector = PlatformCollector(active_root=active_root)
         try:
@@ -328,8 +351,11 @@ def test_run_stream_normalizes_lines_with_redaction() -> None:
                 [
                     "evt=room-created room=main",
                     "error=connection refused",
-                    "token=super-secret",
+                    "Bearer abc123",
+                    "sk-abcdef raw",
+                    'data={"customer":"vip"}',
                     "ignored",
+                    '{"customer":"vip"}',
                 ],
                 service="livekit",
             )
@@ -338,10 +364,15 @@ def test_run_stream_normalizes_lines_with_redaction() -> None:
                 .read_text(encoding="utf-8")
                 .splitlines()
             )
+            joined = " ".join(content)
             assert content[0] == "evt=room-created room=main"
             assert content[1] == "error=connection"
-            assert content[2] == "error=ignored"
-            assert "super-secret" not in " ".join(content)
+            assert "Bearer" not in joined
+            assert "abc123" not in joined
+            assert "sk-abcdef" not in joined
+            assert "customer" not in joined
+            assert "vip" not in joined
+            assert joined.count("evt=unstructured_line_dropped") >= 4
         finally:
             collector.close()
 
@@ -352,6 +383,7 @@ def test_cli_help_succeeds() -> None:
     assert result.returncode == 0
     assert "--service" in result.stdout
     assert "--active-root" in result.stdout
+    assert "run" in result.stdout
 
 
 def test_cli_writes_platform_log_and_redacts() -> None:
@@ -383,11 +415,95 @@ def test_cli_rejects_unknown_service_and_exits_cleanly() -> None:
         assert "Unknown platform service" in result.stderr
 
 
-def test_normalize_event_line_drops_unsafe_fields() -> None:
+def test_normalize_event_line_accepts_only_safe_tokens() -> None:
     assert normalize_event_line("evt=ok message=customer-data") == "evt=ok"
-    assert normalize_event_line("data=raw") == "error=data=raw"
-    assert normalize_event_line("plain text") == "error=plain text"
     assert normalize_event_line("evt=x api_key=hunter2") == "evt=x api_key=[REDACTED]"
+    assert normalize_event_line("error=ECONNREFUSED") == "error=ECONNREFUSED"
+    assert normalize_event_line("error=connection refused") == "error=connection"
+    assert normalize_event_line("plain text") == "evt=unstructured_line_dropped"
+    assert normalize_event_line("data=raw") == "evt=unstructured_line_dropped"
+    assert normalize_event_line('{"customer":"vip"}') == "evt=unstructured_line_dropped"
+    assert normalize_event_line("error=Bearer abc123") == "error=[REDACTED]"
+    assert normalize_event_line("sk-abcdef=value") == "evt=unstructured_line_dropped"
+
+
+def test_run_command_collects_stdout_and_stderr_concurrently() -> None:
+    from tts.observability.logging.platform_collector import run_command
+
+    with removable_temp_dir() as active_root:
+        child = (
+            "import sys\n"
+            "print('evt=ready')\n"
+            "print('error=ECONNREFUSED', file=sys.stderr)\n"
+            "print('secret=sk-abcdef')\n"
+        )
+        code = run_command(
+            [sys.executable, "-c", child],
+            service="livekit",
+            active_root=active_root,
+        )
+        assert code == 0
+        content = (
+            active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
+        )
+        joined = " ".join(content)
+        assert "evt=ready" in content
+        assert "error=ECONNREFUSED" in content
+        assert "sk-abcdef" not in joined
+
+
+def test_run_command_propagates_nonzero_exit() -> None:
+    from tts.observability.logging.platform_collector import run_command
+
+    with removable_temp_dir() as active_root:
+        code = run_command(
+            [sys.executable, "-c", "print('evt=dying'); raise SystemExit(3)"],
+            service="livekit",
+            active_root=active_root,
+        )
+        assert code == 3
+        content = active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
+        assert "evt=dying" in content
+
+
+def test_run_command_timeout_terminates_child() -> None:
+    from tts.observability.logging.platform_collector import run_command
+
+    with removable_temp_dir() as active_root:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_command(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                service="livekit",
+                active_root=active_root,
+                timeout=0.5,
+            )
+
+
+def test_cli_run_subcommand_launches_child_and_collects() -> None:
+    module = "tts.observability.logging.platform_collector"
+    with removable_temp_dir() as active_root:
+        payload = "print('evt=ready'); print('error=ECONNREFUSED', file=__import__('sys').stderr)"
+        result = run_collector(
+            module,
+            [
+                "--service",
+                "livekit",
+                "--active-root",
+                str(active_root),
+                "run",
+                "--",
+                sys.executable,
+                "-c",
+                payload,
+            ],
+            "",
+        )
+        assert result.returncode == 0
+        content = (
+            active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
+        )
+        assert "evt=ready" in content
+        assert "error=ECONNREFUSED" in content
 
 
 def test_flush_failure_closes_stream_and_deactivates() -> None:
