@@ -8,21 +8,26 @@ in paths, and service/group names come from fixed allowlists.
 from __future__ import annotations
 
 import logging
-import threading
 from pathlib import Path
+from typing import TextIO
 
 _PRODUCT_SERVICES = frozenset({"backend", "llm", "tts", "avatar"})
 _PLATFORM_SERVICES = frozenset({"livekit", "lmcache", "postgres", "redis"})
 _GROUPS = {"product": _PRODUCT_SERVICES, "platform": _PLATFORM_SERVICES}
 
+INACTIVE = "inactive"
+ACTIVE = "active"
+CLOSED = "closed"
+
 
 class ActiveSessionHandler(logging.Handler):
     """Write active-session records to `{active_root}/{group}/<service>.log`.
 
-    - start_session truncates the file ahead of the first record of a new session.
-    - emit appends within a session.
-    - end_session flushes and closes the stream, retaining the file for reads.
-    - service/group are allowlist-validated; no untrusted value reaches a path.
+    Lifetime is explicit: constructed inactive; start_session activates and
+    truncates; emit appends only while active; end_session deactivates and
+    retains the file; close is terminal. All state transitions and writes
+    share the inherited handler lock (RLock), so a concurrent emit can never
+    interleave with a session-start truncate.
     """
 
     def __init__(
@@ -42,8 +47,9 @@ class ActiveSessionHandler(logging.Handler):
         self._group = group
         self._service = service
         self._path = Path(active_root) / group / f"{service}.log"
-        self._stream: object = None
-        self._lock = threading.RLock()
+        self._state = INACTIVE
+        self._stream: TextIO | None = None
+        self.createLock()
 
     @property
     def group(self) -> str:
@@ -57,39 +63,56 @@ class ActiveSessionHandler(logging.Handler):
     def path(self) -> Path:
         return self._path
 
-    def start_session(self) -> None:
-        """Truncate the file ahead of the first record of a new session."""
-        with self._lock:
-            self._open("w")
-            self._flush()
+    @property
+    def state(self) -> str:
+        return self._state
 
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            message = self.format(record)
-        except Exception:
-            self.handleError(record)
-            return
-        with self._lock:
-            try:
-                self._open("a")
-                self._stream.write(message + "\n")  # type: ignore[union-attr]
-                self._flush()
-            except Exception:
-                self.handleError(record)
+    def start_session(self) -> None:
+        """Activate and truncate; restartable after end_session."""
+        with self.lock:
+            if self._state == CLOSED:
+                raise RuntimeError("ActiveSessionHandler is closed")
+            self._open("w")
+            self._state = ACTIVE
 
     def end_session(self) -> None:
-        """Flush and close the stream; retain the file for later reads."""
-        with self._lock:
+        """Deactivate and retain the file; no-op unless active."""
+        with self.lock:
+            if self._state != ACTIVE:
+                return
             self._flush()
             self._close_stream()
+            self._state = INACTIVE
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # handle() already holds self.lock; RLock makes the re-entry safe.
+        with self.lock:
+            if self._state != ACTIVE:
+                return
+            try:
+                message = self.format(record)
+            except Exception:
+                self.handleError(record)
+                return
+            try:
+                self._stream.write(message + "\n")  # type: ignore[union-attr]
+                self._stream.flush()  # type: ignore[union-attr]
+            except Exception:
+                try:
+                    self._close_stream()
+                finally:
+                    self._state = INACTIVE
+                self.handleError(record)
 
     def close(self) -> None:
-        with self._lock:
+        """Terminal close; idempotent; start/emit refused afterwards."""
+        with self.lock:
             super().close()
             self._close_stream()
+            self._state = CLOSED
 
     def _open(self, mode: str) -> None:
-        if self._stream is not None and not self._stream.closed:  # type: ignore[union-attr]
+        if self._stream is not None and not self._stream.closed:
             if mode == "a":
                 return
             self._close_stream()
@@ -97,10 +120,10 @@ class ActiveSessionHandler(logging.Handler):
         self._stream = self._path.open(mode, encoding="utf-8")
 
     def _flush(self) -> None:
-        if self._stream is not None and not self._stream.closed:  # type: ignore[union-attr]
-            self._stream.flush()  # type: ignore[union-attr]
+        if self._stream is not None and not self._stream.closed:
+            self._stream.flush()
 
     def _close_stream(self) -> None:
-        if self._stream is not None and not self._stream.closed:  # type: ignore[union-attr]
-            self._stream.close()  # type: ignore[union-attr]
+        if self._stream is not None and not self._stream.closed:
+            self._stream.close()
         self._stream = None

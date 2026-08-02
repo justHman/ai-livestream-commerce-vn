@@ -6,7 +6,7 @@
 - [x] 1.4 Update imports, repository-root build contexts, Dockerfile-specific ignore paths, scripts, locks, workflow paths, documentation, and Terraform references to the canonical service paths.
 - [ ] 1.5 Verify each product service build and each platform runtime's real configuration, image pin, readiness, and smoke behavior after the path migration.
 - [x] 1.6 Add `observability/context.py` and `observability/logging/{__init__,config,setup,filters,formatter,daily_handler,active_session_handler}.py` to each product service, including validated transport propagation, idempotent setup, and guaranteed context cleanup.
-- [ ] 1.7 Implement `active_session_handler.py` under each product service and platform log collection under `{product,platform}/<service>.log`; truncate at session start, retain after completion, and create no file keyed by `session_id`.
+- [x] 1.7 Implement `active_session_handler.py` under each product service and platform log collection under `{product,platform}/<service>.log`; truncate at session start, retain after completion, and create no file keyed by `session_id`.
 - [ ] 1.8 Implement daily per-service UTC rotation and `LOG_RETENTION_DAYS` cleanup under `{product,platform}/<service>/YYYY-MM-DD.log`.
 - [ ] 1.9 Implement aligned four-level logfmt with level width 7 and service width 8, quoted whitespace values, TTY-only console colors, file output without ANSI escapes, approved structured fields, and sensitive-key redaction/omission.
 - [ ] 1.10 Test concurrent context isolation, transport propagation, idempotent setup, invalid-level startup failure, active-session overwrite, daily retention, alignment, quoted values, TTY/file separation, and secret-free output.
