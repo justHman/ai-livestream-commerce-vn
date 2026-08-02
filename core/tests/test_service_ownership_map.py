@@ -22,6 +22,19 @@ MAP_PATTERN = re.compile(
     r"<!-- service-ownership-map:end -->",
     re.DOTALL,
 )
+EXACT_TARGETS = {
+    ".env.example": ".env.example",
+    "core/llm/__init__.py": "services/product/llm_service/src/llm/__init__.py",
+    "core/llm/adapters/__init__.py": "services/product/llm_service/src/llm/engines/__init__.py",
+    "core/tts/__init__.py": "services/product/tts_service/src/tts/__init__.py",
+    "core/tts/adapters/__init__.py": "services/product/tts_service/src/tts/engines/__init__.py",
+    "providers/liveavatar_cloud/service/server.py": (
+        "services/product/backend_service/src/backend/application/clients/avatar/liveavatar.py"
+    ),
+    "providers/liveavatar_cloud/service/conversation.py": "tests/sandbox/liveavatar/conversation.py",
+    "providers/liveavatar_cloud/service/lite_agent.py": "tests/sandbox/liveavatar/lite_agent.py",
+    "providers/liveavatar_cloud/service/store.py": "tests/sandbox/liveavatar/store.py",
+}
 
 
 def test_service_ownership_map_covers_required_categories_and_existing_sources() -> None:
@@ -37,3 +50,5 @@ def test_service_ownership_map_covers_required_categories_and_existing_sources()
     assert REQUIRED_CATEGORIES <= categories
     assert all(mapping["target"] for mapping in mappings)
     assert all((repository_root / mapping["source"]).exists() for mapping in mappings)
+    targets = {mapping["source"]: mapping["target"] for mapping in mappings}
+    assert {source: targets.get(source) for source in EXACT_TARGETS} == EXACT_TARGETS
