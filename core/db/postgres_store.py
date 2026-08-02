@@ -86,6 +86,9 @@ class PostgresRuntimeStore:
             await asyncio.wait_for(pool.close(), timeout=_COMMAND_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError as exc:
+            self._record_error(exc)
+            raise TimeoutError(str(exc)) from exc
         except Exception as exc:
             self._record_error(exc)
             raise

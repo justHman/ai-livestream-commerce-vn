@@ -30,6 +30,7 @@ test = [
 ]
 livekit = ["livekit"]
 postgres = ["asyncpg"]
+director = ["sentence-transformers>=5,<6"]
 
 [build-system]
 requires = ["setuptools>=68"]

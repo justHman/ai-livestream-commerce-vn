@@ -21,8 +21,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 if TYPE_CHECKING:
     from ..schemas.run_plan import RunPlan
@@ -37,7 +38,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..config import AppConfig
 from ..llm.base import LLMEngine, _NoopEngine
@@ -55,6 +56,7 @@ from ..director.coordinator import DirectorCoordinator
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
+SANDBOX_LAYER_TIMEOUT_SEC = 45.0
 
 
 # ── Control-plane WS hub (one connection per session) ───────────────
@@ -102,33 +104,107 @@ class StartReq(BaseModel):
 class SayReq(BaseModel):
     session_id: str = Field(max_length=128)
     text: str = Field(min_length=1, max_length=2_000)
+    generate: bool = True
 
 
 class SessionReq(BaseModel):
     session_id: str = Field(max_length=128)
 
 
+ProductArrayItem = Annotated[str, Field(min_length=1, max_length=500)]
+
+
 class ProductIn(BaseModel):
-    id: str = Field(max_length=128)
-    name: str = Field(max_length=256)
+    id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
     description: str = Field(default="", max_length=2_000)
-    price: Optional[int] = None
-    original_price: Optional[int] = None
+    price: Optional[int] = Field(default=None, ge=0)
+    original_price: Optional[int] = Field(default=None, ge=0)
     promotion: Optional[str] = Field(default=None, max_length=500)
-    colors: list[str] = Field(default_factory=list, max_length=32)
-    sizes: list[str] = Field(default_factory=list, max_length=32)
+    colors: list[ProductArrayItem] = Field(default_factory=list, max_length=32)
+    sizes: list[ProductArrayItem] = Field(default_factory=list, max_length=32)
     material: Optional[str] = Field(default=None, max_length=256)
     shipping: Optional[str] = Field(default=None, max_length=500)
     warranty: Optional[str] = Field(default=None, max_length=500)
     in_stock: bool = True
-    stock_total: Optional[int] = None
+    stock_total: Optional[int] = Field(default=None, ge=0)
     ref_image: Optional[str] = Field(default=None, max_length=2_048)
-    features: list[str] = Field(default_factory=list, max_length=32)
+    features: list[ProductArrayItem] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_prices(self) -> "ProductIn":
+        if (
+            self.price is not None
+            and self.original_price is not None
+            and self.original_price < self.price
+        ):
+            raise ValueError("original_price must be greater than or equal to price")
+        return self
+
+
+class ShopProfileIn(BaseModel):
+    shop_name: str = Field(default="", max_length=256)
+    host_name: str = Field(default="", max_length=128)
+    address: str = Field(default="", max_length=500)
+    phone: str = Field(default="", max_length=64)
+    selling_style: str = Field(default="", max_length=1_000)
+
+    def to_persona_text(self) -> str:
+        return "\n".join(
+            f"{label}: {value}"
+            for label, value in (
+                ("Tên shop", self.shop_name),
+                ("Tên MC", self.host_name),
+                ("Địa chỉ", self.address),
+                ("Điện thoại", self.phone),
+                ("Phong cách bán hàng", self.selling_style),
+            )
+            if value
+        )
+
+
+class RuntimeConfigReq(BaseModel):
+    comment_rate: Optional[float] = Field(default=None, ge=0.2, le=5.0)
+    initial_ingest_mode: Optional[str] = Field(default=None, pattern="^(batch|single)$")
+    max_qa_clusters_per_window: Optional[int] = Field(default=None, ge=1, le=20)
+    qa_window_hard_timeout_sec: Optional[float] = Field(default=None, gt=0, le=600)
+    qa_topic_cooldown_sec: Optional[float] = Field(default=None, ge=0, le=3600)
+    answer_cache_variants: Optional[int] = Field(default=None, ge=1, le=20)
+    prepared_turn_depth: Optional[int] = Field(default=None, ge=1, le=20)
+    transient_retry_count: Optional[int] = Field(default=None, ge=0, le=3)
+    demand_pivot_enter_share: Optional[float] = Field(default=None, gt=0, le=1)
+    demand_pivot_exit_share: Optional[float] = Field(default=None, gt=0, le=1)
+    demand_pivot_min_comments: Optional[int] = Field(default=None, ge=1, le=1000)
+    demand_pivot_score_margin: Optional[float] = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_pivot_hysteresis(self) -> "RuntimeConfigReq":
+        if (
+            self.demand_pivot_enter_share is not None
+            and self.demand_pivot_exit_share is not None
+            and self.demand_pivot_exit_share >= self.demand_pivot_enter_share
+        ):
+            raise ValueError("pivot shares must satisfy exit < enter")
+        return self
 
 
 class AttachReq(BaseModel):
     session_id: str = Field(max_length=128)
     products: list[ProductIn] = Field(max_length=100)
+    shop_profile: Optional[ShopProfileIn | str] = None
+    runtime_config: Optional[RuntimeConfigReq] = None
+
+    @model_validator(mode="after")
+    def validate_product_ids(self) -> "AttachReq":
+        ids = [product.id for product in self.products]
+        if len(ids) != len(set(ids)):
+            raise ValueError("product ids must be unique")
+        return self
+
+    def shop_profile_text(self) -> Optional[str]:
+        if isinstance(self.shop_profile, ShopProfileIn):
+            return self.shop_profile.to_persona_text() or None
+        return self.shop_profile
 
 
 class CommentIn(BaseModel):
@@ -141,6 +217,10 @@ class IngestReq(BaseModel):
     comments: list[CommentIn] = Field(max_length=100)
     viewer_count: Optional[int] = None
     msg_rate: Optional[float] = None
+
+
+class RuntimeConfigUpdateReq(RuntimeConfigReq):
+    session_id: str = Field(max_length=128)
 
 
 class ChatIn(BaseModel):
@@ -158,6 +238,12 @@ class TTSPresetIn(BaseModel):
     preset_id: str = Field(min_length=1, max_length=128)
 
 
+class TTSPreviewReq(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+    tts_id: str = Field(min_length=1, max_length=512)
+    voice_id: str = Field(default="default", min_length=1, max_length=512)
+
+
 class AvatarCreateReq(BaseModel):
     scope: Literal["half", "full"] = "half"
     ref_photo_url: Optional[str] = Field(default=None, max_length=2_048)
@@ -170,6 +256,11 @@ class AvatarUpdateReq(BaseModel):
     voice: Optional[str] = Field(default=None, max_length=128)
 
 
+class SandboxVerifyReq(BaseModel):
+    avatar_id: Optional[str] = Field(default=None, max_length=128)
+    speech_text: str = Field(default="Xin chào, đây là phiên kiểm tra.", min_length=1, max_length=300)
+
+
 class PlanCreateReq(BaseModel):
     """Optional products/persona for deterministic offline run-plan generation."""
 
@@ -179,6 +270,7 @@ class PlanCreateReq(BaseModel):
 
 class PathSayReq(BaseModel):
     text: str = Field(min_length=1, max_length=2_000)
+    generate: bool = True
 
 
 class PathChatIn(BaseModel):
@@ -195,6 +287,8 @@ class PathIngestReq(BaseModel):
 
 class PathAttachReq(BaseModel):
     products: list[ProductIn] = Field(max_length=100)
+    shop_profile: Optional[ShopProfileIn | str] = None
+    runtime_config: Optional[RuntimeConfigReq] = None
 
 
 # ── In-memory avatar store ──────────────────────────────────────────
@@ -217,10 +311,15 @@ class AvatarStore:
         avatar_id = str(uuid.uuid4())
         item = {
             "avatar_id": avatar_id,
+            "id": avatar_id,
+            "label": f"Custom avatar {avatar_id[:8]}",
             "scope": scope,
             "ref_photo_url": ref_photo_url,
+            "thumbnail_url": ref_photo_url,
             "voice": voice,
             "status": "ready",
+            "ready": True,
+            "capabilities": ["speech", "idle", scope],
         }
         with self._lock:
             self._items[avatar_id] = item
@@ -402,6 +501,7 @@ def build_run_plan(
         OpeningPhase,
         ProductSellingPhase,
         RunPlan,
+        SellingTask,
     )
 
     items: list[ProductSellingPhase] = []
@@ -426,11 +526,97 @@ def build_run_plan(
                 features.append(f"Giá chỉ {data['price']}")
             if not features:
                 features = [f"Ưu điểm nổi bật của {name or pid}"]
+        tasks = [
+            SellingTask(
+                stage="intro",
+                task_id=f"{pid}:intro",
+                instruction="Mở sản phẩm và tạo tò mò bằng 1 đến 2 câu hoàn chỉnh.",
+            )
+        ]
+        tasks.extend(
+            SellingTask(
+                stage="benefit",
+                task_id=f"{pid}:benefit:{index}",
+                instruction=f"Giải thích một lợi ích thực tế từ điểm nổi bật: {feature}",
+            )
+            for index, feature in enumerate(features)
+        )
+        if data.get("price") is not None or data.get("promotion"):
+            offer = ". ".join(
+                part
+                for part in (
+                    f"Giá bán {data.get('price')} đồng" if data.get("price") is not None else "",
+                    f"Giá gốc {data.get('original_price')} đồng"
+                    if data.get("original_price") is not None
+                    else "",
+                    str(data.get("promotion") or ""),
+                )
+                if part
+            )
+            tasks.extend(
+                (
+                    SellingTask(
+                        stage="offer",
+                        task_id=f"{pid}:offer",
+                        instruction=f"Công bố deal rõ ràng, không bỏ dở số tiền: {offer}",
+                    ),
+                    SellingTask(
+                        stage="offer",
+                        task_id=f"{pid}:offer-repeat",
+                        instruction=(
+                            f"Nhấn mạnh lại deal bằng cách diễn đạt khác, có nhịp lặp tự nhiên: {offer}"
+                        ),
+                    ),
+                )
+            )
+        trust = ". ".join(
+            part
+            for part in (
+                f"Chất liệu {data.get('material')}" if data.get("material") else "",
+                f"Màu {', '.join(data.get('colors') or [])}"
+                if data.get("colors")
+                else "",
+                f"Size {', '.join(data.get('sizes') or [])}" if data.get("sizes") else "",
+                str(data.get("shipping") or ""),
+                str(data.get("warranty") or ""),
+            )
+            if part
+        )
+        if trust:
+            tasks.append(
+                SellingTask(
+                    stage="trust",
+                    task_id=f"{pid}:trust",
+                    instruction=f"Tăng tin cậy bằng thông tin chính xác: {trust}",
+                )
+            )
+        tasks.extend(
+            (
+                SellingTask(
+                    stage="cta",
+                    task_id=f"{pid}:cta",
+                    instruction="Kêu gọi chốt đơn ngay bằng 1 đến 2 câu tự nhiên.",
+                ),
+                SellingTask(
+                    stage="cta",
+                    task_id=f"{pid}:cta-urgent",
+                    instruction=(
+                        "Chèo kéo thêm một lượt, lặp cụm ưu đãi có chủ đích nhưng không lặp nguyên câu."
+                    ),
+                ),
+                SellingTask(
+                    stage="transition",
+                    task_id=f"{pid}:transition",
+                    instruction="Khép sản phẩm hiện tại và chuyển mạch rõ ràng sang sản phẩm tiếp theo.",
+                ),
+            )
+        )
         items.append(
             ProductSellingPhase(
                 product_id=pid,
                 product_name=name,
                 key_selling_points=features,
+                tasks=tasks,
             )
         )
     phases: list = ["opening"]
@@ -530,6 +716,25 @@ async def health_ready() -> dict[str, Any]:
             tts_ok = False
         ready = llm_ok and tts_ok
 
+    embedder: Optional[dict] = None
+    if d.director is not None:
+        from ..director.embedder import embedder_status
+
+        try:
+            embedder = embedder_status(d.director.embedder)
+        except Exception as exc:
+            embedder = {
+                "name": "unavailable",
+                "mode": "semantic-required",
+                "ready": False,
+                "degraded": False,
+                "error": type(exc).__name__,
+            }
+        if not embedder["ready"]:
+            ready = False
+        if embedder["degraded"] and d.config is not None and d.config.app_env != "dev":
+            ready = False
+
     resp: dict[str, Any] = {
         "ok": ready,
         "status": "ready" if ready else "not_ready",
@@ -537,6 +742,8 @@ async def health_ready() -> dict[str, Any]:
         "llm_engine": llm_engine_name,
         "tts_engine": tts_engine_name,
     }
+    if embedder is not None:
+        resp["embedder"] = embedder
     if llm_load_error:
         resp["llm_load_error"] = llm_load_error
     if tts_load_error:
@@ -644,15 +851,23 @@ async def lite_say(
         return await _streaming_say(d, req)
     if not isinstance(d.backend, FullPipelineBackend):
         raise HTTPException(status_code=501, detail="backend does not support say()")
-    # Cloud / FullPipelineBackend path — unchanged.
-    await d.hub.emit(req.session_id, {"type": "avatar.speak_started", "text": req.text})
+    # Cloud / FullPipelineBackend path.
+    # Per-session lock: 1 say at a time. LLM remote ~6s/call + LiveAvatar
+    # sandbox 1 concurrent — overlapping says overload + 503. Reject 409
+    # if a turn is already running; FE reuses the queue + retries next tick.
+    sid = req.session_id
+    if not d.locks.try_acquire(sid):
+        raise HTTPException(status_code=409, detail="already_speaking")
+    await d.hub.emit(sid, {"type": "avatar.speak_started", "text": req.text})
     try:
-        reply = await asyncio.to_thread(d.backend.say, req.session_id, req.text)
+        reply = await asyncio.to_thread(d.backend.say, sid, req.text, req.generate)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
-    await d.hub.emit(req.session_id, {"type": "avatar.speak_ended", "reply": reply})
+    finally:
+        d.locks.release(sid)
+    await d.hub.emit(sid, {"type": "avatar.speak_ended", "reply": reply})
     return {"ok": True, "reply": reply}
 
 
@@ -712,10 +927,13 @@ async def _streaming_say(d: V1Deps, req: SayReq) -> dict[str, Any]:
         d.orchestrators[sid] = {"orchestrator": orchestrator, "queue": queue}
 
         await d.hub.emit(sid, {"type": "avatar.speak_started", "text": req.text})
-        system_prompt = None
-        if em is not None and hasattr(em, "_system_prompt"):
-            system_prompt = em._system_prompt or None
-        spoken = await orchestrator.run(sid, req.text, system_prompt=system_prompt)
+        if req.generate:
+            system_prompt = None
+            if em is not None and hasattr(em, "_system_prompt"):
+                system_prompt = em._system_prompt or None
+            spoken = await orchestrator.run(sid, req.text, system_prompt=system_prompt)
+        else:
+            spoken = await orchestrator.speak_verbatim(sid, req.text)
         # Drain the queue: emit one WS event per VideoWindow to the control
         # hub so connected clients see frame updates. In production the MEDIA
         # plane carries the actual video; this control event is for telemetry.
@@ -751,12 +969,15 @@ async def lite_interrupt(req: SessionReq, _: None = Depends(viewer_auth)) -> dic
     d = deps()
     # Task 8: if there is an active streaming orchestrator for this session,
     # cancel it first (stops emission + drains the bounded queue).
-    entry = d.orchestrators.get(req.session_id)
-    if entry is not None:
-        orch: StreamOrchestrator = entry["orchestrator"]
-        await orch.cancel(req.session_id)
     try:
-        await asyncio.to_thread(d.backend.interrupt, req.session_id)
+        if d.coordinator is not None and d.coordinator.has(req.session_id):
+            await d.coordinator.interrupt(req.session_id)
+        else:
+            entry = d.orchestrators.get(req.session_id)
+            if entry is not None:
+                orch: StreamOrchestrator = entry["orchestrator"]
+                await orch.cancel(req.session_id)
+            await asyncio.to_thread(d.backend.interrupt, req.session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     await d.hub.emit(req.session_id, {"type": "avatar.interrupted"})
@@ -799,11 +1020,29 @@ async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[st
         raise HTTPException(status_code=501, detail="Director not enabled")
     from ..director.catalog import Product
 
+    if await d.store.get(req.session_id) is None:
+        raise HTTPException(status_code=404, detail="unknown session_id")
     products = [Product(**p.model_dump()) for p in req.products]
+    shop_profile = req.shop_profile_text()
+    # Re-attach updates the existing runtime/coordinator atomically. Stopping
+    # the coordinator here would erase the active checkpoint and rolling window.
+    has_coordinator = d.coordinator is not None and d.coordinator.has(req.session_id)
     try:
-        info = await asyncio.to_thread(d.director.attach, req.session_id, products)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        runtime_values = (
+            req.runtime_config.model_dump(exclude_none=True)
+            if req.runtime_config is not None
+            else None
+        )
+        info = await asyncio.to_thread(
+            d.director.attach,
+            req.session_id,
+            products,
+            shop_profile=shop_profile,
+            run_plan=build_run_plan(req.products, persona=shop_profile),
+            runtime_config=runtime_values,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # M3: freeze the product snapshot into the runtime DB (fire-and-forget).
     if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
         try:
@@ -817,10 +1056,45 @@ async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[st
                 "Postgres persistence failed session=%s operation=insert_product_snapshot",
                 req.session_id,
             )
-    # Wave 2: also start the DirectorCoordinator for this session.
+    # Set the persona before the Coordinator tick exists. Attach is config-only;
+    # the Coordinator stays dormant until the first viewer comment is ingested.
+    if shop_profile and hasattr(d.backend, "set_persona"):
+        try:
+            d.backend.set_persona(req.session_id, shop_profile)
+        except Exception:
+            logger.warning(
+                "set_persona failed session=%s (continuing with default persona)",
+                req.session_id,
+            )
     if d.coordinator is not None:
-        d.coordinator.start(session_id=req.session_id, products=products)
-    return {"ok": True, **info}
+        if not has_coordinator:
+            d.coordinator.start(
+                session_id=req.session_id,
+                products=products,
+                activated=False,
+            )
+        else:
+            d.coordinator.update_catalog(req.session_id, products)
+    return {"ok": True, "will_speak": False, **info}
+
+
+@router.patch("/lite/config")
+async def lite_config_update(
+    req: RuntimeConfigUpdateReq,
+    _: None = Depends(viewer_auth),
+) -> dict[str, Any]:
+    d = deps()
+    values = req.model_dump(exclude={"session_id"}, exclude_none=True)
+    if d.coordinator is not None and d.coordinator.has(req.session_id):
+        updater = d.coordinator.update_runtime_config
+    elif d.director is not None and d.director.has(req.session_id):
+        updater = d.director.update_runtime_config
+    else:
+        raise HTTPException(status_code=409, detail="session not attached")
+    try:
+        return {"ok": True, "session_id": req.session_id, **updater(req.session_id, values)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/lite/ingest")
@@ -842,6 +1116,11 @@ async def lite_ingest(
     d = deps()
     # Wave 2: coordinator path (async tick loop drains the queue).
     if d.coordinator is not None and d.coordinator.has(req.session_id):
+        d.coordinator.update_traffic(
+            req.session_id,
+            viewer_count=req.viewer_count,
+            msg_rate=req.msg_rate,
+        )
         for c in req.comments:
             d.coordinator.ingest(req.session_id, c.text, author="viewer", ts=c.t)
         await _persist_viewer_msgs(d, req.session_id, req.comments, author="viewer")
@@ -1038,6 +1317,58 @@ async def set_tts_preset(
     return {"preset_id": payload.preset_id, "tts_cfg": updated}
 
 
+@router.post("/engines/tts/preview")
+async def preview_tts(
+    payload: TTSPreviewReq,
+    _: None = Depends(admin_auth),
+    _limit: None = Depends(rate_limit_admin),
+) -> Response:
+    """Synthesize bounded browser-playable WAV without creating an avatar session."""
+    import io
+    import wave
+
+    d = deps()
+    manager = d.engine_manager
+    if manager is None or manager.tts is None:
+        raise HTTPException(status_code=503, detail="TTS engine not loaded")
+    try:
+        manager.validate_tts_selection(payload.tts_id, payload.voice_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from ..tts.base import TTSRequest
+
+    try:
+        audio = await asyncio.wait_for(
+            asyncio.to_thread(
+                manager.tts.synthesize,
+                TTSRequest(text=payload.text, voice=payload.voice_id),
+            ),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="TTS preview timed out") from exc
+    except Exception as exc:
+        logger.warning("TTS preview failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="TTS preview failed") from exc
+
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(audio.sample_rate)
+        wav.writeframes(audio.to_pcm16_bytes())
+    return Response(
+        content=output.getvalue(),
+        media_type="audio/wav",
+        headers={
+            "X-TTS-Id": payload.tts_id,
+            "X-Voice-Id": payload.voice_id,
+            "X-Sample-Rate": str(audio.sample_rate),
+        },
+    )
+
+
 # ── Debug mode endpoints (mock viewer traffic + products) ─────────────
 
 
@@ -1147,6 +1478,28 @@ async def debug_mock_viewer_msgs(
     from ..debug.mock_data import MOCK_VIEWER_MSGS
 
     return {"count": len(MOCK_VIEWER_MSGS), "messages": MOCK_VIEWER_MSGS}
+
+
+@router.get("/debug/clusters/{session_id}")
+async def debug_clusters(
+    session_id: str,
+    _dbg: None = Depends(debug_enabled_dep),
+    _adm: None = Depends(admin_auth),
+) -> dict[str, Any]:
+    """Re-cluster the session's rolling comments + return current clusters.
+
+    Stage 2 visibility: the coordinator queue auto-reactive path needs a
+    self-host renderer (Stage 3), so this endpoint lets the FE show the
+    cluster state (gom cụm) without relying on coordinator auto-speak.
+    """
+    coordinator = deps().coordinator
+    if coordinator is None or not coordinator.has(session_id):
+        raise HTTPException(404, "session not attached to Director coordinator")
+    try:
+        snapshot = coordinator.cluster_snapshot(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "session not attached") from exc
+    return {**snapshot, "queue_stats": coordinator.stats(session_id)}
 
 
 @router.websocket("/ws/control/{session_id}")
@@ -1322,7 +1675,9 @@ async def sessions_say(
     _: None = Depends(viewer_auth),
     _limit: None = Depends(rate_limit_viewer),
 ) -> dict[str, Any]:
-    return await lite_say(SayReq(session_id=session_id, text=req.text), _)
+    return await lite_say(
+        SayReq(session_id=session_id, text=req.text, generate=req.generate), _
+    )
 
 
 @router.post("/sessions/{session_id}/interrupt")
@@ -1339,7 +1694,15 @@ async def sessions_stop(session_id: str, _: None = Depends(viewer_auth)) -> dict
 async def sessions_attach(
     session_id: str, req: PathAttachReq, _: None = Depends(viewer_auth)
 ) -> dict[str, Any]:
-    return await lite_attach(AttachReq(session_id=session_id, products=req.products), _)
+    return await lite_attach(
+        AttachReq(
+            session_id=session_id,
+            products=req.products,
+            shop_profile=req.shop_profile,
+            runtime_config=req.runtime_config,
+        ),
+        _,
+    )
 
 
 @router.post("/sessions/{session_id}/ingest")
@@ -1524,6 +1887,118 @@ async def ws_platform(ws: WebSocket, session_id: str) -> None:
 
 
 # ── Admin ───────────────────────────────────────────────────────────
+
+
+@router.post("/admin/sandbox/verify")
+async def verify_sandbox(
+    payload: SandboxVerifyReq,
+    _: None = Depends(admin_auth),
+    _limit: None = Depends(rate_limit_admin),
+) -> dict[str, Any]:
+    """Run bounded verification and clean late provider results."""
+    backend = deps().backend
+    layers: list[dict[str, Any]] = []
+    session_id: Optional[str] = None
+
+    async def run_layer(name: str, operation, error: str):
+        started = time.monotonic()
+        worker = asyncio.create_task(asyncio.to_thread(operation))
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(worker),
+                timeout=SANDBOX_LAYER_TIMEOUT_SEC,
+            )
+        except asyncio.CancelledError:
+            worker.cancel()
+            raise
+        except Exception:
+            logger.warning("Sandbox verification failed layer=%s", name)
+            layers.append(
+                {
+                    "name": name,
+                    "status": "fail",
+                    "latency_ms": round((time.monotonic() - started) * 1000.0, 1),
+                    "error": error,
+                }
+            )
+            return None, worker
+        layers.append(
+            {
+                "name": name,
+                "status": "pass",
+                "latency_ms": round((time.monotonic() - started) * 1000.0, 1),
+            }
+        )
+        return result, None
+
+    async def cleanup_late_start(worker: asyncio.Task) -> None:
+        try:
+            result = await worker
+            await asyncio.to_thread(backend.stop, result.session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Sandbox late-session cleanup failed")
+
+    try:
+        probe = getattr(backend, "verify_credentials", None)
+        if not callable(probe):
+            layers.append(
+                {
+                    "name": "credentials",
+                    "status": "fail",
+                    "latency_ms": 0.0,
+                    "error": "credential verification unavailable",
+                }
+            )
+            return {
+                "ready": False,
+                "layers": layers + [
+                    {"name": "connectivity", "status": "skipped", "latency_ms": 0.0},
+                    {"name": "speech", "status": "skipped", "latency_ms": 0.0},
+                ],
+            }
+        credentials, _ = await run_layer(
+            "credentials", probe, "credential verification failed"
+        )
+        if credentials is None:
+            return {
+                "ready": False,
+                "layers": layers + [
+                    {"name": "connectivity", "status": "skipped", "latency_ms": 0.0},
+                    {"name": "speech", "status": "skipped", "latency_ms": 0.0},
+                ],
+            }
+        result, late_worker = await run_layer(
+            "connectivity",
+            lambda: backend.start(
+                StartOptions(avatar_id=payload.avatar_id, is_sandbox=True)
+            ),
+            "LiveAvatar or LiveKit connectivity failed",
+        )
+        if result is None:
+            if late_worker is not None:
+                asyncio.create_task(cleanup_late_start(late_worker))
+            return {
+                "ready": False,
+                "layers": layers
+                + [{"name": "speech", "status": "skipped", "latency_ms": 0.0}],
+            }
+        session_id = result.session_id
+        spoken, _ = await run_layer(
+            "speech",
+            lambda: backend.say(session_id, payload.speech_text, generate=True),
+            "speech verification failed",
+        )
+        return {"ready": spoken is not None, "layers": layers}
+    finally:
+        if session_id is not None:
+            try:
+                await asyncio.to_thread(backend.stop, session_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Sandbox verification cleanup failed")
 
 
 @router.get("/admin/config")

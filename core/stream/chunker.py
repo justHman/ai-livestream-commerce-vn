@@ -144,17 +144,22 @@ class TextChunker:
         self._buffer_len = 0
         self._last_flush_time = self._clock()
 
-    def _flush_buffer(self, is_final: bool) -> list[TextChunk]:
-        """Flush the current buffer as a single TextChunk (if non-empty).
-
-        Returns [] when the buffer is empty. Resets the buffer and updates
-        last_flush_time on a successful flush.
-        """
+    def _flush_buffer(self, is_final: bool, *, prefer_word_boundary: bool = False) -> list[TextChunk]:
+        """Flush buffered text without cutting a word at the hard-size boundary."""
         if self._buffer_len == 0:
             return []
         text = self._buffer_text()
-        chunk = self._emit(text, is_final=is_final)
+        remainder = ""
+        if prefer_word_boundary and len(text) > self._max_chars:
+            boundary = text.rfind(" ", self._min_chars, self._max_chars + 1)
+            if boundary >= self._min_chars:
+                remainder = text[boundary + 1 :]
+                text = text[: boundary + 1]
+        chunk = self._emit(text, is_final=is_final and not remainder)
         self._reset_buffer()
+        if remainder:
+            self._buffer = [remainder]
+            self._buffer_len = len(remainder)
         return [chunk]
 
     def _check_timeout(self) -> bool:
@@ -212,7 +217,7 @@ class TextChunker:
 
         # Condition 2: max_chars hard cap. Flush regardless of punctuation.
         if self._buffer_len >= self._max_chars:
-            return self._flush_buffer(is_final=False)
+            return self._flush_buffer(is_final=False, prefer_word_boundary=True)
 
         # Condition 3: timeout. The buffer (including the just-appended
         # token) has sat without a flush for >= flush_timeout_ms.

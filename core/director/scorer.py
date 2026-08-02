@@ -99,6 +99,22 @@ class ScoredCluster:
     score: float
     phase_rel: float
     intent: float
+    product_relevance: float = 0.0
+    size_score: float = 0.0
+    recency_score: float = 0.0
+    new_demand_score: float = 0.0
+    actionability_score: float = 0.0
+
+    def breakdown(self) -> dict[str, float]:
+        return {
+            "product_relevance": self.product_relevance,
+            "intent_actionability": self.actionability_score,
+            "size": self.size_score,
+            "recency": self.recency_score,
+            "phase": self.phase_rel,
+            "new_demand": self.new_demand_score,
+            "total": self.score,
+        }
 
 
 def score_cluster(
@@ -120,7 +136,17 @@ def score_cluster(
         + cfg.w_cluster_size * size_norm
         + cfg.w_recency * recency
     )
-    return ScoredCluster(cluster=cluster, score=score, phase_rel=pr, intent=intent)
+    return ScoredCluster(
+        cluster=cluster,
+        score=score,
+        phase_rel=pr,
+        intent=intent,
+        product_relevance=pr,
+        size_score=size_norm,
+        recency_score=recency,
+        new_demand_score=min(1.0, cluster.size / 5.0),
+        actionability_score=intent,
+    )
 
 
 def rank_clusters(
@@ -130,17 +156,20 @@ def rank_clusters(
     now: float,
 ) -> list[ScoredCluster]:
     """Retrieve products, score, drop stale/over-skipped, return high->low."""
-    # retrieval first (fills product_id for phase_relevance)
-    for cl in clusters:
-        pid, rscore = retrieve_product(cl, state.products)
-        cl.product_id, cl.retrieval_score = pid, rscore
+    actionable = [cluster for cluster in clusters if cluster.actionable]
+    # Preserve deterministic routing; retrieve only when no product was routed.
+    for cluster in actionable:
+        if cluster.product_id is None:
+            product_id, retrieval_score = retrieve_product(cluster, state.products)
+            cluster.product_id = product_id
+            cluster.retrieval_score = retrieval_score
 
-    max_size = max((c.size for c in clusters), default=1)
+    max_size = max((cluster.size for cluster in actionable), default=1)
     scored = []
-    for cl in clusters:
-        age = now - cl.newest_t
-        if age > cfg.cluster_max_age_sec or cl.skips > cfg.cluster_max_skips:
+    for cluster in actionable:
+        age = now - cluster.newest_t
+        if age > cfg.cluster_max_age_sec or cluster.skips > cfg.cluster_max_skips:
             continue  # evict
-        scored.append(score_cluster(cl, state, cfg, now, max_size))
+        scored.append(score_cluster(cluster, state, cfg, now, max_size))
     scored.sort(key=lambda s: s.score, reverse=True)
     return scored

@@ -29,11 +29,19 @@ from .base import FullPipelineBackend, StartOptions, StartResult
 # backend runs anywhere out of the box (offline / CI / sandbox).
 _llm_fn = echo_llm
 _tts_fn = tone_tts
+# Raw LLMEngine + default system_prompt kept so CloudRenderBackend can build a
+# per-session llm_fn with a session-specific shop profile (2-layer persona).
+# Set by configure() when it receives an LLMEngine (not a pre-wrapped callable).
+_llm_engine = None
+_default_system_prompt: Optional[str] = None
+_llm_defaults: dict = {}
 
 
 def configure(
     llm: Optional[Union[object, callable]] = None,
     tts: Optional[Union[object, callable]] = None,
+    system_prompt: Optional[str] = None,
+    llm_defaults: Optional[dict] = None,
 ) -> None:
     """Inject LLM/TTS before serving.
 
@@ -42,15 +50,22 @@ def configure(
       - TTSEngine  → wrapped via core.tts.to_tts_fn (normalizes output to pcm16)
       - callable   → used as-is (legacy compat for fn(text)->str / fn(text)->(bytes,rate))
 
+    `system_prompt` is the default (env SHOP_PROFILE) persona; per-session shop
+    profiles override it via CloudRenderBackend.set_persona().
+
     This duck-typing keeps the seam open: production passes engines, quick demos
     pass lambdas, and the server's env-driven path passes engines it built.
     """
-    global _llm_fn, _tts_fn
+    global _llm_fn, _tts_fn, _llm_engine, _default_system_prompt, _llm_defaults
     if llm is not None:
         if _is_llm_engine(llm):
             from ..llm import to_llm_fn
-            _llm_fn = to_llm_fn(llm)
+            _llm_engine = llm
+            _default_system_prompt = system_prompt
+            _llm_defaults = dict(llm_defaults or {})
+            _llm_fn = to_llm_fn(llm, system_prompt=system_prompt, **_llm_defaults)
         elif callable(llm):
+            _llm_engine = None
             _llm_fn = llm
         else:
             raise TypeError(f"configure(llm=...): expected LLMEngine or callable, got {type(llm)}")
@@ -81,6 +96,25 @@ class CloudRenderBackend(FullPipelineBackend):
     def __init__(self, client: Optional[LiveAvatarClient] = None) -> None:
         self._client = client or LiveAvatarClient()
         self._convos: dict[str, LiteConversation] = {}
+        # Per-session shop-profile persona override (2-layer persona).
+        # session_id -> composed persona (BASE_SALE_PERSONA + shop_profile).
+        self._personas: dict[str, str] = {}
+
+    def verify_credentials(self) -> dict:
+        """Probe the cheapest authenticated LiveAvatar endpoint."""
+        credits = self._client.get_credits()
+        return {"credits_available": credits > 0}
+
+    def set_persona(self, session_id: str, shop_profile: str) -> None:
+        """Set a per-session shop profile persona.
+
+        `shop_profile` is the shop info text (name, address, phone, ...) sent
+        by the FE/team-SE via /lite/attach. Composed with BASE_SALE_PERSONA
+        from config into the full system prompt used for this session's LLM
+        calls. Overrides the env SHOP_PROFILE default.
+        """
+        from ..config import _build_persona
+        self._personas[session_id] = _build_persona(shop_profile)
 
     def start(self, opts: StartOptions) -> StartResult:
         convo = LiteConversation(
@@ -103,6 +137,20 @@ class CloudRenderBackend(FullPipelineBackend):
         convo = self._convos.get(session_id)
         if convo is None:
             raise KeyError(session_id)
+        # Per-session persona override: rebuild llm_fn with this session's
+        # composed persona if one was set via set_persona(). Falls back to the
+        # default _llm_fn (env SHOP_PROFILE) when no override exists.
+        persona = self._personas.get(session_id)
+        if generate and persona is not None and _llm_engine is not None:
+            from ..llm import to_llm_fn
+            saved_llm = convo.llm
+            convo.llm = to_llm_fn(
+                _llm_engine, system_prompt=persona, **_llm_defaults
+            )
+            try:
+                return convo.turn(text)
+            finally:
+                convo.llm = saved_llm
         if generate:
             return convo.turn(text)
         return convo.speak_verbatim(text)
@@ -114,6 +162,7 @@ class CloudRenderBackend(FullPipelineBackend):
 
     def stop(self, session_id: str) -> None:
         convo = self._convos.pop(session_id, None)
+        self._personas.pop(session_id, None)
         if convo is None:
             raise KeyError(session_id)
         convo.stop()

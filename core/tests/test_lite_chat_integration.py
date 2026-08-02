@@ -21,9 +21,6 @@ from fastapi.testclient import TestClient
 
 from core.api import v1
 from core.config import AppConfig
-from core.engine_manager import EngineManager
-from core.render.mock import MockRenderBackend
-from core.store import InMemorySessionStore
 
 
 @pytest.fixture
@@ -47,6 +44,7 @@ def _make_app(mock_env) -> TestClient:
         backend_api_token="",
         admin_api_token="",
         director_enabled=True,
+        debug_enabled=True,
     )
     # Build via env-driven path so the coordinator is constructed in server.py.
     app = create_app(config=cfg)
@@ -92,6 +90,51 @@ def test_lite_chat_10_comments_accepted(mock_env: None) -> None:
         r = client.post("/api/v1/lite/stop", json={"session_id": sid})
         assert r.status_code == 200, r.text
         assert r.json()["ok"] is True
+
+
+def test_debug_clusters_returns_canonical_cached_snapshot(mock_env: None) -> None:
+    """Polling diagnostics uses Coordinator state and canonical cluster metrics."""
+    with _make_app(mock_env) as client:
+        response = client.post("/api/v1/lite/start", json={"is_sandbox": True})
+        session_id = response.json()["session_id"]
+        response = client.post(
+            "/api/v1/lite/attach",
+            json={
+                "session_id": session_id,
+                "products": [
+                    {
+                        "id": "P004",
+                        "name": "Áo hoodie HeyGen",
+                        "description": "Áo hoodie trắng",
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 200
+        for text in ("Áo hoodie giá bao nhiêu?", "Hoodie này bao nhiêu tiền?"):
+            response = client.post(
+                "/api/v1/lite/chat",
+                json={"session_id": session_id, "text": text, "author": "viewer"},
+            )
+            assert response.status_code == 202
+
+        coordinator = v1.deps().coordinator
+        assert coordinator is not None
+        import asyncio
+
+        asyncio.run(coordinator._tick_once(session_id))
+        first = client.get(f"/api/v1/debug/clusters/{session_id}")
+        second = client.get(f"/api/v1/debug/clusters/{session_id}")
+
+        assert first.status_code == 200
+        assert first.json()["received_total"] == 2
+        assert first.json()["buffered_comments"] == 2
+        assert first.json()["embedder_name"] == "hashing-fallback"
+        from core.director.config import StreamConfig
+
+        assert first.json()["cluster_merge_threshold"] == StreamConfig().cluster_merge_threshold
+        assert first.json()["clusters"] == second.json()["clusters"]
+        client.post("/api/v1/lite/stop", json={"session_id": session_id})
 
 
 def test_lite_chat_without_attach_returns_404(mock_env: None) -> None:

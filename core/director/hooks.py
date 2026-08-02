@@ -17,9 +17,9 @@ from typing import Optional
 
 _DEFAULT_POOL = {
     "opening": [
-        "Xin chào cả nhà! Chào mừng mọi người đến với phiên live hôm nay nha!",
-        "Hello mọi người! Hôm nay shop có nhiều deal cực hot, ở lại xem nha!",
-        "Chào các bạn! Mình bắt đầu phiên live đây, mọi người thả tim ủng hộ nhé!",
+        "Chào cả nhà, shop và MC rất vui được gặp mọi người trong phiên live hôm nay nha!",
+        "Mọi người nhớ thả tim, chia sẻ, comment và follow để không bỏ lỡ deal của shop nhé!",
+        "Hôm nay shop sẽ giới thiệu lần lượt các sản phẩm theo agenda, mọi người ở lại xem và đặt câu hỏi nha!",
     ],
     "engagement": [
         "Mọi người thả tim cho shop để được giá tốt hơn nha!",
@@ -53,6 +53,12 @@ class HookPool:
         if lines:
             self._pool[category] = list(lines)
             self._rebuild_cycles()
+
+    def get(self, category: str, index: int) -> str:
+        lines = self._pool.get(category) or self._pool.get("engagement") or []
+        if not lines:
+            return "Cảm ơn mọi người đã theo dõi nha!"
+        return lines[index % len(lines)]
 
     def next_hook(self, category: str) -> str:
         cyc = self._cycles.get(category)

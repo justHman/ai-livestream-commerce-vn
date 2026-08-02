@@ -47,7 +47,31 @@ class StreamConfig:
     interrupt_score_threshold: float = 1.5
 
     # Online clustering similarity threshold (cosine)
-    cluster_merge_threshold: float = 0.55
+    cluster_merge_threshold: float = 0.375
+
+    # Stage 2 Q&A window and prepared pipeline controls
+    max_qa_clusters_per_window: int = 2
+    qa_window_hard_timeout_sec: float = 45.0
+    qa_topic_cooldown_sec: float = 120.0
+    answer_cache_variants: int = 3
+    prepared_turn_depth: int = 3
+    transient_retry_count: int = 1
+    demand_pivot_enter_share: float = 0.60
+    demand_pivot_exit_share: float = 0.45
+    demand_pivot_min_comments: int = 5
+    demand_pivot_score_margin: float = 0.15
+
+    def validate_runtime(self) -> None:
+        if not 0.2 <= self.traffic_high_threshold <= 5.0:
+            raise ValueError("traffic_high_threshold must be between 0.2 and 5")
+        if self.max_qa_clusters_per_window < 1 or self.qa_window_hard_timeout_sec <= 0:
+            raise ValueError("Q&A window limits must be positive")
+        if self.answer_cache_variants < 1 or self.prepared_turn_depth < 1:
+            raise ValueError("cache variants and prepared depth must be positive")
+        if not 0 < self.demand_pivot_exit_share < self.demand_pivot_enter_share <= 1:
+            raise ValueError("pivot shares must satisfy 0 < exit < enter <= 1")
+        if self.demand_pivot_min_comments < 1 or self.demand_pivot_score_margin < 0:
+            raise ValueError("pivot gates must be non-negative")
 
     @classmethod
     def from_json(cls, path: str | Path) -> "StreamConfig":

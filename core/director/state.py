@@ -43,6 +43,11 @@ class ProductState:
     cluster_count: int = 0                  # Q&A clusters answered for this product
     # Pre-embedded target vector (filled by the embedder); used for retrieval/scoring.
     embedding: Optional[list[float]] = None
+    is_introduced: bool = False
+    stage: str = "intro"
+    stage_turn_index: int = 0
+    spoken_turns: int = 0
+    reactive_streak: int = 0
 
 
 @dataclass
@@ -68,6 +73,22 @@ class DirectorCursor:
     phase: str = "opening"  # opening | selling | closing
     product_idx: int = 0
     talking_point_idx: int = 0
+    opening_turn_index: int = 0
+    opening_completed: bool = False
+    checkpoint_product_id: Optional[str] = None
+    checkpoint_stage: Optional[str] = None
+    checkpoint_turn_index: int = 0
+    pivot_product_id: Optional[str] = None
+    pivot_active: bool = False
+    pivot_completed: bool = False
+    pivot_queue: list[str] = field(default_factory=list)
+    profile_revision: int = 0
+    prepared_turns: list[Any] = field(default_factory=list)
+    stale_turns: list[dict[str, Any]] = field(default_factory=list)
+    playback_state: str = "idle"
+    catalog_revision: int = 0
+    config_revision: int = 0
+    generation_token: int = 0
 
 
 @dataclass
@@ -95,6 +116,17 @@ class StreamState:
     # reads rolling_comments instead of receiving a fresh list every call.
     rolling_comments: list[Any] = field(default_factory=list)  # list[Comment]
     embeddings_cache: dict[str, list[float]] = field(default_factory=dict)  # comment_id -> vec
+    answered_comments: set[str] = field(default_factory=set)
+    closing_spoken: bool = False
+    qa_window_open: bool = False
+    qa_clusters_answered: int = 0
+    qa_window_started_at: float = 0.0
+    qa_window_stage_index: int = -1
+    topic_cooldown_until: dict[str, float] = field(default_factory=dict)
+    answer_variants: dict[tuple[str, str, int, int], list[str]] = field(default_factory=dict)
+    answer_variant_index: dict[tuple[str, str, int, int], int] = field(default_factory=dict)
+    qa_topic_last_answered: dict[str, float] = field(default_factory=dict)
+    qa_last_comment_signature: dict[str, str] = field(default_factory=dict)
 
     def current_product(self) -> Optional[ProductState]:
         if 0 <= self.current_product_index < len(self.products):
@@ -116,17 +148,12 @@ class StreamState:
     # ── Phase B helpers ──────────────────────────────────────────────
 
     def add_comments(self, new: list[Any]) -> None:
-        """Merge new Comment objects into rolling_comments without duplicates.
-
-        Deduplication uses the ``text + t`` pair as identity (Comment has no
-        ``id`` field; the IncomingComment id is tracked in embeddings_cache).
-        """
-        existing = {(c.text, c.t) for c in self.rolling_comments}
-        for c in new:
-            key = (c.text, c.t)
-            if key not in existing:
-                self.rolling_comments.append(c)
-                existing.add(key)
+        """Merge new Comment objects by immutable ingestion identity."""
+        existing = {c.id for c in self.rolling_comments}
+        for comment in new:
+            if comment.id not in existing:
+                self.rolling_comments.append(comment)
+                existing.add(comment.id)
 
     def advance_talking_point(self, n_points: int) -> None:
         """Advance talking_point_idx after a proactive speak (clamp to n_points)."""

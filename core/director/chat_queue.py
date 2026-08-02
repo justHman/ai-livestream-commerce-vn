@@ -76,26 +76,55 @@ class ChatQueue:
                 self._deque.popleft()
         return comment
 
+    def snapshot(
+        self,
+        window_sec: Optional[float] = None,
+        *,
+        now: Optional[float] = None,
+    ) -> list[IncomingComment]:
+        """Return an immutable queue snapshot, optionally limited to a time window."""
+        with self._lock:
+            items = list(self._deque)
+        if window_sec is None:
+            return items
+        cutoff = (time.time() if now is None else now) - window_sec
+        return [comment for comment in items if comment.ts >= cutoff]
+
     def drain_window(self, window_sec: float = 75.0) -> list[IncomingComment]:
-        """Return comments whose ``ts >= now - window_sec``.
+        """Backward-compatible non-destructive active-window snapshot."""
+        return self.snapshot(window_sec)
 
-        This is a non-destructive peek: the same comment may appear in
-        consecutive drain_window calls until it ages out or is evicted by
-        max_size.
-        """
-        cutoff = time.time() - window_sec
+    def stats(
+        self,
+        window_sec: Optional[float] = None,
+        *,
+        now: Optional[float] = None,
+    ) -> dict:
+        """Return canonical lifetime, buffer, and optional active-window counts."""
+        snapshot_at = time.time() if now is None else now
         with self._lock:
-            return [c for c in self._deque if c.ts >= cutoff]
-
-    def stats(self) -> dict:
-        """Diagnostic snapshot: pending count and age of oldest comment."""
-        with self._lock:
-            n = len(self._deque)
-            if n == 0:
-                return {"pending": 0, "oldest_ms_ago": None, "total_put": self._total_put}
-            oldest_ts = self._deque[0].ts
-        age_ms = (time.time() - oldest_ts) * 1000.0
-        return {"pending": n, "oldest_ms_ago": round(age_ms, 1), "total_put": self._total_put}
+            items = list(self._deque)
+            received_total = self._total_put
+        buffered_comments = len(items)
+        active_comments = (
+            buffered_comments
+            if window_sec is None
+            else sum(comment.ts >= snapshot_at - window_sec for comment in items)
+        )
+        oldest_ms_ago = (
+            None
+            if not items
+            else round(max(0.0, snapshot_at - items[0].ts) * 1000.0, 1)
+        )
+        return {
+            "received_total": received_total,
+            "buffered_comments": buffered_comments,
+            "active_comments": active_comments,
+            "oldest_ms_ago": oldest_ms_ago,
+            # Temporary aliases for clients migrating to canonical names.
+            "pending": buffered_comments,
+            "total_put": received_total,
+        }
 
     def clear(self) -> None:
         """Drop all comments (used on session stop)."""

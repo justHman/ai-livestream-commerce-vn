@@ -33,7 +33,7 @@ RUN uv venv /opt/venv \
     && uv pip install --python /opt/venv/bin/python \
         "fastapi" "uvicorn[standard]" "pydantic" "httpx" \
         "python-multipart" "python-dotenv" "redis" "PyJWT" \
-        "numpy" "Pillow" "requests" "websocket-client"
+        "numpy" "Pillow" "requests" "websocket-client" "sentence-transformers>=5,<6"
 
 # ── runtime ───────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim AS runtime

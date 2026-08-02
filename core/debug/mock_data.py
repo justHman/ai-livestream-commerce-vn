@@ -12,6 +12,23 @@ from __future__ import annotations
 
 MOCK_PRODUCTS = [
     {
+        "id": "P004",
+        "name": "Áo hoodie HeyGen màu trắng",
+        "description": "Áo hoodie trơn màu trắng kem, có mũ trùm, in logo HeyGen tinh tế ở ngực trái, phong cách tối giản và năng động.",
+        "price": 350000,
+        "original_price": 500000,
+        "promotion": "Giảm 30% — chỉ 350k (giá gốc 500k)",
+        "colors": ["trắng kem"],
+        "sizes": ["S", "M", "L", "XL"],
+        "material": "nỉ cotton",
+        "shipping": "Freeship toàn quốc cho đơn từ 250k",
+        "warranty": "Đổi trả miễn phí trong 7 ngày nếu lỗi từ nhà sản xuất",
+        "in_stock": True,
+        "stock_total": 120,
+        "ref_image": "image_20509e.png",
+        "features": ["áo hoodie có mũ", "logo HeyGen", "màu trắng kem", "dài tay", "phong cách tối giản"],
+    },
+    {
         "id": "P001",
         "name": "Kem chống nắng La Roche-Posay SPF50+",
         "description": "Kem chống nắng phổ rộng SPF50+, chống nước, phù hợp da nhạy cảm",

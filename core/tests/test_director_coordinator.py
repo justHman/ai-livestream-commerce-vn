@@ -374,9 +374,13 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
                    may_interrupt=False, reason="score=3")
     ev = _decision_to_event(dec)
     assert ev == {
+        "turn_id": dec.turn_id,
         "action": "answer_fact",
         "product": "P001",
         "field": "price",
+        "stage": None,
+        "task_id": None,
+        "prompt_layers": {},
         "may_interrupt": False,
         "reason": "score=3",
     }

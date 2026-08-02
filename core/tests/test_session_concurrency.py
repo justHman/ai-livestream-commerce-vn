@@ -17,16 +17,11 @@ Uses ``httpx.AsyncClient`` with the ASGI transport for true concurrency
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
-from typing import Iterator, List
+from typing import Iterator
 
-import pytest
-
-pytestmark = pytest.mark.asyncio
-
-# httpx is a fastapi/testclient dependency, so it's available.
 import httpx
+import pytest
 from httpx import ASGITransport
 
 from core.api import v1
@@ -35,9 +30,12 @@ from core.engine_manager import EngineManager
 from core.llm.base import LLMEngine, LLMRequest, LLMResponse
 from core.render.base import FullPipelineBackend, RenderBackend, StartOptions, StartResult
 from core.render.mock import MockRenderBackend
-from core.render.windows import AudioWindow, TextChunk, VideoWindow
+from core.render.windows import AudioWindow, TextChunk
 from core.store import InMemorySessionStore
 from core.tts.base import AudioChunk, TTSEngine, TTSRequest
+
+
+pytestmark = pytest.mark.asyncio
 
 
 # ---------- stubs ----------
@@ -283,7 +281,7 @@ class _FakeCloudBackend(FullPipelineBackend):
     name = "fake-cloud"
 
     def __init__(self) -> None:
-        self.said: list[tuple[str, str]] = []
+        self.said: list[tuple[str, str, bool]] = []
 
     def start(self, opts: StartOptions) -> StartResult:
         return StartResult(
@@ -294,7 +292,7 @@ class _FakeCloudBackend(FullPipelineBackend):
         )
 
     def say(self, session_id: str, text: str, generate: bool = True) -> str:
-        self.said.append((session_id, text))
+        self.said.append((session_id, text, generate))
         return f"reply:{text}"
 
     def interrupt(self, session_id: str) -> None:
@@ -323,5 +321,48 @@ async def test_cloud_backend_say_path_unchanged(mock_env: None):
         body = r.json()
         assert body["ok"] is True
         assert body["reply"] == "reply:hello"
-        # The cloud backend's say() was called.
-        assert ("fake-cloud-session", "hello") in cloud.said
+        # The compatibility default still asks the cloud backend to generate.
+        assert ("fake-cloud-session", "hello", True) in cloud.said
+
+
+async def test_cloud_manual_say_forwards_verbatim_mode(mock_env: None):
+    from core.server import create_app
+
+    cloud = _FakeCloudBackend()
+    deps = _deps_with_stubs(llm=_FastStubLLM(), tts=_StubTTS(), backend=cloud)
+    app = create_app(config=_prod_cfg(), deps=deps)
+
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        start = await client.post("/api/v1/lite/start", json={})
+        sid = start.json()["session_id"]
+        response = await client.post(
+            "/api/v1/lite/say",
+            json={"session_id": sid, "text": "Nói nguyên văn câu này.", "generate": False},
+        )
+
+    assert response.status_code == 200
+    assert ("fake-cloud-session", "Nói nguyên văn câu này.", False) in cloud.said
+
+
+async def test_streaming_manual_say_bypasses_llm(mock_env: None):
+    from core.server import create_app
+
+    class FailingLLM(_FastStubLLM):
+        def stream_chunks(self, req, *, session_id="", utterance_id=""):
+            raise AssertionError("manual verbatim speech must not call the LLM")
+            yield
+
+    backend = MockRenderBackend()
+    deps = _deps_with_stubs(llm=FailingLLM(), tts=_StubTTS(), backend=backend)
+    app = create_app(config=_prod_cfg(), deps=deps)
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        sid = (await client.post("/api/v1/lite/start", json={})).json()["session_id"]
+        response = await client.post(
+            "/api/v1/lite/say",
+            json={"session_id": sid, "text": "Ba trăm năm mươi nghìn đồng.", "generate": False},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Ba trăm năm mươi nghìn đồng."

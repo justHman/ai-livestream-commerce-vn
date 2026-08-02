@@ -17,6 +17,13 @@ from core.director.runtime import DirectorRuntime, DirectorSession
 from core.director.state import Phase, ProductState, ProductStatus, StreamState
 
 
+def test_stage2_runtime_config_validates_qna_and_pivot_defaults() -> None:
+    cfg = StreamConfig()
+    cfg.validate_runtime()
+    assert (cfg.max_qa_clusters_per_window, cfg.qa_window_hard_timeout_sec) == (2, 45.0)
+    assert (cfg.demand_pivot_enter_share, cfg.demand_pivot_exit_share) == (0.60, 0.45)
+
+
 class _FakeClock:
     def __init__(self, initial: float = 0.0) -> None:
         self._t = initial
@@ -164,8 +171,13 @@ class TestDirectorTimers:
             await coordinator._tick_once(session_id)
             clock.set(5.0)
             await coordinator._tick_once(session_id)
-            result = (state.current_product_index, state.product_elapsed_sec)
-            assert result == (1, pytest.approx(0.0))
+            await asyncio.sleep(0)
+            result = (
+                state.current_product_index,
+                state.product_elapsed_sec,
+                coordinator.stats(session_id)["director_cycles"] >= 3,
+            )
+            assert result == (0, pytest.approx(5.0), True)
         finally:
             await _stop(coordinator, session_id)
 
@@ -185,12 +197,22 @@ class TestDirectorTimers:
             state.products[0].status = ProductStatus.ACTIVE
             clock.set(5.0)
             await coordinator._tick_once(session_id)
+            pending = [
+                *coordinator._decision_queue[session_id],
+                *coordinator._speech_queue[session_id],
+            ]
             result = (
                 state.current_product_index,
                 state.product_elapsed_sec,
                 state.sec_since_relevant_msg,
+                any(decision.product_id == "p2" for decision in pending),
             )
-            assert result == (1, pytest.approx(0.0), pytest.approx(0.0))
+            assert result == (
+                0,
+                pytest.approx(5.0),
+                pytest.approx(5.0),
+                True,
+            )
         finally:
             await _stop(coordinator, session_id)
 
@@ -216,11 +238,67 @@ class TestDirectorTimers:
         finally:
             await _stop(coordinator, session_id)
 
+    def test_fresh_relevant_comment_prevents_decay_switch(self) -> None:
+        product = Product(id="p1", name="P1", price=100, embedding=[1.0, 0.0])
+        state = StreamState(
+            phase=Phase.SELLING,
+            products=[
+                ProductState(
+                    product_id="p1",
+                    name="P1",
+                    status=ProductStatus.ACTIVE,
+                    embedding=[1.0, 0.0],
+                    is_introduced=True,
+                )
+            ],
+            sec_since_relevant_msg=5.0,
+        )
+        director = Director(
+            state=state,
+            cfg=StreamConfig(engagement_decay_sec=5.0, product_time_budget_sec=100.0),
+            hook_pool=HookPool(),
+            catalog={product.id: product},
+        )
+
+        state.products[0].stage_turn_index = 2
+        decision = director.decide(
+            [
+                Comment(
+                    text="P1 giá bao nhiêu?",
+                    embedding=[1.0, 0.0],
+                    t=10.0,
+                    intent="price",
+                    product_id="p1",
+                ),
+                Comment(
+                    text="P1 nhiêu tiền?",
+                    embedding=[1.0, 0.0],
+                    t=10.1,
+                    intent="price",
+                    product_id="p1",
+                ),
+            ],
+            now=10.0,
+        )
+
+        assert (decision.action, state.phase, state.sec_since_relevant_msg) == (
+            "answer_fact",
+            Phase.SELLING,
+            pytest.approx(0.0),
+        )
+
     def test_relevant_cluster_resets_engagement_timer(self) -> None:
         product = Product(id="p1", name="P1", price=100, embedding=[1.0, 0.0])
         state = StreamState(
             phase=Phase.SELLING,
-            products=[ProductState(product_id="p1", name="P1", embedding=[1.0, 0.0])],
+            products=[
+                ProductState(
+                    product_id="p1",
+                    name="P1",
+                    embedding=[1.0, 0.0],
+                    is_introduced=True,
+                )
+            ],
             sec_since_relevant_msg=10.0,
         )
         director = Director(
@@ -229,8 +307,12 @@ class TestDirectorTimers:
             hook_pool=HookPool(),
             catalog={product.id: product},
         )
+        state.products[0].stage_turn_index = 2
         decision = director.decide(
-            [Comment(text="giá bao nhiêu", embedding=[1.0, 0.0], t=0.0)],
+            [
+                Comment(text="giá bao nhiêu", embedding=[1.0, 0.0], t=0.0),
+                Comment(text="nhiêu tiền", embedding=[1.0, 0.0], t=0.1),
+            ],
             now=5.0,
         )
         result = (decision.action, decision.product_id, state.sec_since_relevant_msg)

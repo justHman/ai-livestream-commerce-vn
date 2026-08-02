@@ -22,6 +22,9 @@ import os
 from typing import Optional, Sequence
 
 
+DEFAULT_MODEL_ID = "bkai-foundation-models/vietnamese-bi-encoder"
+
+
 def _l2_normalize(vec: list[float]) -> list[float]:
     n = math.sqrt(sum(x * x for x in vec)) or 1.0
     return [x / n for x in vec]
@@ -62,6 +65,10 @@ class HashingEmbedder:
     def __init__(self, dim: int = 256) -> None:
         self.dim = dim
         self.name = "hashing-fallback"
+        self.mode = "hash-explicit"
+        self.ready = True
+        self.degraded = True
+        self.error: Optional[str] = None
 
     def _encode_one(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
@@ -86,27 +93,40 @@ class BiEncoderEmbedder:
 
         self.model = SentenceTransformer(model_id)
         self.name = model_id
+        self.mode = "semantic-required"
+        self.ready = True
+        self.degraded = False
+        self.error: Optional[str] = None
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         embs = self.model.encode(texts, normalize_embeddings=True)
         return [list(map(float, e)) for e in embs]
 
 
-def build_embedder(model_id: Optional[str] = None):
-    """Return the best available embedder.
+def embedder_status(embedder: object) -> dict:
+    """Return frontend-safe readiness metadata for an embedding service."""
+    return {
+        "name": getattr(embedder, "name", "unknown"),
+        "mode": getattr(embedder, "mode", "unknown"),
+        "ready": bool(getattr(embedder, "ready", True)),
+        "degraded": bool(getattr(embedder, "degraded", False)),
+        "error": getattr(embedder, "error", None),
+    }
 
-    Order: explicit hash override -> bi-encoder -> hashing fallback.
-    """
-    if os.environ.get("DIRECTOR_EMBEDDER", "").lower() == "hash":
+
+def build_embedder(model_id: Optional[str] = None, mode: Optional[str] = None):
+    """Build the explicit offline hash or required semantic embedder."""
+    configured = (mode or os.environ.get("DIRECTOR_EMBEDDER", "semantic")).lower()
+    if configured in ("hash", "hash-explicit"):
         return HashingEmbedder()
+    if configured not in ("semantic", "semantic-required", ""):
+        raise ValueError(f"unsupported DIRECTOR_EMBEDDER mode '{configured}'")
 
-    model_id = model_id or os.environ.get(
-        "DIRECTOR_EMBEDDER_MODEL", "bkai-foundation-models/vietnamese-bi-encoder"
-    )
+    model_id = model_id or os.environ.get("DIRECTOR_EMBEDDER_MODEL", DEFAULT_MODEL_ID)
     try:
         return BiEncoderEmbedder(model_id)
-    except Exception as exc:  # sentence-transformers missing or offline
-        print(f"[director] bi-encoder unavailable ({type(exc).__name__}); "
-              "using hashing fallback. Set DIRECTOR_EMBEDDER_MODEL + install "
-              "sentence-transformers for production quality.")
-        return HashingEmbedder()
+    except Exception as exc:
+        raise RuntimeError(
+            f"semantic embedder unavailable ({type(exc).__name__}); "
+            "install sentence-transformers and provision DIRECTOR_EMBEDDER_MODEL"
+        ) from exc

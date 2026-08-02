@@ -49,6 +49,9 @@ class LiteAudioAgent:
         self._ws: Optional[websocket.WebSocket] = None
         self._connected = threading.Event()
         self._speak_ended = threading.Event()
+        self._active_speak_event_id: Optional[str] = None
+        self._active_speak_task_id: Optional[str] = None
+        self._connection_error: Optional[str] = None
         self._streaming = threading.Event()
         self._reader: Optional[threading.Thread] = None
         self._keepalive: Optional[threading.Thread] = None
@@ -65,6 +68,7 @@ class LiteAudioAgent:
         MUST wait for this to return before speaking.
         """
         self._ws = websocket.create_connection(self.ws_url, timeout=timeout)
+        self._ws.settimeout(None)
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
         if not self._connected.wait(timeout):
@@ -77,6 +81,8 @@ class LiteAudioAgent:
         while not self._closed and self._ws is not None:
             try:
                 raw = self._ws.recv()
+            except websocket.WebSocketTimeoutException:
+                continue
             except Exception:
                 break
             if not raw:
@@ -87,9 +93,21 @@ class LiteAudioAgent:
                 continue
 
             etype = evt.get("type")
-            if etype == "session.state_updated" and evt.get("state") == "connected":
-                self._connected.set()
-            elif etype == "agent.speak_ended":
+            task_id = (evt.get("task") or {}).get("id")
+            if etype == "session.state_updated":
+                state = evt.get("state")
+                if state == "connected":
+                    self._connected.set()
+                elif state in {"closing", "closed"}:
+                    self._connection_error = f"LiveAvatar LITE session {state}"
+                    self._speak_ended.set()
+            elif etype == "agent.speak_started" and task_id:
+                self._active_speak_task_id = task_id
+            elif (
+                etype == "agent.speak_ended"
+                and task_id
+                and task_id == self._active_speak_task_id
+            ):
                 self._speak_ended.set()
 
             if self.on_event:
@@ -126,17 +144,32 @@ class LiteAudioAgent:
     # Speaking
     # ------------------------------------------------------------------
 
+    def _begin_speaking(self, event_id: str) -> None:
+        if self._connection_error:
+            raise ConnectionError(self._connection_error)
+        self._active_speak_event_id = event_id
+        self._active_speak_task_id = None
+        self._speak_ended.clear()
+
+    def _wait_for_playback(self, timeout: float) -> None:
+        if not self._speak_ended.wait(timeout=timeout):
+            raise TimeoutError(
+                f"LiveAvatar agent.speak_ended not received within {timeout:g} seconds"
+            )
+        if self._connection_error:
+            raise ConnectionError(self._connection_error)
+
     def speak_pcm(self, pcm_24k_mono: bytes, wait: bool = True) -> None:
         """Send one complete utterance (already 24 kHz/16-bit/mono PCM)."""
         event_id = f"speak-{uuid4()}"
-        self._speak_ended.clear()
+        self._begin_speaking(event_id)
         for chunk in audio.chunk_pcm(pcm_24k_mono):
             self._send(
                 {"type": "agent.speak", "event_id": event_id, "audio": audio.b64(chunk)}
             )
         self._send({"type": "agent.speak_end", "event_id": event_id})
         if wait:
-            self._speak_ended.wait(timeout=60.0)
+            self._wait_for_playback(60.0)
 
     def stream_pcm(
         self,
@@ -156,7 +189,7 @@ class LiteAudioAgent:
             Block until the avatar finishes (agent.speak_ended).
         """
         event_id = f"speak-{uuid4()}"
-        self._speak_ended.clear()
+        self._begin_speaking(event_id)
         self._streaming.set()
         buffer = b""
         target = audio.FIRST_CHUNK
@@ -180,7 +213,7 @@ class LiteAudioAgent:
             )
         self._send({"type": "agent.speak_end", "event_id": event_id})
         if wait:
-            self._speak_ended.wait(timeout=120.0)
+            self._wait_for_playback(120.0)
 
     def interrupt(self) -> None:
         """Stop the current stream and tell the avatar to stop speaking."""

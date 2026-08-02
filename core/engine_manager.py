@@ -27,6 +27,21 @@ from .llm import LLMEngine, load_engine as load_llm_engine, to_llm_fn
 from .tts import TTSEngine, load_engine as load_tts_engine, to_tts_fn
 
 
+def _resource_id(engine: str, model: str) -> str:
+    return f"{engine}:{model or 'default'}"
+
+
+def _public_preset(preset: dict, kind: str) -> dict:
+    model = preset.get("model") or preset.get("weights_path") or ""
+    return {
+        **preset,
+        "id": preset.get("id") or _resource_id(preset["engine"], model),
+        "model": model,
+        "ready": True,
+        "capabilities": ["generate"] if kind == "llm" else ["synthesize", "preview"],
+    }
+
+
 @dataclass
 class EngineInfo:
     """Serializable info about a loaded (or available) engine — for the UI."""
@@ -166,24 +181,24 @@ class EngineManager:
         self._system_prompt = prompt
 
     def load_llm(self, cfg: dict) -> EngineInfo:
-        """Load an LLM engine from cfg. If one is already loaded, unload it first.
-        After loading, runs warmup() to JIT CUDA kernels + populate prefix cache."""
+        """Stage a replacement before mutating the active runtime."""
         with self._lock:
-            # Unload old engine (free VRAM) before loading the new one.
-            if self._llm is not None:
-                self._llm.unload()
-                self._llm = None
-            # Load new engine (this is the slow part: 10-30s for a 4B model).
-            self._llm = load_llm_engine(cfg)
-            self._llm_cfg = cfg
-            # Clear any prior load failure — this load succeeded.
+            candidate = load_llm_engine(cfg)
+            try:
+                candidate.warmup(system_prompt=self._system_prompt or None)
+            except Exception:
+                candidate.unload()
+                raise
+            previous = self._llm
+            self._llm = candidate
+            self._llm_cfg = dict(cfg)
             self.llm_load_error = None
-            # Warmup: JIT CUDA kernels + populate prefix cache with persona.
-            self._llm.warmup(system_prompt=self._system_prompt or None)
+            if previous is not None:
+                previous.unload()
             return EngineInfo(
                 engine=cfg.get("engine", "?"),
                 model=cfg.get("model", cfg.get("model_path", cfg.get("weights_path", ""))),
-                name=self._llm.name,
+                name=candidate.name,
                 loaded=True,
             )
 
@@ -197,7 +212,12 @@ class EngineManager:
         """Return the (text)->str callable for the cloud RenderBackend."""
         if self._llm is None:
             return None
-        return to_llm_fn(self._llm, system_prompt=self._system_prompt)
+        return to_llm_fn(
+            self._llm,
+            system_prompt=self._system_prompt,
+            max_tokens=int(self._llm_cfg.get("max_tokens", 512)),
+            temperature=float(self._llm_cfg.get("temperature", 0.7)),
+        )
 
     # ── TTS ─────────────────────────────────────────────────────────────
 
@@ -210,24 +230,26 @@ class EngineManager:
         return self._tts_cfg
 
     def load_tts(self, cfg: dict) -> EngineInfo:
-        """Load a TTS engine from cfg. If one is already loaded, unload it first.
-        After loading, runs warmup() to JIT CUDA kernels."""
+        """Stage a replacement before mutating the active runtime."""
         with self._lock:
-            if self._tts is not None:
-                self._tts.unload()
-                self._tts = None
-            self._tts = load_tts_engine(cfg)
-            self._tts_cfg = cfg
-            # Clear any prior load failure — this load succeeded.
+            candidate = load_tts_engine(cfg)
+            try:
+                candidate.warmup()
+            except Exception:
+                candidate.unload()
+                raise
+            previous = self._tts
+            self._tts = candidate
+            self._tts_cfg = dict(cfg)
             self.tts_load_error = None
-            # Warmup: JIT CUDA kernels + allocate GPU buffers.
-            self._tts.warmup()
+            if previous is not None:
+                previous.unload()
             return EngineInfo(
                 engine=cfg.get("engine", "?"),
                 model=cfg.get("model", cfg.get("weights_path", "")),
-                name=self._tts.name,
+                name=candidate.name,
                 loaded=True,
-                sample_rate=self._tts.sample_rate,
+                sample_rate=candidate.sample_rate,
             )
 
     @property
@@ -240,8 +262,35 @@ class EngineManager:
         """Return the (text)->(bytes,rate) callable for the cloud RenderBackend."""
         if self._tts is None:
             return None
-        voice = self._tts_cfg.get("ref_audio")
+        voice = self._tts_cfg.get("voice_id") or self._tts_cfg.get("ref_audio")
         return to_tts_fn(self._tts, voice=voice)
+
+    def voices(self) -> list[dict]:
+        """Return adapter voices or one configured default when enumeration is absent."""
+        configured = self._tts_cfg.get("voice_id") or self._tts_cfg.get("ref_audio") or "default"
+        discover = getattr(self._tts, "list_voices", None) if self._tts is not None else None
+        raw = discover() if callable(discover) else []
+        if not raw:
+            return [{"id": configured, "label": "Default", "active": True}]
+        return [
+            {
+                "id": str(voice.get("id")),
+                "label": str(voice.get("label") or voice.get("name") or voice.get("id")),
+                "active": str(voice.get("id")) == configured,
+            }
+            for voice in raw
+            if voice.get("id")
+        ]
+
+    def validate_tts_selection(self, tts_id: str, voice_id: str) -> None:
+        cfg_id = _resource_id(
+            self._tts_cfg.get("engine", "tone"),
+            self._tts_cfg.get("model", self._tts_cfg.get("weights_path", "")),
+        )
+        if tts_id != cfg_id:
+            raise ValueError(f"TTS resource '{tts_id}' is not active")
+        if voice_id not in {voice["id"] for voice in self.voices()}:
+            raise ValueError(f"unknown voice '{voice_id}'")
 
     def apply_tts_preset(self, preset_id: str) -> dict:
         """Update the in-memory TTS cfg from a preset id (frontend dropdown).
@@ -273,25 +322,50 @@ class EngineManager:
         Call this after a swap so the say-loop uses the new engines."""
         from .render import cloud
 
-        cloud.configure(llm=self.get_llm_fn(), tts=self.get_tts_fn())
+        # Pass the raw LLMEngine + default system_prompt so CloudRenderBackend
+        # can build per-session llm_fn with session-specific shop profiles.
+        cloud.configure(
+            llm=self._llm,
+            tts=self.get_tts_fn(),
+            system_prompt=self._system_prompt or None,
+            llm_defaults={
+                "max_tokens": int(self._llm_cfg.get("max_tokens", 512)),
+                "temperature": float(self._llm_cfg.get("temperature", 0.7)),
+            },
+        )
 
     # ── Status (for the UI) ─────────────────────────────────────────────
 
     def status(self) -> dict:
+        llm_engine = self._llm_cfg.get("engine", "none")
+        llm_model = self._llm_cfg.get("model", self._llm_cfg.get("model_path", ""))
+        tts_engine = self._tts_cfg.get("engine", "tone")
+        tts_model = self._tts_cfg.get("model", self._tts_cfg.get("weights_path", ""))
         return {
             "llm": {
-                "engine": self._llm_cfg.get("engine", "none"),
-                "model": self._llm_cfg.get("model", self._llm_cfg.get("model_path", "")),
+                "id": _resource_id(llm_engine, llm_model),
+                "engine": llm_engine,
+                "model": llm_model,
                 "name": self._llm.name if self._llm else "none(stub)",
                 "loaded": self._llm is not None,
+                "ready": self.llm_load_error is None,
+                "capabilities": ["generate"],
             },
             "tts": {
-                "engine": self._tts_cfg.get("engine", "tone"),
-                "model": self._tts_cfg.get("model", self._tts_cfg.get("weights_path", "")),
+                "id": _resource_id(tts_engine, tts_model),
+                "engine": tts_engine,
+                "model": tts_model,
                 "name": self._tts.name if self._tts else "tone(stub)",
                 "loaded": self._tts is not None,
+                "ready": self.tts_load_error is None,
                 "sample_rate": self._tts.sample_rate if self._tts else 24000,
+                "capabilities": ["synthesize", "preview"],
             },
-            "available_llm_presets": AVAILABLE_LLM_PRESETS,
-            "available_tts_presets": AVAILABLE_TTS_PRESETS,
+            "voices": self.voices(),
+            "available_llm_presets": [
+                _public_preset(preset, "llm") for preset in AVAILABLE_LLM_PRESETS
+            ],
+            "available_tts_presets": [
+                _public_preset(preset, "tts") for preset in AVAILABLE_TTS_PRESETS
+            ],
         }

@@ -640,6 +640,8 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "TTS_MODEL_ID", value = "eleven_turbo_v2_5" },
         { name = "SESSION_STORE", value = var.session_store },
         { name = "DIRECTOR_ENABLED", value = "1" },
+        { name = "DIRECTOR_EMBEDDER", value = "semantic-required" },
+        { name = "DIRECTOR_EMBEDDER_MODEL", value = "bkai-foundation-models/vietnamese-bi-encoder" },
         { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
         { name = "PIPECAT_ENABLED", value = "0" },
         { name = "LIVEKIT_PUBLISH", value = "0" },

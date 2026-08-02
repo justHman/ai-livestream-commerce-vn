@@ -153,6 +153,50 @@ class StreamOrchestrator:
             self._running_session = None
             self._loop = None
 
+    async def speak_verbatim(self, session_id: str, text: str) -> str:
+        """Run TTS->backend for exact text without invoking the LLM."""
+        self._running_session = session_id
+        self._loop = asyncio.get_running_loop()
+        self._cancel_event.clear()
+        self._metrics.record_start()
+        utterance_id = uuid.uuid4().hex
+        bridge: queue.Queue[VideoWindow | object] = queue.Queue()
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._speak_verbatim_sync,
+                session_id,
+                utterance_id,
+                text,
+                bridge,
+            )
+        )
+        first_emitted = False
+        try:
+            while True:
+                item = await asyncio.to_thread(bridge.get)
+                if item is _BRIDGE_SENTINEL:
+                    break
+                if self._cancel_event.is_set():
+                    break
+                ok = await self._queue.put(item)  # type: ignore[arg-type]
+                if not ok:
+                    self._metrics.increment_dropped(1)
+                if not first_emitted:
+                    self._metrics.record_first_frame()
+                    first_emitted = True
+                self._metrics.update_queue_depth(self._queue.qsize())
+            await worker
+            if self._cancel_event.is_set():
+                self._queue.clear()
+                self._metrics.update_queue_depth(0)
+            return text
+        finally:
+            if not worker.done():
+                self._cancel_event.set()
+                await worker
+            self._running_session = None
+            self._loop = None
+
     async def cancel(self, session_id: str) -> None:
         """Barge-in: stop the running turn for ``session_id`` and drain the queue.
 
@@ -168,6 +212,42 @@ class StreamOrchestrator:
     # Sync pipeline (runs in a thread)
     # ------------------------------------------------------------------
 
+    def _speak_verbatim_sync(
+        self,
+        session_id: str,
+        utterance_id: str,
+        text: str,
+        bridge: queue.Queue[VideoWindow | object],
+    ) -> None:
+        try:
+            phrase = TextChunk(
+                session_id=session_id,
+                utterance_id=utterance_id,
+                seq=0,
+                text=text,
+                is_final=True,
+            )
+            for audio_window in self._tts.stream_audio(
+                phrase,
+                session_id=session_id,
+                utterance_id=utterance_id,
+            ):
+                if self._cancel_event.is_set():
+                    break
+                if self._audio_window_callback is not None:
+                    loop = self._loop
+                    if loop is None:
+                        raise RuntimeError("orchestrator event loop is unavailable")
+                    asyncio.run_coroutine_threadsafe(
+                        self._audio_window_callback(audio_window), loop
+                    ).result()
+                for video_window in self._backend.stream_audio(session_id, audio_window):
+                    if self._cancel_event.is_set():
+                        break
+                    bridge.put(video_window)
+        finally:
+            bridge.put(_BRIDGE_SENTINEL)
+
     def _run_sync(
         self,
         session_id: str,
@@ -175,13 +255,28 @@ class StreamOrchestrator:
         req: LLMRequest,
         bridge: queue.Queue[VideoWindow | object],
     ) -> tuple[str, int]:
-        """Run the sync generators and push VideoWindows to ``bridge``.
-
-        Returns ``(spoken_text, dropped_count)``. The sentinel is always pushed
-        so async ``run()`` never blocks forever if a sync stage raises.
-        """
+        """Stream each complete LLM phrase into TTS as soon as it is available."""
         spoken_parts: list[str] = []
-        dropped = 0
+
+        def render_phrase(phrase: TextChunk) -> None:
+            for audio_window in self._tts.stream_audio(
+                phrase,
+                session_id=session_id,
+                utterance_id=utterance_id,
+            ):
+                if self._cancel_event.is_set():
+                    return
+                if self._audio_window_callback is not None:
+                    loop = self._loop
+                    if loop is None:
+                        raise RuntimeError("orchestrator event loop is unavailable")
+                    asyncio.run_coroutine_threadsafe(
+                        self._audio_window_callback(audio_window), loop
+                    ).result()
+                for video_window in self._backend.stream_audio(session_id, audio_window):
+                    if self._cancel_event.is_set():
+                        return
+                    bridge.put(video_window)
 
         try:
             chunker = TextChunker(
@@ -192,61 +287,34 @@ class StreamOrchestrator:
                 max_chars=self._max_chars,
                 flush_timeout_ms=self._flush_timeout_ms,
             )
-
-            # Stage 1: LLM stream -> TextChunker feed. We still need phrase
-            # chunks before TTS can run, but we do NOT collect video windows;
-            # every rendered window is bridged immediately downstream.
-            phrase_chunks: list[TextChunk] = []
-            for tc in self._llm.stream_chunks(
+            saw_final_token = False
+            for token in self._llm.stream_chunks(
                 req, session_id=session_id, utterance_id=utterance_id
             ):
                 if self._cancel_event.is_set():
                     break
-                spoken_parts.append(tc.text)
-                phrase_chunks.extend(chunker.feed(tc.text))
-                phrase_chunks.extend(chunker.check_timeout())
+                spoken_parts.append(token.text)
+                phrases = chunker.feed(token.text) + chunker.check_timeout()
+                if token.is_final:
+                    saw_final_token = True
+                    phrases.extend(chunker.finalize())
+                    if phrases and not phrases[-1].is_final:
+                        last = phrases[-1]
+                        phrases[-1] = TextChunk(
+                            session_id=last.session_id,
+                            utterance_id=last.utterance_id,
+                            seq=last.seq,
+                            text=last.text,
+                            is_final=True,
+                            id=last.id,
+                        )
+                for phrase in phrases:
+                    render_phrase(phrase)
             else:
-                if not self._cancel_event.is_set():
-                    phrase_chunks.extend(chunker.finalize())
-
-            # Stamp finality onto the last phrase chunk even when punctuation
-            # flushing left no final remainder for chunker.finalize().
-            if phrase_chunks and not self._cancel_event.is_set():
-                last = phrase_chunks[-1]
-                if not last.is_final:
-                    phrase_chunks[-1] = TextChunk(
-                        session_id=last.session_id,
-                        utterance_id=last.utterance_id,
-                        seq=last.seq,
-                        text=last.text,
-                        is_final=True,
-                        id=last.id,
-                    )
-
-            # Stage 2 + 3 + 4: TTS stream -> backend stream -> bridge windows.
-            for phrase in phrase_chunks:
-                if self._cancel_event.is_set():
-                    break
-                for audio_window in self._tts.stream_audio(
-                    phrase,
-                    session_id=session_id,
-                    utterance_id=utterance_id,
-                ):
-                    if self._cancel_event.is_set():
-                        break
-                    if self._audio_window_callback is not None:
-                        loop = self._loop
-                        if loop is None:
-                            raise RuntimeError("orchestrator event loop is unavailable")
-                        asyncio.run_coroutine_threadsafe(
-                            self._audio_window_callback(audio_window), loop
-                        ).result()
-                    for vw in self._backend.stream_audio(session_id, audio_window):
-                        if self._cancel_event.is_set():
-                            break
-                        bridge.put(vw)
-
-            return "".join(spoken_parts), dropped
+                if not self._cancel_event.is_set() and not saw_final_token:
+                    for phrase in chunker.finalize():
+                        render_phrase(phrase)
+            return "".join(spoken_parts), 0
         finally:
             bridge.put(_BRIDGE_SENTINEL)
 

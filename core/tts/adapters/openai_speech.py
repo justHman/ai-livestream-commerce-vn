@@ -1,18 +1,19 @@
-"""ElevenLabs TTS client (remote, backend-only).
+"""OpenAI-compatible TTS client (remote, backend-only).
 
-Calls ElevenLabs REST API: POST /v1/text-to-speech/{voice_id}
-with header `xi-api-key: <key>`. Returns MP3 bytes; decoded to
-float32 mono PCM via ffmpeg-free path (httpx + audio decode).
+Calls any server exposing OpenAI audio speech:
+  POST {base_url}/v1/audio/speech
+  body: {"model": ..., "input": <text>, ...}
+  returns: audio bytes (mp3 by default)
 
-ElevenLabs API reference:
-  https://api.elevenlabs.io/v1/text-to-speech/{voice_id}
+Free local proxies (e.g. localhost:20128 with edge-tts/vi-VN-NamMinhNeural)
+have no quota limits, unlike ElevenLabs free tier.
 
 Usage:
     tts = load_engine({
-        "engine": "elevenlabs",
-        "api_key": os.environ["ELEVENLABS_API_KEY"],
-        "voice_id": "21m00Tcm4TlvDq8ikWAM",  # Rachel (default)
-        "model_id": "eleven_turbo_v2_5",
+        "engine": "openai_speech",
+        "api_key": os.environ["TTS_API_KEY"],
+        "base_url": "http://localhost:20128",
+        "model": "edge-tts/vi-VN-NamMinhNeural",
         "sample_rate": 24000,
     })
 """
@@ -28,25 +29,21 @@ import numpy as np
 
 from ..base import AudioChunk, TTSEngine, TTSRequest, register_engine
 
-DEFAULT_BASE_URL = "https://api.elevenlabs.io"
-# Premade voice (free-tier API-usable; library voices like Rachel need paid plan).
-# Roger — laid-back, casual, resonant. Free tier only allows premade voices via API.
-DEFAULT_VOICE_ID = "CwhRBWXzGAHq8TQ4Fs17"  # Roger (premade, free-tier)
-DEFAULT_MODEL_ID = "eleven_turbo_v2_5"
+DEFAULT_BASE_URL = "http://localhost:20128"
+DEFAULT_MODEL = "edge-tts/vi-VN-NamMinhNeural"
 
 
 def _strip_trailing_slash(url: str) -> str:
     return url.rstrip("/")
 
 
-def _decode_mp3_to_float32(mp3_bytes: bytes, sample_rate: int) -> np.ndarray:
-    """Decode MP3 bytes to float32 mono PCM at sample_rate via ffmpeg.
+def _decode_mp3_to_float32(audio_bytes: bytes, sample_rate: int) -> np.ndarray:
+    """Decode audio bytes (mp3/wav) to float32 mono PCM at sample_rate via ffmpeg.
 
-    Windows: NamedTemporaryFile default delete=True locks the file while open,
-    so ffmpeg cannot open it (exit code -4 / "could not open input"). Use
-    mkstemp + close-before-subprocess + manual cleanup instead.
+    Windows: mkstemp + close-before-subprocess + manual cleanup (NamedTemporaryFile
+    locks the file on Windows → ffmpeg cannot open it).
     """
-    if not mp3_bytes:
+    if not audio_bytes:
         return np.zeros(0, dtype=np.float32)
     import wave
     in_fd, in_path = tempfile.mkstemp(suffix=".mp3")
@@ -55,7 +52,7 @@ def _decode_mp3_to_float32(mp3_bytes: bytes, sample_rate: int) -> np.ndarray:
     os.close(out_fd)
     try:
         with open(in_path, "wb") as inf:
-            inf.write(mp3_bytes)
+            inf.write(audio_bytes)
         subprocess.run(
             ["ffmpeg", "-y", "-i", in_path, "-ar", str(sample_rate),
              "-ac", "1", "-f", "wav", out_path],
@@ -72,34 +69,29 @@ def _decode_mp3_to_float32(mp3_bytes: bytes, sample_rate: int) -> np.ndarray:
                 pass
 
 
-@register_engine("elevenlabs")
-class ElevenLabsTTSEngine(TTSEngine):
-    """ElevenLabs REST API TTS client (sync httpx)."""
+@register_engine("openai_speech")
+class OpenAISpeechTTSEngine(TTSEngine):
+    """OpenAI-compatible REST TTS client (sync httpx)."""
 
     sample_rate = 24_000
 
     def __init__(self) -> None:
         self._api_key: str = ""
-        self._voice_id: str = DEFAULT_VOICE_ID
-        self._model_id: str = DEFAULT_MODEL_ID
+        self._model: str = DEFAULT_MODEL
         self._base_url: str = DEFAULT_BASE_URL
         self._timeout: float = 30.0
         self._client: Optional[httpx.Client] = None
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "ElevenLabsTTSEngine":
+    def from_config(cls, cfg: dict) -> "OpenAISpeechTTSEngine":
         e = cls()
         e._api_key = str(
             cfg.get("api_key")
+            or os.environ.get("TTS_API_KEY")
             or os.environ.get("ELEVENLABS_API_KEY", "")
             or ""
         )
-        if not e._api_key:
-            raise ValueError(
-                "elevenlabs TTS needs cfg['api_key'] or env ELEVENLABS_API_KEY"
-            )
-        e._voice_id = str(cfg.get("voice_id") or DEFAULT_VOICE_ID)
-        e._model_id = str(cfg.get("model_id") or DEFAULT_MODEL_ID)
+        e._model = str(cfg.get("model") or cfg.get("model_id") or DEFAULT_MODEL)
         e._base_url = _strip_trailing_slash(
             cfg.get("base_url") or DEFAULT_BASE_URL
         )
@@ -108,7 +100,7 @@ class ElevenLabsTTSEngine(TTSEngine):
         client = cfg.get("http_client")
         if client is not None:
             e._client = client
-        e.name = "elevenlabs"
+        e.name = "openai_speech"
         return e
 
     def _get_client(self) -> httpx.Client:
@@ -118,31 +110,25 @@ class ElevenLabsTTSEngine(TTSEngine):
 
     def synthesize(self, req: TTSRequest) -> AudioChunk:
         client = self._get_client()
-        url = f"{self._base_url}/v1/text-to-speech/{self._voice_id}"
-        headers = {
-            "xi-api-key": self._api_key,
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
-        }
-        body = {
-            "text": req.text,
-            "model_id": self._model_id,
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-        }
+        url = f"{self._base_url}/v1/audio/speech"
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        body = {"model": self._model, "input": req.text}
         try:
             resp = client.post(url, json=body, headers=headers)
         except httpx.RequestError as exc:
             raise RuntimeError(
-                f"elevenlabs TTS request failed: {exc}"
+                f"openai_speech TTS request failed: {exc}"
             ) from exc
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = (resp.text or "")[:300]
             raise RuntimeError(
-                f"elevenlabs TTS failed: HTTP {resp.status_code} {detail}"
+                f"openai_speech TTS failed: HTTP {resp.status_code} {detail}"
             ) from exc
         pcm = _decode_mp3_to_float32(resp.content or b"", self.sample_rate)
         if pcm.size == 0:
-            raise RuntimeError("elevenlabs TTS: empty audio body")
+            raise RuntimeError("openai_speech TTS: empty audio body")
         return AudioChunk(pcm=pcm, sample_rate=self.sample_rate)

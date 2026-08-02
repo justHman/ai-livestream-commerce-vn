@@ -1,447 +1,1037 @@
 <!DOCTYPE html>
 <html lang="vi">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Live-Commerce VN — Stage 2 Test Viewer</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Livento — Stage 2 Operator Console</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; background: #1a1a2e; color: #eee; }
-    header { padding: 12px 20px; background: #0173B2; }
-    header h1 { margin: 0; font-size: 18px; }
-    header .sub { font-size: 12px; color: #b8d4e8; }
-    .wrap { display: flex; gap: 16px; padding: 20px; flex-wrap: wrap; }
-    .panel { background: #232336; border-radius: 10px; padding: 16px; margin-bottom: 12px; }
-    .controls { flex: 1; min-width: 320px; max-width: 480px; }
-    .stage { flex: 2; min-width: 420px; }
-    video { width: 100%; border-radius: 8px; background: #000; aspect-ratio: 16/9; }
-    button { background: #0173B2; color: #fff; border: none; padding: 10px 16px;
-             border-radius: 6px; cursor: pointer; font-size: 14px; margin: 4px 0; }
-    button.stop { background: #D55E00; }
-    button.mock { background: #56B4E9; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    input, textarea, select { width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0 12px;
-                      border-radius: 6px; border: 1px solid #444; background: #1a1a2e; color: #eee; font-size: 13px; }
-    label { font-size: 13px; color: #aaa; display: block; margin-top: 8px; }
-    #log { font-family: monospace; font-size: 12px; white-space: pre-wrap;
-           max-height: 240px; overflow-y: auto; background: #14141f; padding: 10px; border-radius: 6px; }
-    .row { display: flex; gap: 8px; }
-    .row button { flex: 1; }
-    .engine-status { font-size: 12px; color: #aaa; margin: 8px 0; }
-    .ok { color: #029E73; } .bad { color: #D55E00; }
-    .hint { font-size: 12px; color: #888; margin: 4px 0; }
-    #livekitBar { margin-top: 8px; }
-    code { background: #14141f; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+    :root {
+      color-scheme: dark;
+      --bg: #111322;
+      --panel: #1b1e31;
+      --panel-2: #24283e;
+      --line: #39405f;
+      --text: #f4f6ff;
+      --muted: #aeb7d3;
+      --primary: #56b4e9;
+      --primary-strong: #0173b2;
+      --success: #4fd19d;
+      --warning: #f0b44c;
+      --danger: #ef7f66;
+      --focus: #f6c85f;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    header { padding: 18px 24px; background: linear-gradient(135deg, #073b5c, #25294b); border-bottom: 1px solid var(--line); }
+    header h1 { margin: 0; font-size: 1.35rem; }
+    header p { margin: 6px 0 0; color: var(--muted); font-size: .9rem; }
+    main { display: grid; grid-template-columns: minmax(330px, 420px) minmax(520px, 1fr); gap: 16px; padding: 16px; max-width: 1680px; margin: auto; }
+    .column { min-width: 0; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 10px 24px rgba(0, 0, 0, .14); }
+    .panel h2 { font-size: 1rem; margin: 0 0 12px; }
+    .panel h3 { font-size: .9rem; margin: 14px 0 8px; color: var(--muted); }
+    .grid-2, .grid-3 { display: grid; gap: 10px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .field { min-width: 0; }
+    label, legend { display: block; color: var(--muted); font-size: .8rem; margin: 0 0 5px; }
+    input, textarea, select, button { font: inherit; }
+    input, textarea, select { width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; background: #111425; color: var(--text); }
+    textarea { resize: vertical; min-height: 76px; }
+    button { border: 1px solid transparent; border-radius: 7px; padding: 9px 12px; background: var(--primary-strong); color: white; cursor: pointer; font-weight: 650; }
+    button.secondary { background: var(--panel-2); border-color: var(--line); }
+    button.danger { background: #9f3e31; }
+    button.warning { background: #815f1c; }
+    button:disabled { opacity: .48; cursor: not-allowed; }
+    :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .actions > * { flex: 1 1 auto; }
+    .status { margin: 8px 0 0; padding: 8px 10px; border-radius: 7px; background: #111425; color: var(--muted); white-space: pre-wrap; }
+    .status[data-tone="success"] { border-left: 4px solid var(--success); color: var(--text); }
+    .status[data-tone="warning"] { border-left: 4px solid var(--warning); color: var(--text); }
+    .status[data-tone="danger"] { border-left: 4px solid var(--danger); color: var(--text); }
+    .hint { color: var(--muted); font-size: .78rem; line-height: 1.45; }
+    .toggle { display: flex; align-items: center; gap: 8px; color: var(--text); margin: 8px 0; }
+    .toggle input { width: auto; }
+    video { width: 100%; background: #05060a; border-radius: 9px; aspect-ratio: 16 / 9; }
+    audio { width: 100%; margin-top: 10px; }
+    .product-card { border: 1px solid var(--line); border-radius: 9px; margin: 9px 0; background: #15182a; }
+    .product-card-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; padding: 8px 10px; }
+    .product-details summary { cursor: pointer; padding: 2px 0; font-weight: 650; }
+    .product-card-body { padding: 0 10px 12px; }
+    .product-card .selection { display: flex; gap: 8px; align-items: center; margin: 0; }
+    .product-card .selection input { width: auto; }
+    .json-editor { margin-top: 12px; }
+    #configErrors { color: #ffd1c8; white-space: pre-wrap; min-height: 1.3em; }
+    .demo-states { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+    .demo-state { border: 1px solid var(--line); border-radius: 99px; padding: 4px 8px; color: var(--muted); font-size: .72rem; }
+    .demo-state[aria-current="step"] { border-color: var(--focus); color: var(--text); background: #4d4322; }
+    .metrics { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); gap: 8px; }
+    .metric { background: #111425; border: 1px solid var(--line); border-radius: 8px; padding: 9px; }
+    .metric span { display: block; color: var(--muted); font-size: .7rem; }
+    .metric strong { display: block; margin-top: 4px; font-size: 1rem; overflow-wrap: anywhere; }
+    .diagnostic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .diagnostic-card { min-width: 0; background: #111425; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+    .diagnostic-card h3 { margin: 0 0 7px; }
+    .diagnostic-content { font: .78rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow: auto; user-select: text; }
+    #clusterList details { border-top: 1px solid var(--line); padding: 8px 0; }
+    #clusterList summary { cursor: pointer; color: var(--text); }
+    #msgFeed, #eventLog { max-height: 230px; overflow: auto; background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 9px; }
+    .feed-row, .event-row { padding: 5px 0; border-bottom: 1px solid #262b43; overflow-wrap: anywhere; }
+    .event-row time { color: var(--muted); margin-right: 7px; }
+    .wide { grid-column: 1 / -1; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    @media (max-width: 1024px) {
+      main { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
+    }
+    @media (max-width: 620px) {
+      main { padding: 10px; }
+      .grid-2, .grid-3, .diagnostic-grid { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>AI Live-Commerce VN — Stage 2 Test Viewer</h1>
-    <div class="sub">LiveAvatar cloud + real LLM (vLLM Qwen3.5-4B-AWQ) + real TTS (vllm-omni VieNeu) · sandbox-first · no LiveKit SFU (Stage 3)</div>
+    <h1>Livento — Stage 2 Operator Console</h1>
+    <p>Một nguồn sự thật cho session, tài nguyên, cấu hình bán hàng, Auto Demo và Director diagnostics.</p>
   </header>
-  <div class="wrap">
-    <!-- LEFT: controls -->
-    <div class="controls">
-      <div class="panel">
-        <label>Backend API base</label>
-        <input id="backend" value="http://ai-livestream-dev-alb-2115882377.ap-northeast-2.elb.amazonaws.com" />
-        <label>API token (viewer — for sessions/speak)</label>
-        <input id="apiToken" placeholder="Bearer token (TF_VAR_backend_api_token)" />
-        <label>Admin token (for /engines + debug endpoints)</label>
-        <input id="adminToken" placeholder="Bearer token (TF_VAR_admin_api_token)" />
-        <div class="row">
-          <button id="checkEnginesBtn">Check engines</button>
-          <button id="healthBtn">Health</button>
+  <main>
+    <div class="column">
+      <section class="panel" id="sessionPanel" aria-labelledby="sessionHeading">
+        <h2 id="sessionHeading">1. Session</h2>
+        <div class="field"><label for="backend">Backend API</label><input id="backend" value="http://127.0.0.1:8800"></div>
+        <div class="field"><label for="apiToken">Viewer token</label><input id="apiToken" type="password" value="local-test-token-123456789012345678901234567890" autocomplete="off"></div>
+        <div class="field"><label for="adminToken">Admin token</label><input id="adminToken" type="password" value="local-admin-token-123456789012345678901234567890" autocomplete="off"></div>
+        <label class="toggle" for="sandboxToggle"><input id="sandboxToggle" type="checkbox" checked> Dùng LiveAvatar sandbox</label>
+        <div class="actions">
+          <button id="healthBtn" type="button" class="secondary">Kiểm tra health</button>
+          <button id="startBtn" type="button">Start session</button>
+          <button id="stopBtn" type="button" class="danger" disabled>Stop session</button>
         </div>
-        <div id="engineStatus" class="engine-status">— not checked —</div>
-      </div>
+        <div id="sessionStatus" class="status" aria-live="polite">Trạng thái: chưa có session.</div>
+      </section>
 
-      <div class="panel">
-        <label>Session</label>
-        <div class="row">
-          <button id="startBtn">▶ Start session (sandbox)</button>
-          <button id="stopBtn" class="stop" disabled>■ Stop</button>
+      <section class="panel" id="resourcePanel" aria-labelledby="resourceHeading">
+        <h2 id="resourceHeading">2. Avatar, LLM, TTS và voice</h2>
+        <div class="actions"><button id="discoverBtn" type="button" class="secondary">Nạp tài nguyên backend</button><button id="verifyBtn" type="button" class="warning">Kiểm tra sandbox 3 lớp</button></div>
+        <div class="field"><label for="avatarSelect">Avatar</label><select id="avatarSelect"><option value="">Avatar mặc định của backend</option></select></div>
+        <div class="field"><label for="llmSelect">LLM</label><select id="llmSelect"><option value="">Chưa discovery</option></select></div>
+        <div class="actions"><button id="applyLlmBtn" type="button" class="secondary">Nạp LLM đã chọn</button></div>
+        <div class="grid-2">
+          <div class="field"><label for="ttsSelect">TTS</label><select id="ttsSelect"><option value="">Chưa discovery</option></select></div>
+          <div class="field"><label for="voiceSelect">Voice</label><select id="voiceSelect"><option value="default">Default</option></select></div>
         </div>
-        <div class="hint">Sandbox avatar <code>dd73ea75…</code> free ~1min, no credits. Re-start if expired.<br>
-          ⚠ Sandbox = 1 concurrent session only. <b>Always click Stop before Start</b> else LiveAvatar returns 403 "concurrency limit reached".</div>
-        <div id="livekitBar" class="row" style="display:none;">
-          <button id="livekitConnectBtn" type="button">Connect LiveKit</button>
-          <span id="livekitStatus" class="engine-status" style="flex:1; align-self:center;"></span>
-        </div>
-        <div id="sessionInfo" class="hint">— no session —</div>
-      </div>
+        <div class="actions"><button id="applyTtsBtn" type="button" class="secondary">Nạp TTS đã chọn</button></div>
+        <div class="field"><label for="previewText">Câu preview</label><input id="previewText" maxlength="300" value="Xin chào cả nhà, đây là giọng đọc thử của Livento."></div>
+        <div class="actions"><button id="previewBtn" type="button">Nghe thử voice</button></div>
+        <audio id="previewAudio" controls aria-label="Audio preview TTS"></audio>
+        <div id="resourceStatus" class="status" aria-live="polite">Trạng thái: chưa discovery.</div>
+      </section>
 
-      <div class="panel">
-        <label>Speak (LLM → TTS → LiveAvatar cloud avatar)</label>
-        <input id="speakText" placeholder="Viết câu tiếng Việt… vd: Chào cả nhà, hôm nay mình review sản phẩm này" />
-        <div class="row">
-          <button id="speakBtn" disabled>▶ Speak</button>
-          <button id="autoSpeakBtn" class="mock" disabled>▶ Auto demo</button>
+      <section class="panel" id="shopPanel" aria-labelledby="shopHeading">
+        <h2 id="shopHeading">3. Shop profile</h2>
+        <div class="field"><label for="shopProfileSelect">Profile có sẵn hoặc tự thêm</label><select id="shopProfileSelect"><option value="beauty">Nam Beauty</option><option value="fashion">Livento Fashion</option><option value="gadget">Livento Gadget</option><option value="custom">Tự thêm</option></select></div>
+        <div class="grid-2">
+          <div class="field"><label for="shopName">Tên shop</label><input id="shopName" maxlength="256"></div>
+          <div class="field"><label for="hostName">Tên MC</label><input id="hostName" maxlength="128"></div>
+          <div class="field"><label for="shopAddress">Địa chỉ</label><input id="shopAddress" maxlength="500"></div>
+          <div class="field"><label for="shopPhone">Điện thoại</label><input id="shopPhone" maxlength="64"></div>
         </div>
-        <label>Latency (last speak)</label>
-        <div id="latency" class="hint">—</div>
-      </div>
+        <div class="field"><label for="sellingStyle">Phong cách bán hàng</label><textarea id="sellingStyle" maxlength="1000"></textarea></div>
+      </section>
 
-      <div class="panel">
-        <label>Mock data (debug endpoints)</label>
-        <div class="row">
-          <button id="loadMockProductsBtn" class="mock">Load mock products</button>
-          <button id="loadMockMsgsBtn" class="mock">Load 200 mock msgs</button>
-        </div>
-        <label>Product catalog JSON (attach to session)</label>
-        <textarea id="productsJson" rows="4" placeholder='[{"id":"p1","name":"Sữa rửa mặt","price":99000}]'></textarea>
-        <div class="row">
-          <button id="attachBtn" disabled>Attach products</button>
-        </div>
-      </div>
+      <section class="panel" id="productsPanel" aria-labelledby="productsHeading">
+        <h2 id="productsHeading">4. Sản phẩm đã chọn và thứ tự nói</h2>
+        <p class="hint">Bỏ chọn để loại sản phẩm khỏi phiên. Dùng nút Lên/Xuống để đổi thứ tự Director.</p>
+        <div class="actions"><button id="addProductBtn" type="button" class="secondary">Thêm sản phẩm</button></div>
+        <div id="productList"></div>
+        <details class="json-editor">
+          <summary>Advanced JSON editor</summary>
+          <label for="productsJson">Product catalog JSON</label>
+          <textarea id="productsJson" rows="14" spellcheck="false"></textarea>
+          <div class="actions"><button id="applyJsonBtn" type="button" class="secondary">Validate và áp dụng JSON</button></div>
+        </details>
+        <div id="configErrors" role="alert" aria-live="polite"></div>
+        <div class="actions"><button id="attachBtn" type="button" disabled>Attach cấu hình vào session</button></div>
+      </section>
     </div>
 
-    <!-- RIGHT: stage + log -->
-    <div class="stage">
-      <div class="panel">
-        <label>Avatar video (WebRTC from LiveAvatar cloud)</label>
-        <video id="avatarVideo" autoplay playsinline muted></video>
-        <div id="noVideo" class="hint">— start session + connect LiveKit to see avatar —</div>
-      </div>
-      <div class="panel">
-        <label>Event log</label>
-        <div id="log"></div>
-      </div>
-    </div>
-  </div>
+    <div class="column">
+      <section class="panel" id="videoPanel" aria-labelledby="videoHeading">
+        <h2 id="videoHeading">5. Avatar video</h2>
+        <video id="avatarVideo" autoplay playsinline></video>
+        <div class="actions"><button id="livekitConnectBtn" type="button" class="secondary" disabled>Connect LiveKit</button></div>
+        <div id="livekitStatus" class="status" aria-live="polite">Trạng thái: chưa có LiveKit credentials.</div>
+        <h3>Manual speech</h3>
+        <label for="speakText">Nội dung nói nguyên văn</label>
+        <textarea id="speakText" maxlength="2000" placeholder="Nhập yêu cầu nói..."></textarea>
+        <div class="actions"><button id="speakBtn" type="button" disabled>Nói</button></div>
+      </section>
 
+      <section class="panel" id="autoDemoPanel" aria-labelledby="demoHeading">
+        <h2 id="demoHeading">6. Auto Demo</h2>
+        <div id="demoStateText" class="status" aria-live="polite">Trạng thái Auto Demo: idle — đang chờ.</div>
+        <div id="demoStates" class="demo-states" aria-label="Các trạng thái Auto Demo"></div>
+        <div class="grid-2">
+          <div class="field"><label for="autoDemoRate">Tốc độ comment/giây</label><input id="autoDemoRate" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
+          <div class="field"><label for="autoDemoMode">Initial ingest mode</label><select id="autoDemoMode"><option value="batch">Batch 20 comments</option><option value="single">Gửi từng comment</option></select></div>
+          <div class="field"><label for="qaMaxClusters">Max Q&A clusters/window</label><input id="qaMaxClusters" type="number" min="1" max="20" value="2"></div>
+          <div class="field"><label for="qaTimeout">Q&A timeout (giây)</label><input id="qaTimeout" type="number" min="1" max="600" value="45"></div>
+          <div class="field"><label for="qaCooldown">Topic cooldown (giây)</label><input id="qaCooldown" type="number" min="0" max="3600" value="120"></div>
+          <div class="field"><label for="answerVariants">Answer variants</label><input id="answerVariants" type="number" min="1" max="20" value="3"></div>
+          <div class="field"><label for="preparedDepth">Prepared-turn depth</label><input id="preparedDepth" type="number" min="1" max="20" value="3"></div>
+          <div class="field"><label for="retryCount">Transient retries</label><input id="retryCount" type="number" min="0" max="3" value="1"></div>
+          <div class="field"><label for="pivotEnter">Pivot enter share</label><input id="pivotEnter" type="number" min="0.01" max="1" step="0.01" value="0.60"></div>
+          <div class="field"><label for="pivotExit">Pivot exit share</label><input id="pivotExit" type="number" min="0.01" max="1" step="0.01" value="0.45"></div>
+        </div>
+        <div class="actions"><button id="applyRuntimeConfigBtn" type="button" class="secondary">Áp dụng runtime config</button><button id="autoDemoBtn" type="button">Chạy Auto Demo</button><button id="stopAutoBtn" type="button" class="danger" disabled>Dừng Auto Demo</button></div>
+        <h3>Viewer comments</h3>
+        <div id="msgFeed" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" id="diagnosticsPanel" aria-labelledby="diagnosticsHeading">
+        <h2 id="diagnosticsHeading">7. Director diagnostics</h2>
+        <div id="embedderStatus" class="status" aria-live="polite">Embedder: chưa có snapshot.</div>
+        <div id="metrics" class="metrics"></div>
+        <div class="diagnostic-grid">
+          <article class="diagnostic-card"><h3>Current product / decision</h3><div id="currentDecision" class="diagnostic-content">Chưa có quyết định.</div></article>
+          <article class="diagnostic-card"><h3>Playback state</h3><div id="playbackState" class="diagnostic-content">idle</div></article>
+          <article class="diagnostic-card"><h3>Selected cluster — đầy đủ</h3><div id="selectedCluster" class="diagnostic-content">Chưa chọn cụm.</div></article>
+          <article class="diagnostic-card"><h3>Current prompt — đầy đủ</h3><div id="currentPrompt" class="diagnostic-content">Chưa có prompt đang xử lý.</div></article>
+          <article class="diagnostic-card"><h3>Generated script gần nhất — đầy đủ</h3><div id="generatedScript" class="diagnostic-content">Chưa có script hoàn tất.</div></article>
+          <article class="diagnostic-card"><h3>Upcoming work — đầy đủ</h3><div id="upcomingWork" class="diagnostic-content">Không có turn đang chờ.</div></article>
+          <article class="diagnostic-card wide"><h3>Completed history — đầy đủ</h3><div id="completedHistory" class="diagnostic-content">Chưa có speech hoàn tất.</div></article>
+          <article class="diagnostic-card wide"><h3>Active clusters — không cắt member</h3><div id="clusterList"></div></article>
+        </div>
+      </section>
+
+      <section class="panel" id="eventLogPanel" aria-labelledby="eventHeading">
+        <h2 id="eventHeading">8. Event log</h2>
+        <div id="eventLog" aria-live="polite"></div>
+      </section>
+    </div>
+  </main>
+
+  <template id="productTemplate">
+    <article class="product-card">
+      <div class="product-card-header">
+        <label class="selection"><input type="checkbox" data-field="selected" aria-label="Dùng sản phẩm này trong phiên"></label>
+        <details class="product-details">
+          <summary class="product-summary">Sản phẩm</summary>
+          <div class="product-card-body">
+            <div class="grid-2">
+          <div class="field"><label>ID<input data-field="id" maxlength="128"></label></div>
+          <div class="field"><label>Tên<input data-field="name" maxlength="256"></label></div>
+          <div class="field wide"><label>Mô tả<textarea data-field="description" maxlength="2000"></textarea></label></div>
+          <div class="field"><label>Giá bán<input data-field="price" data-type="integer" type="number" min="0"></label></div>
+          <div class="field"><label>Giá gốc<input data-field="original_price" data-type="integer" type="number" min="0"></label></div>
+          <div class="field"><label>Tồn kho<input data-field="stock_total" data-type="integer" type="number" min="0"></label></div>
+          <div class="field"><label class="toggle"><input data-field="in_stock" data-type="boolean" type="checkbox"> Còn hàng</label></div>
+          <div class="field wide"><label>Khuyến mãi<input data-field="promotion" maxlength="500"></label></div>
+          <div class="field"><label>Màu, phân cách bằng dấu phẩy<input data-field="colors" data-type="array"></label></div>
+          <div class="field"><label>Size, phân cách bằng dấu phẩy<input data-field="sizes" data-type="array"></label></div>
+          <div class="field"><label>Chất liệu<input data-field="material" maxlength="256"></label></div>
+          <div class="field"><label>Vận chuyển<input data-field="shipping" maxlength="500"></label></div>
+          <div class="field"><label>Bảo hành<input data-field="warranty" maxlength="500"></label></div>
+          <div class="field"><label>Ảnh tham chiếu<input data-field="ref_image" maxlength="2048"></label></div>
+              <div class="field wide"><label>Đặc điểm, phân cách bằng dấu phẩy<input data-field="features" data-type="array"></label></div>
+            </div>
+          </div>
+        </details>
+        <div class="actions">
+          <button type="button" class="secondary" data-action="move-up" aria-label="Di chuyển sản phẩm lên">↑</button>
+          <button type="button" class="secondary" data-action="move-down" aria-label="Di chuyển sản phẩm xuống">↓</button>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <script>
+    window.__livekitExports = {};
+    window.module = { exports: window.__livekitExports };
+    window.exports = window.__livekitExports;
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
   <script>
     "use strict";
+    window.LiveKit = window.__livekitExports;
+    delete window.module;
+    delete window.exports;
+
     const $ = (id) => document.getElementById(id);
-    let sessionId = null;
-    let sessionMode = null;
-    let pendingLivekit = null; // { url, token }
-    let livekitRoom = null;
-    let autoSpeakActive = false, autoSpeakTimer = null;
-
-    // ── Helpers ────────────────────────────────────────────────────
-    function backend() { return $("backend").value.replace(/\/$/, ""); }
-    function viewerToken() { return $("apiToken").value.trim(); }
-    function adminToken() { return $("adminToken").value.trim(); }
-    // engines + debug/mock endpoints require admin token; sessions/speak use viewer token.
-    function authHeaders() { const t = viewerToken(); return t ? { "Authorization": "Bearer " + t } : {}; }
-    function adminHeaders() { const t = adminToken(); return t ? { "Authorization": "Bearer " + t } : {}; }
-    function jsonHeaders() { return { ...authHeaders(), "Content-Type": "application/json" }; }
-    function log(msg) {
-      const ts = new Date().toLocaleTimeString("vi-VN");
-      $("log").textContent = `[${ts}] ${msg}\n` + $("log").textContent;
-    }
-    // livekit-client UMD exposes window.LiveKit (capital K), NOT LivekitRoom.
-    function hasLivekitClient() { return typeof window.LiveKit !== "undefined" && !!window.LiveKit.Room; }
-
-    // ── Mock shop profiles (per-shop info, loaded like mock prods) ──
-    // In prod: team SE sends shop profile via API; FE loads it like mock data.
-    const MOCK_SHOP_PROFILES = {
-      "default": {
-        name: "Shop Nam Beauty",
-        address: "123 Nguyễn Huệ, Q.1, TP.HCM",
-        phone: "0909.123.456",
-        contact: "Zalo: 0909.123.456 · IG: @shopnambeauty",
-        hours: "8:00 - 22:00 mỗi ngày",
-        shipping: "Freeship ĐB từ 99k · Giao 2-4h TP.HCM, 1-3 ngày toàn quốc",
-        return_policy: "Đổi trả 7 ngày nếu lỗi nhà sản xuất",
-        payment: "COD · chuyển khoản · QR · Momo",
-        note: "Shop chính hãng 100%, cam kết giả tiền nếu phát hiện hàng giả."
-      },
-      "tech": {
-        name: "NamTech Store",
-        address: "45 Lê Lợi, Q.BT, TP.HCM",
-        phone: "0901.987.654",
-        contact: "Zalo: 0901.987.654 · Fanpage: NamTech Store",
-        hours: "9:00 - 21:00 T2-CN",
-        shipping: "Freeship ĐB từ 199k · Giao 1-3 ngày",
-        return_policy: "Bảo hành 12 tháng chính hãng",
-        payment: "COD · chuyển khoản · QR · trả góp 0%",
-        note: "Phân phối chính hãng Apple, Samsung, Xiaomi."
-      },
-      "fashion": {
-        name: "Nam Fashion",
-        address: "78 Trần Hưng Đạo, Q.5, TP.HCM",
-        phone: "0908.555.123",
-        contact: "Hotline 0908.555.123 · Shopee: Nam Fashion Official",
-        hours: "9:00 - 22:00 mỗi ngày",
-        shipping: "Freeship ĐB từ 79k · Giao 2-5 ngày",
-        return_policy: "Đổi size/màu trong 3 ngày, hàng nguyên tag",
-        payment: "COD · chuyển khoản · QR · Momo · ZaloPay",
-        note: "Hàng thiết kế riêng, chất cotton linen, size S-XL."
-      }
+    const AUTO_DEMO_STATES = ["idle", "verifying", "attaching", "opening", "introducing", "answering", "generating", "synthesizing", "prepared", "playback", "advancing", "pivoting", "resuming", "stopped", "failed"];
+    const AUTO_DEMO_COMMENT_COUNT = 20;
+    const LOCAL_DRAFT_KEY = "livento-stage2-draft-v1";
+    const LOCAL_DRAFT_VERSION = 1;
+    const SHOP_PROFILE_PRESETS = {
+      beauty: { shop_name: "Shop Nam Beauty", host_name: "Chị Lan", address: "123 Nguyễn Huệ, Q.1, TP.HCM", phone: "0909.123.456", selling_style: "Nhiệt tình, rõ giá, không phóng đại công dụng." },
+      fashion: { shop_name: "Livento Fashion", host_name: "Chị Lan", address: "TP.HCM", phone: "0909.123.456", selling_style: "Năng động, nhấn mạnh form, chất liệu, size, giá và chốt đơn." },
+      gadget: { shop_name: "Livento Gadget", host_name: "Anh Nam", address: "TP.HCM", phone: "0909.123.456", selling_style: "Rõ thông số, nói lợi ích thực tế, không phóng đại." }
     };
-
-    function buildShopProfileText(profile) {
-      // Compose shop profile text for LLM system prompt (base persona + shop info).
-      // FE sends this via attach/start; backend prepends BASE_SALE_PERSONA.
-      const lines = ["Thông tin shop:"];
-      lines.push("- Tên shop: " + (profile.name || "Chưa cấu hình"));
-      lines.push("- Địa chỉ: " + (profile.address || "Chưa cấu hình"));
-      lines.push("- Liên hệ: " + (profile.contact || profile.phone || "Chưa cấu hình"));
-      if (profile.hours) lines.push("- Giờ mở cửa: " + profile.hours);
-      if (profile.shipping) lines.push("- Vận chuyển: " + profile.shipping);
-      if (profile.return_policy) lines.push("- Đổi trả: " + profile.return_policy);
-      if (profile.payment) lines.push("- Thanh toán: " + profile.payment);
-      if (profile.note) lines.push("- Lưu ý: " + profile.note);
-      return lines.join("\n");
-    }
-
-    // ── Mock viewer comment pool (Vietnamese live-commerce) ────────
-    const MOCK_COMMENTS = [
-      "shop ơi giá bao nhiêu vậy",
-      "sản phẩm này có hàng không shop",
-      "cho mình xin link mua ạ",
-      "chất lượng thế nào shop",
-      "mua 2 có giảm giá không",
-      "shop tư vấn mình loại phù hợp da dầu",
-      "thanh toán quét mã QR được không",
-      "livestream tiếng quá shop ơi",
-      "free ship không shop",
-      "có màu khác không ạ",
-      "shop demo lên tay xem thử nha",
-      "đánh giá 5 sao nha shop",
+    const LOCAL_PRODUCT_FIXTURES = [
+      { id: "P004", name: "Áo hoodie HeyGen màu trắng", description: "Áo hoodie trơn màu trắng kem, có mũ trùm, in logo HeyGen tinh tế ở ngực trái, phong cách tối giản và năng động.", price: 350000, original_price: 500000, promotion: "Giảm 30% — chỉ 350k (giá gốc 500k)", colors: ["trắng kem"], sizes: ["S", "M", "L", "XL"], material: "nỉ cotton", shipping: "Freeship toàn quốc cho đơn từ 250k", warranty: "Đổi trả miễn phí trong 7 ngày nếu lỗi từ nhà sản xuất", in_stock: true, stock_total: 120, ref_image: "image_20509e.png", features: ["áo hoodie có mũ", "logo HeyGen", "màu trắng kem", "dài tay", "phong cách tối giản"] },
+      { id: "P001", name: "Kem chống nắng La Roche-Posay SPF50+", description: "Kem chống nắng phổ rộng SPF50+, chống nước, phù hợp da nhạy cảm", price: 329000, original_price: 490000, promotion: "Giảm 33% — chỉ 329k (giá gốc 490k)", colors: [], sizes: [], material: "", shipping: "Freeship đơn từ 200k, giao 2-4 ngày", warranty: "Đổi trả trong 7 ngày nếu chưa sử dụng", in_stock: true, stock_total: 150, ref_image: "", features: ["SPF50+", "chống nước", "phổ rộng", "da nhạy cảm", "không bết dính"] },
+      { id: "P002", name: "Serum Vitamin C 20% làm sáng da", description: "Serum Vitamin C 20% + HA, mờ thâm nám, sáng da, chai 30ml", price: 189000, original_price: 299000, promotion: "Flash sale: 189k (giá gốc 299k) — chỉ còn 50 chai!", colors: [], sizes: [], material: "", shipping: "Freeship toàn quốc", warranty: "Đổi trả 7 ngày", in_stock: true, stock_total: 50, ref_image: "", features: ["Vitamin C 20%", "Hyaluronic Acid", "mờ thâm nám", "sáng da", "chống oxy hóa"] },
+      { id: "P003", name: "Áo thun cotton form rộng unisex", description: "Áo thun 100% cotton, form rộng, unisex, nhiều màu, size M-XL", price: 149000, original_price: 249000, promotion: "Mua 2 tặng 1 — chỉ 149k/chiếc", colors: ["đen", "trắng", "xám", "xanh navy"], sizes: ["M", "L", "XL"], material: "cotton 100%", shipping: "Freeship đơn từ 300k", warranty: "Đổi size miễn phí trong 14 ngày", in_stock: true, stock_total: 200, ref_image: "", features: ["100% cotton", "form rộng", "unisex", "thoáng mát", "không xù lông"] }
     ];
+    const LOCAL_TEST_PREFERENCES = { initialIngestMode: "batch", commentRate: 0.67 };
+    const AUTO_STATE_LABELS = {
+      idle: "đang chờ", verifying: "đang kiểm tra sandbox", attaching: "đang attach cấu hình",
+      introducing: "đang giới thiệu sản phẩm", answering: "đang trả lời cụm bình luận",
+      generating: "backend đang tạo nội dung", synthesizing: "backend đang tổng hợp giọng nói",
+      playback: "avatar đang phát", advancing: "đang chờ quyết định tiếp theo",
+      opening: "đang mở đầu livestream", stopped: "đã dừng", pivoting: "đang chuyển sản phẩm", resuming: "đang quay lại checkpoint", failed: "thất bại"
+    };
+    const EMPTY_PRODUCT = {
+      id: "", name: "", description: "", price: null, original_price: null, promotion: "",
+      colors: [], sizes: [], material: "", shipping: "", warranty: "", in_stock: true,
+      stock_total: null, ref_image: "", features: []
+    };
+    const initialState = {
+      session: { id: null, mode: null, livekit: null, attached: false, lifecycle: null },
+      resources: { engines: null, avatars: [], llmId: "", ttsId: "", voiceId: "default", avatarId: "", status: "Chưa discovery." },
+      verification: { ready: null, layers: [] },
+      draft: {
+        shop: { shop_name: "Shop Nam Beauty", host_name: "Chị Lan", address: "123 Nguyễn Huệ, Q.1, TP.HCM", phone: "0909.123.456", selling_style: "Nhiệt tình, rõ giá, không phóng đại công dụng." },
+        products: [], selectedProductIds: [], productOrder: [], jsonText: "[]", jsonDirty: false, errors: []
+      },
+      autoDemo: { phase: "idle", active: false },
+      diagnostics: null,
+      events: []
+    };
+    let state = { ...structuredClone(initialState), draft: { ...structuredClone(initialState.draft), ...hydrateLocalDraft() } };
+    let livekitRoom = null;
+    let controlSocket = null;
+    let diagnosticTimer = null;
+    let mockViewerMsgs = [];
+    let previewObjectUrl = null;
+    let autoDemoTimer = null;
+    let autoDemoGeneration = 0;
+    let autoDemoCursor = 0;
+    let autoDemoHasSeeded = false;
+    let autoDemoAbortController = null;
 
-    // ── Engines + health ───────────────────────────────────────────
-    async function checkEngines() {
-      log("→ GET /api/v1/engines (admin)");
-      try {
-        const res = await fetch(backend() + "/api/v1/engines", { headers: adminHeaders() });
-        if (!res.ok) { log("✗ engines HTTP " + res.status + " (need admin token)"); return; }
-        const d = await res.json();
-        await updateEngineStatus(d);
-        log(`✓ LLM=${d.llm.engine} loaded=${d.llm.loaded} | TTS=${d.tts.engine} loaded=${d.tts.loaded} sr=${d.tts.sample_rate||"?"}`);
-      } catch (e) { log("✗ engines error: " + e); }
+    function fixtureDraft() {
+      const products = structuredClone(LOCAL_PRODUCT_FIXTURES);
+      const ids = products.map((product) => product.id);
+      return { shop: structuredClone(SHOP_PROFILE_PRESETS.beauty), products, selectedProductIds: ids, productOrder: ids, jsonText: productJson(products), jsonDirty: false, errors: [], testPreferences: structuredClone(LOCAL_TEST_PREFERENCES) };
     }
 
-    async function health() {
-      log("→ GET /api/v1/health/ready");
+    function hydrateLocalDraft() {
+      const fallback = fixtureDraft();
       try {
-        const res = await fetch(backend() + "/api/v1/health/ready", { headers: authHeaders() });
-        const d = await res.json();
-        log(`✓ ready: render=${d.render_backend} llm=${d.llm_engine} tts=${d.tts_engine} ok=${d.ok}`);
-        await checkEngines();
-      } catch (e) { log("✗ health error: " + e); }
+        const raw = localStorage.getItem(LOCAL_DRAFT_KEY);
+        if (!raw) return fallback;
+        const stored = JSON.parse(raw);
+        if (stored?.version !== LOCAL_DRAFT_VERSION || !stored.draft || !Array.isArray(stored.draft.products)) return fallback;
+        const draft = { ...fallback, ...stored.draft, shop: { ...fallback.shop, ...stored.draft.shop }, testPreferences: { ...fallback.testPreferences, ...stored.draft.testPreferences } };
+        const errors = validateProductCatalog(draft.products);
+        if (errors.length || !draft.productOrder.every((id) => draft.products.some((product) => product.id === id))) return fallback;
+        draft.jsonText = productJson(draft.products);
+        draft.jsonDirty = false;
+        draft.errors = [];
+        return draft;
+      } catch (error) {
+        return fallback;
+      }
     }
 
-    async function updateEngineStatus(eng) {
-      let health = { ok: false };
-      try {
-        const r = await fetch(backend() + "/api/v1/health/ready", { headers: authHeaders() });
-        if (r.ok) health = await r.json();
-      } catch (e) {}
-      const llmOn = eng.llm.loaded ? "✓" : "✗";
-      const ttsOn = eng.tts.loaded ? "✓" : "✗";
-      const sr = eng.tts.sample_rate ? ` ${Math.round(eng.tts.sample_rate/1000)}kHz` : "";
-      const ready = health.ok ? "✓" : "✗";
-      $("engineStatus").innerHTML =
-        `LLM: <b>${eng.llm.engine}</b> ${llmOn} | TTS: <b>${eng.tts.engine}</b> ${ttsOn}${sr} | Ready: ${ready}`;
+    function persistLocalDraft() {
+      const { shop, products, selectedProductIds, productOrder, testPreferences } = state.draft;
+      try { localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify({ version: LOCAL_DRAFT_VERSION, draft: { shop, products, selectedProductIds, productOrder, testPreferences } })); }
+      catch (error) { addEvent(`Không lưu draft local: ${safeMessage(error)}`, "warning"); }
     }
 
-    // ── Session lifecycle ──────────────────────────────────────────
-    async function startSession() {
-      log("→ POST /api/v1/lite/start (is_sandbox=true)");
-      try {
-        const res = await fetch(backend() + "/api/v1/lite/start", {
-          method: "POST", headers: jsonHeaders(),
-          body: JSON.stringify({ is_sandbox: true }),
-        });
-        if (!res.ok) {
-          const body = await res.text();
-          log(`✗ start HTTP ${res.status}: ${body.slice(0, 200)}`);
-          if (res.status === 502 && body.includes("concurrency limit")) {
-            log("⚠ LiveAvatar sandbox busy. Click Stop (or reload) then Start again. Sandbox = 1 session only.");
+    function reducer(current, action) {
+      switch (action.type) {
+        case "SESSION_SET": return { ...current, session: { ...current.session, ...action.value } };
+        case "SESSION_CLEAR": return { ...current, session: structuredClone(initialState.session), diagnostics: null };
+        case "RESOURCES_SET": return { ...current, resources: { ...current.resources, ...action.value } };
+        case "RESOURCE_SELECT": return { ...current, resources: { ...current.resources, [action.field]: action.value } };
+        case "VERIFICATION_SET": return { ...current, verification: action.value };
+        case "SHOP_FIELD": return { ...current, draft: { ...current.draft, shop: { ...current.draft.shop, [action.field]: action.value } } };
+        case "PRODUCTS_SET": return { ...current, draft: { ...current.draft, ...action.value } };
+        case "PRODUCT_FIELD": return { ...current, draft: { ...current.draft, products: current.draft.products.map((product) => product.id === action.productId ? { ...product, [action.field]: action.value } : product), jsonText: action.jsonText, jsonDirty: false, errors: [] } };
+        case "DRAFT_PATCH": return { ...current, draft: { ...current.draft, ...action.value } };
+        case "AUTO_PHASE": return { ...current, autoDemo: { ...current.autoDemo, phase: action.phase, active: action.active ?? current.autoDemo.active } };
+        case "DIAGNOSTICS_SET": return { ...current, diagnostics: action.value };
+        case "LIFECYCLE_EVENT": return { ...current, session: { ...current.session, lifecycle: action.value } };
+        case "EVENT_ADD": return { ...current, events: [action.value, ...current.events].filter((_, index) => index < 200) };
+        default: return current;
+      }
+    }
+
+    function dispatch(action) {
+      state = reducer(state, action);
+      if (["SHOP_FIELD", "PRODUCTS_SET", "PRODUCT_FIELD", "DRAFT_PATCH"].includes(action.type)) persistLocalDraft();
+      render(action);
+    }
+
+    function render(action = {}) {
+      renderSession();
+      renderResources();
+      renderShop();
+      if (!["PRODUCT_FIELD", "DRAFT_JSON_TEXT"].includes(action.type)) renderProducts();
+      renderAutoDemo();
+      renderDiagnostics();
+      renderEvents();
+    }
+
+    function backend() { return $("backend").value.replace(/\/$/, ""); }
+    function getViewerToken() { return $("apiToken").value.trim(); }
+    function getAdminToken() { return $("adminToken").value.trim(); }
+    function viewerHeaders(json = false) { const token = getViewerToken(); return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(json ? { "Content-Type": "application/json" } : {}) }; }
+    function adminHeaders(json = false) { const token = getAdminToken(); return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(json ? { "Content-Type": "application/json" } : {}) }; }
+    function safeMessage(error) { return error instanceof Error ? error.message : "Lỗi không xác định"; }
+    function setStatus(id, text, tone = "") { const element = $(id); element.textContent = text; element.dataset.tone = tone; }
+
+    function addEvent(message, tone = "info") {
+      dispatch({ type: "EVENT_ADD", value: { at: new Date().toISOString(), message: String(message), tone } });
+    }
+
+    async function requestJson(path, options = {}) {
+      const response = await fetch(backend() + path, options);
+      const text = await response.text();
+      let body = null;
+      if (text) {
+        try { body = JSON.parse(text); }
+        catch (error) { throw new Error(`HTTP ${response.status}: phản hồi không phải JSON`); }
+      }
+      if (!response.ok) {
+        const detail = body?.detail;
+        const message = typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((issue) => `${issue.loc.join(".")}: ${issue.msg}`).join("; ") : `HTTP ${response.status}`;
+        throw new Error(message);
+      }
+      return body;
+    }
+
+    function renderSession() {
+      const session = state.session;
+      $("startBtn").disabled = Boolean(session.id);
+      $("stopBtn").disabled = !session.id;
+      $("attachBtn").disabled = !session.id;
+      $("speakBtn").disabled = !session.id;
+      $("livekitConnectBtn").disabled = !session.livekit;
+      setStatus("sessionStatus", session.id ? `Trạng thái: đang chạy · session=${session.id} · mode=${session.mode || "unknown"} · attach=${session.attached ? "đã attach" : "chưa attach"}` : "Trạng thái: chưa có session.", session.id ? "success" : "");
+      setStatus("livekitStatus", livekitRoom ? "Trạng thái: LiveKit đã kết nối." : session.livekit ? "Trạng thái: đã nhận credentials, sẵn sàng kết nối." : "Trạng thái: chưa có LiveKit credentials.", livekitRoom ? "success" : "");
+    }
+
+    function replaceOptions(select, items, selected, fallbackLabel) {
+      const fragment = document.createDocumentFragment();
+      if (fallbackLabel) {
+        const option = document.createElement("option"); option.value = ""; option.textContent = fallbackLabel; fragment.appendChild(option);
+      }
+      for (const item of items) {
+        const option = document.createElement("option");
+        option.value = item.id; option.textContent = `${item.label || item.name || item.id}${item.ready === false ? " — chưa sẵn sàng" : ""}`;
+        option.disabled = item.ready === false; fragment.appendChild(option);
+      }
+      select.replaceChildren(fragment);
+      if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+    }
+
+    function resourceOptions(presets, active) {
+      if (!active?.id || presets.some((item) => item.id === active.id)) return presets;
+      return [{ ...active, label: `${active.name || active.model || active.id} (đang active)` }, ...presets];
+    }
+
+    function renderResources() {
+      const resources = state.resources;
+      if (resources.engines) {
+        const llmOptions = resourceOptions(resources.engines.available_llm_presets || [], resources.engines.llm);
+        const ttsOptions = resourceOptions(resources.engines.available_tts_presets || [], resources.engines.tts);
+        replaceOptions($("llmSelect"), llmOptions, resources.llmId, null);
+        replaceOptions($("ttsSelect"), ttsOptions, resources.ttsId, null);
+        replaceOptions($("voiceSelect"), resources.engines.voices || [], resources.voiceId, null);
+        $("applyLlmBtn").disabled = resources.llmId === resources.engines.llm.id;
+        $("applyTtsBtn").disabled = resources.ttsId === resources.engines.tts.id;
+      }
+      replaceOptions($("avatarSelect"), resources.avatars, resources.avatarId, "Avatar mặc định của backend");
+      setStatus("resourceStatus", `Trạng thái: ${resources.status}`, state.verification.ready === false ? "danger" : resources.engines ? "success" : "");
+    }
+
+    function renderShop() {
+      const mapping = { shopName: "shop_name", hostName: "host_name", shopAddress: "address", shopPhone: "phone", sellingStyle: "selling_style" };
+      for (const [id, field] of Object.entries(mapping)) if (document.activeElement !== $(id)) $(id).value = state.draft.shop[field] || "";
+    }
+
+    function productById(id) { return state.draft.products.find((product) => product.id === id); }
+    function orderedProducts() { return state.draft.productOrder.map(productById).filter(Boolean); }
+    function productJson(products = state.draft.products) { return JSON.stringify(products, null, 2); }
+
+    function renderProducts() {
+      const list = $("productList");
+      const fragment = document.createDocumentFragment();
+      for (const product of orderedProducts()) {
+        const node = $("productTemplate").content.firstElementChild.cloneNode(true);
+        node.dataset.productId = product.id;
+        node.querySelector(".product-summary").textContent = `${product.id || "Chưa có ID"} · ${product.name || "Chưa có tên"}`;
+        for (const input of node.querySelectorAll("[data-field]")) {
+          const field = input.dataset.field;
+          if (field === "selected") input.checked = state.draft.selectedProductIds.includes(product.id);
+          else if (input.dataset.type === "boolean") input.checked = Boolean(product[field]);
+          else if (input.dataset.type === "array") input.value = Array.isArray(product[field]) ? product[field].join(", ") : "";
+          else input.value = product[field] ?? "";
+        }
+        const index = state.draft.productOrder.indexOf(product.id);
+        node.querySelector('[data-action="move-up"]').disabled = index <= 0;
+        node.querySelector('[data-action="move-down"]').disabled = index >= state.draft.productOrder.length - 1;
+        fragment.appendChild(node);
+      }
+      list.replaceChildren(fragment);
+      if (state.draft.jsonDirty) list.querySelectorAll("input, textarea, button").forEach((control) => { control.disabled = true; });
+      if (!state.draft.jsonDirty && document.activeElement !== $("productsJson")) $("productsJson").value = state.draft.jsonText;
+      $("configErrors").textContent = state.draft.errors.join("\n");
+    }
+
+    function renderAutoDemo() {
+      const demo = state.autoDemo;
+      $("demoStateText").textContent = `Trạng thái Auto Demo: ${demo.phase} — ${AUTO_STATE_LABELS[demo.phase] || "không xác định"}.`;
+      $("demoStateText").dataset.tone = demo.phase === "failed" ? "danger" : demo.active ? "warning" : "";
+      $("autoDemoBtn").disabled = demo.active;
+      $("stopAutoBtn").disabled = !demo.active;
+      const fragment = document.createDocumentFragment();
+      for (const phase of AUTO_DEMO_STATES) {
+        const item = document.createElement("span"); item.className = "demo-state"; item.textContent = phase;
+        if (phase === demo.phase) item.setAttribute("aria-current", "step");
+        fragment.appendChild(item);
+      }
+      $("demoStates").replaceChildren(fragment);
+    }
+
+    function metric(label, value) {
+      const item = document.createElement("div"); item.className = "metric";
+      const name = document.createElement("span"); name.textContent = label;
+      const number = document.createElement("strong"); number.textContent = String(value ?? 0);
+      item.append(name, number); return item;
+    }
+
+    function clearDiagnosticsView() {
+      $("metrics").replaceChildren(metric("received_total", 0), metric("buffered_comments", 0), metric("active_comments", 0), metric("director_cycles", 0), metric("completed_speeches", 0));
+      setStatus("embedderStatus", "Embedder: chưa có snapshot.");
+      $("currentDecision").textContent = "Chưa có quyết định.";
+      $("playbackState").textContent = "idle";
+      $("selectedCluster").textContent = "Chưa chọn cụm.";
+      $("currentPrompt").textContent = "Chưa có prompt đang xử lý.";
+      $("generatedScript").textContent = "Chưa có script hoàn tất.";
+      $("upcomingWork").textContent = "Không có turn đang chờ.";
+      $("completedHistory").textContent = "Chưa có speech hoàn tất.";
+      $("clusterList").textContent = "Chưa có active cluster.";
+    }
+
+    function renderDiagnostics() {
+      const data = state.diagnostics;
+      const lifecycle = state.session.lifecycle;
+      if (!data) { clearDiagnosticsView();
+        return;
+      }
+      const queue = data.queue_stats || {};
+      const history = Array.isArray(queue.completed_speech_history) ? queue.completed_speech_history : [];
+      const latest = history.length ? history[history.length - 1] : null;
+      const active = queue.active_decision || null;
+      const plan = queue.speech_queue || {};
+      const currentProduct = plan.current_product || (active?.product_id ? { product_id: active.product_id, name: "" } : null);
+      const selected = active?.selected_cluster || latest?.selected_cluster || lifecycle?.selected_cluster || [];
+      const promptLayers = active?.prompt_layers || latest?.prompt_layers || lifecycle?.prompt_layers;
+      const prompt = promptLayers ? [
+        `BASE ROLE\n${promptLayers.base_role || "Chưa có"}`,
+        `SHOP PROFILE\n${promptLayers.shop_profile || "Chưa có"}`,
+        `STAGE TASK\n${promptLayers.stage_task || "Chưa có"}`,
+        `FINAL PROMPT\n${promptLayers.final_prompt || "Chưa có"}`
+      ].join("\n\n") : active?.prompt || "Chưa có prompt đang xử lý.";
+      const script = latest?.script || (lifecycle?.type === "coordinator.speak_finished" ? lifecycle.text : "") || "Chưa có script hoàn tất.";
+      const playback = active?.state || latest?.state || lifecycle?.state || "idle";
+      const upcoming = Array.isArray(queue.queued_decisions_detail) ? queue.queued_decisions_detail : [];
+      const nextProduct = plan.next_product || null;
+      $("metrics").replaceChildren(
+        metric("received_total", queue.received_total), metric("buffered_comments", queue.buffered_comments), metric("active_comments", queue.active_comments),
+        metric("director_cycles", queue.director_cycles), metric("active_decision", active ? 1 : 0), metric("queued_decisions", queue.queued_decisions),
+        metric("completed_speeches", queue.completed_speeches), metric("singleton_clusters", data.singleton_clusters), metric("actionable_clusters", data.actionable_clusters),
+        metric("total_clusters", data.total_clusters)
+      );
+      setStatus("embedderStatus", `Embedder: ${data.embedder_name || "unknown"} · trạng thái=${data.embedder_status || "unknown"} · threshold=${data.cluster_merge_threshold ?? "?"} · multi=${data.multi_comment_clusters ?? 0} · unanswered=${data.unanswered_clusters ?? 0}`, data.embedder_status === "ready" ? "success" : "warning");
+      $("currentDecision").textContent = active ? `turn_id=${active.turn_id}\naction=${active.action}\nproduct=${active.product_id || "—"}\nstate=${active.state}` : currentProduct ? `Không có turn active.\nCurrent product=${currentProduct.product_id} ${currentProduct.name || ""}` : "Chưa có quyết định.";
+      $("playbackState").textContent = playback;
+      $("selectedCluster").textContent = selected.length ? selected.join("\n") : "Chưa chọn cụm.";
+      $("currentPrompt").textContent = prompt;
+      $("generatedScript").textContent = script;
+      $("upcomingWork").textContent = upcoming.length || nextProduct ? `${upcoming.length ? JSON.stringify(upcoming, null, 2) : "Không có turn đã queue."}${nextProduct ? `\n\nSản phẩm tiếp theo:\n${JSON.stringify(nextProduct, null, 2)}` : ""}` : "Không có turn đang chờ.";
+      $("completedHistory").textContent = history.length ? JSON.stringify(history, null, 2) : "Chưa có speech hoàn tất.";
+      renderClusters(data.clusters || []);
+    }
+
+    function renderClusters(clusters) {
+      const container = $("clusterList");
+      if (!clusters.length) { container.textContent = "Chưa có active cluster."; return; }
+      const fragment = document.createDocumentFragment();
+      for (const [index, cluster] of clusters.entries()) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `Cụm ${index + 1} · size=${cluster.size} · ${cluster.category || "unknown"}/${cluster.intent || "unknown"} · product=${cluster.product_id || "unknown"} · actionable=${cluster.actionable ? "có" : "không"}`;
+        const members = document.createElement("ol");
+        for (const member of cluster.members || []) { const item = document.createElement("li"); item.textContent = member; members.appendChild(item); }
+        details.append(summary, members); fragment.appendChild(details);
+      }
+      container.replaceChildren(fragment);
+    }
+
+    function renderEvents() {
+      const fragment = document.createDocumentFragment();
+      for (const event of state.events) {
+        const row = document.createElement("div"); row.className = "event-row";
+        const time = document.createElement("time"); time.dateTime = event.at; time.textContent = new Date(event.at).toLocaleTimeString("vi-VN");
+        const text = document.createElement("span"); text.textContent = event.message;
+        row.append(time, text); fragment.appendChild(row);
+      }
+      $("eventLog").replaceChildren(fragment);
+    }
+
+    function validateProductCatalog(products) {
+      const errors = [];
+      if (!Array.isArray(products)) return ["products: phải là JSON array."];
+      if (products.length > 100) errors.push("products: tối đa 100 sản phẩm.");
+      const ids = new Set();
+      const stringLimits = { id: 128, name: 256, description: 2000, promotion: 500, material: 256, shipping: 500, warranty: 500, ref_image: 2048 };
+      products.forEach((product, index) => {
+        if (!product || typeof product !== "object" || Array.isArray(product)) { errors.push(`products[${index}]: phải là object.`); return; }
+        for (const [field, limit] of Object.entries(stringLimits)) {
+          const value = product[field];
+          if ((field === "id" || field === "name") && (typeof value !== "string" || !value.trim())) errors.push(`products[${index}].${field}: bắt buộc.`);
+          else if (value != null && typeof value !== "string") errors.push(`products[${index}].${field}: phải là chuỗi.`);
+          else if (typeof value === "string" && value.length > limit) errors.push(`products[${index}].${field}: tối đa ${limit} ký tự.`);
+        }
+        if (typeof product.id === "string") { if (ids.has(product.id)) errors.push(`products[${index}].id: trùng ID ${product.id}.`); ids.add(product.id); }
+        for (const field of ["price", "original_price", "stock_total"]) {
+          const value = product[field];
+          if (value != null && (!Number.isInteger(value) || value < 0)) errors.push(`products[${index}].${field}: phải là số nguyên không âm.`);
+        }
+        if (product.price != null && product.original_price != null && product.original_price < product.price) errors.push(`products[${index}].original_price: phải lớn hơn hoặc bằng price.`);
+        for (const field of ["colors", "sizes", "features"]) {
+          const values = product[field] ?? [];
+          if (!Array.isArray(values)) errors.push(`products[${index}].${field}: phải là array.`);
+          else {
+            if (values.length > 32) errors.push(`products[${index}].${field}: tối đa 32 phần tử.`);
+            values.forEach((value, itemIndex) => { if (typeof value !== "string" || !value.length || value.length > 500) errors.push(`products[${index}].${field}[${itemIndex}]: chuỗi 1-500 ký tự.`); });
           }
-          return;
         }
-        const d = await res.json();
-        sessionId = d.session_id;
-        sessionMode = d.mode || "LITE";
-        log(`✓ session ${sessionId} mode=${sessionMode}`);
-        $("sessionInfo").textContent = `session=${sessionId.slice(0,8)}… mode=${sessionMode}`;
-        $("startBtn").disabled = true;
-        $("stopBtn").disabled = false;
-        $("speakBtn").disabled = false;
-        $("autoSpeakBtn").disabled = false;
-        $("attachBtn").disabled = false;
+      });
+      return errors;
+    }
 
-        const lkUrl = d.livekit_url || "";
-        const lkToken = d.livekit_client_token || "";
-        if (lkUrl && lkToken) {
-          pendingLivekit = { url: lkUrl, token: lkToken };
-          $("livekitBar").style.display = "flex";
-          $("livekitConnectBtn").disabled = false;
-          $("livekitStatus").textContent = "LiveKit creds ready — click Connect";
-          log("✓ LiveKit creds received: " + lkUrl);
-          // auto-connect
-          if (hasLivekitClient()) await connectLiveKit(lkUrl, lkToken);
-        } else {
-          log("⚠ no LiveKit creds in start response");
-        }
-      } catch (e) { log("✗ start error: " + e); }
+    function validateDraft() {
+      const errors = validateProductCatalog(state.draft.products);
+      const shopLimits = { shop_name: 256, host_name: 128, address: 500, phone: 64, selling_style: 1000 };
+      for (const [field, limit] of Object.entries(shopLimits)) if (typeof state.draft.shop[field] !== "string" || state.draft.shop[field].length > limit) errors.push(`shop_profile.${field}: tối đa ${limit} ký tự.`);
+      if (!state.draft.selectedProductIds.length) errors.push("products: chọn ít nhất một sản phẩm.");
+      return errors;
+    }
+
+    async function checkHealth() {
+      try {
+        const body = await requestJson("/api/v1/health/ready", { headers: viewerHeaders() });
+        addEvent(`Health: ${body.status || (body.ok ? "ready" : "not_ready")} · render=${body.render_backend} · LLM=${body.llm_engine} · TTS=${body.tts_engine}`, body.ok ? "success" : "warning");
+      } catch (error) { addEvent(`Health thất bại: ${safeMessage(error)}`, "danger"); }
+    }
+
+    async function discoverResources() {
+      dispatch({ type: "RESOURCES_SET", value: { status: "Đang discovery..." } });
+      const [enginesResult, avatarsResult] = await Promise.allSettled([
+        getAdminToken() ? requestJson("/api/v1/engines", { headers: adminHeaders() }) : null,
+        getViewerToken() ? requestJson("/api/v1/avatars", { headers: viewerHeaders() }) : null
+      ]);
+      const engines = enginesResult.value || state.resources.engines;
+      const avatars = avatarsResult.value?.avatars || state.resources.avatars;
+      if (enginesResult.status === "rejected") addEvent(`Discovery engines thất bại: ${safeMessage(enginesResult.reason)}`, "danger");
+      if (avatarsResult.status === "rejected") addEvent(`Discovery avatars thất bại: ${safeMessage(avatarsResult.reason)}`, "danger");
+      const llmId = engines?.llm?.id || engines?.available_llm_presets?.[0]?.id || "";
+      const ttsId = engines?.tts?.id || engines?.available_tts_presets?.[0]?.id || "";
+      const voiceId = engines?.voices?.find((voice) => voice.active)?.id || engines?.voices?.[0]?.id || "default";
+      const status = engines
+        ? `Discovery hoàn tất: LLM=${engines.llm.id}, TTS=${engines.tts.id}, avatars=${avatars.length}.`
+        : "Nhập token để discovery tài nguyên được bảo vệ.";
+      dispatch({ type: "RESOURCES_SET", value: { engines, avatars, llmId, ttsId, voiceId, status } });
+    }
+
+    function enginePayload(preset, kind) {
+      const known = { engine: preset.engine, model: kind === "tts" ? (preset.model || preset.weights_path || "") : (preset.model || ""), device: preset.device || "auto", sample_rate: preset.sample_rate || 24000 };
+      return { ...known, extra: Object.fromEntries(Object.entries(preset).filter(([key]) => !["id", "label", "ready", "capabilities", "engine", "model", "weights_path", "device", "sample_rate", "notes"].includes(key))) };
+    }
+
+    async function applyEngine(kind) {
+      const engines = state.resources.engines;
+      if (!engines) { addEvent("Hãy discovery trước khi nạp engine.", "warning"); return; }
+      const presets = kind === "llm" ? engines.available_llm_presets : engines.available_tts_presets;
+      const id = kind === "llm" ? state.resources.llmId : state.resources.ttsId;
+      const preset = presets.find((item) => item.id === id);
+      if (!preset) { addEvent(`Không tìm thấy ${kind} đã chọn.`, "danger"); return; }
+      dispatch({ type: "RESOURCES_SET", value: { status: `Đang nạp ${kind.toUpperCase()} ${preset.label}...` } });
+      try {
+        await requestJson(`/api/v1/engines/${kind}`, { method: "POST", headers: adminHeaders(true), body: JSON.stringify(enginePayload(preset, kind)) });
+        addEvent(`Đã nạp ${kind.toUpperCase()} ${preset.label}.`, "success");
+        await discoverResources();
+      } catch (error) { dispatch({ type: "RESOURCES_SET", value: { status: `Nạp ${kind} thất bại: ${safeMessage(error)}` } }); addEvent(`Nạp ${kind} thất bại: ${safeMessage(error)}`, "danger"); }
+    }
+
+    async function previewVoice() {
+      const engines = state.resources.engines;
+      if (!engines) { addEvent("Hãy discovery TTS trước.", "warning"); return; }
+      if (state.resources.ttsId !== engines.tts.id) { addEvent("TTS đã chọn chưa active. Nạp TTS trước khi preview.", "warning"); return; }
+      try {
+        const response = await fetch(backend() + "/api/v1/engines/tts/preview", { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ text: $("previewText").value.trim(), tts_id: state.resources.ttsId, voice_id: state.resources.voiceId }) });
+        if (!response.ok) { const body = await response.json().catch((error) => ({ detail: `Không đọc được lỗi preview: ${safeMessage(error)}` })); throw new Error(body.detail || `HTTP ${response.status}`); }
+        const blob = await response.blob();
+        if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+        previewObjectUrl = URL.createObjectURL(blob); $("previewAudio").src = previewObjectUrl;
+        await $("previewAudio").play(); addEvent(`Preview TTS ${response.headers.get("X-TTS-Id") || state.resources.ttsId} thành công.`, "success");
+      } catch (error) { addEvent(`Preview TTS thất bại: ${safeMessage(error)}`, "danger"); }
+    }
+
+    async function verifySandbox() {
+      dispatch({ type: "AUTO_PHASE", phase: "verifying", active: state.autoDemo.active });
+      dispatch({ type: "RESOURCES_SET", value: { status: "Đang chạy sandbox verification 3 lớp..." } });
+      try {
+        const body = await requestJson("/api/v1/admin/sandbox/verify", { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ avatar_id: state.resources.avatarId || null, speech_text: "Xin chào, đây là phiên kiểm tra Stage 2." }) });
+        dispatch({ type: "VERIFICATION_SET", value: body });
+        dispatch({ type: "RESOURCES_SET", value: { status: `Sandbox verification: ${body.ready ? "PASS" : "FAIL"}. ${body.layers.map((layer) => `${layer.name}=${layer.status}(${layer.latency_ms}ms)`).join(" · ")}` } });
+        addEvent(`Sandbox verification ${body.ready ? "PASS" : "FAIL"}.`, body.ready ? "success" : "danger");
+        if (!body.ready) dispatch({ type: "AUTO_PHASE", phase: "failed", active: false });
+        return body.ready;
+      } catch (error) { dispatch({ type: "VERIFICATION_SET", value: { ready: false, layers: [] } }); dispatch({ type: "RESOURCES_SET", value: { status: `Sandbox verification thất bại: ${safeMessage(error)}` } }); dispatch({ type: "AUTO_PHASE", phase: "failed", active: false }); addEvent(`Sandbox verification thất bại: ${safeMessage(error)}`, "danger"); return false; }
+    }
+
+    async function startSession() {
+      try {
+        const body = await requestJson("/api/v1/lite/start", { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ avatar_id: state.resources.avatarId || null, is_sandbox: $("sandboxToggle").checked }) });
+        dispatch({ type: "SESSION_SET", value: { id: body.session_id, mode: body.mode, livekit: body.livekit_url && body.livekit_client_token ? { url: body.livekit_url, token: body.livekit_client_token } : null, attached: false } });
+        connectControlSocket();
+        if (state.session.livekit) await connectLiveKit();
+        addEvent(`Session đã start: ${body.session_id}.`, "success"); return true;
+      } catch (error) { addEvent(`Start session thất bại: ${safeMessage(error)}`, "danger"); dispatch({ type: "AUTO_PHASE", phase: "failed", active: false }); return false; }
     }
 
     async function stopSession() {
-      if (!sessionId) return;
-      log("→ POST /api/v1/lite/stop");
+      if (!state.session.id) return;
       try {
-        await fetch(backend() + "/api/v1/lite/stop", {
-          method: "POST", headers: jsonHeaders(),
-          body: JSON.stringify({ session_id: sessionId }),
-        });
-        log("✓ stopped");
-      } catch (e) { log("✗ stop error: " + e); }
-      stopAutoSpeak();
-      if (livekitRoom) { try { await livekitRoom.disconnect(); } catch(e){} livekitRoom = null; }
+        await requestJson("/api/v1/lite/stop", { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ session_id: state.session.id }) });
+        await cleanupLocalSession(); dispatch({ type: "SESSION_CLEAR" }); dispatch({ type: "AUTO_PHASE", phase: "stopped", active: false }); addEvent("Session đã stop và dọn tài nguyên local.", "success");
+      } catch (error) { addEvent(`Stop session thất bại; giữ state để có thể thử lại: ${safeMessage(error)}`, "danger"); }
+    }
+
+    async function cleanupLocalSession() {
+      stopAutoDemo(false);
+      if (controlSocket) { controlSocket.close(); controlSocket = null; }
+      if (livekitRoom) { await livekitRoom.disconnect(); livekitRoom = null; }
       $("avatarVideo").srcObject = null;
-      $("noVideo").style.display = "block";
-      sessionId = null; sessionMode = null; pendingLivekit = null;
-      $("startBtn").disabled = false;
-      $("stopBtn").disabled = true;
-      $("speakBtn").disabled = true;
-      $("autoSpeakBtn").disabled = true;
-      $("attachBtn").disabled = true;
-      $("livekitBar").style.display = "none";
-      $("sessionInfo").textContent = "— no session —";
-      $("latency").textContent = "—";
     }
 
-    // ── LiveKit WebRTC connect (avatar video from LiveAvatar cloud) ─
-    async function connectLiveKit(url, token) {
-      if (!url || !token) { log("✗ no LiveKit creds"); return false; }
-      if (!hasLivekitClient()) { log("⚠ livekit-client SDK not loaded (check CDN)"); return false; }
-      log("→ LiveKit connect: " + url);
+    async function connectLiveKit() {
+      if (!state.session.livekit) { addEvent("Chưa có LiveKit credentials.", "warning"); return false; }
+      if (!window.LiveKit?.Room) { addEvent("LiveKit SDK chưa tải được.", "danger"); return false; }
       try {
-        const RoomCtor = window.LiveKit.Room;
-        livekitRoom = new RoomCtor({ adaptiveStream: true, dynacast: true });
-        await livekitRoom.connect(url, token);
-        log("✓ LiveKit connected, room=" + (livekitRoom.name || "?"));
-        $("livekitStatus").textContent = "connected ✓";
-        // livekit-client v2+ API: trackSubscribed(track, publication, participant)
-        livekitRoom.on("trackSubscribed", (track, publication, participant) => {
-          if (track.kind === "video") {
-            const el = $("avatarVideo");
-            track.attach(el);  // livekit-client API: attach track to element
-            el.style.display = "block";
-            $("noVideo").style.display = "none";
-            log("✓ avatar video track attached");
-          } else if (track.kind === "audio") {
-            // audio: create <audio> element, attach (no UI needed)
-            const a = document.createElement("audio");
-            a.autoplay = true;
-            document.body.appendChild(a);
-            track.attach(a);
-            log("✓ audio track attached");
-          }
+        if (livekitRoom) await livekitRoom.disconnect();
+        livekitRoom = new window.LiveKit.Room({ adaptiveStream: true, dynacast: true });
+        livekitRoom.on("trackSubscribed", (track) => {
+          if (track.kind === "video") track.attach($("avatarVideo"));
+          if (track.kind === "audio") { const audio = document.createElement("audio"); audio.autoplay = true; audio.className = "sr-only"; document.body.appendChild(audio); track.attach(audio); }
         });
-        return true;
-      } catch (e) {
-        log("✗ LiveKit connect error: " + e);
-        $("livekitStatus").textContent = "connect failed ✗";
-        return false;
-      }
+        await livekitRoom.connect(state.session.livekit.url, state.session.livekit.token); renderSession(); addEvent("LiveKit đã kết nối.", "success"); return true;
+      } catch (error) { livekitRoom = null; renderSession(); addEvent(`LiveKit kết nối thất bại: ${safeMessage(error)}`, "danger"); return false; }
     }
 
-    // (handleTrack removed — trackSubscribed handler inlines track.attach per
-    // livekit-client v2+ API; old mediaStream approach was wrong.)
-
-    // ── Speak (LLM → TTS → avatar) ─────────────────────────────────
-    async function speak() {
-      if (!sessionId) { log("⚠ start session first"); return; }
-      const text = $("speakText").value.trim();
-      if (!text) { log("⚠ empty speak text"); return; }
-      const t0 = performance.now();
-      log("→ POST /api/v1/lite/say: " + text.slice(0, 60));
-      try {
-        const res = await fetch(backend() + "/api/v1/lite/say", {
-          method: "POST", headers: jsonHeaders(),
-          body: JSON.stringify({ session_id: sessionId, text }),
-        });
-        const d = await res.json();
-        const ms = Math.round(performance.now() - t0);
-        $("latency").textContent = `${ms} ms`;
-        log(`✓ say ok=${d.ok || d.accepted || "?"} ${ms}ms`);
-      } catch (e) { log("✗ say error: " + e); }
-    }
-
-    function startAutoSpeak() {
-      if (!sessionId) return;
-      autoSpeakActive = true;
-      $("autoSpeakBtn").textContent = "■ Stop auto";
-      sendNextMock();
-    }
-    function stopAutoSpeak() {
-      autoSpeakActive = false;
-      if (autoSpeakTimer) { clearTimeout(autoSpeakTimer); autoSpeakTimer = null; }
-      $("autoSpeakBtn").textContent = "▶ Auto demo";
-    }
-    function sendNextMock() {
-      if (!autoSpeakActive || !sessionId) return;
-      const msg = MOCK_COMMENTS[Math.floor(Math.random() * MOCK_COMMENTS.length)];
-      $("speakText").value = msg;
-      speak().then(() => {
-        if (!autoSpeakActive) return;
-        autoSpeakTimer = setTimeout(sendNextMock, 4000 + Math.random() * 3000);
+    function connectControlSocket() {
+      if (!state.session.id) return;
+      if (controlSocket) controlSocket.close();
+      const url = new URL(backend());
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.pathname = `/api/v1/ws/control/${encodeURIComponent(state.session.id)}`;
+      const token = getViewerToken();
+      url.search = token ? `token=${encodeURIComponent(token)}` : "";
+      controlSocket = new WebSocket(url);
+      controlSocket.addEventListener("open", () => addEvent("Control WebSocket đã kết nối.", "success"));
+      controlSocket.addEventListener("message", (event) => {
+        try { handleLifecycleEvent(JSON.parse(event.data)); }
+        catch (error) { addEvent(`Không đọc được WebSocket event: ${safeMessage(error)}`, "danger"); }
       });
+      controlSocket.addEventListener("error", () => addEvent("Control WebSocket gặp lỗi kết nối.", "danger"));
+      controlSocket.addEventListener("close", () => addEvent("Control WebSocket đã đóng.", "warning"));
     }
 
-    // ── Mock data + attach ─────────────────────────────────────────
-    async function loadMockProducts() {
-      log("→ GET /api/v1/debug/mock_products (admin)");
-      try {
-        const res = await fetch(backend() + "/api/v1/debug/mock_products", { headers: adminHeaders() });
-        const d = await res.json();
-        $("productsJson").value = JSON.stringify(d.products, null, 2);
-        log(`✓ loaded ${d.products.length} mock products`);
-      } catch (e) { log("✗ mock products error: " + e); }
-    }
-    async function loadMockMsgs() {
-      log("→ GET /api/v1/debug/mock_viewer_msgs (admin)");
-      try {
-        const res = await fetch(backend() + "/api/v1/debug/mock_viewer_msgs", { headers: adminHeaders() });
-        const d = await res.json();
-        log(`✓ mock viewer pool: ${d.count} messages`);
-      } catch (e) { log("✗ mock msgs error: " + e); }
-    }
-    async function attachProducts() {
-      if (!sessionId) { log("⚠ start session first"); return; }
-      let products = [];
-      try { products = JSON.parse($("productsJson").value || "[]"); }
-      catch (e) { log("✗ invalid products JSON: " + e); return; }
-      log(`→ POST /api/v1/lite/attach ${products.length} products`);
-      try {
-        const res = await fetch(backend() + "/api/v1/lite/attach", {
-          method: "POST", headers: jsonHeaders(),
-          body: JSON.stringify({ session_id: sessionId, products }),
-        });
-        const d = await res.json();
-        log(`✓ attach ok=${d.ok || "?"}`);
-      } catch (e) { log("✗ attach error: " + e); }
-    }
-
-    // ── Wire up ────────────────────────────────────────────────────
-    $("checkEnginesBtn").onclick = checkEngines;
-    $("healthBtn").onclick = health;
-    $("startBtn").onclick = startSession;
-    $("stopBtn").onclick = stopSession;
-    $("livekitConnectBtn").onclick = () => { if (pendingLivekit) connectLiveKit(pendingLivekit.url, pendingLivekit.token); };
-    $("speakBtn").onclick = speak;
-    $("autoSpeakBtn").onclick = () => autoSpeakActive ? stopAutoSpeak() : startAutoSpeak();
-    $("loadMockProductsBtn").onclick = loadMockProducts;
-    $("loadMockMsgsBtn").onclick = loadMockMsgs;
-    $("attachBtn").onclick = attachProducts;
-    // Auto-stop session on page unload (avoid LiveAvatar concurrency leak).
-    window.addEventListener("beforeunload", () => {
-      if (sessionId) {
-        navigator.sendBeacon(
-          backend() + "/api/v1/lite/stop",
-          new Blob([JSON.stringify({ session_id: sessionId })], { type: "application/json" }),
-        );
+    function handleLifecycleEvent(event) {
+      dispatch({ type: "LIFECYCLE_EVENT", value: event });
+      addEvent(`WS ${event.type}${event.turn_id ? ` · turn=${event.turn_id}` : ""}${event.state ? ` · state=${event.state}` : ""}`);
+      if (AUTO_DEMO_STATES.includes(event.state)) dispatch({ type: "AUTO_PHASE", phase: event.state, active: state.autoDemo.active });
+      else if (event.type === "director.decision") {
+        if (["introduce_product", "sell_product"].includes(event.action)) dispatch({ type: "AUTO_PHASE", phase: "introducing", active: state.autoDemo.active });
+        else if (["answer_cluster", "answer_fact"].includes(event.action)) dispatch({ type: "AUTO_PHASE", phase: "answering", active: state.autoDemo.active });
+      } else if (event.type === "coordinator.speak_started") {
+        const phase = ["introduce_product", "sell_product"].includes(event.action) ? "introducing" : event.action?.startsWith("answer") ? "answering" : "generating";
+        dispatch({ type: "AUTO_PHASE", phase, active: state.autoDemo.active });
+      } else if (event.type === "coordinator.speak_finished") {
+        dispatch({ type: "AUTO_PHASE", phase: "advancing", active: state.autoDemo.active });
       }
+    }
+
+    async function speak() {
+      const text = $("speakText").value.trim();
+      if (!state.session.id || !text) { addEvent("Cần session và nội dung manual speech.", "warning"); return; }
+      dispatch({ type: "AUTO_PHASE", phase: "generating", active: state.autoDemo.active });
+      try { await requestJson("/api/v1/lite/say", { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ session_id: state.session.id, text, generate: false }) }); dispatch({ type: "AUTO_PHASE", phase: "advancing", active: state.autoDemo.active }); addEvent("Manual speech nguyên văn đã hoàn tất playback.", "success"); }
+      catch (error) { dispatch({ type: "AUTO_PHASE", phase: "failed", active: false }); addEvent(`Manual speech thất bại: ${safeMessage(error)}`, "danger"); }
+    }
+
+    async function loadMockProducts() {
+      const products = structuredClone(LOCAL_PRODUCT_FIXTURES);
+      const ids = products.map((product) => product.id);
+      dispatch({ type: "PRODUCTS_SET", value: { products, selectedProductIds: ids, productOrder: ids, jsonText: productJson(products), jsonDirty: false, errors: [] } });
+      return products;
+    }
+
+    async function loadMockMessages() {
+      if (mockViewerMsgs.length) return mockViewerMsgs;
+      try { const body = await requestJson("/api/v1/debug/mock_viewer_msgs", { headers: adminHeaders() }); mockViewerMsgs = Array.isArray(body.messages) ? body.messages : []; return mockViewerMsgs; }
+      catch (error) { addEvent(`Nạp mock comments thất bại: ${safeMessage(error)}`, "danger"); return []; }
+    }
+
+    async function attachDraft() {
+      if (!state.session.id) { addEvent("Hãy start session trước.", "warning"); return false; }
+      const errors = validateDraft();
+      dispatch({ type: "DRAFT_PATCH", value: { errors } });
+      if (errors.length) { addEvent(`Không attach: ${errors.length} lỗi cấu hình.`, "danger"); return false; }
+      dispatch({ type: "AUTO_PHASE", phase: "attaching", active: state.autoDemo.active });
+      const selected = new Set(state.draft.selectedProductIds);
+      const products = orderedProducts().filter((product) => selected.has(product.id));
+      try {
+        const body = await requestJson("/api/v1/lite/attach", { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ session_id: state.session.id, shop_profile: state.draft.shop, products }) });
+        dispatch({ type: "SESSION_SET", value: { attached: true } }); dispatch({ type: "AUTO_PHASE", phase: "advancing", active: state.autoDemo.active });
+        addEvent(`Attach thành công: ${body.products?.length ?? products.length} sản phẩm; đầu tiên=${products[0].id}.`, "success"); scheduleDiagnostics(0); return true;
+      } catch (error) { dispatch({ type: "AUTO_PHASE", phase: "failed", active: false }); addEvent(`Attach thất bại: ${safeMessage(error)}`, "danger"); return false; }
+    }
+
+    function appendComment(author, text) {
+      const row = document.createElement("div"); row.className = "feed-row"; row.textContent = `${author}: ${text}`;
+      $("msgFeed").appendChild(row); $("msgFeed").scrollTop = $("msgFeed").scrollHeight;
+      while ($("msgFeed").children.length > AUTO_DEMO_COMMENT_COUNT) $("msgFeed").firstElementChild.remove();
+    }
+
+    async function ingestComments(comments, signal = undefined) {
+      const body = await requestJson("/api/v1/lite/ingest", { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ session_id: state.session.id, comments, viewer_count: 1010, msg_rate: 2.0 }), signal });
+      addEvent(`Ingest accepted=${body.accepted ?? comments.length}.`);
+    }
+
+    async function ingestNextDemoBatch(generation, batchSize = 1) {
+      if (!state.autoDemo.active || generation !== autoDemoGeneration || !state.session.id || !state.session.attached) return false;
+      const source = mockViewerMsgs.length ? mockViewerMsgs : ["Shop ơi sản phẩm này giá bao nhiêu?", "Có freeship không shop?"];
+      const now = Date.now() / 1000;
+      const comments = Array.from({ length: batchSize }, (_, index) => {
+        const sourceIndex = (autoDemoCursor + index) % source.length;
+        return { text: source[sourceIndex], id: `demo-${generation}-${autoDemoCursor + index}-${Date.now()}`, t: now + index * 0.001 };
+      });
+      autoDemoCursor = (autoDemoCursor + batchSize) % source.length;
+      comments.forEach((comment, index) => appendComment(`viewer${autoDemoCursor + index + 1}`, comment.text));
+      try {
+        autoDemoAbortController = new AbortController();
+        await ingestComments(comments, autoDemoAbortController.signal);
+        return generation === autoDemoGeneration;
+      }
+      catch (error) { if (generation === autoDemoGeneration) { dispatch({ type: "AUTO_PHASE", phase: "failed", active: false }); addEvent(`Auto Demo ingest thất bại: ${safeMessage(error)}`, "danger"); } return false; }
+    }
+
+    function scheduleAutoDemoTick(generation) {
+      if (!state.autoDemo.active || generation !== autoDemoGeneration) return;
+      const rate = Math.min(5, Math.max(0.2, Number($("autoDemoRate").value) || 0.67));
+      const batchSize = $("autoDemoMode").value === "batch" && !autoDemoHasSeeded ? AUTO_DEMO_COMMENT_COUNT : 1;
+      autoDemoHasSeeded = true;
+      autoDemoTimer = setTimeout(async () => {
+        if (!state.autoDemo.active || generation !== autoDemoGeneration) return;
+        const accepted = await ingestNextDemoBatch(generation, batchSize);
+        if (accepted) scheduleAutoDemoTick(generation);
+      }, 1000 / rate);
+    }
+
+    async function startAutoDemo() {
+      if (!state.session.id || !state.session.attached) {
+        dispatch({ type: "AUTO_PHASE", phase: "failed", active: false });
+        addEvent("Auto Demo yêu cầu Start session và Attach cấu hình trước.", "warning");
+        return;
+      }
+      if (state.autoDemo.active) return;
+      autoDemoGeneration += 1;
+      autoDemoCursor = 0;
+      autoDemoHasSeeded = false;
+      dispatch({ type: "AUTO_PHASE", phase: "advancing", active: true });
+      try {
+        if (!mockViewerMsgs.length) await loadMockMessages();
+        $("msgFeed").replaceChildren();
+        const generation = autoDemoGeneration;
+        const batchSize = $("autoDemoMode").value === "batch" ? AUTO_DEMO_COMMENT_COUNT : 1;
+        await ingestNextDemoBatch(generation, batchSize);
+        addEvent(`Auto Demo chạy liên tục ở tốc độ ${$("autoDemoRate").value || "0.67"} comment/s.`, "success");
+        scheduleAutoDemoTick(generation);
+        scheduleDiagnostics(0);
+      } catch (error) { dispatch({ type: "AUTO_PHASE", phase: "failed", active: false }); addEvent(`Auto Demo thất bại: ${safeMessage(error)}`, "danger"); }
+    }
+
+    async function stopAutoDemo(setStopped = true) {
+      autoDemoGeneration += 1;
+      if (autoDemoTimer) { clearTimeout(autoDemoTimer); autoDemoTimer = null; }
+      if (autoDemoAbortController) { autoDemoAbortController.abort(); autoDemoAbortController = null; }
+      if (state.session.id && setStopped) {
+        try { await requestJson("/api/v1/lite/interrupt", { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ session_id: state.session.id }) }); }
+        catch (error) { addEvent(`Interrupt Auto Demo thất bại: ${safeMessage(error)}`, "danger"); }
+      }
+      if (setStopped) dispatch({ type: "AUTO_PHASE", phase: "stopped", active: false });
+      else state = reducer(state, { type: "AUTO_PHASE", phase: "stopped", active: false });
+    }
+
+    function scheduleDiagnostics(delay = 2000) {
+      if (diagnosticTimer) clearTimeout(diagnosticTimer);
+      if (!state.session.id || !state.session.attached) return;
+      diagnosticTimer = setTimeout(pollDiagnostics, delay);
+    }
+
+    async function pollDiagnostics() {
+      if (!state.session.id || !state.session.attached) return;
+      try { const body = await requestJson(`/api/v1/debug/clusters/${encodeURIComponent(state.session.id)}`, { headers: adminHeaders() }); dispatch({ type: "DIAGNOSTICS_SET", value: body }); }
+      catch (error) { addEvent(`Diagnostics polling thất bại: ${safeMessage(error)}`, "danger"); }
+      finally { scheduleDiagnostics(); }
+    }
+
+    function replaceProductId(productId, nextId) {
+      if (nextId !== productId && productById(nextId)) {
+        dispatch({ type: "DRAFT_PATCH", value: { errors: [`products.id: trùng ID ${nextId}.`] } });
+        return;
+      }
+      const products = state.draft.products.map((product) => product.id === productId ? { ...product, id: nextId } : product);
+      const productOrder = state.draft.productOrder.map((id) => id === productId ? nextId : id);
+      const selectedProductIds = state.draft.selectedProductIds.map((id) => id === productId ? nextId : id);
+      dispatch({ type: "PRODUCTS_SET", value: { products, productOrder, selectedProductIds, jsonText: productJson(products), jsonDirty: false, errors: [] } });
+    }
+
+    function changeProductField(productId, field, value) {
+      if (field === "id") { replaceProductId(productId, value); return; }
+      const products = state.draft.products.map((product) => product.id === productId ? { ...product, [field]: value } : product);
+      dispatch({ type: "PRODUCTS_SET", value: { products, jsonText: productJson(products), jsonDirty: false, errors: [] } });
+    }
+
+    function moveProduct(productId, offset) {
+      const order = [...state.draft.productOrder]; const from = order.indexOf(productId); const to = from + offset;
+      if (from < 0 || to < 0 || to >= order.length) return;
+      [order[from], order[to]] = [order[to], order[from]];
+      dispatch({ type: "DRAFT_PATCH", value: { productOrder: order } });
+    }
+
+    function applyProductJson() {
+      const text = $("productsJson").value;
+      let products;
+      try { products = JSON.parse(text); }
+      catch (error) { dispatch({ type: "DRAFT_PATCH", value: { jsonText: text, jsonDirty: true, errors: [`JSON: ${safeMessage(error)}`] } }); return; }
+      const errors = validateProductCatalog(products);
+      if (errors.length) { dispatch({ type: "DRAFT_PATCH", value: { jsonText: text, jsonDirty: true, errors } }); return; }
+      const ids = products.map((product) => product.id);
+      dispatch({ type: "PRODUCTS_SET", value: { products, selectedProductIds: ids, productOrder: ids, jsonText: productJson(products), jsonDirty: false, errors: [] } });
+      addEvent(`Advanced JSON hợp lệ và đã áp dụng ${products.length} sản phẩm.`, "success");
+    }
+
+    const shopFields = { shopName: "shop_name", hostName: "host_name", shopAddress: "address", shopPhone: "phone", sellingStyle: "selling_style" };
+    for (const [id, field] of Object.entries(shopFields)) $(id).addEventListener("input", (event) => {
+      $("shopProfileSelect").value = "custom";
+      dispatch({ type: "SHOP_FIELD", field, value: event.target.value });
+    });
+    $("shopProfileSelect").addEventListener("change", (event) => {
+      const preset = SHOP_PROFILE_PRESETS[event.target.value];
+      if (preset) dispatch({ type: "DRAFT_PATCH", value: { shop: structuredClone(preset) } });
+    });
+    $("productList").addEventListener("change", (event) => {
+      const card = event.target.closest(".product-card"); if (!card) return; const productId = card.dataset.productId; const field = event.target.dataset.field;
+      if (field === "selected") { const selected = new Set(state.draft.selectedProductIds); event.target.checked ? selected.add(productId) : selected.delete(productId); dispatch({ type: "DRAFT_PATCH", value: { selectedProductIds: [...selected], errors: [] } }); return; }
+      if (!field) return; let value = event.target.value;
+      if (event.target.dataset.type === "integer") value = value === "" ? null : Number(value);
+      else if (event.target.dataset.type === "boolean") value = event.target.checked;
+      else if (event.target.dataset.type === "array") value = value.split(",").map((item) => item.trim()).filter(Boolean);
+      changeProductField(productId, field, value);
+    });
+    $("productList").addEventListener("click", (event) => {
+      const control = event.target.closest('button[data-action], input[data-field="selected"]');
+      if (!control) return;
+      event.stopPropagation();
+      const button = control.closest("button[data-action]");
+      if (!button) return;
+      const productId = button.closest(".product-card").dataset.productId;
+      moveProduct(productId, button.dataset.action === "move-up" ? -1 : 1);
+    });
+    $("productsJson").addEventListener("input", (event) => dispatch({ type: "DRAFT_PATCH", value: { jsonText: event.target.value, jsonDirty: true, errors: ["Advanced JSON chưa được validate; product form đang khóa để bảo toàn draft hợp lệ."] } }));
+    async function loadProtectedResources() {
+      if (getAdminToken()) await discoverResources();
+      if (getViewerToken()) await discoverResources();
+    }
+
+    $("backend").addEventListener("change", () => addEvent(`Backend đổi thành ${backend()}.`));
+    $("adminToken").addEventListener("change", loadProtectedResources);
+    $("apiToken").addEventListener("change", discoverResources);
+    $("avatarSelect").addEventListener("change", (event) => dispatch({ type: "RESOURCE_SELECT", field: "avatarId", value: event.target.value }));
+    $("llmSelect").addEventListener("change", (event) => dispatch({ type: "RESOURCE_SELECT", field: "llmId", value: event.target.value }));
+    $("ttsSelect").addEventListener("change", (event) => dispatch({ type: "RESOURCE_SELECT", field: "ttsId", value: event.target.value }));
+    $("voiceSelect").addEventListener("change", (event) => dispatch({ type: "RESOURCE_SELECT", field: "voiceId", value: event.target.value }));
+    $("healthBtn").addEventListener("click", checkHealth);
+    $("discoverBtn").addEventListener("click", discoverResources);
+    $("verifyBtn").addEventListener("click", verifySandbox);
+    $("applyLlmBtn").addEventListener("click", () => applyEngine("llm"));
+    $("applyTtsBtn").addEventListener("click", () => applyEngine("tts"));
+    $("previewBtn").addEventListener("click", previewVoice);
+    $("startBtn").addEventListener("click", startSession);
+    $("stopBtn").addEventListener("click", stopSession);
+    $("livekitConnectBtn").addEventListener("click", connectLiveKit);
+    $("speakBtn").addEventListener("click", speak);
+    $("addProductBtn").addEventListener("click", () => {
+      let number = state.draft.products.length + 1; let id = `NEW-${number}`;
+      while (productById(id)) { number += 1; id = `NEW-${number}`; }
+      const products = [...state.draft.products, { ...EMPTY_PRODUCT, id, name: `Sản phẩm ${number}` }];
+      dispatch({ type: "PRODUCTS_SET", value: { products, selectedProductIds: [...state.draft.selectedProductIds, id], productOrder: [...state.draft.productOrder, id], jsonText: productJson(products), jsonDirty: false, errors: [] } });
+    });
+    $("applyJsonBtn").addEventListener("click", applyProductJson);
+    $("attachBtn").addEventListener("click", attachDraft);
+    $("applyRuntimeConfigBtn").addEventListener("click", async () => {
+      if (!state.session.id || !state.session.attached) { addEvent("Runtime config yêu cầu session đã Attach.", "warning"); return; }
+      const payload = {
+        session_id: state.session.id,
+        comment_rate: Number($("autoDemoRate").value),
+        initial_ingest_mode: $("autoDemoMode").value,
+        max_qa_clusters_per_window: Number($("qaMaxClusters").value),
+        qa_window_hard_timeout_sec: Number($("qaTimeout").value),
+        qa_topic_cooldown_sec: Number($("qaCooldown").value),
+        answer_cache_variants: Number($("answerVariants").value),
+        prepared_turn_depth: Number($("preparedDepth").value),
+        transient_retry_count: Number($("retryCount").value),
+        demand_pivot_enter_share: Number($("pivotEnter").value),
+        demand_pivot_exit_share: Number($("pivotExit").value),
+      };
+      try { const body = await requestJson("/api/v1/lite/config", { method: "PATCH", headers: viewerHeaders(true), body: JSON.stringify(payload) }); addEvent(`Runtime config accepted revision=${body.config_revision}.`, "success"); }
+      catch (error) { addEvent(`Runtime config bị từ chối: ${safeMessage(error)}`, "danger"); }
+    });
+    $("autoDemoRate").addEventListener("change", (event) => {
+      const value = Math.min(5, Math.max(0.2, Number(event.target.value) || 0.67));
+      event.target.value = value.toFixed(2);
+      state.draft.testPreferences = { ...state.draft.testPreferences, commentRate: value };
+      persistLocalDraft();
+    });
+    $("autoDemoMode").addEventListener("change", (event) => {
+      state.draft.testPreferences = { ...state.draft.testPreferences, initialIngestMode: event.target.value };
+      persistLocalDraft();
+    });
+    $("autoDemoBtn").addEventListener("click", startAutoDemo);
+    $("stopAutoBtn").addEventListener("click", () => stopAutoDemo(true));
+    $("autoDemoRate").value = String(state.draft.testPreferences?.commentRate || 0.67);
+    $("autoDemoMode").value = state.draft.testPreferences?.initialIngestMode || "batch";
+    window.addEventListener("pagehide", () => {
+      if (!state.session.id) return;
+      fetch(backend() + "/api/v1/lite/stop", { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ session_id: state.session.id }), keepalive: true }).catch((error) => console.warn("Session cleanup request failed", safeMessage(error)));
     });
 
-    log("Stage 2 viewer ready. Click Health or Check engines to verify backend.");
+    render();
+    addEvent("Stage 2 operator console đã sẵn sàng.");
   </script>
 </body>
 </html>

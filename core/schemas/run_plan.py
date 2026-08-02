@@ -11,6 +11,12 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
+class SellingTask(BaseModel):
+    stage: Literal["intro", "benefit", "offer", "trust", "cta", "transition"]
+    task_id: str
+    instruction: str
+
+
 class OpeningPhase(BaseModel):
     intro_shop: str = "Chào mừng cả nhà đến livestream!"
     persona: str = "MC bán hàng nhiệt tình"
@@ -28,6 +34,7 @@ class ProductSellingPhase(BaseModel):
     product_id: str
     product_name: str = ""
     key_selling_points: list[str] = Field(default_factory=list)
+    tasks: list[SellingTask] = Field(default_factory=list)
     min_duration_sec: int = 120
     max_duration_sec: int = 480
     transition_cue: str = "Chuyển sang sản phẩm tiếp theo nhé!"

@@ -104,18 +104,17 @@ class LiteConversation:
         self.agent.stop_listening()
 
         out = self.tts(response)
-        # Normalize: streaming iterable vs single (pcm, rate)
-        # wait=False: fire-and-forget PCM stream (don't block say on avatar
-        # render — LiveAvatar cloud renders async; blocking 120s causes ALB
-        # 504 gateway timeout). say returns as soon as PCM is sent.
+        # Keep one utterance in flight per session. Returning before
+        # agent.speak_ended releases the shared lock while the avatar is still
+        # talking, so the next decision cuts the current sentence off.
         if isinstance(out, tuple) and len(out) == 2 and isinstance(out[0], (bytes, bytearray)):
             pcm, rate = out
-            self.agent.stream_pcm([pcm], source_rate=rate, wait=False)
+            self.agent.stream_pcm([pcm], source_rate=rate, wait=True)
         else:
             # iterable of (pcm, rate) — assume constant rate
             chunks = list(out)
             rate = chunks[0][1] if chunks else 24_000
-            self.agent.stream_pcm((c[0] for c in chunks), source_rate=rate, wait=False)
+            self.agent.stream_pcm((c[0] for c in chunks), source_rate=rate, wait=True)
 
         self.agent.start_listening()
         return response
@@ -128,11 +127,11 @@ class LiteConversation:
         out = self.tts(text)
         if isinstance(out, tuple) and len(out) == 2 and isinstance(out[0], (bytes, bytearray)):
             pcm, rate = out
-            self.agent.stream_pcm([pcm], source_rate=rate, wait=False)
+            self.agent.stream_pcm([pcm], source_rate=rate, wait=True)
         else:
             chunks = list(out)
             rate = chunks[0][1] if chunks else 24_000
-            self.agent.stream_pcm((c[0] for c in chunks), source_rate=rate, wait=False)
+            self.agent.stream_pcm((c[0] for c in chunks), source_rate=rate, wait=True)
         return text
 
     def stop(self) -> None:

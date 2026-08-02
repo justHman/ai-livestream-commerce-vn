@@ -27,8 +27,6 @@ infrastructure noise, not a test failure.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -252,7 +250,7 @@ def test_mock_mode_loads_configured_llm_when_set(monkeypatch: pytest.MonkeyPatch
 
     # Build a fresh AppConfig from the patched env so the test sees the
     # monkeypatched values (the module-level CONFIG was built at import time).
-    app = create_app(config=AppConfig.from_env())
+    create_app(config=AppConfig.from_env())
     em = v1.deps().engine_manager
     assert em is not None
     assert em.llm is not None, (
@@ -303,7 +301,7 @@ def test_mock_mode_loads_configured_tts_when_set(monkeypatch: pytest.MonkeyPatch
     from core.api import v1
     from core.config import AppConfig
 
-    app = create_app(config=AppConfig.from_env())
+    create_app(config=AppConfig.from_env())
     em = v1.deps().engine_manager
     assert em is not None
     assert em.tts is not None, (
@@ -350,6 +348,34 @@ def test_mock_mode_with_default_stubs_still_works(monkeypatch: pytest.MonkeyPatc
 
 
 # ---------- Finding 2: /health/ready honest on engine load failure ----------
+
+
+def test_health_ready_not_ready_with_hash_embedder_outside_dev(
+    monkeypatch: pytest.MonkeyPatch, injected_deps: v1.V1Deps
+) -> None:
+    from core.director.embedder import HashingEmbedder
+    from core.director.runtime import DirectorRuntime
+    from core.server import create_app
+
+    monkeypatch.setenv("APP_ENV", "prod")
+    injected_deps.config = AppConfig(
+        app_env="prod",
+        render_backend="mock",
+        cors_origins="https://console.example",
+        director_enabled=True,
+    )
+    injected_deps.director = DirectorRuntime(
+        injected_deps.backend,
+        embedder=HashingEmbedder(),
+    )
+    app = create_app(config=injected_deps.config, deps=injected_deps)
+
+    with TestClient(app) as client:
+        body = client.get("/api/v1/health/ready").json()
+
+    assert body["ok"] is False
+    assert body["status"] == "not_ready"
+    assert body["embedder"]["degraded"] is True
 
 
 def test_health_ready_not_ready_when_llm_load_failed(
