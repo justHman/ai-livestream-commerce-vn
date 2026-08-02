@@ -58,7 +58,7 @@ RUN apt-get update \
     && mkdir -p /models \
     && chown -R appuser:appuser /opt/vllm-omni /models
 
-COPY services/product/tts_service/pyproject.toml services/product/tts_service/uv.lock /app/
+COPY services/product/tts_service/pyproject.toml services/product/tts_service/uv.lock services/product/tts_service/README.md /app/
 COPY services/product/tts_service/src/tts/ /app/src/tts/
 COPY services/scripts/fetch_weights.sh /usr/local/bin/fetch_weights.sh
 COPY services/product/tts_service/entrypoint.sh /entrypoint.sh

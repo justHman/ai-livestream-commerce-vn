@@ -11,6 +11,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[2]
 PRODUCT_DOCKERFILES = {
     "backend_service": "backend",
@@ -145,6 +146,47 @@ def test_canonical_product_dockerfiles_reference_service_packages() -> None:
 
         assert f"services/product/{service}" in dockerfile
         assert f"src/{package}" in dockerfile
+
+
+def test_product_dockerfiles_copy_build_metadata_before_locked_sync() -> None:
+    for service in PRODUCT_DOCKERFILES:
+        dockerfile = (ROOT / "services" / "product" / service / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        metadata_copy = next(
+            line
+            for line in dockerfile.splitlines()
+            if line.startswith("COPY ") and f"services/product/{service}/pyproject.toml" in line
+        )
+
+        assert f"services/product/{service}/uv.lock" in metadata_copy
+        assert f"services/product/{service}/README.md" in metadata_copy
+        assert dockerfile.index(metadata_copy) < dockerfile.index("uv sync --frozen")
+
+
+def test_product_locks_are_current() -> None:
+    for service in PRODUCT_DOCKERFILES:
+        result = subprocess.run(
+            ["uv", "lock", "--check", "--project", str(ROOT / "services/product" / service)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+
+def test_product_smoke_scripts_import_canonical_packages() -> None:
+    for service, package in PRODUCT_DOCKERFILES.items():
+        smoke_script = ROOT / "services" / "product" / service / "scripts" / "smoke_test.py"
+        result = subprocess.run(
+            [sys.executable, "-I", str(smoke_script)],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert f"{package} " in result.stdout
 
 
 def test_canonical_service_scripts_target_existing_launchers() -> None:

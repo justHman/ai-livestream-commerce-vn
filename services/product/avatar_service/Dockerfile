@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /build
-COPY services/product/avatar_service/pyproject.toml services/product/avatar_service/uv.lock ./
+COPY services/product/avatar_service/pyproject.toml services/product/avatar_service/uv.lock services/product/avatar_service/README.md ./
 COPY services/product/avatar_service/src/avatar/ ./src/avatar/
 RUN pip install --upgrade pip uv \
     && uv venv /opt/venv \

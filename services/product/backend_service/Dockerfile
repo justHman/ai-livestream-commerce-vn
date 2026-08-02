@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && rm -rf /var/lib/apt/lists/*
 
 # Install exactly the service-owned lock; root tooling metadata is never used.
-COPY services/product/backend_service/pyproject.toml services/product/backend_service/uv.lock ./
+COPY services/product/backend_service/pyproject.toml services/product/backend_service/uv.lock services/product/backend_service/README.md ./
 COPY services/product/backend_service/src/backend/ ./src/backend/
 RUN uv sync --frozen --no-dev --extra director --extra livekit --extra postgres
 

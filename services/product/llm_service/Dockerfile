@@ -37,7 +37,7 @@ RUN apt-get update \
     && mkdir -p /models \
     && chown appuser:appuser /models
 
-COPY services/product/llm_service/pyproject.toml services/product/llm_service/uv.lock /app/
+COPY services/product/llm_service/pyproject.toml services/product/llm_service/uv.lock services/product/llm_service/README.md /app/
 COPY services/product/llm_service/src/llm/ /app/src/llm/
 COPY services/scripts/fetch_weights.sh /usr/local/bin/fetch_weights.sh
 COPY services/product/llm_service/entrypoint.sh /entrypoint.sh
