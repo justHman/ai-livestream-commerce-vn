@@ -16,9 +16,15 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Ruff check (canonical service sources)
+      - name: Ruff check (production and canonical service sources)
         run: >
           uvx ruff check
+          core/api core/db core/debug core/director core/llm core/render
+          core/schemas core/stream core/tts
+          core/config.py core/engine_manager.py core/livekit_publish.py
+          core/livekit_tokens.py core/pipecat_bridge.py core/server.py
+          core/store.py
+          providers
           services/product/backend_service/src
           services/product/llm_service/src
           services/product/tts_service/src

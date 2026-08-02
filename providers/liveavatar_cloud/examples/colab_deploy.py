@@ -24,8 +24,15 @@ calls only run when you execute main() on Colab with a GPU.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_SRC = REPO_ROOT / "services" / "product" / "backend_service" / "src"
+sys.path[:0] = [str(BACKEND_SRC), str(REPO_ROOT)]
 
 
 # ── 1. LLM backend (via core.llm unified seam) ──────────────────────────
