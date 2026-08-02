@@ -30,9 +30,33 @@ import time
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-BACKEND_SRC = REPO_ROOT / "services" / "product" / "backend_service" / "src"
-sys.path[:0] = [str(BACKEND_SRC), str(REPO_ROOT)]
+def _is_repo_root(path: Path) -> bool:
+    return (path / "services/product/backend_service/src/backend").is_dir() and (path / "core").is_dir()
+
+
+def _find_repo_root() -> Path:
+    candidates = [Path.cwd(), Path("/content/ai-livestream-commerce-vn")]
+    if "__file__" in globals():
+        candidates.insert(0, Path(__file__).resolve().parents[3])
+
+    for candidate in candidates:
+        if _is_repo_root(candidate):
+            return candidate
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    raise RuntimeError(f"Cannot locate repository root. Tried: {tried}")
+
+
+def _prepend_import_paths(repo_root: Path) -> Path:
+    backend_src = repo_root / "services" / "product" / "backend_service" / "src"
+    for path in (str(backend_src), str(repo_root)):
+        while path in sys.path:
+            sys.path.remove(path)
+    sys.path[:0] = [str(backend_src), str(repo_root)]
+    return backend_src
+
+
+REPO_ROOT = _find_repo_root()
+BACKEND_SRC = _prepend_import_paths(REPO_ROOT)
 
 
 # ── 1. LLM backend (via core.llm unified seam) ──────────────────────────

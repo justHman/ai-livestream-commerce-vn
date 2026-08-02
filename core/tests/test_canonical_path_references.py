@@ -188,11 +188,11 @@ def test_terraform_module_sources_resolve_from_each_environment() -> None:
             assert (config.parent / source).resolve().is_dir(), f"{config}: missing module {source}"
 
 
-def test_postgres_documentation_preserves_current_and_future_schema_owners() -> None:
+def test_postgres_documentation_references_only_the_current_schema_owner() -> None:
     document = (ROOT / "services/platform/postgres/README.md").read_text(encoding="utf-8")
 
     assert "core/sql/runtime_schema.sql" in document
-    assert "Task 1.23" in document
+    assert "backend/db/sql/runtime_schema.sql" not in document
     assert (ROOT / "core/sql/runtime_schema.sql").is_file()
 
 
@@ -209,27 +209,62 @@ def test_notebook_bootstraps_before_provider_import_and_compiles() -> None:
     assert "services/product/backend_service/src" in bootstrap_cell
 
 
-def test_colab_launcher_bootstraps_the_canonical_backend_import() -> None:
-    launcher = ROOT / "providers/liveavatar_cloud/examples/colab_deploy.py"
-    code = f"""
-import importlib.util
+def _launcher_smoke_code(loader: str) -> str:
+    return f"""
 import os
 import sys
 
 os.environ.update(APP_ENV="dev", DIRECTOR_ENABLED="0", LLM_ENGINE="none", RENDER_BACKEND="mock", SESSION_STORE="memory", TTS_ENGINE="tone")
-spec = importlib.util.spec_from_file_location("colab_launcher", {str(launcher)!r})
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+{loader}
 assert sys.path[:2] == [str(module.BACKEND_SRC), str(module.REPO_ROOT)]
+assert sys.path.count(str(module.BACKEND_SRC)) == 1
+assert sys.path.count(str(module.REPO_ROOT)) == 1
 from backend.main import app
 assert app is not None
+"""
+
+
+def test_colab_launcher_bootstraps_imported_script_and_notebook_execution() -> None:
+    launcher = ROOT / "providers/liveavatar_cloud/examples/colab_deploy.py"
+    loaders = (
+        f"""import importlib.util
+spec = importlib.util.spec_from_file_location("colab_launcher", {str(launcher)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)""",
+        f"""module = type("NotebookModule", (), {{"__dict__": {{}}}})()
+namespace = {{"__name__": "colab_launcher", "__builtins__": __builtins__}}
+exec(compile(open({str(launcher)!r}, encoding="utf-8").read(), "<colab-cell>", "exec"), namespace)
+module = type("NotebookModule", (), namespace)""",
+    )
+    for loader in loaders:
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", _launcher_smoke_code(loader)],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+
+        assert result.returncode == 0
+
+
+def test_colab_launcher_fails_loudly_when_no_repository_root_exists() -> None:
+    launcher = ROOT / "providers/liveavatar_cloud/examples/colab_deploy.py"
+    code = f"""
+namespace = {{"__name__": "colab_launcher", "__builtins__": __builtins__}}
+try:
+    exec(compile(open({str(launcher)!r}, encoding="utf-8").read(), "<colab-cell>", "exec"), namespace)
+except RuntimeError as error:
+    assert "Tried:" in str(error)
+else:
+    raise AssertionError("expected missing repository root failure")
 """
     result = subprocess.run(
         [sys.executable, "-I", "-c", code],
         check=True,
         capture_output=True,
         text=True,
-        cwd=ROOT,
+        cwd=ROOT.parent,
     )
 
     assert result.returncode == 0
