@@ -22,10 +22,12 @@ from tts.observability.logging.active_session_handler import (
 )
 from tts.observability.logging.platform_collector import (
     PlatformCollector,
+    ProcessCleanupError,
     normalize_event_line,
 )
 
 SERVICE = "tts"
+MODULE = "tts.observability.logging.platform_collector"
 
 
 @contextmanager
@@ -246,7 +248,7 @@ def test_platform_group_and_platform_services() -> None:
 def test_product_services_are_rejected_for_platform_group() -> None:
     with removable_temp_dir() as active_root:
         with pytest.raises(ValueError, match="Unknown platform service"):
-            ActiveSessionHandler(service="tts", group="platform", active_root=active_root)
+            ActiveSessionHandler(service="backend", group="platform", active_root=active_root)
 
 
 def test_unknown_service_is_rejected() -> None:
@@ -382,8 +384,8 @@ def test_run_stream_keeps_only_semantic_allowlist() -> None:
             )
             joined = " ".join(content)
             assert content == [
-                "evt=room_created provider=livekit latency_ms=12.5",
-                "error=ECONNREFUSED evt=sensitive_field_dropped",
+                "evt=platform_event provider=livekit latency_ms=12.5",
+                "evt=platform_error evt=sensitive_field_dropped",
                 "evt=sensitive_field_dropped",
                 "evt=unstructured_line_dropped",
                 "evt=unstructured_line_dropped",
@@ -417,7 +419,10 @@ def test_cli_writes_platform_log_and_redacts() -> None:
         content = (
             active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
         )
-        assert content == ["evt=room_ready evt=sensitive_field_dropped", "error=boom"]
+        assert content == [
+            "evt=platform_event evt=sensitive_field_dropped",
+            "evt=platform_error",
+        ]
         assert "SECRET_VALUE" not in " ".join(content)
 
 
@@ -438,19 +443,19 @@ def test_cli_rejects_unknown_service_and_exits_cleanly() -> None:
     [
         (
             "evt=ready error=NONE provider=livekit latency_ms=42.125 room=main status=ok",
-            "evt=ready error=NONE provider=livekit latency_ms=42.125",
+            "evt=platform_event evt=platform_error provider=livekit latency_ms=42.125",
         ),
-        ("evt=x api_key=hunter2", "evt=x evt=sensitive_field_dropped"),
-        ("evt=x customer_payload=vip", "evt=x evt=sensitive_field_dropped"),
-        ("evt=x Authorization=Bearer.secret", "evt=x evt=sensitive_field_dropped"),
+        ("evt=x api_key=hunter2", "evt=platform_event evt=sensitive_field_dropped"),
+        ("evt=x customer_payload=vip", "evt=platform_event evt=sensitive_field_dropped"),
+        ("evt=x Authorization=Bearer.secret", "evt=platform_event evt=sensitive_field_dropped"),
         ("evt=Bearer.secret", "evt=sensitive_field_dropped"),
         ("error=sk-abcdef", "evt=sensitive_field_dropped"),
-        ("latency_ms=0042", None),
-        ("latency_ms=-1", None),
-        ("latency_ms=nan", None),
-        ("latency_ms=1e3", None),
-        ("latency_ms=999999999", None),
-        ("provider=livekit/../../secret", None),
+        ("latency_ms=0042", "evt=unknown_event"),
+        ("latency_ms=-1", "evt=unknown_event"),
+        ("latency_ms=nan", "evt=unknown_event"),
+        ("latency_ms=1e3", "evt=unknown_event"),
+        ("latency_ms=999999999", "evt=unknown_event"),
+        ("provider=livekit/../../secret", "evt=unknown_event"),
         ('data={"customer":"vip"}', "evt=sensitive_field_dropped"),
         ('{"customer":"vip","token":"sk-abcdef"}', "evt=unstructured_line_dropped"),
         ("plain bearer sk-abcdef customer vip", "evt=unstructured_line_dropped"),
@@ -483,8 +488,8 @@ def test_run_command_collects_stdout_and_stderr_concurrently() -> None:
             active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
         )
         joined = " ".join(content)
-        assert "evt=ready" in content
-        assert "error=ECONNREFUSED" in content
+        assert "evt=platform_event" in content
+        assert "evt=platform_error" in content
         assert "sk-abcdef" not in joined
 
 
@@ -499,7 +504,7 @@ def test_run_command_propagates_nonzero_exit() -> None:
         )
         assert code == 3
         content = active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-        assert "evt=dying" in content
+        assert "evt=platform_event" in content
 
 
 def test_run_command_invalid_service_fails_before_popen(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -614,8 +619,189 @@ def test_cli_run_subcommand_launches_child_and_collects() -> None:
         content = (
             active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
         )
-        assert "evt=ready" in content
-        assert "error=ECONNREFUSED" in content
+        assert "evt=platform_event" in content
+        assert "evt=platform_error" in content
+
+
+def _pid_exists(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+
+        process = ctypes.WinDLL("kernel32", use_last_error=True).OpenProcess(0x100000, False, pid)
+        if process:
+            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(process)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _assert_pid_dead(pid: int) -> None:
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and _pid_exists(pid):
+        time.sleep(0.05)
+    assert not _pid_exists(pid)
+
+
+def test_semantic_normalization_never_persists_arbitrary_codes() -> None:
+    private_event = "tenant-event-782913"
+    private_error = "customer-error-184439"
+    assert normalize_event_line(f"evt={private_event}") == "evt=platform_event"
+    assert normalize_event_line(f"error={private_error}") == "evt=platform_error"
+    assert private_event not in normalize_event_line(f"evt={private_event}")
+    assert private_error not in normalize_event_line(f"error={private_error}")
+
+
+def test_run_command_invalid_root_fails_before_popen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tts.observability.logging import platform_collector
+
+    monkeypatch.setattr(
+        platform_collector.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Popen must not run"),
+    )
+    with removable_temp_dir() as root:
+        invalid_root = root / "not-a-directory"
+        invalid_root.write_text("x", encoding="utf-8")
+        with pytest.raises(OSError):
+            platform_collector.run_command(
+                [sys.executable], service="livekit", active_root=invalid_root
+            )
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_timeout_fails_before_popen(
+    timeout: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tts.observability.logging import platform_collector
+
+    monkeypatch.setattr(
+        platform_collector.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Popen must not run"),
+    )
+    with pytest.raises(ValueError, match="invalid timeout"):
+        platform_collector.run_command([sys.executable], service="livekit", timeout=timeout)
+
+
+def test_silent_child_truncates_and_creates_log() -> None:
+    from tts.observability.logging.platform_collector import run_command
+
+    with removable_temp_dir() as active_root:
+        path = active_root / "platform" / "livekit.log"
+        path.parent.mkdir(parents=True)
+        path.write_text("old-private-value\n", encoding="utf-8")
+        assert (
+            run_command(
+                [sys.executable, "-c", "pass"],
+                service="livekit",
+                active_root=active_root,
+            )
+            == 0
+        )
+        assert path.exists() and path.read_text(encoding="utf-8") == ""
+
+
+def test_timeout_reaps_descendant_pids() -> None:
+    from tts.observability.logging.platform_collector import run_command
+
+    with removable_temp_dir() as active_root:
+        child_pid_path = active_root / "descendant.pid"
+        grandchild_pid_path = active_root / "grandchild.pid"
+        grandchild = (
+            "import pathlib,subprocess,sys,time; "
+            f"path=pathlib.Path({str(grandchild_pid_path)!r}); "
+            "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']); "
+            "path.write_text(str(child.pid)); time.sleep(30)"
+        )
+        child = (
+            "import pathlib,subprocess,sys,time; "
+            f"path=pathlib.Path({str(child_pid_path)!r}); "
+            f"child=subprocess.Popen([sys.executable,'-c',{grandchild!r}]); "
+            "path.write_text(str(child.pid)); print('evt=ready',flush=True); time.sleep(30)"
+        )
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_command(
+                [sys.executable, "-c", child],
+                service="livekit",
+                active_root=active_root,
+                timeout=1,
+            )
+        _assert_pid_dead(int(child_pid_path.read_text(encoding="ascii")))
+        _assert_pid_dead(int(grandchild_pid_path.read_text(encoding="ascii")))
+
+
+def test_windows_job_handle_closes_on_assign_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tts.observability.logging import platform_collector
+
+    class FakeProcess:
+        stdout = None
+        stderr = None
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 1
+
+    closed: list[int | None] = []
+    monkeypatch.setattr(platform_collector.os, "name", "nt")
+    monkeypatch.setattr(platform_collector, "_create_windows_job", lambda: 7)
+    monkeypatch.setattr(
+        platform_collector,
+        "_assign_windows_job",
+        lambda *_args: (_ for _ in ()).throw(ProcessCleanupError("assign failed")),
+    )
+    monkeypatch.setattr(platform_collector, "_close_windows_job", lambda job: closed.append(job))
+    monkeypatch.setattr(
+        platform_collector.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess()
+    )
+    with pytest.raises(ProcessCleanupError, match="assign failed"):
+        platform_collector.run_command(["program"], service="livekit")
+    assert closed == [7]
+
+
+def test_windows_job_termination_failure_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tts.observability.logging import platform_collector
+
+    monkeypatch.setattr(
+        platform_collector,
+        "_terminate_windows_job",
+        lambda *_args: (_ for _ in ()).throw(ProcessCleanupError("status=9")),
+    )
+    process = type("Process", (), {"pid": 123})()
+    with pytest.raises(ProcessCleanupError) as raised:
+        platform_collector._terminate_process_tree(process, time.monotonic() + 1, 7)
+    assert str(raised.value) == "status=9"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--private-secret-option"],
+        ["run", "--timeout", "private-secret-value", "--", sys.executable],
+        ["run", "--timeout", "nan", "--", sys.executable],
+        ["run", "--timeout", "inf", "--", sys.executable],
+    ],
+)
+def test_parser_errors_never_echo_raw_arguments(args: list[str]) -> None:
+    result = run_collector(MODULE, args, "")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "private-secret" not in output
+    assert output.strip() in {
+        "platform-collector: invalid arguments",
+        "platform-collector: command failed",
+    }
 
 
 def test_flush_failure_closes_stream_and_deactivates() -> None:
@@ -642,13 +828,13 @@ def test_platform_collector_writes_only_normalized_events_to_exact_log() -> None
             collector.emit_event("postgres", "evt=connection_accepted latency_ms=7")
             assert (
                 active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-                == "evt=room_created evt=sensitive_field_dropped\n"
+                == "evt=platform_event evt=sensitive_field_dropped\n"
             )
             assert (
                 active_root.joinpath("platform", "postgres.log").read_text(encoding="utf-8")
-                == "evt=connection_accepted latency_ms=7\n"
+                == "evt=platform_event latency_ms=7\n"
             )
-            assert not active_root.joinpath("platform", "tts.log").exists()
+            assert not active_root.joinpath("platform", "backend.log").exists()
         finally:
             collector.close()
 
@@ -659,12 +845,12 @@ def test_platform_collector_rejects_unknown_service_and_closes_idempotently() ->
         try:
             collector.emit_event("livekit", "evt=ready")
             with pytest.raises(ValueError, match="Unknown platform service"):
-                collector.emit_event("tts", "boom")
+                collector.emit_event("backend", "boom")
             collector.close()
             collector.close()
             assert (
                 active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-                == "evt=ready\n"
+                == "evt=platform_event\n"
             )
         finally:
             collector.close()
