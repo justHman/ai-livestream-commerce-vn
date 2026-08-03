@@ -253,24 +253,30 @@ def test_retention_rejects_non_digit_environment_value(
         validate_config()
 
 
-def test_setup_is_idempotent_and_closes_owned_handler() -> None:
+def test_setup_is_idempotent_and_closes_owned_handlers() -> None:
     with removable_temp_dir() as runtime_root:
         logger = setup_logging(validate_config(runtime_root=runtime_root))
-        handler = logger.handlers[-1]
+
+        def owned() -> list[logging.Handler]:
+            return [
+                item
+                for item in logger.handlers
+                if getattr(item, "_avatar_observability_handler", False)
+            ]
+
+        handlers = owned()
+        assert len(handlers) == 2
         setup_logging(validate_config(runtime_root=runtime_root))
-        assert (
-            sum(getattr(item, "_avatar_observability_handler", False) for item in logger.handlers)
-            == 1
-        )
+        assert len(owned()) == 2
         reset_logging()
-        assert handler._closed
+        assert all(item._closed for item in handlers)
     assert not runtime_root.exists()
 
 
 def test_approved_context_overrides_untrusted_record_context() -> None:
     with scoped(request_id="bound-request"):
         output = render({"request_id": "forged-request", "event": "started"})
-    assert "request_id=bound-request" in output and "forged-request" not in output
+    assert "rid=bound-request" in output and "forged-request" not in output
 
 
 @pytest.mark.parametrize(

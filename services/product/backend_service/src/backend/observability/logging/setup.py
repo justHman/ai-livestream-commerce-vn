@@ -7,6 +7,7 @@ import sys
 from threading import Lock
 
 from backend.observability.logging.config import LoggingConfig, validate_config
+from backend.observability.logging.daily_handler import DailyHandler
 from backend.observability.logging.filters import ContextFilter, StructuredFieldsFilter
 from backend.observability.logging.formatter import ContextFormatter
 
@@ -19,7 +20,12 @@ def _owned_handlers(logger: logging.Logger) -> list[logging.Handler]:
 
 
 def setup_logging(config: LoggingConfig | None = None, **overrides: object) -> logging.Logger:
-    """Configure one service logger once without mutating unrelated handlers."""
+    """Configure one service logger once without mutating unrelated handlers.
+
+    Attaches a TTY console handler (color only when the stream is a terminal)
+    and a UTC-dated daily file handler under `{runtime_root}/daily/`, both
+    protected by the context and structured-field filters.
+    """
     if config is not None and overrides:
         raise ValueError("Pass either config or overrides, not both")
     resolved = config or validate_config(**overrides)
@@ -27,13 +33,29 @@ def setup_logging(config: LoggingConfig | None = None, **overrides: object) -> l
     with _SETUP_LOCK:
         if _owned_handlers(logger):
             return logger
-        handler = logging.StreamHandler(sys.stderr)
-        setattr(handler, _HANDLER_MARKER, True)
-        handler.setLevel(resolved.level)
-        handler.setFormatter(ContextFormatter(service=resolved.service))
-        handler.addFilter(ContextFilter())
-        handler.addFilter(StructuredFieldsFilter())
-        logger.addHandler(handler)
+
+        console = logging.StreamHandler(sys.stderr)
+        setattr(console, _HANDLER_MARKER, True)
+        console.setLevel(resolved.level)
+        colorize = resolved.color == "auto" and sys.stderr.isatty()
+        console.setFormatter(ContextFormatter(service=resolved.service, colorize=colorize))
+        console.addFilter(ContextFilter())
+        console.addFilter(StructuredFieldsFilter())
+
+        daily = DailyHandler(
+            service=resolved.service,
+            daily_root=resolved.runtime_root / "daily",
+            retention_days=resolved.retention_days,
+        )
+        setattr(daily, _HANDLER_MARKER, True)
+        daily.setLevel(resolved.level)
+        daily.setFormatter(ContextFormatter(service=resolved.service, colorize=False))
+        daily.addFilter(ContextFilter())
+        daily.addFilter(StructuredFieldsFilter())
+        daily.retain()
+
+        logger.addHandler(console)
+        logger.addHandler(daily)
         logger.setLevel(resolved.level)
         logger.propagate = False
     return logger

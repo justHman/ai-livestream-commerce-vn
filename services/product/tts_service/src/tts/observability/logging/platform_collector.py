@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Iterable, TextIO
 
 from tts.observability.logging.active_session_handler import ActiveSessionHandler
+from tts.observability.logging.daily_handler import DailyHandler
+from tts.observability.logging.formatter import ContextFormatter
 
 _PLATFORM_SERVICES = frozenset({"livekit", "lmcache", "postgres", "redis"})
 _LATENCY_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,7})(?:\.[0-9]{1,3})?$")
@@ -55,14 +57,26 @@ class SanitizedArgumentParser(argparse.ArgumentParser):
 class PlatformCollector:
     """Own platform handlers and log classified events to platform files."""
 
-    def __init__(self, active_root: Path | str = ".runtime/logs/active-sessions") -> None:
+    def __init__(
+        self,
+        active_root: Path | str = ".runtime/logs/active-sessions",
+        daily_root: Path | str | None = None,
+    ) -> None:
         self._active_root = Path(active_root)
+        self._daily_root = (
+            Path(daily_root) if daily_root is not None else self._active_root.parent / "daily"
+        )
         self._handlers: dict[str, ActiveSessionHandler] = {}
+        self._daily_handlers: dict[str, DailyHandler] = {}
         self._lock = threading.Lock()
 
     @property
     def active_root(self) -> Path:
         return self._active_root
+
+    @property
+    def daily_root(self) -> Path:
+        return self._daily_root
 
     def start_session(self, service: str) -> None:
         """Validate the service and open/reactivate its active log (truncates).
@@ -82,21 +96,23 @@ class PlatformCollector:
             handler.start_session()
 
     def emit_event(self, service: str, message: str, *, level: int = logging.INFO) -> None:
-        """Classify one event without retaining caller-controlled field values."""
-        handler = self._handler_for(service)
+        """Classify one event without leaking handler-controlled field values."""
         normalized = normalize_event_line(message)
         if normalized is not None:
-            handler.handle(make_platform_record(normalized, level=level))
+            self._write(service, normalized, level=level)
 
     def run_stream(self, lines: Iterable[str], *, service: str = "livekit") -> None:
         """Consume event lines without copying unapproved fields or raw content."""
         handler = self._handler_for(service)
+        daily = self._daily_handler_for(service)
         handler.start_session()
         try:
             for line in lines:
                 normalized = normalize_event_line(line)
                 if normalized is not None:
-                    handler.emit(make_platform_record(normalized))
+                    record = make_platform_record(normalized)
+                    handler.emit(record)
+                    daily.emit(record)
         finally:
             handler.end_session()
 
@@ -107,12 +123,21 @@ class PlatformCollector:
         for handler in handlers:
             handler.end_session()
 
+    def retain_daily(self, service: str, days: int | None = None) -> list[Path]:
+        """Run retention on one platform service's daily view."""
+        _validate_service(service)
+        return self._daily_handler_for(service).retain(days=days)
+
     def close(self) -> None:
         """Close every owned platform handler."""
         with self._lock:
             handlers = list(self._handlers.values())
             self._handlers.clear()
+            daily_handlers = list(self._daily_handlers.values())
+            self._daily_handlers.clear()
         for handler in handlers:
+            handler.close()
+        for handler in daily_handlers:
             handler.close()
 
     def _handler_for(self, service: str) -> ActiveSessionHandler:
@@ -126,6 +151,23 @@ class PlatformCollector:
                 handler.start_session()
                 self._handlers[service] = handler
             return handler
+
+    def _daily_handler_for(self, service: str) -> DailyHandler:
+        _validate_service(service)
+        with self._lock:
+            handler = self._daily_handlers.get(service)
+            if handler is None:
+                handler = DailyHandler(
+                    service=service, group="platform", daily_root=self._daily_root
+                )
+                handler.setFormatter(ContextFormatter(service=service, colorize=False))
+                self._daily_handlers[service] = handler
+            return handler
+
+    def _write(self, service: str, normalized: str, *, level: int) -> None:
+        record = make_platform_record(normalized, level=level)
+        self._handler_for(service).handle(record)
+        self._daily_handler_for(service).handle(record)
 
 
 def _validate_service(service: str) -> None:
