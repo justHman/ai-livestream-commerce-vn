@@ -485,7 +485,9 @@ def main() -> None:
         payload = {"workflows": inv}
         if args.manifest:
             args.manifest.parent.mkdir(parents=True, exist_ok=True)
-            args.manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            args.manifest.write_text(
+                json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+            )
         if args.check_drift:
             if not args.check_drift.exists():
                 print(f"ERROR: manifest {args.check_drift} does not exist", file=sys.stderr)

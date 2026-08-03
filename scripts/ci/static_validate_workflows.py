@@ -281,8 +281,8 @@ def validate_service_tags(workflow: dict, result: ValidationResult) -> None:
 
 
 def _is_service_shaped(tag: str) -> bool:
-    """True if a tag looks like `<word>-v...` (service release shape)."""
-    return bool(re.match(r"^[a-z][a-z0-9_]*-[vV]", tag))
+    """True if a tag looks like a service release shape (<word>-...)."""
+    return bool(re.match(r"^[a-z][a-z0-9_]*-", tag))
 
 
 def _is_deploy_uses(uses: str) -> bool:

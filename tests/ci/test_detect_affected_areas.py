@@ -179,7 +179,32 @@ def test_root_misc_file_conservative():
     assert classify_path("data.csv") == ["shared-source"]
 
 
-# ── Multi-change union ──────────────────────────────────────────────────────
+# ── Finding 5: .dockerignore + root build-policy files ─────────────────────
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (".dockerignore", ["shared-build"]),
+        ("Dockerfile", ["shared-build"]),
+        ("Makefile", ["shared-build"]),
+        ("compose.yaml", ["shared-build"]),
+        ("docker-compose.yml", ["shared-build"]),
+        ("docker-compose.yaml", ["shared-build"]),
+    ],
+)
+def test_build_policy_files_mapped_to_shared_build(path, expected):
+    assert classify_path(path) == expected
+
+
+def test_dockerignore_shared_build():
+    """.dockerignore controls build context for all services — shared-build."""
+    assert classify_path(".dockerignore") == ["shared-build"]
+
+
+def test_dockerignore_child_path_not_shared_build():
+    """A .dockerignore inside a service dir is that service's concern."""
+    assert classify_path("services/product/backend_service/.dockerignore") == ["backend_service"]
 
 
 def test_multi_change_union():

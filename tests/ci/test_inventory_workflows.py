@@ -204,3 +204,71 @@ def test_manifest_drift_detected(tmp_path):
     )
     assert proc.returncode == 1
     assert "drift" in proc.stderr
+
+
+# ── Finding 1: secret refs, push:false, canonical manifest ─────────────────
+
+
+def test_secret_refs_captured_from_step_with():
+    """Secret references in step with: block are captured without values."""
+    wf = inventory_workflow(WORKFLOWS / "deploy-dev.yml", WORKFLOWS)
+    all_secrets = set()
+    for job in wf["jobs"]:
+        all_secrets.update(job.get("secrets", []))
+    # deploy-dev uses DOCKERHUB_USER and DOCKERHUB_TOKEN in login steps
+    assert "DOCKERHUB_USER" in all_secrets, f"got {sorted(all_secrets)}"
+    assert "DOCKERHUB_TOKEN" in all_secrets, f"got {sorted(all_secrets)}"
+    assert "AWS_ROLE_ARN_DEV" in all_secrets
+
+
+def test_secret_refs_captured_from_step_env():
+    """Secret references in step env: block are captured."""
+    wf = inventory_workflow(WORKFLOWS / "deploy-prod.yml", WORKFLOWS)
+    all_secrets = set()
+    for job in wf["jobs"]:
+        all_secrets.update(job.get("secrets", []))
+    assert "DOCKERHUB_USER" in all_secrets
+
+
+def test_push_false_not_artifact_mutation():
+    """ci.yml uses docker/build-push-action with push: false — not artifact_push."""
+    wf = inventory_workflow(WORKFLOWS / "ci.yml", WORKFLOWS)
+    assert wf["mutation"]["artifact_push"] is False, (
+        "push:false step should not count as artifact_push"
+    )
+
+
+def test_canonical_manifest_write_drift_consistent(tmp_path):
+    """Manifest write and drift check use identical JSON serialization."""
+    import subprocess
+
+    manifest = tmp_path / "canonical.json"
+    proc = subprocess.run(
+        [
+            "python",
+            "scripts/ci/inventory_workflows.py",
+            "--repo-root",
+            ".",
+            "--manifest",
+            str(manifest),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    # Re-run with --check-drift against the same manifest must pass
+    proc2 = subprocess.run(
+        [
+            "python",
+            "scripts/ci/inventory_workflows.py",
+            "--repo-root",
+            ".",
+            "--check-drift",
+            str(manifest),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert proc2.returncode == 0, proc2.stderr

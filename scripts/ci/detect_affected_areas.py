@@ -101,6 +101,7 @@ ROOT_SHARED_AREA: Dict[str, str] = {
     # build / tooling
     "Makefile": "shared-build",
     "Dockerfile": "shared-build",
+    ".dockerignore": "shared-build",
     "compose.yaml": "shared-build",
     "docker-compose.yml": "shared-build",
     "docker-compose.yaml": "shared-build",

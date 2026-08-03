@@ -132,6 +132,55 @@ def test_valid_local_ref_passes(tmp_path):
     assert r.passed
 
 
+# ── Finding 4: local reusable workflow validation + workflow_call secrets ──
+
+
+def test_local_reusable_deployment_workflow_validates(tmp_path):
+    """A local reusable deploy workflow is validated with correct ref form."""
+    (tmp_path / "_deploy_reusable.yml").write_text(
+        "name: _deploy_reusable\non:\n  workflow_call:\n    inputs:\n      tag:\n        required: true\n        type: string\n    secrets:\n      AWS_ROLE:\n        required: true\n"
+    )
+    # Validate a job referencing this reusable
+    r = ValidationResult("caller.yml")
+    validate_reusable_refs(
+        {"jobs": {"deploy": {"uses": "./.github/workflows/_deploy_reusable.yml"}}},
+        r,
+        tmp_path,
+    )
+    assert r.passed
+
+
+def test_job_environment_mapping_shapes_validated(tmp_path):
+    """Job environment: mapping with name/url is valid; bare number is not."""
+    r = _result()
+    validate_permissions_shape(
+        {"jobs": {"deploy": {"environment": {"name": "production", "url": "https://example.com"}}}},
+        r,
+    )
+    assert r.passed
+
+
+def test_job_environment_bare_url_mapping_valid(tmp_path):
+    r = _result()
+    validate_permissions_shape({"jobs": {"deploy": {"environment": "production"}}}, r)
+    assert r.passed
+
+
+def test_workflow_call_secrets_shape_validated():
+    """on.workflow_call.secrets must be a mapping with required keys."""
+    r = _result()
+    validate_permissions_shape({"secrets": {"TOKEN": {"required": True}}, "jobs": {}}, r)
+    assert r.passed
+
+
+def test_workflow_call_secrets_invalid_shape_rejected():
+    """on.workflow_call.secrets as a string is invalid."""
+    r = ValidationResult("_reusable.yml")
+    validate_permissions_shape({"secrets": "SHARED_TOKEN", "jobs": {}}, r)
+    assert not r.passed
+    assert any("secrets block" in e for e in r.errors)
+
+
 # ── Service tags ────────────────────────────────────────────────────────────
 
 
@@ -168,6 +217,48 @@ def test_canonical_service_tags_pass():
     r = _result()
     validate_service_tags({"on": {"push": {"tags": ["backend-v1.2.3", "tts-v0.4.5"]}}}, r)
     assert r.passed
+
+
+# ── Finding 3: malformed service-shaped tags ───────────────────────────────
+
+
+def test_service_tag_missing_v_prefix_rejected():
+    """backend-1.2.3 is service-shaped but missing v prefix — reject."""
+    r = _result()
+    validate_service_tags({"on": {"push": {"tags": ["backend-1.2.3"]}}}, r)
+    assert not r.passed
+    assert any("valid release tag" in e for e in r.errors)
+
+
+def test_service_tag_wildcard_like_rejected():
+    """backend-* is service-shaped wildcard — reject."""
+    r = _result()
+    validate_service_tags({"on": {"push": {"tags": ["backend-*"]}}}, r)
+    assert not r.passed
+    assert any("valid release tag" in e for e in r.errors)
+
+
+def test_broad_v_star_allowed_with_service_shaped_tags():
+    """v* remains allowed alongside service-shaped tags — only the malformed one errors."""
+    r = _result()
+    validate_service_tags({"on": {"push": {"tags": ["v*", "backend-v1.2.3"]}}}, r)
+    assert r.passed
+
+
+def test_service_tag_patch_missing_rejected():
+    """backend-v1.2 is missing patch — reject."""
+    r = _result()
+    validate_service_tags({"on": {"push": {"tags": ["backend-v1.2"]}}}, r)
+    assert not r.passed
+    assert any("valid release tag" in e for e in r.errors)
+
+
+def test_service_tag_unknown_service_rejected():
+    """backendx-v1.2.3 uses short name not in SERVICE_TAG_NAMES — reject."""
+    r = _result()
+    validate_service_tags({"on": {"push": {"tags": ["backendx-v1.2.3"]}}}, r)
+    assert not r.passed
+    assert any("unsupported service" in e for e in r.errors)
 
 
 # ── CI no deploy ────────────────────────────────────────────────────────────

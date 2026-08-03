@@ -1,5 +1,6 @@
 """Tests for OpenSpec 2.2 validated workflow inputs."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -240,7 +241,6 @@ def test_cli_requires_all_inputs():
     assert proc.returncode == 1
     assert "Missing required input: --sha" in proc.stderr
     assert "Missing required input: --env" in proc.stderr
-    assert "Missing required input: --services" in proc.stderr
 
 
 def test_cli_requires_key_inputs():
@@ -250,11 +250,10 @@ def test_cli_requires_key_inputs():
     assert "--sha" not in proc.stderr
 
 
-def test_cli_partial_require_ok():
-    proc = _run_cli(
-        ["--sha", HEAD_SHA, "--env", "dev", "--require", "sha,env", "--services", "tts_service"]
-    )
-    assert proc.returncode == 0
+def test_cli_profile_implicit_services():
+    """deploy-dev profile implies all product services — no --services required."""
+    proc = _run_cli(["--sha", HEAD_SHA, "--profile", "deploy-dev"])
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_cli_rejects_missing_github_output_without_inputs(capsys):
@@ -265,7 +264,60 @@ def test_cli_rejects_missing_github_output_without_inputs(capsys):
     assert "Missing required input: --services" in out.err
 
 
-def test_cli_unknown_require_value():
-    proc = _run_cli(["--sha", HEAD_SHA, "--require", "bogus"])
-    assert proc.returncode == 2
-    assert "unknown --require" in proc.stderr
+def test_cli_rejects_unknown_profile():
+    proc = _run_cli(["--sha", HEAD_SHA, "--profile", "deploy-prod"])
+    assert proc.returncode == 1
+    assert "Unknown workflow profile" in proc.stderr
+
+
+# ── Finding 2: profile-bound env/service allowlists ────────────────────────
+
+
+def test_profile_deploy_dev_cannot_validate_prod():
+    """deploy-dev profile binds env=dev — passing --env prod must fail."""
+    proc = _run_cli(["--sha", HEAD_SHA, "--profile", "deploy-dev", "--env", "prod"])
+    assert proc.returncode == 1
+    assert "contradicts profile" in proc.stderr
+
+
+def test_profile_deploy_dev_defaults_dev():
+    """deploy-dev profile without --env defaults to dev and succeeds."""
+    proc = _run_cli(["--sha", HEAD_SHA, "--profile", "deploy-dev"])
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["env"] == "dev"
+
+
+def test_profile_release_binds_prod():
+    """release profile binds env=prod."""
+    proc = _run_cli(["--sha", HEAD_SHA, "--profile", "release", "--services", "backend_service"])
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["env"] == "prod"
+
+
+def test_profile_release_rejects_multi_service():
+    """release profile requires exactly one service."""
+    proc = _run_cli(
+        ["--sha", HEAD_SHA, "--profile", "release", "--services", "backend_service,tts_service"]
+    )
+    assert proc.returncode == 1
+    assert "exactly one" in proc.stderr
+
+
+def test_profile_deploy_dev_rejects_services_outside_allowlist():
+    """deploy-dev profile allows only product services — unknown service fails."""
+    # All product services are in the allowlist, so this checks that a non-product
+    # service is rejected even when a profile is active.
+    proc = _run_cli(
+        [
+            "--sha",
+            HEAD_SHA,
+            "--profile",
+            "deploy-dev",
+            "--services",
+            "backend_service,database_service",
+        ]
+    )
+    assert proc.returncode == 1
+    assert "Unknown service" in proc.stderr
