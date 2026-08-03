@@ -384,13 +384,16 @@ def validate_permissions_shape(workflow: dict, result: ValidationResult) -> None
                 f"(shape check only); got {type(secrets).__name__}."
             )
 
-    # Workflow-level secrets (reusable): must be a mapping
-    wf_secrets = workflow.get("secrets")
-    if wf_secrets is not None and not isinstance(wf_secrets, dict):
-        result.add_error(
-            f"Workflow '{filename}' secrets block must be a mapping "
-            f"(shape check only); got {type(wf_secrets).__name__}."
-        )
+    # Reusable workflow secrets (on.workflow_call.secrets): must be a mapping when present.
+    on = _on_mapping(workflow.get("on"))
+    workflow_call = on.get("workflow_call")
+    if isinstance(workflow_call, dict):
+        wf_call_secrets = workflow_call.get("secrets")
+        if wf_call_secrets is not None and not isinstance(wf_call_secrets, dict):
+            result.add_error(
+                f"Workflow '{filename}' on.workflow_call.secrets must be a mapping "
+                f"(shape check only); got {type(wf_call_secrets).__name__}."
+            )
 
 
 def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationResult:

@@ -169,16 +169,20 @@ def test_job_environment_bare_url_mapping_valid(tmp_path):
 def test_workflow_call_secrets_shape_validated():
     """on.workflow_call.secrets must be a mapping with required keys."""
     r = _result()
-    validate_permissions_shape({"secrets": {"TOKEN": {"required": True}}, "jobs": {}}, r)
+    validate_permissions_shape(
+        {"on": {"workflow_call": {"secrets": {"TOKEN": {"required": True}}}}, "jobs": {}}, r
+    )
     assert r.passed
 
 
 def test_workflow_call_secrets_invalid_shape_rejected():
     """on.workflow_call.secrets as a string is invalid."""
     r = ValidationResult("_reusable.yml")
-    validate_permissions_shape({"secrets": "SHARED_TOKEN", "jobs": {}}, r)
+    validate_permissions_shape(
+        {"on": {"workflow_call": {"secrets": "SHARED_TOKEN"}}, "jobs": {}}, r
+    )
     assert not r.passed
-    assert any("secrets block" in e for e in r.errors)
+    assert any("on.workflow_call.secrets" in e for e in r.errors)
 
 
 # ── Service tags ────────────────────────────────────────────────────────────

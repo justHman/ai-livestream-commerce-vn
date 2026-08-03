@@ -51,7 +51,6 @@ ALL_AREAS = (
         {
             "workbench",
             "infra",
-            "contracts",
             "shared-config",
             "shared-locks",
             "shared-build",

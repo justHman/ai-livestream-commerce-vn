@@ -123,7 +123,12 @@ def step_push_semantics(step: dict) -> bool:
         return False
     with_block = step.get("with")
     if isinstance(with_block, dict) and "push" in with_block:
-        return bool(with_block["push"])
+        push_val = with_block["push"]
+        if isinstance(push_val, bool):
+            return push_val
+        if isinstance(push_val, str):
+            return push_val.strip().lower() == "true"
+        return bool(push_val)
     return True
 
 

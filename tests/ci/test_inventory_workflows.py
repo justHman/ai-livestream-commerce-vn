@@ -9,6 +9,7 @@ import pytest
 from scripts.ci.inventory_workflows import (
     inventory_all,
     inventory_workflow,
+    step_push_semantics,
     validate_inventory,
 )
 
@@ -207,6 +208,47 @@ def test_manifest_drift_detected(tmp_path):
 
 
 # ── Finding 1: secret refs, push:false, canonical manifest ─────────────────
+
+
+def test_push_false_string_not_artifact_mutation():
+    """step_push_semantics('false') returns False (string truthiness fix)."""
+    assert (
+        step_push_semantics({"uses": "docker/build-push-action@v6", "with": {"push": "false"}})
+        is False
+    )
+
+
+def test_push_true_string_semantics():
+    """step_push_semantics('true') returns True."""
+    assert (
+        step_push_semantics({"uses": "docker/build-push-action@v6", "with": {"push": "true"}})
+        is True
+    )
+
+
+def test_push_yaml_bool_true_semantics():
+    """step_push_semantics(True) returns True."""
+    assert (
+        step_push_semantics({"uses": "docker/build-push-action@v6", "with": {"push": True}}) is True
+    )
+
+
+def test_push_yaml_bool_false_semantics():
+    """step_push_semantics(False) returns False."""
+    assert (
+        step_push_semantics({"uses": "docker/build-push-action@v6", "with": {"push": False}})
+        is False
+    )
+
+
+def test_push_missing_defaults_true():
+    """step_push_semantics with no push key defaults to True (action default)."""
+    assert step_push_semantics({"uses": "docker/build-push-action@v6", "with": {}}) is True
+
+
+def test_non_build_push_action_returns_false():
+    """step_push_semantics for non-build-push action returns False."""
+    assert step_push_semantics({"uses": "actions/checkout@v4", "with": {"push": "true"}}) is False
 
 
 def test_secret_refs_captured_from_step_with():
