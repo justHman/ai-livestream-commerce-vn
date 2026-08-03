@@ -2,10 +2,13 @@
 
 Task 1.8 owns this module: a logging.Handler appending to
 `{daily_root}/{group}/{service}/YYYY-MM-DD.log` where the date is the UTC day
-of emission. The active stream rotates when the UTC date changes, and retain()
-deletes files that fall outside the configured retention window. Service and
-group names come from fixed allowlists; no session identifier ever appears in
-a daily path.
+of emission, always derived through ``astimezone(timezone.utc).date()``. The
+active stream rotates when the UTC date changes; retention runs atomically on
+the first open and on every UTC-day transition and deletes only direct,
+non-symlinked, strictly-stale files inside the exact resolved service
+directory. Service and group come from fixed allowlists; no session identifier
+ever appears in a daily path, and no candidate outside the resolved service
+directory can be deleted.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ _PLATFORM_SERVICES = frozenset({"livekit", "lmcache", "postgres", "redis"})
 _GROUPS = {"product": _PRODUCT_SERVICES, "platform": _PLATFORM_SERVICES}
 _UTC = timezone.utc
 _DATE_STEM = re.compile(r"^(\d{4}-\d{2}-\d{2})$")
+_MAX_RETENTION_DAYS = 3650
 
 
 class DailyHandler(logging.Handler):
@@ -42,7 +46,10 @@ class DailyHandler(logging.Handler):
         self._service = service
         self._root = Path(daily_root)
         self._retention_days = retention_days
-        self._clock = clock or (lambda: datetime.now(_UTC))
+        if clock is None:
+            self._clock: Callable[[], datetime] = lambda: datetime.now(_UTC)
+        else:
+            self._clock = clock
         self._stream: TextIO | None = None
         self._current_day: date | None = None
         self._closed = False
@@ -54,9 +61,11 @@ class DailyHandler(logging.Handler):
                 f"Unknown {group} service={service!r}; expected one of {sorted(services)}"
             )
         if not isinstance(retention_days, int) or isinstance(retention_days, bool):
-            raise ValueError("LOG_RETENTION_DAYS must be a positive integer")
-        if retention_days < 1:
-            raise ValueError("LOG_RETENTION_DAYS must be a positive integer")
+            raise ValueError("LOG_RETENTION_DAYS must be a bounded integer")
+        if not 1 <= retention_days <= _MAX_RETENTION_DAYS:
+            raise ValueError(
+                f"LOG_RETENTION_DAYS must be between 1 and {_MAX_RETENTION_DAYS}"
+            )
         self.createLock()
 
     @property
@@ -71,12 +80,19 @@ class DailyHandler(logging.Handler):
     def daily_root(self) -> Path:
         return self._root
 
+    @property
+    def utc_day(self) -> date:
+        now = self._clock()
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise ValueError("logging clock must return an aware UTC datetime")
+        return now.astimezone(_UTC).date()
+
     def emit(self, record: logging.LogRecord) -> None:
         with self.lock:
             if self._closed:
                 return
             try:
-                today = self._clock().date()
+                today = self.utc_day
                 if self._stream is None or today != self._current_day:
                     self._rotate(today)
                 self._stream.write(self.format(record) + "\n")  # type: ignore[union-attr]
@@ -85,24 +101,33 @@ class DailyHandler(logging.Handler):
                 self._close_stream()
                 self.handleError(record)
 
-    def retain(self, days: int | None = None) -> list[Path]:
+    def retain(self, days: int | None = None, *, today: date | None = None) -> list[Path]:
         """Delete expired daily files and return the deleted paths.
 
         A file is deleted only when it is strictly older than the configured
-        window: `file_date < today - days`. The current UTC day and every
-        retained day therefore always survive, while exactly-N-days-old files
-        are removed. Files whose names are not `YYYY-MM-DD.log` are never
-        touched.
+        window (`file_date < today - window`), is a direct child of the exact
+        resolved service directory, is a regular file (not a symlink), and has
+        a ``YYYY-MM-DD.log`` name. Symlinked directories and candidates are
+        rejected — the resolved service directory must live under the resolved
+        daily root, ensuring no external path is ever unlinked.
         """
         window = self._retention_days if days is None else days
-        if not isinstance(window, int) or isinstance(window, bool) or window < 1:
-            raise ValueError("LOG_RETENTION_DAYS must be a positive integer")
-        cutoff = self._clock().date() - timedelta(days=window)
-        directory = self._root / self._group / self._service
+        if (
+            not isinstance(window, int)
+            or isinstance(window, bool)
+            or not 1 <= window <= _MAX_RETENTION_DAYS
+        ):
+            raise ValueError(
+                f"LOG_RETENTION_DAYS must be between 1 and {_MAX_RETENTION_DAYS}"
+            )
+        cutoff = (today or self.utc_day) - timedelta(days=window)
+        directory = self._service_directory()
         if not directory.is_dir():
             return []
         deleted: list[Path] = []
         for path in sorted(directory.glob("*.log")):
+            if path.is_symlink() or not path.is_file():
+                continue
             match = _DATE_STEM.fullmatch(path.stem)
             if match is None:
                 continue
@@ -121,11 +146,31 @@ class DailyHandler(logging.Handler):
             self._close_stream()
             self._closed = True
 
+    def _service_directory(self) -> Path:
+        root = self._root.resolve()
+        directory = (self._root / self._group / self._service).resolve()
+        expected = root / self._group / self._service
+        # Reject a symlinked group or service component: resolve() yields the
+        # real target, which must still be the literal expected path under the
+        # resolved root. Any redirect therefore fails containment and no
+        # external file can be opened or deleted.
+        if directory != expected:
+            raise ValueError(f"daily service path escapes configured root: {directory}")
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise ValueError(f"daily service path is not a real directory: {directory}")
+        return directory
+
     def _rotate(self, day: date) -> None:
         self._close_stream()
-        directory = self._root / self._group / self._service
+        directory = self._service_directory()
         directory.mkdir(parents=True, exist_ok=True)
-        self._stream = (directory / f"{day.isoformat()}.log").open("a", encoding="utf-8")
+        # Retention runs atomically on first open and each UTC transition,
+        # reusing the already-read UTC day so the clock is read once per emit.
+        self.retain(today=day)
+        target = directory / f"{day.isoformat()}.log"
+        if target.is_symlink():
+            raise ValueError(f"refusing to open symlinked log: {target}")
+        self._stream = target.open("a", encoding="utf-8")
         self._current_day = day
 
     def _close_stream(self) -> None:

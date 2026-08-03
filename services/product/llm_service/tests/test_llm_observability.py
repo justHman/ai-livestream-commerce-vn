@@ -98,12 +98,12 @@ def clean_observability() -> Generator[None, None, None]:
 
 
 def test_context_identifiers_are_exact() -> None:
-    with scoped(session_id="s", request_id="r", trace_id="t", component="llm"):
+    with scoped(session_id="s", request_id="r", trace_id="t", component="backend"):
         assert get_all() == {
             "session_id": "s",
             "request_id": "r",
             "trace_id": "t",
-            "component": "llm",
+            "component": "backend",
         }
 
 
@@ -172,14 +172,14 @@ def test_inbound_metadata_is_case_insensitive_and_validated() -> None:
             "X-Session-ID": "session-1",
             "x-request-id": "request-1",
             "X-TRACE-ID": "trace/1",
-            "x-component": "llm.api",
+            "x-component": "backend.api",
             "authorization": "not-context",
         }
     ) == {
         "session_id": "session-1",
         "request_id": "request-1",
         "trace_id": "trace/1",
-        "component": "llm.api",
+        "component": "backend.api",
     }
 
 
@@ -202,13 +202,13 @@ def test_outbound_metadata_contains_only_validated_context() -> None:
         session_id="session-1",
         request_id="request-1",
         trace_id="trace-1",
-        component="llm.client",
+        component="backend.client",
     ):
         assert outbound_headers() == {
             "x-session-id": "session-1",
             "x-request-id": "request-1",
             "x-trace-id": "trace-1",
-            "x-component": "llm.client",
+            "x-component": "backend.client",
         }
 
 

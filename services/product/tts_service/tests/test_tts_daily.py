@@ -59,6 +59,18 @@ def make_clock(days: list[date]) -> Callable[[], datetime]:
     return _clock
 
 
+def make_sequential_clock(days: list[date]) -> Callable[[], datetime]:
+    state = {"index": 0}
+
+    def _clock() -> datetime:
+        index = state["index"]
+        state["index"] += 1
+        day = days[min(index, len(days) - 1)]
+        return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
+
+    return _clock
+
+
 def make_record(message: str = "event") -> logging.LogRecord:
     return logging.LogRecord("test", logging.INFO, __file__, 1, message, (), None)
 
@@ -125,7 +137,7 @@ def test_daily_handler_rotates_on_utc_date_change() -> None:
             service=SERVICE,
             daily_root=root,
             retention_days=30,
-            clock=make_clock([FIXED_DAY, date(2026, 8, 4), FIXED_DAY]),
+            clock=make_sequential_clock([FIXED_DAY, date(2026, 8, 4), FIXED_DAY]),
         )
         try:
             handler.handle(make_record("first-day"))
@@ -335,7 +347,7 @@ def test_formatter_renders_utc_timestamp_and_heading() -> None:
     formatter = ContextFormatter(service=SERVICE)
     line = formatter.format(make_record("hello"))
     assert TS_PATTERN.match(line)
-    assert f"INFO    | {SERVICE.ljust(8)}: hello" in line
+    assert f"INFO    | {SERVICE:<8}: hello" in line
 
 
 def test_formatter_renders_short_approved_field_names() -> None:
@@ -404,7 +416,9 @@ def test_setup_attaches_console_and_daily_handlers() -> None:
     with removable_temp_dir() as runtime_root:
         logger = setup_logging(validate_config(runtime_root=runtime_root))
         try:
-            owned = [h for h in logger.handlers if getattr(h, "_tts_observability_handler", False)]
+            owned = [
+                h for h in logger.handlers if getattr(h, "_tts_observability_handler", False)
+            ]
             assert len(owned) == 2
             assert sum(isinstance(h, DailyHandler) for h in owned) == 1
             assert sum(isinstance(h, logging.StreamHandler) for h in owned) == 1

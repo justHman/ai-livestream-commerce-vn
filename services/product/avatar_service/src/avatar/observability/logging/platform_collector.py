@@ -18,6 +18,7 @@ from typing import Iterable, TextIO
 
 from avatar.observability.logging.active_session_handler import ActiveSessionHandler
 from avatar.observability.logging.daily_handler import DailyHandler
+from avatar.observability.logging.filters import LevelFilter, StructuredFieldsFilter
 from avatar.observability.logging.formatter import ContextFormatter
 
 _PLATFORM_SERVICES = frozenset({"livekit", "lmcache", "postgres", "redis"})
@@ -61,11 +62,13 @@ class PlatformCollector:
         self,
         active_root: Path | str = ".runtime/logs/active-sessions",
         daily_root: Path | str | None = None,
+        retention_days: int = 30,
     ) -> None:
         self._active_root = Path(active_root)
         self._daily_root = (
             Path(daily_root) if daily_root is not None else self._active_root.parent / "daily"
         )
+        self._retention_days = retention_days
         self._handlers: dict[str, ActiveSessionHandler] = {}
         self._daily_handlers: dict[str, DailyHandler] = {}
         self._lock = threading.Lock()
@@ -87,12 +90,7 @@ class PlatformCollector:
         """
         _validate_service(service)
         with self._lock:
-            handler = self._handlers.get(service)
-            if handler is None:
-                handler = ActiveSessionHandler(
-                    service=service, group="platform", active_root=self._active_root
-                )
-                self._handlers[service] = handler
+            handler = self._handler_for(service)
             handler.start_session()
 
     def emit_event(self, service: str, message: str, *, level: int = logging.INFO) -> None:
@@ -148,7 +146,9 @@ class PlatformCollector:
                 handler = ActiveSessionHandler(
                     service=service, group="platform", active_root=self._active_root
                 )
-                handler.start_session()
+                handler.setFormatter(ContextFormatter(service=service, colorize=False))
+                handler.addFilter(LevelFilter())
+                handler.addFilter(StructuredFieldsFilter())
                 self._handlers[service] = handler
             return handler
 
@@ -158,9 +158,14 @@ class PlatformCollector:
             handler = self._daily_handlers.get(service)
             if handler is None:
                 handler = DailyHandler(
-                    service=service, group="platform", daily_root=self._daily_root
+                    service=service,
+                    group="platform",
+                    daily_root=self._daily_root,
+                    retention_days=self._retention_days,
                 )
                 handler.setFormatter(ContextFormatter(service=service, colorize=False))
+                handler.addFilter(LevelFilter())
+                handler.addFilter(StructuredFieldsFilter())
                 self._daily_handlers[service] = handler
             return handler
 

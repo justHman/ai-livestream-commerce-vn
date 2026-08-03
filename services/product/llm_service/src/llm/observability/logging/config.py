@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
+MAX_RETENTION_DAYS = 3650
 SERVICE_NAME = "llm"
 APPROVED_FIELDS = frozenset(
     {
@@ -65,9 +66,11 @@ class LoggingConfig:
             raise ValueError("LOG_ROOT must not be empty")
         object.__setattr__(self, "runtime_root", Path(self.runtime_root))
         if not isinstance(self.retention_days, int) or isinstance(self.retention_days, bool):
-            raise ValueError("LOG_RETENTION_DAYS must be an integer")
-        if self.retention_days < 1:
-            raise ValueError("LOG_RETENTION_DAYS must be >= 1")
+            raise ValueError("LOG_RETENTION_DAYS must be a bounded integer")
+        if not 1 <= self.retention_days <= MAX_RETENTION_DAYS:
+            raise ValueError(
+                f"LOG_RETENTION_DAYS must be between 1 and {MAX_RETENTION_DAYS}"
+            )
         if self.color not in {"auto", "never"}:
             raise ValueError("LOG_COLOR must be 'auto' or 'never'")
 

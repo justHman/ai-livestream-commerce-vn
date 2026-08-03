@@ -12,10 +12,17 @@ from llm.observability.logging.config import (
     OMITTED_FIELDS,
     REDACTION_FIELD,
     REDACTION_MARKER,
+    VALID_LEVELS,
 )
 
 _STANDARD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+_LEVEL_NUMBERS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
 
 
 def _normalized_key(key: str) -> str:
@@ -50,6 +57,17 @@ def _is_safe_value(value: object) -> bool:
         and len(value) <= 512
         and _CONTROL_CHARACTER_PATTERN.search(value) is None
     )
+
+
+class LevelFilter(logging.Filter):
+    """Reject records whose level is outside the approved four-level set."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        name = record.levelname or "INFO"
+        expected = _LEVEL_NUMBERS.get(name)
+        if expected is None or expected != record.levelno or name not in VALID_LEVELS:
+            return False
+        return True
 
 
 class StructuredFieldsFilter(logging.Filter):

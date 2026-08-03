@@ -248,7 +248,7 @@ def test_platform_group_and_platform_services() -> None:
 def test_product_services_are_rejected_for_platform_group() -> None:
     with removable_temp_dir() as active_root:
         with pytest.raises(ValueError, match="Unknown platform service"):
-            ActiveSessionHandler(service="backend", group="platform", active_root=active_root)
+            ActiveSessionHandler(service="avatar", group="platform", active_root=active_root)
 
 
 def test_unknown_service_is_rejected() -> None:
@@ -385,13 +385,13 @@ def test_run_stream_keeps_only_semantic_allowlist() -> None:
                 .splitlines()
             )
             joined = " ".join(content)
-            assert content == [
-                "evt=platform_event provider=livekit latency_ms=12.5",
-                "evt=platform_error evt=sensitive_field_dropped",
-                "evt=sensitive_field_dropped",
-                "evt=unstructured_line_dropped",
-                "evt=unstructured_line_dropped",
-            ]
+            assert len(content) == 5
+            assert all(" | INFO    | livekit : " in line for line in content)
+            assert "evt=platform_event provider=livekit latency_ms=12.5" in content[0]
+            assert "evt=platform_error evt=sensitive_field_dropped" in content[1]
+            assert "evt=sensitive_field_dropped" in content[2]
+            assert "evt=unstructured_line_dropped" in content[3]
+            assert "evt=unstructured_line_dropped" in content[4]
             assert all(
                 secret not in joined.lower() for secret in ("customer", "vip", "bearer", "sk-")
             )
@@ -421,10 +421,10 @@ def test_cli_writes_platform_log_and_redacts() -> None:
         content = (
             active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
         )
-        assert content == [
-            "evt=platform_event evt=sensitive_field_dropped",
-            "evt=platform_error",
-        ]
+        assert len(content) == 2
+        assert all(" | INFO    | livekit : " in line for line in content)
+        assert "evt=platform_event evt=sensitive_field_dropped" in content[0]
+        assert "evt=platform_error" in content[1]
         assert "SECRET_VALUE" not in " ".join(content)
 
 
@@ -490,8 +490,8 @@ def test_run_command_collects_stdout_and_stderr_concurrently() -> None:
             active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
         )
         joined = " ".join(content)
-        assert "evt=platform_event" in content
-        assert "evt=platform_error" in content
+        assert any("evt=platform_event" in line for line in content)
+        assert any("evt=platform_error" in line for line in content)
         assert "sk-abcdef" not in joined
 
 
@@ -621,8 +621,8 @@ def test_cli_run_subcommand_launches_child_and_collects() -> None:
         content = (
             active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8").splitlines()
         )
-        assert "evt=platform_event" in content
-        assert "evt=platform_error" in content
+        assert any("evt=platform_event" in line for line in content)
+        assert any("evt=platform_error" in line for line in content)
 
 
 def _pid_exists(pid: int) -> bool:
@@ -832,15 +832,11 @@ def test_platform_collector_writes_only_normalized_events_to_exact_log() -> None
         try:
             collector.emit_event("livekit", "evt=room_created customer=vip")
             collector.emit_event("postgres", "evt=connection_accepted latency_ms=7")
-            assert (
-                active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-                == "evt=platform_event evt=sensitive_field_dropped\n"
-            )
-            assert (
-                active_root.joinpath("platform", "postgres.log").read_text(encoding="utf-8")
-                == "evt=platform_event latency_ms=7\n"
-            )
-            assert not active_root.joinpath("platform", "avatar.log").exists()
+            livekit = active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
+            postgres = active_root.joinpath("platform", "postgres.log").read_text(encoding="utf-8")
+            assert " | INFO    | livekit : evt=platform_event evt=sensitive_field_dropped\n" in livekit
+            assert " | INFO    | postgres: evt=platform_event latency_ms=7\n" in postgres
+            assert not active_root.joinpath("platform", "backend.log").exists()
         finally:
             collector.close()
 
@@ -855,8 +851,8 @@ def test_platform_collector_rejects_unknown_service_and_closes_idempotently() ->
             collector.close()
             collector.close()
             assert (
-                active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-                == "evt=platform_event\n"
+                " | INFO    | livekit : evt=platform_event\n"
+                in active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
             )
         finally:
             collector.close()
@@ -866,36 +862,37 @@ def test_start_session_reactivates_cached_handler_after_end() -> None:
     """Explicit start after an ended session re-activates and truncates."""
     with removable_temp_dir() as active_root:
         collector = PlatformCollector(active_root=active_root)
-        collector.start_session("livekit")
-        collector.emit_event("livekit", "evt=first")
-        collector.end_session()
-        assert (
-            active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-            == "evt=platform_event\n"
-        )
-        collector.start_session("livekit")
-        collector.emit_event("livekit", "evt=second")
-        collector.end_session()
-        assert (
-            active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-            == "evt=platform_event\n"
-        )
+        try:
+            collector.start_session("livekit")
+            collector.emit_event("livekit", "evt=first")
+            collector.end_session()
+            first = active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
+            assert " : evt=platform_event\n" in first
+            collector.start_session("livekit")
+            collector.emit_event("livekit", "evt=second")
+            collector.end_session()
+            second = active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
+            assert " : evt=platform_event\n" in second
+            assert len(second.splitlines()) == 1
+        finally:
+            collector.close()
 
 
 def test_repeated_start_session_truncates_each_time() -> None:
-    """Every explicit start_session writes to a freshly truncated file."""
+    """Every start_session writes to a freshly truncated file."""
     with removable_temp_dir() as active_root:
         collector = PlatformCollector(active_root=active_root)
-        collector.start_session("livekit")
-        collector.emit_event("livekit", "evt=first")
-        collector.end_session()
-        collector.start_session("livekit")
-        collector.emit_event("livekit", "evt=second")
-        assert (
-            active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-            == "evt=platform_event\n"
-        )
-        collector.close()
+        try:
+            collector.start_session("livekit")
+            collector.emit_event("livekit", "evt=first")
+            collector.end_session()
+            collector.start_session("livekit")
+            collector.emit_event("livekit", "evt=second")
+            content = active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
+            assert " : evt=platform_event\n" in content
+            assert len(content.splitlines()) == 1
+        finally:
+            collector.close()
 
 
 def test_windows_job_assign_failure_fallback_kills_tree(

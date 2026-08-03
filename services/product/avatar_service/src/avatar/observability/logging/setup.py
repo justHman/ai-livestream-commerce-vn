@@ -8,7 +8,11 @@ from threading import Lock
 
 from avatar.observability.logging.config import LoggingConfig, validate_config
 from avatar.observability.logging.daily_handler import DailyHandler
-from avatar.observability.logging.filters import ContextFilter, StructuredFieldsFilter
+from avatar.observability.logging.filters import (
+    ContextFilter,
+    LevelFilter,
+    StructuredFieldsFilter,
+)
 from avatar.observability.logging.formatter import ContextFormatter
 
 _HANDLER_MARKER = "_avatar_observability_handler"
@@ -40,6 +44,7 @@ def setup_logging(config: LoggingConfig | None = None, **overrides: object) -> l
         colorize = resolved.color == "auto" and sys.stderr.isatty()
         console.setFormatter(ContextFormatter(service=resolved.service, colorize=colorize))
         console.addFilter(ContextFilter())
+        console.addFilter(LevelFilter())
         console.addFilter(StructuredFieldsFilter())
 
         daily = DailyHandler(
@@ -51,8 +56,8 @@ def setup_logging(config: LoggingConfig | None = None, **overrides: object) -> l
         daily.setLevel(resolved.level)
         daily.setFormatter(ContextFormatter(service=resolved.service, colorize=False))
         daily.addFilter(ContextFilter())
+        daily.addFilter(LevelFilter())
         daily.addFilter(StructuredFieldsFilter())
-        daily.retain()
 
         logger.addHandler(console)
         logger.addHandler(daily)

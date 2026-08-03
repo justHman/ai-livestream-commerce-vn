@@ -335,7 +335,7 @@ def test_formatter_renders_utc_timestamp_and_heading() -> None:
     formatter = ContextFormatter(service=SERVICE)
     line = formatter.format(make_record("hello"))
     assert TS_PATTERN.match(line)
-    assert "INFO    | backend : hello" in line
+    assert f"INFO    | {SERVICE:<8}: hello" in line
 
 
 def test_formatter_renders_short_approved_field_names() -> None:
