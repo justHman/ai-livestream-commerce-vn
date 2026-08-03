@@ -18,7 +18,7 @@ import numpy as np
 
 try:
     from core.render.windows import AudioWindow, TextChunk, split_waveform
-except ModuleNotFoundError:
+except ImportError:
 
     @dataclass(frozen=True)
     class TextChunk:

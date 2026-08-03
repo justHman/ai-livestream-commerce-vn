@@ -32,7 +32,7 @@ from uuid import uuid4
 
 try:
     from core.render.windows import TextChunk
-except ModuleNotFoundError:
+except ImportError:
 
     @dataclass(frozen=True)
     class TextChunk:
@@ -71,7 +71,7 @@ class LLMRequest:
     max_tokens: int = 512
     temperature: float = 0.7
     top_p: float = 0.95
-    top_k: int = -1            # -1 = disabled (vLLM convention)
+    top_k: int = -1  # -1 = disabled (vLLM convention)
     stop: list[str] = field(default_factory=list)
     seed: int = 42
     repetition_penalty: float = 1.0
@@ -99,7 +99,7 @@ class LLMResponse:
     """Result of one generation."""
 
     text: str
-    finish_reason: str = "stop"          # "stop" | "length" | "content_filter"
+    finish_reason: str = "stop"  # "stop" | "length" | "content_filter"
     num_prompt_tokens: int = 0
     num_generated_tokens: int = 0
     engine: str = ""
@@ -226,10 +226,12 @@ ENGINES: dict[str, type[LLMEngine]] = {}
 
 def register_engine(name: str):
     """Class decorator: register an LLMEngine subclass under `name`."""
+
     def deco(cls: type[LLMEngine]) -> type[LLMEngine]:
         ENGINES[name] = cls
         cls.name = name
         return cls
+
     return deco
 
 
@@ -249,9 +251,7 @@ def load_engine(cfg: dict) -> LLMEngine:
         except Exception:
             pass
     if engine not in ENGINES:
-        raise KeyError(
-            f"unknown LLM engine '{engine}'. Registered: {sorted(ENGINES)}"
-        )
+        raise KeyError(f"unknown LLM engine '{engine}'. Registered: {sorted(ENGINES)}")
     return ENGINES[engine].from_config(cfg)
 
 
@@ -266,10 +266,11 @@ def to_llm_fn(
     `system_prompt` is prepended to every call (the livestream persona).
     `default_kwargs` override LLMRequest defaults (max_tokens, temperature...).
     """
+
     def llm_fn(user_text: str) -> str:
-        req = LLMRequest.from_prompt(user_text, system_prompt=system_prompt,
-                                     **default_kwargs)
+        req = LLMRequest.from_prompt(user_text, system_prompt=system_prompt, **default_kwargs)
         return engine.generate(req).text
+
     return llm_fn
 
 
