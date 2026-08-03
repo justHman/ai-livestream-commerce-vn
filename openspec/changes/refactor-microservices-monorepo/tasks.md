@@ -82,10 +82,10 @@
 
 ## 2. Establish Workflow Contracts
 
-- [ ] 2.1 Inventory existing `.github/workflows/` triggers and map each current behavior to the approved event-to-action matrix.
-- [ ] 2.2 Define validated workflow inputs for immutable commit SHA, target environment, and supported service identifiers.
-- [ ] 2.3 Add static workflow validation that rejects unsupported triggers, invalid reusable-workflow references, and malformed service tag patterns.
-- [ ] 2.4 Define repository-aware affected-area rules for product services, platform runtimes, workbench, infrastructure, service-owned contract artifacts, shared configuration, locks, and build files, including consumer-specific fan-out from each contract change.
+- [x] 2.1 Inventory existing `.github/workflows/` triggers and map each current behavior to the approved event-to-action matrix.
+- [x] 2.2 Define validated workflow inputs for immutable commit SHA, target environment, and supported service identifiers.
+- [x] 2.3 Add static workflow validation that rejects unsupported triggers, invalid reusable-workflow references, and malformed service tag patterns.
+- [x] 2.4 Define repository-aware affected-area rules for product services, platform runtimes, workbench, infrastructure, service-owned contract artifacts, shared configuration, locks, and build files, including consumer-specific fan-out from each contract change.
 
 ## 3. Implement Branch-Governed CI
 
