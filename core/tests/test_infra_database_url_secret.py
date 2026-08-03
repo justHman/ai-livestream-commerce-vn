@@ -189,9 +189,7 @@ def test_prod_database_url_enablement_has_no_default() -> None:
 
 def test_database_url_arn_is_merged_into_backend_secret_map() -> None:
     source = _read(DEV_MAIN) + _read(PROD_MAIN)
-    assert re.search(
-        r'"backend/database_url"\s*=\s*var\.database_url_parameter_arn', source
-    )
+    assert re.search(r'"backend/database_url"\s*=\s*var\.database_url_parameter_arn', source)
 
 
 def _policy_statements() -> list[str]:

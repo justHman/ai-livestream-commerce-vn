@@ -60,20 +60,27 @@ def test_lite_chat_10_comments_accepted(mock_env: None) -> None:
         sid = r.json()["session_id"]
 
         # Attach with empty product list (coordinator starts on attach).
-        r = client.post("/api/v1/lite/attach", json={
-            "session_id": sid, "products": [],
-        })
+        r = client.post(
+            "/api/v1/lite/attach",
+            json={
+                "session_id": sid,
+                "products": [],
+            },
+        )
         assert r.status_code == 200, r.text
         assert r.json()["ok"] is True
 
         # POST /lite/chat 10 times.
         comment_ids = []
         for i in range(10):
-            r = client.post("/api/v1/lite/chat", json={
-                "session_id": sid,
-                "text": f"Comment #{i}: Gia bao nhieu?",
-                "author": f"Viewer{i}",
-            })
+            r = client.post(
+                "/api/v1/lite/chat",
+                json={
+                    "session_id": sid,
+                    "text": f"Comment #{i}: Gia bao nhieu?",
+                    "author": f"Viewer{i}",
+                },
+            )
             assert r.status_code == 202, f"chat #{i}: {r.status_code} {r.text}"
             body = r.json()
             assert body["accepted"] is True
@@ -143,9 +150,14 @@ def test_lite_chat_without_attach_returns_404(mock_env: None) -> None:
         r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
         sid = r.json()["session_id"]
 
-        r = client.post("/api/v1/lite/chat", json={
-            "session_id": sid, "text": "hello", "author": "test",
-        })
+        r = client.post(
+            "/api/v1/lite/chat",
+            json={
+                "session_id": sid,
+                "text": "hello",
+                "author": "test",
+            },
+        )
         assert r.status_code == 404
 
         # Cleanup.
@@ -157,13 +169,22 @@ def test_lite_chat_text_too_long_returns_413(mock_env: None) -> None:
     with _make_app(mock_env) as client:
         r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
         sid = r.json()["session_id"]
-        client.post("/api/v1/lite/attach", json={
-            "session_id": sid, "products": [],
-        })
+        client.post(
+            "/api/v1/lite/attach",
+            json={
+                "session_id": sid,
+                "products": [],
+            },
+        )
 
-        r = client.post("/api/v1/lite/chat", json={
-            "session_id": sid, "text": "x" * 501, "author": "test",
-        })
+        r = client.post(
+            "/api/v1/lite/chat",
+            json={
+                "session_id": sid,
+                "text": "x" * 501,
+                "author": "test",
+            },
+        )
         assert r.status_code == 413
 
         client.post("/api/v1/lite/stop", json={"session_id": sid})
@@ -174,9 +195,13 @@ def test_lite_stop_drops_coordinator_session(mock_env: None) -> None:
     with _make_app(mock_env) as client:
         r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
         sid = r.json()["session_id"]
-        client.post("/api/v1/lite/attach", json={
-            "session_id": sid, "products": [],
-        })
+        client.post(
+            "/api/v1/lite/attach",
+            json={
+                "session_id": sid,
+                "products": [],
+            },
+        )
         # Coordinator should be active.
         d = v1.deps()
         assert d.coordinator is not None

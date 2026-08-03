@@ -172,9 +172,7 @@ def test_root_route_returns_render_backend(mock_env: None, injected_deps: v1.V1D
 # ---------- injected deps skip model loading ----------
 
 
-def test_injected_deps_engine_manager_used_as_is(
-    mock_env: None, injected_deps: v1.V1Deps
-) -> None:
+def test_injected_deps_engine_manager_used_as_is(mock_env: None, injected_deps: v1.V1Deps) -> None:
     """create_app(deps=...) must NOT call engine_mgr.load_llm/load_tts.
 
     We assert by inspecting the injected EngineManager after boot: it should

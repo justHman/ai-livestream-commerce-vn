@@ -258,7 +258,9 @@ class AvatarUpdateReq(BaseModel):
 
 class SandboxVerifyReq(BaseModel):
     avatar_id: Optional[str] = Field(default=None, max_length=128)
-    speech_text: str = Field(default="Xin chào, đây là phiên kiểm tra.", min_length=1, max_length=300)
+    speech_text: str = Field(
+        default="Xin chào, đây là phiên kiểm tra.", min_length=1, max_length=300
+    )
 
 
 class PlanCreateReq(BaseModel):
@@ -478,7 +480,9 @@ async def _persist_viewer_msgs(
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.warning("Postgres persistence failed session=%s operation=insert_viewer_msg", session_id)
+            logger.warning(
+                "Postgres persistence failed session=%s operation=insert_viewer_msg", session_id
+            )
 
 
 def _mock_or_debug_allowed() -> None:
@@ -573,9 +577,7 @@ def build_run_plan(
             part
             for part in (
                 f"Chất liệu {data.get('material')}" if data.get("material") else "",
-                f"Màu {', '.join(data.get('colors') or [])}"
-                if data.get("colors")
-                else "",
+                f"Màu {', '.join(data.get('colors') or [])}" if data.get("colors") else "",
                 f"Size {', '.join(data.get('sizes') or [])}" if data.get("sizes") else "",
                 str(data.get("shipping") or ""),
                 str(data.get("warranty") or ""),
@@ -834,7 +836,9 @@ async def lite_start(
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.warning("Postgres persistence failed session=%s operation=upsert_session", result.session_id)
+            logger.warning(
+                "Postgres persistence failed session=%s operation=upsert_session", result.session_id
+            )
     return result.public_dict()  # frontend-safe only
 
 
@@ -1609,10 +1613,12 @@ async def mock_video_mjpeg(
             entry = d.orchestrators.get(session_id)
             if entry is not None:
                 queue: BoundedVideoQueue = entry["queue"]
+
                 def _idle_fn() -> bytes:
                     return mb.get_idle_frame_jpeg(
                         session_id, int(_time.monotonic_ns() // 1_000_000)
                     )
+
                 try:
                     jpeg, _is_idle = await queue.get_or_idle(
                         _idle_fn, timeout_ms=int(frame_interval_s * 1000)
@@ -1675,9 +1681,7 @@ async def sessions_say(
     _: None = Depends(viewer_auth),
     _limit: None = Depends(rate_limit_viewer),
 ) -> dict[str, Any]:
-    return await lite_say(
-        SayReq(session_id=session_id, text=req.text, generate=req.generate), _
-    )
+    return await lite_say(SayReq(session_id=session_id, text=req.text, generate=req.generate), _)
 
 
 @router.post("/sessions/{session_id}/interrupt")
@@ -1953,27 +1957,25 @@ async def verify_sandbox(
             )
             return {
                 "ready": False,
-                "layers": layers + [
+                "layers": layers
+                + [
                     {"name": "connectivity", "status": "skipped", "latency_ms": 0.0},
                     {"name": "speech", "status": "skipped", "latency_ms": 0.0},
                 ],
             }
-        credentials, _ = await run_layer(
-            "credentials", probe, "credential verification failed"
-        )
+        credentials, _ = await run_layer("credentials", probe, "credential verification failed")
         if credentials is None:
             return {
                 "ready": False,
-                "layers": layers + [
+                "layers": layers
+                + [
                     {"name": "connectivity", "status": "skipped", "latency_ms": 0.0},
                     {"name": "speech", "status": "skipped", "latency_ms": 0.0},
                 ],
             }
         result, late_worker = await run_layer(
             "connectivity",
-            lambda: backend.start(
-                StartOptions(avatar_id=payload.avatar_id, is_sandbox=True)
-            ),
+            lambda: backend.start(StartOptions(avatar_id=payload.avatar_id, is_sandbox=True)),
             "LiveAvatar or LiveKit connectivity failed",
         )
         if result is None:
@@ -1981,8 +1983,7 @@ async def verify_sandbox(
                 asyncio.create_task(cleanup_late_start(late_worker))
             return {
                 "ready": False,
-                "layers": layers
-                + [{"name": "speech", "status": "skipped", "latency_ms": 0.0}],
+                "layers": layers + [{"name": "speech", "status": "skipped", "latency_ms": 0.0}],
             }
         session_id = result.session_id
         spoken, _ = await run_layer(

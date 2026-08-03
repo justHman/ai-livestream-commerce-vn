@@ -75,8 +75,17 @@ class _StubTTS(TTSEngine):
     def synthesize(self, req: TTSRequest) -> AudioChunk:
         raise RuntimeError("stub: use stream_audio()")
 
-    def stream_audio(self, text_or_chunk, *, session_id="", utterance_id="", req=None,
-                     min_ms=500, target_ms=1000, max_ms=2000) -> Iterator[AudioWindow]:
+    def stream_audio(
+        self,
+        text_or_chunk,
+        *,
+        session_id="",
+        utterance_id="",
+        req=None,
+        min_ms=500,
+        target_ms=1000,
+        max_ms=2000,
+    ) -> Iterator[AudioWindow]:
         text = text_or_chunk.text if isinstance(text_or_chunk, TextChunk) else str(text_or_chunk)
         sid = text_or_chunk.session_id if isinstance(text_or_chunk, TextChunk) else session_id
         uid = text_or_chunk.utterance_id if isinstance(text_or_chunk, TextChunk) else utterance_id
@@ -340,10 +349,14 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
     # arguments.
     from core.render.orchestrator import StreamOrchestrator
     from core.render.queue import BoundedVideoQueue, CoordinatorMetrics
+
     assert sid not in registry
     orch = StreamOrchestrator(
-        llm=_StubLLM(), tts=_StubTTS(), backend=backend,
-        queue=BoundedVideoQueue(max_size=5), metrics=CoordinatorMetrics(),
+        llm=_StubLLM(),
+        tts=_StubTTS(),
+        backend=backend,
+        queue=BoundedVideoQueue(max_size=5),
+        metrics=CoordinatorMetrics(),
     )
     q = BoundedVideoQueue(max_size=5)
     coord._register_speaking(sid, orch, q)
@@ -371,8 +384,13 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
 
     # _decision_to_event projects only safe decision metadata — no prompt
     # text, customer data, or comment text.
-    dec = Decision(action="answer_fact", product_id="P001", field="price",
-                   may_interrupt=False, reason="score=3")
+    dec = Decision(
+        action="answer_fact",
+        product_id="P001",
+        field="price",
+        may_interrupt=False,
+        reason="score=3",
+    )
     ev = _decision_to_event(dec)
     assert ev == {
         "turn_id": dec.turn_id,
@@ -456,9 +474,7 @@ async def test_ws_events_never_contain_sensitive_data() -> None:
     ev = _decision_to_event(dec)
     flat = str(ev)
     for sentinel in _SENSITIVE_SENTINELS:
-        assert sentinel not in flat, (
-            f"sentinel {sentinel!r} found in _decision_to_event: {ev}"
-        )
+        assert sentinel not in flat, f"sentinel {sentinel!r} found in _decision_to_event: {ev}"
 
     # ── _speech_item (queued, processing, failed, cancelled) ──
     for state in ("queued", "processing", "failed", "cancelled_stale"):
@@ -471,35 +487,47 @@ async def test_ws_events_never_contain_sensitive_data() -> None:
 
     # ── WS events via hub: speak_started, speak_finished, terminal_failure ──
     # speak_started
-    await hub.emit(sid, {
-        "type": "coordinator.speak_started",
-        "turn_id": dec.turn_id,
-        "state": "processing",
-        "action": dec.action,
-        "product": dec.product_id,
-    })
+    await hub.emit(
+        sid,
+        {
+            "type": "coordinator.speak_started",
+            "turn_id": dec.turn_id,
+            "state": "processing",
+            "action": dec.action,
+            "product": dec.product_id,
+        },
+    )
     # speak_finished
-    await hub.emit(sid, {
-        "type": "coordinator.speak_finished",
-        "turn_id": dec.turn_id,
-        "state": "completed",
-        "action": dec.action,
-        "product_id": dec.product_id,
-    })
+    await hub.emit(
+        sid,
+        {
+            "type": "coordinator.speak_finished",
+            "turn_id": dec.turn_id,
+            "state": "completed",
+            "action": dec.action,
+            "product_id": dec.product_id,
+        },
+    )
     # terminal_failure
-    await hub.emit(sid, {
-        "type": "coordinator.terminal_failure",
-        "turn_id": dec.turn_id,
-        "state": "failed",
-        "error": "TestError",
-    })
+    await hub.emit(
+        sid,
+        {
+            "type": "coordinator.terminal_failure",
+            "turn_id": dec.turn_id,
+            "state": "failed",
+            "error": "TestError",
+        },
+    )
     # retry_scheduled
-    await hub.emit(sid, {
-        "type": "coordinator.retry_scheduled",
-        "turn_id": dec.turn_id,
-        "retry_count": 1,
-        "error": "TimeoutError",
-    })
+    await hub.emit(
+        sid,
+        {
+            "type": "coordinator.retry_scheduled",
+            "turn_id": dec.turn_id,
+            "retry_count": 1,
+            "error": "TimeoutError",
+        },
+    )
 
     # Verify every emitted event is clean
     for event_sid, event in hub.events:
@@ -522,6 +550,4 @@ async def test_ws_events_never_contain_sensitive_data() -> None:
     }
     flat = str(completed)
     for sentinel in _SENSITIVE_SENTINELS:
-        assert sentinel not in flat, (
-            f"sentinel {sentinel!r} found in completed_speech: {completed}"
-        )
+        assert sentinel not in flat, f"sentinel {sentinel!r} found in completed_speech: {completed}"

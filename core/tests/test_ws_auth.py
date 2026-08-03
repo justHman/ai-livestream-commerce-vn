@@ -71,9 +71,7 @@ def _prod_cfg() -> AppConfig:
 
 def test_prod_ws_valid_token_accepted(mock_env: None) -> None:
     with _client(_prod_cfg()) as client:
-        with client.websocket_connect(
-            "/api/v1/ws/control/sid-ok?token=viewer-secret"
-        ) as ws:
+        with client.websocket_connect("/api/v1/ws/control/sid-ok?token=viewer-secret") as ws:
             # First event is the control.connected handshake.
             hello = ws.receive_json()
             assert hello["type"] == "control.connected"
@@ -93,9 +91,7 @@ def test_prod_ws_no_token_rejected(mock_env: None) -> None:
 def test_prod_ws_wrong_token_rejected(mock_env: None) -> None:
     with _client(_prod_cfg()) as client:
         with pytest.raises(Exception):
-            with client.websocket_connect(
-                "/api/v1/ws/control/sid-wrong?token=nope"
-            ):
+            with client.websocket_connect("/api/v1/ws/control/sid-wrong?token=nope"):
                 pass  # server should close before accept
 
 
@@ -125,9 +121,7 @@ def test_dev_ws_no_token_accepted(mock_env: None) -> None:
 def test_ws_connect_emits_control_connected(mock_env: None) -> None:
     """First event after accept should be control.connected."""
     with _client(_prod_cfg()) as client:
-        with client.websocket_connect(
-            "/api/v1/ws/control/sid-conn?token=viewer-secret"
-        ) as ws:
+        with client.websocket_connect("/api/v1/ws/control/sid-conn?token=viewer-secret") as ws:
             msg = ws.receive_json()
     assert msg["type"] == "control.connected"
     assert msg["session_id"] == "sid-conn"

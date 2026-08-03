@@ -49,7 +49,7 @@ class ProductVariant:
     sku: str
     color: Optional[str] = None
     size: Optional[str] = None
-    price: Optional[int] = None        # VND; overrides product price if set
+    price: Optional[int] = None  # VND; overrides product price if set
     stock: int = 0
 
 
@@ -63,10 +63,10 @@ class Product:
     description: str = ""
 
     # commercial
-    price: Optional[int] = None            # VND, base/display price
+    price: Optional[int] = None  # VND, base/display price
     original_price: Optional[int] = None
     currency: str = "VND"
-    promotion: Optional[str] = None        # human-readable promo text
+    promotion: Optional[str] = None  # human-readable promo text
     discount_percent: Optional[float] = None
 
     # physical / catalog attributes
@@ -82,14 +82,14 @@ class Product:
     variants: list[ProductVariant] = field(default_factory=list)
     in_stock: bool = True
     stock_total: Optional[int] = None
-    shipping: Optional[str] = None         # e.g. "Freeship đơn từ 200k, 2-4 ngày"
+    shipping: Optional[str] = None  # e.g. "Freeship đơn từ 200k, 2-4 ngày"
     warranty: Optional[str] = None
     how_to_buy: Optional[str] = None
     usage: Optional[str] = None
-    purchase_limit: Optional[int] = None   # max per buyer (flash-sale edge case)
+    purchase_limit: Optional[int] = None  # max per buyer (flash-sale edge case)
 
     # media / presentation
-    ref_image: Optional[str] = None        # avatar asset keyed by product id
+    ref_image: Optional[str] = None  # avatar asset keyed by product id
     images: list[str] = field(default_factory=list)
 
     # free-form extension — add domain fields without schema changes
@@ -124,8 +124,9 @@ class Product:
                 return f"Giá {self.name}: {base} (giá gốc {og})."
             return f"Giá {self.name}: {base}."
         if k == "promotion":
-            return self.promotion or (f"Đang giảm {self.discount_percent:.0f}%."
-                                      if self.discount_percent else None)
+            return self.promotion or (
+                f"Đang giảm {self.discount_percent:.0f}%." if self.discount_percent else None
+            )
         if k == "shipping":
             return self.shipping
         if k == "stock":

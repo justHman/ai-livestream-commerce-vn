@@ -123,26 +123,17 @@ class OpenAICompatEngine(LLMEngine):
     @classmethod
     def from_config(cls, cfg: dict) -> "OpenAICompatEngine":
         e = cls()
-        base = (
-            cfg.get("base_url")
-            or os.environ.get("LLM_BASE_URL", "")
-            or ""
-        )
+        base = cfg.get("base_url") or os.environ.get("LLM_BASE_URL", "") or ""
         base = str(base).strip()
         if not base:
-            raise ValueError(
-                "openai_compat needs cfg['base_url'] or env LLM_BASE_URL"
-            )
+            raise ValueError("openai_compat needs cfg['base_url'] or env LLM_BASE_URL")
         e._base_url = _strip_trailing_slash(base)
         e._model = str(cfg.get("model") or cfg.get("weights_path") or "default")
-        e._api_key = str(
-            cfg.get("api_key") or os.environ.get("LLM_API_KEY", "") or ""
-        )
+        e._api_key = str(cfg.get("api_key") or os.environ.get("LLM_API_KEY", "") or "")
         e._timeout = float(cfg.get("timeout", 60.0))
         e._guided_json = bool(
             cfg.get("guided_json")
-            or os.environ.get("LLM_GUIDED_JSON", "").lower()
-            in ("1", "true", "on", "yes")
+            or os.environ.get("LLM_GUIDED_JSON", "").lower() in ("1", "true", "on", "yes")
         )
         # Allow injecting a prebuilt client (tests); otherwise lazy-create.
         client = cfg.get("http_client")
@@ -162,15 +153,11 @@ class OpenAICompatEngine(LLMEngine):
         try:
             resp = client.post(
                 url,
-                json=_payload(
-                    req, self._model, stream=False, guided_json=self._guided_json
-                ),
+                json=_payload(req, self._model, stream=False, guided_json=self._guided_json),
                 headers=_auth_headers(self._api_key),
             )
         except httpx.RequestError as exc:
-            raise RuntimeError(
-                f"openai_compat generate request failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"openai_compat generate request failed: {exc}") from exc
         _raise_http(resp, "generate")
         try:
             data = resp.json()
@@ -192,16 +179,13 @@ class OpenAICompatEngine(LLMEngine):
                         break
             if end > 0:
                 import json as _json
+
                 try:
                     data = _json.loads(raw[:end])
                 except ValueError as exc:
-                    raise RuntimeError(
-                        "openai_compat generate returned non-JSON body"
-                    ) from exc
+                    raise RuntimeError("openai_compat generate returned non-JSON body") from exc
             else:
-                raise RuntimeError(
-                    "openai_compat generate returned non-JSON body"
-                )
+                raise RuntimeError("openai_compat generate returned non-JSON body")
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         text = (message.get("content") or choice.get("text") or "").strip()
@@ -225,9 +209,7 @@ class OpenAICompatEngine(LLMEngine):
             with client.stream(
                 "POST",
                 url,
-                json=_payload(
-                    req, self._model, stream=True, guided_json=self._guided_json
-                ),
+                json=_payload(req, self._model, stream=True, guided_json=self._guided_json),
                 headers=headers,
             ) as resp:
                 _raise_http(resp, "stream")
@@ -244,9 +226,7 @@ class OpenAICompatEngine(LLMEngine):
                     if content:
                         yield content
         except httpx.RequestError as exc:
-            raise RuntimeError(
-                f"openai_compat stream request failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"openai_compat stream request failed: {exc}") from exc
 
     def unload(self) -> None:
         if self._client is not None:

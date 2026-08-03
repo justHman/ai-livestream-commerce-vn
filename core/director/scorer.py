@@ -30,8 +30,26 @@ from .state import Phase, ProductState, StreamState
 # semantic product match is done by embedding retrieval. These only bias which
 # *intent* is urgent — price/stock/buy beat greetings.)
 INTENT_WEIGHTS = {
-    "high": (["giá", "bao nhiêu", "tiền", "ship", "giao", "mua", "đặt", "cọc",
-              "còn hàng", "size", "màu", "khuyến mãi", "sale", "giảm", "freeship"], 1.0),
+    "high": (
+        [
+            "giá",
+            "bao nhiêu",
+            "tiền",
+            "ship",
+            "giao",
+            "mua",
+            "đặt",
+            "cọc",
+            "còn hàng",
+            "size",
+            "màu",
+            "khuyến mãi",
+            "sale",
+            "giảm",
+            "freeship",
+        ],
+        1.0,
+    ),
     "mid": (["chất lượng", "review", "thật không", "bền", "dùng", "công dụng"], 0.5),
     "low": (["chào", "hello", "hi", "đẹp", "like", "follow", "tym", "tim"], 0.1),
 }

@@ -31,9 +31,9 @@ def test_schema_contains_required_tables():
     assert sql.strip(), "schema SQL is empty"
     lower = sql.lower()
     for table in REQUIRED_TABLES:
-        assert re.search(
-            rf"create\s+table\s+if\s+not\s+exists\s+{table}\b", lower
-        ), f"table {table} missing from schema"
+        assert re.search(rf"create\s+table\s+if\s+not\s+exists\s+{table}\b", lower), (
+            f"table {table} missing from schema"
+        )
 
 
 def test_schema_indexes_session_id():

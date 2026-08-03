@@ -31,7 +31,9 @@ async def _http_exception_handler(request: Request, exc) -> JSONResponse:
     return _envelope(exc.status_code, f"http_{exc.status_code}", detail)
 
 
-async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def _request_validation_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     if any(error["type"] == "string_too_long" for error in exc.errors()):
         return _envelope(413, "input_too_long", "input too long")
     return await request_validation_exception_handler(request, exc)

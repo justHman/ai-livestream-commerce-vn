@@ -67,9 +67,7 @@ def test_platform_ws_auth_rejects_in_prod(mock_env: None) -> None:
         with pytest.raises(Exception):
             with client.websocket_connect("/api/v1/ws/platform/s1"):
                 pass
-        with client.websocket_connect(
-            "/api/v1/ws/platform/s1?token=viewer-secret"
-        ) as ws:
+        with client.websocket_connect("/api/v1/ws/platform/s1?token=viewer-secret") as ws:
             assert ws.receive_json()["type"] == "platform.connected"
 
 

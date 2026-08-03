@@ -71,9 +71,7 @@ def _ws_limiters(ws: WebSocket) -> WebSocketLimiters:
     return limiter
 
 
-async def allow_ws_message(
-    ws: WebSocket, scope: str, session_id: str, connection_id: str
-) -> bool:
+async def allow_ws_message(ws: WebSocket, scope: str, session_id: str, connection_id: str) -> bool:
     """Apply the per-connection then per-session budgets; close on exceed."""
     connection_key, session_key = _ws_limit_keys(ws, scope, session_id, connection_id)
     allowed = _ws_limiters(ws).allow(connection_key, session_key)

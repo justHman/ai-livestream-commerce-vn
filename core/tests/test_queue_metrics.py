@@ -25,7 +25,9 @@ from core.render.queue import BoundedVideoQueue, CoordinatorMetrics
 from core.render.windows import VideoWindow
 
 
-def _window(seq: int = 0, *, frames: list[bytes] | None = None, is_final: bool = False) -> VideoWindow:
+def _window(
+    seq: int = 0, *, frames: list[bytes] | None = None, is_final: bool = False
+) -> VideoWindow:
     return VideoWindow(
         session_id="sess-test",
         utterance_id="utt-1",

@@ -17,6 +17,7 @@ Usage:
         "sample_rate": 24000,
     })
 """
+
 from __future__ import annotations
 
 import os
@@ -46,6 +47,7 @@ def _decode_mp3_to_float32(audio_bytes: bytes, sample_rate: int) -> np.ndarray:
     if not audio_bytes:
         return np.zeros(0, dtype=np.float32)
     import wave
+
     in_fd, in_path = tempfile.mkstemp(suffix=".mp3")
     out_fd, out_path = tempfile.mkstemp(suffix=".wav")
     os.close(in_fd)
@@ -54,9 +56,21 @@ def _decode_mp3_to_float32(audio_bytes: bytes, sample_rate: int) -> np.ndarray:
         with open(in_path, "wb") as inf:
             inf.write(audio_bytes)
         subprocess.run(
-            ["ffmpeg", "-y", "-i", in_path, "-ar", str(sample_rate),
-             "-ac", "1", "-f", "wav", out_path],
-            check=True, capture_output=True,
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                in_path,
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-f",
+                "wav",
+                out_path,
+            ],
+            check=True,
+            capture_output=True,
         )
         with wave.open(out_path, "rb") as wf:
             frames = wf.readframes(wf.getnframes())
@@ -92,9 +106,7 @@ class OpenAISpeechTTSEngine(TTSEngine):
             or ""
         )
         e._model = str(cfg.get("model") or cfg.get("model_id") or DEFAULT_MODEL)
-        e._base_url = _strip_trailing_slash(
-            cfg.get("base_url") or DEFAULT_BASE_URL
-        )
+        e._base_url = _strip_trailing_slash(cfg.get("base_url") or DEFAULT_BASE_URL)
         e._timeout = float(cfg.get("timeout", 30.0))
         e.sample_rate = int(cfg.get("sample_rate", 24_000))
         client = cfg.get("http_client")
@@ -118,9 +130,7 @@ class OpenAISpeechTTSEngine(TTSEngine):
         try:
             resp = client.post(url, json=body, headers=headers)
         except httpx.RequestError as exc:
-            raise RuntimeError(
-                f"openai_speech TTS request failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"openai_speech TTS request failed: {exc}") from exc
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:

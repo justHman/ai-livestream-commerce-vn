@@ -81,7 +81,9 @@ def test_engine_manager_forwards_cloud_generation_defaults() -> None:
 
 
 def test_global_opening_has_three_grounded_turns_before_product_lifecycle() -> None:
-    state = StreamState(phase=Phase.OPENING, products=[ProductState(product_id="P004", name="Áo hoodie")])
+    state = StreamState(
+        phase=Phase.OPENING, products=[ProductState(product_id="P004", name="Áo hoodie")]
+    )
     state.traffic.viewer_count = 100
     director = Director(state=state)
 
@@ -119,7 +121,9 @@ def test_demand_pivot_has_hysteresis_and_minimum_comment_gate() -> None:
     from core.director.pivot import should_enter_pivot, should_exit_pivot
 
     assert should_enter_pivot("P002", ["P002"] * 6 + ["P004"] * 4, top_score=0.9, current_score=0.7)
-    assert not should_enter_pivot("P002", ["P002"] * 3 + ["P004"] * 3, top_score=0.9, current_score=0.7)
+    assert not should_enter_pivot(
+        "P002", ["P002"] * 3 + ["P004"] * 3, top_score=0.9, current_score=0.7
+    )
     assert should_exit_pivot("P002", ["P002"] * 4 + ["P004"] * 6)
     assert not should_exit_pivot("P002", ["P002"] * 6 + ["P004"] * 4)
 
@@ -267,7 +271,10 @@ def test_decision_carries_generation_and_cache_metadata_fields() -> None:
 
 
 def test_singleton_cluster_does_not_enter_qna_ranking() -> None:
-    state = StreamState(phase=Phase.SELLING, products=[ProductState(product_id="P004", name="Áo hoodie", is_introduced=True)])
+    state = StreamState(
+        phase=Phase.SELLING,
+        products=[ProductState(product_id="P004", name="Áo hoodie", is_introduced=True)],
+    )
     director = Director(state=state)
     decision = director.decide([Comment(text="giá bao nhiêu", embedding=[1.0], t=0.0)], now=1.0)
     assert decision.action == "sell_product"
@@ -368,7 +375,12 @@ def test_cluster_answer_prompt_requests_one_clause_paraphrase_and_short_grounded
     from core.director.scorer import ScoredCluster
     from core.director.cluster import Cluster
 
-    cluster = Cluster(centroid=[1.0], members=["giá bao nhiêu", "nhiêu tiền"], member_ids=["a", "b"], intent="price")
+    cluster = Cluster(
+        centroid=[1.0],
+        members=["giá bao nhiêu", "nhiêu tiền"],
+        member_ids=["a", "b"],
+        intent="price",
+    )
     prompt = Director(state=StreamState())._answer_prompt(ScoredCluster(cluster, 1.0, 1.0, 1.0))
 
     assert "một mệnh đề" in prompt
@@ -672,9 +684,7 @@ def test_locked_intro_prevents_director_from_consuming_comments() -> None:
         await coordinator._tick_once(session_id)
 
         state = runtime._sessions[session_id].director.state
-        assert [comment.text for comment in state.rolling_comments] == [
-            "áo hoodie giá bao nhiêu"
-        ]
+        assert [comment.text for comment in state.rolling_comments] == ["áo hoodie giá bao nhiêu"]
         assert coordinator.stats(session_id)["decisions_emitted"] == 0
         locks.release(session_id)
         coordinator.stop(session_id)

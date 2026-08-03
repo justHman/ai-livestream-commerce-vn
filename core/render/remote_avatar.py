@@ -56,9 +56,7 @@ class RemoteAvatarBackend(StreamingAvatarBackend):
     ) -> None:
         base = (base_url or os.environ.get("AVATAR_BASE_URL", "") or "").strip()
         if not base:
-            raise ValueError(
-                "remote_avatar needs base_url or env AVATAR_BASE_URL"
-            )
+            raise ValueError("remote_avatar needs base_url or env AVATAR_BASE_URL")
         self._base_url = _strip_trailing_slash(base)
         self._timeout = float(timeout)
         self._client = http_client
@@ -122,9 +120,7 @@ class RemoteAvatarBackend(StreamingAvatarBackend):
         try:
             resp = client.post(url, json=body)
         except httpx.RequestError as exc:
-            raise RuntimeError(
-                f"remote_avatar stream_audio request failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"remote_avatar stream_audio request failed: {exc}") from exc
         _raise_http(resp, "stream_audio")
         data = resp.json() if resp.content else {}
         windows = data.get("video_windows")
@@ -168,9 +164,7 @@ class RemoteAvatarBackend(StreamingAvatarBackend):
         try:
             resp = client.post(url, json={"session_id": session_id})
         except httpx.RequestError as exc:
-            raise RuntimeError(
-                f"remote_avatar interrupt request failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"remote_avatar interrupt request failed: {exc}") from exc
         _raise_http(resp, "interrupt")
 
     def stop(self, session_id: str) -> None:

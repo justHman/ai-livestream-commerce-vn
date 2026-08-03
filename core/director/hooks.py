@@ -44,9 +44,7 @@ class HookPool:
         self._rebuild_cycles()
 
     def _rebuild_cycles(self) -> None:
-        self._cycles = {
-            k: itertools.cycle(v) for k, v in self._pool.items() if v
-        }
+        self._cycles = {k: itertools.cycle(v) for k, v in self._pool.items() if v}
 
     def populate(self, category: str, lines: list[str]) -> None:
         """Replace a category's lines (e.g. LLM-generated from shop info at init)."""

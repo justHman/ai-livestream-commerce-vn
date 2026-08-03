@@ -60,6 +60,7 @@ def configure(
     if llm is not None:
         if _is_llm_engine(llm):
             from ..llm import to_llm_fn
+
             _llm_engine = llm
             _default_system_prompt = system_prompt
             _llm_defaults = dict(llm_defaults or {})
@@ -72,6 +73,7 @@ def configure(
     if tts is not None:
         if _is_tts_engine(tts):
             from ..tts import to_tts_fn
+
             _tts_fn = to_tts_fn(tts)
         elif callable(tts):
             _tts_fn = tts
@@ -114,6 +116,7 @@ class CloudRenderBackend(FullPipelineBackend):
         calls. Overrides the env SHOP_PROFILE default.
         """
         from ..config import _build_persona
+
         self._personas[session_id] = _build_persona(shop_profile)
 
     def start(self, opts: StartOptions) -> StartResult:
@@ -143,10 +146,9 @@ class CloudRenderBackend(FullPipelineBackend):
         persona = self._personas.get(session_id)
         if generate and persona is not None and _llm_engine is not None:
             from ..llm import to_llm_fn
+
             saved_llm = convo.llm
-            convo.llm = to_llm_fn(
-                _llm_engine, system_prompt=persona, **_llm_defaults
-            )
+            convo.llm = to_llm_fn(_llm_engine, system_prompt=persona, **_llm_defaults)
             try:
                 return convo.turn(text)
             finally:

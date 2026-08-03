@@ -29,7 +29,9 @@ def test_platform_roots_and_legacy_references() -> None:
     lmcache_df = (PLATFORM / "lmcache" / "Dockerfile").read_text()
     assert "lmcache==0.5.2" in lmcache_df, "lmcache pin must be immutable"
     # Flag only best-effort install fallback patterns (|| true, || echo optional), not HEALTHCHECK fail-loudness.
-    install_lines = [l for l in lmcache_df.splitlines() if "pip install" in l or "apt-get" in l or "apk add" in l]
+    install_lines = [
+        l for l in lmcache_df.splitlines() if "pip install" in l or "apt-get" in l or "apk add" in l
+    ]
     for line in install_lines:
         assert "||" not in line, f"install line must fail-loud, not fallback: {line.strip()}"
     lmcache_ep = (PLATFORM / "lmcache" / "entrypoint.sh").read_text()
@@ -42,7 +44,9 @@ def test_platform_roots_and_legacy_references() -> None:
     assert not list((PLATFORM / "postgres").glob("smoke.*"))
     assert not list((PLATFORM / "redis").glob("smoke.*"))
     assert not (PLATFORM / "redis" / "redis.conf").exists()
-    assert not any((PLATFORM / name / "src").exists() for name in ("livekit", "lmcache", "postgres", "redis"))
+    assert not any(
+        (PLATFORM / name / "src").exists() for name in ("livekit", "lmcache", "postgres", "redis")
+    )
     assert not list(PLATFORM.rglob("*.sql"))
 
     legacy = ROOT / "services"

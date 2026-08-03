@@ -94,9 +94,7 @@ def test_remote_avatar_lifecycle():
 
     # audio body carried pcm_b64
     audio_call = next(c for c in calls if "/audio" in c[1])
-    assert audio_call[2]["pcm_b64"] == base64.b64encode(b"\x00\x01\x00\x02").decode(
-        "ascii"
-    )
+    assert audio_call[2]["pcm_b64"] == base64.b64encode(b"\x00\x01\x00\x02").decode("ascii")
     client.close()
 
 
@@ -115,9 +113,7 @@ def test_default_backends_unchanged(monkeypatch):
 
 
 def test_stream_audio_unknown_session():
-    client = httpx.Client(
-        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
-    )
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
     backend = RemoteAvatarBackend(base_url="http://avatar:8080", http_client=client)
     aw = AudioWindow(
         session_id="nope",

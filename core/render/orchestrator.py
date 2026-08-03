@@ -85,7 +85,9 @@ class StreamOrchestrator:
         self._min_chars = int(cfg.get("text_chunk_min_chars", _DEFAULT_MIN_CHARS))
         self._target_chars = int(cfg.get("text_chunk_target_chars", _DEFAULT_TARGET_CHARS))
         self._max_chars = int(cfg.get("text_chunk_max_chars", _DEFAULT_MAX_CHARS))
-        self._flush_timeout_ms = int(cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS))
+        self._flush_timeout_ms = int(
+            cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS)
+        )
         self._cancel_event = threading.Event()
         self._running_session: str | None = None
         self._audio_window_callback = audio_window_callback
@@ -112,13 +114,15 @@ class StreamOrchestrator:
         req = LLMRequest.from_prompt(text, system_prompt=system_prompt)
         bridge: queue.Queue[VideoWindow | object] = queue.Queue()
 
-        worker = asyncio.create_task(asyncio.to_thread(
-            self._run_sync,
-            session_id,
-            utterance_id,
-            req,
-            bridge,
-        ))
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._run_sync,
+                session_id,
+                utterance_id,
+                req,
+                bridge,
+            )
+        )
 
         first_emitted = False
         try:

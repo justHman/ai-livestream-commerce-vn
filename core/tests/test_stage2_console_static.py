@@ -70,14 +70,23 @@ def test_console_has_continuous_demo_controls_and_no_bootstrap_fetch() -> None:
 
 
 def test_console_exposes_runtime_scheduling_controls() -> None:
-    controls = ("qaMaxClusters", "qaTimeout", "qaCooldown", "answerVariants", "preparedDepth", "retryCount", "pivotEnter", "pivotExit")
+    controls = (
+        "qaMaxClusters",
+        "qaTimeout",
+        "qaCooldown",
+        "answerVariants",
+        "preparedDepth",
+        "retryCount",
+        "pivotEnter",
+        "pivotExit",
+    )
     assert all(f'id="{control}"' in HTML for control in controls)
     assert "applyRuntimeConfigBtn" in HTML
-    assert '/api/v1/lite/config' in HTML
+    assert "/api/v1/lite/config" in HTML
 
 
 def test_manual_speech_is_verbatim_tts_without_llm() -> None:
-    assert 'Nội dung nói nguyên văn' in HTML
+    assert "Nội dung nói nguyên văn" in HTML
     assert "generate: false" in HTML
 
 
@@ -142,7 +151,13 @@ def test_console_uses_canonical_diagnostics_without_legacy_aliases() -> None:
 
 
 def test_full_diagnostics_have_copyable_scroll_regions() -> None:
-    ids = ("selectedCluster", "currentPrompt", "generatedScript", "upcomingWork", "completedHistory")
+    ids = (
+        "selectedCluster",
+        "currentPrompt",
+        "generatedScript",
+        "upcomingWork",
+        "completedHistory",
+    )
 
     assert all(f'id="{item_id}"' in HTML for item_id in ids)
     assert "function clearDiagnosticsView" in HTML
@@ -177,6 +192,6 @@ def test_backend_validation_errors_keep_field_locations() -> None:
 
 def test_accessibility_and_tablet_layout_contracts() -> None:
     assert ":focus-visible" in HTML
-    assert '@media (max-width: 1024px)' in HTML
+    assert "@media (max-width: 1024px)" in HTML
     assert 'aria-live="polite"' in HTML
     assert 'aria-label="' in HTML

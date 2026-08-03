@@ -62,7 +62,9 @@ class HFTransformersEngine(LLMEngine):
 
         e._tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust)
         e._model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=dtype, trust_remote_code=trust,
+            model_id,
+            torch_dtype=dtype,
+            trust_remote_code=trust,
         )
         if device == "cuda" and torch.cuda.is_available():
             e._model = e._model.cuda()
@@ -119,9 +121,7 @@ class HFTransformersEngine(LLMEngine):
         if self._device == "cuda" and torch.cuda.is_available():
             inputs = {k: v.cuda() for k, v in inputs.items()}
 
-        streamer = TextIteratorStreamer(
-            self._tokenizer, skip_prompt=True, skip_special_tokens=True
-        )
+        streamer = TextIteratorStreamer(self._tokenizer, skip_prompt=True, skip_special_tokens=True)
         gen_kwargs = dict(
             **inputs,
             max_new_tokens=req.max_tokens,
@@ -146,6 +146,7 @@ class HFTransformersEngine(LLMEngine):
         gc.collect()
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:

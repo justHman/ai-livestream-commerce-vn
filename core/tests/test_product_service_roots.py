@@ -61,9 +61,7 @@ def test_each_service_owns_install_metadata(service: str, package: str) -> None:
 
 
 @pytest.mark.parametrize(("service", "package"), SERVICES.items())
-def test_service_docker_and_start_script_use_canonical_package(
-    service: str, package: str
-) -> None:
+def test_service_docker_and_start_script_use_canonical_package(service: str, package: str) -> None:
     root = _service_root(service)
     dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
     start_script = (root / "scripts" / "start.sh").read_text(encoding="utf-8")
@@ -148,12 +146,8 @@ def test_canonical_backend_entrypoint_is_the_runtime_default() -> None:
 
 
 def test_model_start_scripts_supply_default_commands() -> None:
-    llm_start = (_service_root("llm_service") / "scripts" / "start.sh").read_text(
-        encoding="utf-8"
-    )
-    tts_start = (_service_root("tts_service") / "scripts" / "start.sh").read_text(
-        encoding="utf-8"
-    )
+    llm_start = (_service_root("llm_service") / "scripts" / "start.sh").read_text(encoding="utf-8")
+    tts_start = (_service_root("tts_service") / "scripts" / "start.sh").read_text(encoding="utf-8")
 
     assert "if [[ $# -eq 0 ]]" in llm_start and "vllm serve" in llm_start
     assert "if [[ $# -eq 0 ]]" in tts_start and "vllm serve" in tts_start and "--omni" in tts_start

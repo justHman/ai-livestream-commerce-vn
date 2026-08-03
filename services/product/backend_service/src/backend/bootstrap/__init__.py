@@ -1,4 +1,4 @@
-﻿"""backend.bootstrap — composition root package.
+"""backend.bootstrap — composition root package.
 
 Package layout:
     __init__.py     Public exports (create_app, BootstrapContainer, create_container).

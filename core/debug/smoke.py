@@ -123,7 +123,11 @@ def run_smoke(
         elapsed = _now_ms() - t0
         ready_ok = ready.status_code == 200 and ready.json().get("ok") is not False
         checks.append(Check("health.ready", ready_ok, ready.text[:220], elapsed))
-        metrics["health_ready"] = ready.json() if ready.headers.get("content-type", "").startswith("application/json") else ready.text
+        metrics["health_ready"] = (
+            ready.json()
+            if ready.headers.get("content-type", "").startswith("application/json")
+            else ready.text
+        )
 
         # engines + preset count
         t0 = _now_ms()
@@ -131,24 +135,32 @@ def run_smoke(
         elapsed = _now_ms() - t0
         engines_json = engines.json() if engines.status_code == 200 else {}
         preset_count = len(engines_json.get("available_tts_presets", []))
-        checks.append(Check(
-            "engines.tts_presets",
-            engines.status_code == 200 and preset_count >= 6,
-            f"status={engines.status_code} tts_presets={preset_count}",
-            elapsed,
-        ))
+        checks.append(
+            Check(
+                "engines.tts_presets",
+                engines.status_code == 200 and preset_count >= 6,
+                f"status={engines.status_code} tts_presets={preset_count}",
+                elapsed,
+            )
+        )
         metrics["engines"] = engines_json
 
         # start
         t0 = _now_ms()
         start, api_prefix = _request_first(
-            client, "POST", base_url, "/lite/start", token=token,
+            client,
+            "POST",
+            base_url,
+            "/lite/start",
+            token=token,
             json_body={"is_sandbox": True},
         )
         elapsed = _now_ms() - t0
         start_json = start.json() if start.status_code == 200 else {}
         sid = start_json.get("session_id")
-        checks.append(Check("lite.start", start.status_code == 200 and bool(sid), start.text[:220], elapsed))
+        checks.append(
+            Check("lite.start", start.status_code == 200 and bool(sid), start.text[:220], elapsed)
+        )
         metrics["session_id"] = sid
         metrics["mode"] = start_json.get("mode")
 
@@ -159,11 +171,17 @@ def run_smoke(
             # attach
             t0 = _now_ms()
             attach, _ = _request_first(
-                client, "POST", base_url, "/lite/attach", token=token,
+                client,
+                "POST",
+                base_url,
+                "/lite/attach",
+                token=token,
                 json_body={"session_id": sid, "products": MOCK_PRODUCTS},
             )
             elapsed = _now_ms() - t0
-            checks.append(Check("lite.attach", attach.status_code == 200, attach.text[:220], elapsed))
+            checks.append(
+                Check("lite.attach", attach.status_code == 200, attach.text[:220], elapsed)
+            )
 
             # chat burst
             latencies: list[float] = []
@@ -172,7 +190,11 @@ def run_smoke(
                 msg = MOCK_VIEWER_MSGS[i % len(MOCK_VIEWER_MSGS)]
                 t0 = _now_ms()
                 chat, _ = _request_first(
-                    client, "POST", base_url, "/lite/chat", token=token,
+                    client,
+                    "POST",
+                    base_url,
+                    "/lite/chat",
+                    token=token,
                     json_body={
                         "session_id": sid,
                         "text": msg,
@@ -185,12 +207,14 @@ def run_smoke(
                 if chat.status_code == 202:
                     accepted += 1
             max_chat_ms = max(latencies) if latencies else 0.0
-            checks.append(Check(
-                "lite.chat_burst",
-                accepted == chat_count and max_chat_ms < 1000.0,
-                f"accepted={accepted}/{chat_count} max={max_chat_ms:.1f}ms",
-                sum(latencies),
-            ))
+            checks.append(
+                Check(
+                    "lite.chat_burst",
+                    accepted == chat_count and max_chat_ms < 1000.0,
+                    f"accepted={accepted}/{chat_count} max={max_chat_ms:.1f}ms",
+                    sum(latencies),
+                )
+            )
             metrics["chat"] = {
                 "accepted": accepted,
                 "count": chat_count,
@@ -203,53 +227,79 @@ def run_smoke(
 
             # frame snapshot
             t0 = _now_ms()
-            frame, _ = _request_first(client, "GET", base_url, f"/mock/frame/{sid}.png", token=token)
+            frame, _ = _request_first(
+                client, "GET", base_url, f"/mock/frame/{sid}.png", token=token
+            )
             elapsed = _now_ms() - t0
             frame_size = len(frame.content) if frame.status_code == 200 else 0
-            checks.append(Check(
-                "mock.frame",
-                frame.status_code == 200 and frame_size > 5 * 1024,
-                f"status={frame.status_code} bytes={frame_size}",
-                elapsed,
-            ))
+            checks.append(
+                Check(
+                    "mock.frame",
+                    frame.status_code == 200 and frame_size > 5 * 1024,
+                    f"status={frame.status_code} bytes={frame_size}",
+                    elapsed,
+                )
+            )
             metrics["frame_bytes"] = frame_size
 
             # MJPEG sample
             mjpeg_url = f"{base_url}{api_prefix}/mock/video/{sid}.mjpeg"
             try:
                 parts, byte_count, elapsed = _read_mjpeg_parts(
-                    client, mjpeg_url, max_parts=mjpeg_parts, max_seconds=mjpeg_seconds,
+                    client,
+                    mjpeg_url,
+                    max_parts=mjpeg_parts,
+                    max_seconds=mjpeg_seconds,
                 )
-                checks.append(Check(
-                    "mock.mjpeg",
-                    parts >= mjpeg_parts,
-                    f"parts={parts} bytes={byte_count} url={mjpeg_url}",
-                    elapsed,
-                ))
-                metrics["mjpeg"] = {"parts": parts, "bytes": byte_count, "elapsed_ms": elapsed, "url": mjpeg_url}
+                checks.append(
+                    Check(
+                        "mock.mjpeg",
+                        parts >= mjpeg_parts,
+                        f"parts={parts} bytes={byte_count} url={mjpeg_url}",
+                        elapsed,
+                    )
+                )
+                metrics["mjpeg"] = {
+                    "parts": parts,
+                    "bytes": byte_count,
+                    "elapsed_ms": elapsed,
+                    "url": mjpeg_url,
+                }
             except Exception as exc:
                 checks.append(Check("mock.mjpeg", False, f"{type(exc).__name__}: {exc}"))
                 metrics["mjpeg"] = {"error": f"{type(exc).__name__}: {exc}", "url": mjpeg_url}
         finally:
             t0 = _now_ms()
             stop, _ = _request_first(
-                client, "POST", base_url, "/lite/stop", token=token,
+                client,
+                "POST",
+                base_url,
+                "/lite/stop",
+                token=token,
                 json_body={"session_id": sid},
                 timeout=10.0,
             )
-            checks.append(Check("lite.stop", stop.status_code == 200, stop.text[:220], _now_ms() - t0))
+            checks.append(
+                Check("lite.stop", stop.status_code == 200, stop.text[:220], _now_ms() - t0)
+            )
 
     return checks, metrics
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run P2 smoke checks against a live backend")
-    parser.add_argument("--base-url", required=True, help="Backend base URL, e.g. http://127.0.0.1:8000 or ngrok URL")
+    parser.add_argument(
+        "--base-url",
+        required=True,
+        help="Backend base URL, e.g. http://127.0.0.1:8000 or ngrok URL",
+    )
     parser.add_argument("--token", default="", help="Viewer/admin API token if APP_ENV is not dev")
     parser.add_argument("--chat-count", type=int, default=10)
     parser.add_argument("--mjpeg-parts", type=int, default=10)
     parser.add_argument("--mjpeg-seconds", type=float, default=3.0)
-    parser.add_argument("--json", action="store_true", help="Print raw JSON metrics after the table")
+    parser.add_argument(
+        "--json", action="store_true", help="Print raw JSON metrics after the table"
+    )
     args = parser.parse_args(argv)
 
     checks, metrics = run_smoke(
@@ -268,7 +318,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     ok = all(c.ok for c in checks)
     print("RESULT", "PASS" if ok else "FAIL")
     if args.json:
-        print(json.dumps({"ok": ok, "checks": [c.__dict__ for c in checks], "metrics": metrics}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"ok": ok, "checks": [c.__dict__ for c in checks], "metrics": metrics},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     return 0 if ok else 1
 
 

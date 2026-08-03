@@ -100,8 +100,7 @@ def test_engines_tts_preset_apply_vieneu_v2(mock_env: None) -> None:
 def test_engines_tts_preset_apply_v3_turbo(mock_env: None) -> None:
     """POST /engines/tts/preset {vieneu-v3-turbo} -> 48kHz sample rate."""
     with _make_app(mock_env) as client:
-        r = client.post("/api/v1/engines/tts/preset",
-                        json={"preset_id": "vieneu-v3-turbo"})
+        r = client.post("/api/v1/engines/tts/preset", json={"preset_id": "vieneu-v3-turbo"})
         assert r.status_code == 200, r.text
         body = r.json()
         cfg = body["tts_cfg"]

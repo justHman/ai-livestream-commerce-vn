@@ -40,11 +40,11 @@ from .state import Phase, ProductStatus, StreamState
 class Decision:
     """What the Director wants the avatar to do this cycle."""
 
-    action: str                      # "speak_hook" | "answer_cluster" | "answer_fact" | "introduce_product" | "close" | "idle"
-    text: Optional[str] = None       # for templated hooks / O(1) factual answers (no LLM)
-    prompt: Optional[str] = None     # for LLM-generated answers
+    action: str  # "speak_hook" | "answer_cluster" | "answer_fact" | "introduce_product" | "close" | "idle"
+    text: Optional[str] = None  # for templated hooks / O(1) factual answers (no LLM)
+    prompt: Optional[str] = None  # for LLM-generated answers
     product_id: Optional[str] = None
-    field: Optional[str] = None      # structured attribute answered (if action == answer_fact)
+    field: Optional[str] = None  # structured attribute answered (if action == answer_fact)
     may_interrupt: bool = False
     reason: str = ""
     # Structured decision score (set from the ranked cluster score for
@@ -199,7 +199,9 @@ class Director:
             if s.closing_spoken:
                 return Decision(action="idle", reason="closing already spoken", score=0.0)
             hook = self.hooks.next_hook("closing")
-            return Decision(action="close", text=hook, stage="closing", reason="closing phase", score=0.0)
+            return Decision(
+                action="close", text=hook, stage="closing", reason="closing phase", score=0.0
+            )
 
         # SELLING
         window = [cm for cm in comments if now - cm.t <= c.selection_window_sec]
@@ -208,10 +210,7 @@ class Director:
             item
             for item in rank_clusters(clusters, s, c, now)
             if not item.cluster.member_ids
-            or not all(
-                member_id in s.answered_comments
-                for member_id in item.cluster.member_ids
-            )
+            or not all(member_id in s.answered_comments for member_id in item.cluster.member_ids)
         ]
         relevant_ages = [
             max(0.0, now - item.cluster.newest_t)
@@ -225,14 +224,17 @@ class Director:
         if self._should_switch_product():
             self._advance_product()
             if s.phase == Phase.CLOSING:
-                return Decision(action="close", text=self.hooks.next_hook("closing"),
-                                reason="all products done", score=0.0)
+                return Decision(
+                    action="close",
+                    text=self.hooks.next_hook("closing"),
+                    reason="all products done",
+                    score=0.0,
+                )
             ranked = [
                 item
                 for item in rank_clusters(clusters, s, c, now)
                 if not any(
-                    member_id in s.answered_comments
-                    for member_id in item.cluster.member_ids
+                    member_id in s.answered_comments for member_id in item.cluster.member_ids
                 )
             ]
 
@@ -292,11 +294,7 @@ class Director:
                 )
         elif cur is not None:
             cross_product = next(
-                (
-                    item
-                    for item in ranked
-                    if item.cluster.product_id not in (None, cur.product_id)
-                ),
+                (item for item in ranked if item.cluster.product_id not in (None, cur.product_id)),
                 None,
             )
             if cross_product is not None:
@@ -399,14 +397,10 @@ class Director:
     ) -> Decision:
         if top.cluster.product_id is not None:
             self.state.sec_since_relevant_msg = 0.0
-        product_id = top.cluster.product_id or (
-            current.product_id if current is not None else None
-        )
+        product_id = top.cluster.product_id or (current.product_id if current is not None else None)
         topic = top.cluster.intent or "unknown"
         resume_id = (
-            current.product_id
-            if current is not None and product_id != current.product_id
-            else None
+            current.product_id if current is not None and product_id != current.product_id else None
         )
         cache_key = (
             product_id or "unknown",
@@ -418,9 +412,11 @@ class Director:
         variant_index = self.state.answer_variant_index.get(cache_key, 0)
         cached_script = variants[variant_index % len(variants)] if variants else None
         field_name = self._route_field(top)
-        fact = self.catalog[product_id].answer_field(field_name) if (
-            field_name and product_id in self.catalog
-        ) else None
+        fact = (
+            self.catalog[product_id].answer_field(field_name)
+            if (field_name and product_id in self.catalog)
+            else None
+        )
         action = "answer_fact" if fact else "answer_cluster"
         prompt = (
             self._grounded_prompt(top, product_id, field_name, fact)
@@ -506,9 +502,8 @@ class Director:
             topic_key = f"{product_id}:{topic}"
             self.state.qa_clusters_answered += 1
             self.state.topic_cooldown_until[topic_key] = (
-                (decision.completed_at or decision.decided_at)
-                + self.cfg.qa_topic_cooldown_sec
-            )
+                decision.completed_at or decision.decided_at
+            ) + self.cfg.qa_topic_cooldown_sec
             self.state.qa_last_comment_signature[topic_key] = "\n".join(
                 sorted(set(decision.cluster_members))
             )
@@ -610,11 +605,7 @@ class Director:
         if selling is None and isinstance(plan, dict):
             selling = plan.get("selling") or []
         for phase in selling or []:
-            pid = (
-                phase.product_id
-                if hasattr(phase, "product_id")
-                else phase.get("product_id")
-            )
+            pid = phase.product_id if hasattr(phase, "product_id") else phase.get("product_id")
             if pid != product_id:
                 continue
             tasks = phase.tasks if hasattr(phase, "tasks") else phase.get("tasks") or []
@@ -622,9 +613,7 @@ class Director:
                 (
                     task.stage if hasattr(task, "stage") else task.get("stage"),
                     task.task_id if hasattr(task, "task_id") else task.get("task_id"),
-                    task.instruction
-                    if hasattr(task, "instruction")
-                    else task.get("instruction"),
+                    task.instruction if hasattr(task, "instruction") else task.get("instruction"),
                 )
                 for task in tasks
             ]
@@ -639,10 +628,22 @@ class Director:
             if index > 1:
                 return None
             fallback = [
-                ("intro", f"{product.product_id}:intro:fallback", f"Định vị {product.name} bằng một câu ngắn."),
-                ("benefit", f"{product.product_id}:benefit:fallback", f"Nêu một lợi ích nổi bật của {product.name}."),
+                (
+                    "intro",
+                    f"{product.product_id}:intro:fallback",
+                    f"Định vị {product.name} bằng một câu ngắn.",
+                ),
+                (
+                    "benefit",
+                    f"{product.product_id}:benefit:fallback",
+                    f"Nêu một lợi ích nổi bật của {product.name}.",
+                ),
                 ("offer", f"{product.product_id}:offer:fallback", "Nêu giá và ưu đãi rõ ràng."),
-                ("trust", f"{product.product_id}:trust:fallback", "Nêu một thông tin tạo tin cậy cho sản phẩm."),
+                (
+                    "trust",
+                    f"{product.product_id}:trust:fallback",
+                    "Nêu một thông tin tạo tin cậy cho sản phẩm.",
+                ),
                 ("cta", f"{product.product_id}:cta:fallback", "Kêu gọi chốt đơn tự nhiên."),
             ]
             tasks = fallback
@@ -705,8 +706,8 @@ class Director:
         """
         joined = " | ".join(top.cluster.members[:5])
         return (
-            f"Khán giả đang hỏi (gom cụm): \"{joined}\". "
-            f"Thông tin chính xác về {pid} ({field_name}): \"{fact}\". "
+            f'Khán giả đang hỏi (gom cụm): "{joined}". '
+            f'Thông tin chính xác về {pid} ({field_name}): "{fact}". '
             "Dựa ĐÚNG vào thông tin này, trả lời tự nhiên, nhiệt tình, kiểu MC bán hàng "
             "livestream — không bịa thêm số liệu, có thể thêm lời mời chốt đơn."
         )

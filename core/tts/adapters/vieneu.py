@@ -76,7 +76,7 @@ class VieNeuAdapter(TTSEngine):
 
     def __init__(self) -> None:
         self._model = None
-        self._impl = ""             # "vieneu" | "tone-fallback"
+        self._impl = ""  # "vieneu" | "tone-fallback"
         self._default_ref = None
 
     @classmethod
@@ -90,6 +90,7 @@ class VieNeuAdapter(TTSEngine):
 
         try:
             from vieneu import Vieneu  # pip install vieneu (github.com/pnnbao97/VieNeu-TTS)
+
             e._model = Vieneu(mode=mode, backbone_repo=model_id, device=device)
             e._impl = "vieneu"
         except Exception:
@@ -109,6 +110,7 @@ class VieNeuAdapter(TTSEngine):
                 # Opt-in dev fallback: 440 Hz so the pipeline keeps running
                 # locally even if vieneu is not installed.
                 import math
+
                 seconds = max(0.6, min(len(req.text) / 15.0, 6.0))
                 n = int(self.sample_rate * seconds)
                 t = np.arange(n) / self.sample_rate
@@ -135,9 +137,11 @@ class VieNeuAdapter(TTSEngine):
     def unload(self) -> None:
         self._model = None
         import gc
+
         gc.collect()
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:

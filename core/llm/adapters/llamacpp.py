@@ -52,9 +52,7 @@ class LlamaCppEngine(LLMEngine):
         if model_path and os.path.isdir(model_path):
             ggufs = sorted(glob.glob(os.path.join(model_path, "*.gguf")))
             if not ggufs:
-                raise FileNotFoundError(
-                    f"No .gguf in {model_path}. Download a Q4_K_M GGUF first."
-                )
+                raise FileNotFoundError(f"No .gguf in {model_path}. Download a Q4_K_M GGUF first.")
             model_path = ggufs[0]
         elif model_repo and not model_path:
             # Auto-download from HF Hub (llama-cpp supports repo id)
@@ -62,9 +60,7 @@ class LlamaCppEngine(LLMEngine):
             model_path = f"{model_repo}/{pattern}"
 
         if not model_path:
-            raise ValueError(
-                "llamacpp adapter needs cfg['model_path'] or cfg['model'] (HF repo)"
-            )
+            raise ValueError("llamacpp adapter needs cfg['model_path'] or cfg['model'] (HF repo)")
 
         # Validate local file paths (skip HF repo download specs, which contain '*'
         # or were built as "{repo}/{pattern}" and are resolved by llama_cpp at load).
@@ -195,6 +191,7 @@ class LlamaCppEngine(LLMEngine):
 
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:

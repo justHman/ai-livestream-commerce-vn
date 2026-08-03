@@ -25,7 +25,7 @@ import pytest
 
 pytestmark = pytest.mark.skip(
     reason="integration smoke script — needs LIVEAVATAR_API_KEY / real sandbox; "
-           "run via `DIRECTOR_ENABLED=1 DIRECTOR_EMBEDDER=hash python -m core.tests.director_api_smoke_test`"
+    "run via `DIRECTOR_ENABLED=1 DIRECTOR_EMBEDDER=hash python -m core.tests.director_api_smoke_test`"
 )
 
 from fastapi.testclient import TestClient
@@ -46,30 +46,60 @@ def main() -> None:
     print(f"[start]     session ok")
 
     products = [
-        {"id": "P002", "name": "Serum Vitamin C", "description": "Serum làm sáng da mờ thâm",
-         "price": 329000, "original_price": 490000, "colors": [], "sizes": [],
-         "shipping": "Freeship đơn từ 200k, giao 2-4 ngày"},
-        {"id": "P003", "name": "Áo thun đen", "description": "Áo cotton form rộng unisex",
-         "price": 149000, "colors": ["đen", "trắng"], "sizes": ["M", "L", "XL"],
-         "material": "cotton 100%"},
+        {
+            "id": "P002",
+            "name": "Serum Vitamin C",
+            "description": "Serum làm sáng da mờ thâm",
+            "price": 329000,
+            "original_price": 490000,
+            "colors": [],
+            "sizes": [],
+            "shipping": "Freeship đơn từ 200k, giao 2-4 ngày",
+        },
+        {
+            "id": "P003",
+            "name": "Áo thun đen",
+            "description": "Áo cotton form rộng unisex",
+            "price": 149000,
+            "colors": ["đen", "trắng"],
+            "sizes": ["M", "L", "XL"],
+            "material": "cotton 100%",
+        },
     ]
     a = c.post("/api/v1/lite/attach", json={"session_id": sid, "products": products}).json()
     print(f"[attach]    {a['products']} embedder={a['embedder']}")
 
     # Price question -> should resolve to O(1) structured field (answer_fact)
-    r1 = c.post("/api/v1/lite/ingest", json={
-        "session_id": sid, "viewer_count": 10, "msg_rate": 3.0,
-        "comments": [{"text": "Serum giá bao nhiêu shop?"}, {"text": "serum bao nhiêu tiền vậy"}],
-    }).json()
-    print(f"[ingest#1]  action={r1['action']} field={r1.get('field')} product={r1.get('product_id')}")
+    r1 = c.post(
+        "/api/v1/lite/ingest",
+        json={
+            "session_id": sid,
+            "viewer_count": 10,
+            "msg_rate": 3.0,
+            "comments": [
+                {"text": "Serum giá bao nhiêu shop?"},
+                {"text": "serum bao nhiêu tiền vậy"},
+            ],
+        },
+    ).json()
+    print(
+        f"[ingest#1]  action={r1['action']} field={r1.get('field')} product={r1.get('product_id')}"
+    )
     print(f"            spoken={str(r1.get('spoken'))[:60]!r}")
 
     # Open-ended -> LLM prompt path (answer_cluster)
-    r2 = c.post("/api/v1/lite/ingest", json={
-        "session_id": sid, "viewer_count": 10, "msg_rate": 3.0,
-        "comments": [{"text": "Áo thun mặc có nóng không shop, chất có thoáng không"}],
-    }).json()
-    print(f"[ingest#2]  action={r2['action']} product={r2.get('product_id')} interrupt={r2.get('may_interrupt')}")
+    r2 = c.post(
+        "/api/v1/lite/ingest",
+        json={
+            "session_id": sid,
+            "viewer_count": 10,
+            "msg_rate": 3.0,
+            "comments": [{"text": "Áo thun mặc có nóng không shop, chất có thoáng không"}],
+        },
+    ).json()
+    print(
+        f"[ingest#2]  action={r2['action']} product={r2.get('product_id')} interrupt={r2.get('may_interrupt')}"
+    )
 
     c.post("/api/v1/lite/stop", json={"session_id": sid})
     print("[stop]      [OK]")

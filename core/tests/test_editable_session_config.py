@@ -143,7 +143,9 @@ def test_reattach_increments_revisions_and_preserves_current_checkpoint() -> Non
     assert second["profile_revision"] == first["profile_revision"]
     assert second["catalog_revision"] == first["catalog_revision"] + 1
     assert second["generation_token"] == "1:2:0"
-    assert v1.deps().director.get_session(session_id).director.state.products[0].is_introduced is True
+    assert (
+        v1.deps().director.get_session(session_id).director.state.products[0].is_introduced is True
+    )
 
 
 def test_reattach_replaces_catalog_without_leaving_stale_coordinator() -> None:
@@ -217,9 +219,16 @@ def test_attach_rejects_invalid_runtime_config_without_mutating_existing_session
 def test_runtime_config_update_applies_revision_and_rejects_invalid_rate() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/lite/start", json={}).json()["session_id"]
-        client.post("/api/v1/lite/attach", json={"session_id": session_id, "products": [_product("P004", "Áo hoodie")]})
-        response = client.patch("/api/v1/lite/config", json={"session_id": session_id, "prepared_turn_depth": 4})
-        invalid = client.patch("/api/v1/lite/config", json={"session_id": session_id, "comment_rate": 9})
+        client.post(
+            "/api/v1/lite/attach",
+            json={"session_id": session_id, "products": [_product("P004", "Áo hoodie")]},
+        )
+        response = client.patch(
+            "/api/v1/lite/config", json={"session_id": session_id, "prepared_turn_depth": 4}
+        )
+        invalid = client.patch(
+            "/api/v1/lite/config", json={"session_id": session_id, "comment_rate": 9}
+        )
 
     assert response.status_code == 200
     assert response.json()["config_revision"] == 1
@@ -229,7 +238,9 @@ def test_runtime_config_update_applies_revision_and_rejects_invalid_rate() -> No
 def test_runtime_config_update_requires_attached_session() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/lite/start", json={}).json()["session_id"]
-        response = client.patch("/api/v1/lite/config", json={"session_id": session_id, "prepared_turn_depth": 4})
+        response = client.patch(
+            "/api/v1/lite/config", json={"session_id": session_id, "prepared_turn_depth": 4}
+        )
 
     assert response.status_code == 409
 
@@ -237,8 +248,13 @@ def test_runtime_config_update_requires_attached_session() -> None:
 def test_runtime_config_update_preserves_previous_revision_after_validation_failure() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/lite/start", json={}).json()["session_id"]
-        client.post("/api/v1/lite/attach", json={"session_id": session_id, "products": [_product("P004", "Áo hoodie")]})
-        invalid = client.patch("/api/v1/lite/config", json={"session_id": session_id, "demand_pivot_exit_share": 0.8})
+        client.post(
+            "/api/v1/lite/attach",
+            json={"session_id": session_id, "products": [_product("P004", "Áo hoodie")]},
+        )
+        invalid = client.patch(
+            "/api/v1/lite/config", json={"session_id": session_id, "demand_pivot_exit_share": 0.8}
+        )
 
     assert invalid.status_code == 422
     assert v1.deps().director.get_session(session_id).config_revision == 0

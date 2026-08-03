@@ -46,27 +46,58 @@ def _public_preset(preset: dict, kind: str) -> dict:
 class EngineInfo:
     """Serializable info about a loaded (or available) engine — for the UI."""
 
-    engine: str            # "vllm" | "llamacpp" | "transformers" | "vieneu" | ...
-    model: str             # model id or path
-    name: str              # engine.name (runtime)
-    loaded: bool           # is it currently in VRAM?
+    engine: str  # "vllm" | "llamacpp" | "transformers" | "vieneu" | ...
+    model: str  # model id or path
+    name: str  # engine.name (runtime)
+    loaded: bool  # is it currently in VRAM?
     sample_rate: Optional[int] = None  # TTS only
 
 
 AVAILABLE_LLM_PRESETS = [
-    {"engine": "llamacpp", "label": "Gemma 3 4B (GGUF Q4_K_M)", "model": "google/gemma-3-4b-it-GGUF",
-     "gguf_file": "gemma-3-4b-it-Q4_K_M.gguf", "device": "cuda", "n_gpu_layers": -1},
-    {"engine": "llamacpp", "label": "Qwen3 4B (GGUF Q4_K_M)", "model": "Qwen/Qwen3-4B-GGUF",
-     "gguf_file": "Qwen3-4B-Q4_K_M.gguf", "device": "cuda", "n_gpu_layers": -1},
-    {"engine": "llamacpp", "label": "Qwen3.5 4B (GGUF Q4_K_M)",
-     "model": "unsloth/Qwen3.5-4B-GGUF",
-     "gguf_file": "Qwen3.5-4B-Q4_K_M.gguf", "device": "cuda", "n_gpu_layers": -1},
-    {"engine": "vllm", "label": "Qwen3 4B Instruct (vLLM)", "model": "Qwen/Qwen3-4B-Instruct",
-     "device": "cuda", "enable_prefix_caching": True},
-    {"engine": "vllm", "label": "SeaLLMs v3 7B (vLLM)", "model": "SeaLLMs/SeaLLMs-v3-7B-Chat",
-     "device": "cuda", "enable_prefix_caching": True},
-    {"engine": "hf", "label": "Qwen3 4B (transformers fallback)", "model": "Qwen/Qwen3-4B-Instruct",
-     "device": "auto"},
+    {
+        "engine": "llamacpp",
+        "label": "Gemma 3 4B (GGUF Q4_K_M)",
+        "model": "google/gemma-3-4b-it-GGUF",
+        "gguf_file": "gemma-3-4b-it-Q4_K_M.gguf",
+        "device": "cuda",
+        "n_gpu_layers": -1,
+    },
+    {
+        "engine": "llamacpp",
+        "label": "Qwen3 4B (GGUF Q4_K_M)",
+        "model": "Qwen/Qwen3-4B-GGUF",
+        "gguf_file": "Qwen3-4B-Q4_K_M.gguf",
+        "device": "cuda",
+        "n_gpu_layers": -1,
+    },
+    {
+        "engine": "llamacpp",
+        "label": "Qwen3.5 4B (GGUF Q4_K_M)",
+        "model": "unsloth/Qwen3.5-4B-GGUF",
+        "gguf_file": "Qwen3.5-4B-Q4_K_M.gguf",
+        "device": "cuda",
+        "n_gpu_layers": -1,
+    },
+    {
+        "engine": "vllm",
+        "label": "Qwen3 4B Instruct (vLLM)",
+        "model": "Qwen/Qwen3-4B-Instruct",
+        "device": "cuda",
+        "enable_prefix_caching": True,
+    },
+    {
+        "engine": "vllm",
+        "label": "SeaLLMs v3 7B (vLLM)",
+        "model": "SeaLLMs/SeaLLMs-v3-7B-Chat",
+        "device": "cuda",
+        "enable_prefix_caching": True,
+    },
+    {
+        "engine": "hf",
+        "label": "Qwen3 4B (transformers fallback)",
+        "model": "Qwen/Qwen3-4B-Instruct",
+        "device": "auto",
+    },
     {"engine": "none", "label": "Echo stub (no model, offline)", "model": ""},
 ]
 
@@ -87,8 +118,8 @@ AVAILABLE_TTS_PRESETS = [
         "sample_rate": 48000,
         "device": "auto",
         "notes": "Recommended default. Vietnamese-native, Apache-2.0, 48 kHz. "
-                 "device=auto -> ONNX-CPU (maintainer-recommended; GPU ONNX was "
-                 "reverted upstream as slower).",
+        "device=auto -> ONNX-CPU (maintainer-recommended; GPU ONNX was "
+        "reverted upstream as slower).",
     },
     {
         "id": "vieneu-v2",

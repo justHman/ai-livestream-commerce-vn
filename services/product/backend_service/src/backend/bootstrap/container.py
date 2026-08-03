@@ -1,4 +1,4 @@
-﻿"""backend.bootstrap.container — typed resource references, no business logic.
+"""backend.bootstrap.container — typed resource references, no business logic.
 
 ``BootstrapContainer`` is a lightweight holder of constructed resource references.
 It is NOT a DI framework, a service locator, or a runtime registry. Containers

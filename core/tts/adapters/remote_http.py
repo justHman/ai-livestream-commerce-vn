@@ -60,8 +60,7 @@ def _wav_bytes_to_float32(raw: bytes) -> tuple[np.ndarray, int]:
         frames = wf.readframes(n_frames)
     if sampwidth != 2:
         raise RuntimeError(
-            f"remote_http TTS: unsupported WAV sample width {sampwidth} "
-            "(only 16-bit PCM)"
+            f"remote_http TTS: unsupported WAV sample width {sampwidth} (only 16-bit PCM)"
         )
     pcm = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32767.0
     if n_channels > 1:
@@ -85,10 +84,7 @@ def _decode_audio_body(
     if ct in ("", "application/octet-stream", "audio/pcm", "audio/l16", "audio/raw"):
         return _pcm16_bytes_to_float32(raw), default_sr
     if "json" in ct:
-        raise RuntimeError(
-            "remote_http TTS: expected audio body, got JSON "
-            f"({raw[:200]!r})"
-        )
+        raise RuntimeError(f"remote_http TTS: expected audio body, got JSON ({raw[:200]!r})")
     # Fallback: treat as pcm16le
     return _pcm16_bytes_to_float32(raw), default_sr
 
@@ -120,21 +116,13 @@ class RemoteHTTPTTSEngine(TTSEngine):
     @classmethod
     def from_config(cls, cfg: dict) -> "RemoteHTTPTTSEngine":
         e = cls()
-        base = (
-            cfg.get("base_url")
-            or os.environ.get("TTS_BASE_URL", "")
-            or ""
-        )
+        base = cfg.get("base_url") or os.environ.get("TTS_BASE_URL", "") or ""
         base = str(base).strip()
         if not base:
-            raise ValueError(
-                "remote_http TTS needs cfg['base_url'] or env TTS_BASE_URL"
-            )
+            raise ValueError("remote_http TTS needs cfg['base_url'] or env TTS_BASE_URL")
         e._base_url = _strip_trailing_slash(base)
         e._path = str(cfg.get("path") or "/v1/audio/speech")
-        e._api_key = str(
-            cfg.get("api_key") or os.environ.get("TTS_API_KEY", "") or ""
-        )
+        e._api_key = str(cfg.get("api_key") or os.environ.get("TTS_API_KEY", "") or "")
         e._timeout = float(cfg.get("timeout", 60.0))
         e._format = str(cfg.get("response_format") or cfg.get("format") or "pcm")
         e.sample_rate = int(cfg.get("sample_rate", 24_000))
@@ -170,9 +158,7 @@ class RemoteHTTPTTSEngine(TTSEngine):
                 headers=_auth_headers(self._api_key),
             )
         except httpx.RequestError as exc:
-            raise RuntimeError(
-                f"remote_http TTS request failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"remote_http TTS request failed: {exc}") from exc
         _raise_http(resp)
         raw = resp.content or b""
         if not raw:
@@ -187,9 +173,7 @@ class RemoteHTTPTTSEngine(TTSEngine):
                 self.sample_rate,
             )
         except Exception as exc:
-            raise RuntimeError(
-                f"remote_http TTS could not decode audio body: {exc}"
-            ) from exc
+            raise RuntimeError(f"remote_http TTS could not decode audio body: {exc}") from exc
         return AudioChunk(pcm=pcm, sample_rate=sr)
 
     def unload(self) -> None:

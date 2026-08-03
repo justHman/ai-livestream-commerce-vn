@@ -54,8 +54,7 @@ def test_service_ownership_map_covers_required_categories_and_existing_sources()
     assert REQUIRED_CATEGORIES <= categories
     assert all(mapping["target"] for mapping in mappings)
     assert all(
-        mapping["source"] in KNOWN_MOVED_SOURCES
-        or (repository_root / mapping["source"]).exists()
+        mapping["source"] in KNOWN_MOVED_SOURCES or (repository_root / mapping["source"]).exists()
         for mapping in mappings
     )
     targets = {mapping["source"]: mapping["target"] for mapping in mappings}

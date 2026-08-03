@@ -161,6 +161,4 @@ def test_stream_audio_frame_count_matches_num_frames_for():
     aw = _audio_window(ms=300, is_final=True)
     [vw] = list(backend.stream_audio(sid, aw))
     expected = num_frames_for(aw, 25)
-    assert len(vw.frames) == expected, (
-        f"frames={len(vw.frames)} != num_frames_for={expected}"
-    )
+    assert len(vw.frames) == expected, f"frames={len(vw.frames)} != num_frames_for={expected}"

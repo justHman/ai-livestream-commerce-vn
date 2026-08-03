@@ -41,12 +41,12 @@ class Cluster:
     member_ids: list[str] = field(default_factory=list)
     embeddings: list[list[float]] = field(default_factory=list)
     newest_t: float = 0.0
-    skips: int = 0                       # times this cluster was skipped (eviction)
-    product_id: Optional[str] = None     # routed or filled by retrieval
+    skips: int = 0  # times this cluster was skipped (eviction)
+    product_id: Optional[str] = None  # routed or filled by retrieval
     category: str = "commerce"
     intent: str = "unknown"
     actionable: bool = True
-    retrieval_score: float = 0.0         # cosine to the matched product
+    retrieval_score: float = 0.0  # cosine to the matched product
 
     @property
     def size(self) -> int:

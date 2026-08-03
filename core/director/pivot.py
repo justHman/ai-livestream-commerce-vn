@@ -28,5 +28,7 @@ def should_enter_pivot(
     )
 
 
-def should_exit_pivot(product_id: str, product_ids: Iterable[str], *, exit_share: float = 0.45) -> bool:
+def should_exit_pivot(
+    product_id: str, product_ids: Iterable[str], *, exit_share: float = 0.45
+) -> bool:
     return demand_share(product_id, product_ids) < exit_share

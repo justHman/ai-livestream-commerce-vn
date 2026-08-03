@@ -193,9 +193,9 @@ def test_timeout_flush_triggered_inside_feed():
     )
 
     # Buffer sub-min content ("firstsecon" = 10 chars < 12).
-    c.feed("first")   # 5 chars
-    c.feed("secon")   # +5 = 10 chars, still < 12
-    advance(0.500)    # 500ms >= 350ms — but buffer < min, no timeout flush.
+    c.feed("first")  # 5 chars
+    c.feed("secon")  # +5 = 10 chars, still < 12
+    advance(0.500)  # 500ms >= 350ms — but buffer < min, no timeout flush.
 
     # Feeding another token: still below min_chars (11), no flush (timeout
     # cannot fire; no punct; not at max).

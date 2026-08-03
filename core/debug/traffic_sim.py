@@ -100,7 +100,8 @@ class TrafficSimulator:
 
             try:
                 result = self.director.ingest(
-                    self.session_id, comments,
+                    self.session_id,
+                    comments,
                     traffic_viewer_count=viewers,
                     traffic_msg_rate=msg_rate,
                 )
@@ -112,19 +113,23 @@ class TrafficSimulator:
                 # not the event loop.
                 try:
                     import asyncio
+
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
                         asyncio.run_coroutine_threadsafe(
-                            self.hub.emit(self.session_id, {
-                                "type": "debug.cycle",
-                                "cycle": self.cycles,
-                                "viewers": viewers,
-                                "msg_rate": msg_rate,
-                                "comments_sent": len(comments),
-                                "director_action": result.get("action"),
-                                "director_phase": result.get("phase"),
-                                "spoken": (result.get("spoken") or "")[:80],
-                            }),
+                            self.hub.emit(
+                                self.session_id,
+                                {
+                                    "type": "debug.cycle",
+                                    "cycle": self.cycles,
+                                    "viewers": viewers,
+                                    "msg_rate": msg_rate,
+                                    "comments_sent": len(comments),
+                                    "director_action": result.get("action"),
+                                    "director_phase": result.get("phase"),
+                                    "spoken": (result.get("spoken") or "")[:80],
+                                },
+                            ),
                             loop,
                         )
                 except Exception:

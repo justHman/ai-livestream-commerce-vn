@@ -1,4 +1,4 @@
-﻿"""``backend.main`` — production entrypoint for the backend service.
+"""``backend.main`` — production entrypoint for the backend service.
 
 Usage:
     uvicorn backend.main:app --port 8800

@@ -299,10 +299,7 @@ async def test_interrupt_invalidates_prepared_turns_and_generation() -> None:
         stats = coordinator.stats(session_id)
         assert stats["queued_decisions"] == 0
         assert runtime.current_generation_token(session_id) != before
-        assert any(
-            turn["state"] == "cancelled_stale"
-            for turn in stats["completed_speech_history"]
-        )
+        assert any(turn["state"] == "cancelled_stale" for turn in stats["completed_speech_history"])
     finally:
         backend.release.set()
         coordinator.stop(session_id)

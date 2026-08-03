@@ -99,6 +99,7 @@ class PostgresRuntimeStore:
             return True, None
         if self._pool is None:
             return False, self.last_error or "PostgresRuntimeStore not connected"
+
         async def check() -> None:
             async with self._pool.acquire() as conn:
                 await conn.execute("SELECT 1")
@@ -187,7 +188,9 @@ class PostgresRuntimeStore:
     async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
         async def get() -> Any:
             async with self._require_pool().acquire() as conn:
-                return await conn.fetchrow("SELECT * FROM sessions WHERE session_id = $1", session_id)
+                return await conn.fetchrow(
+                    "SELECT * FROM sessions WHERE session_id = $1", session_id
+                )
 
         row = await self._command(get)
         return dict(row) if row is not None else None
@@ -202,6 +205,7 @@ class PostgresRuntimeStore:
         Called once at /lite/attach. Rows are frozen for the livestream lifetime
         (replay correctness + price integrity) — never mutated mid-stream.
         """
+
         async def insert() -> None:
             async with self._require_pool().acquire() as conn:
                 for idx, p in enumerate(products):

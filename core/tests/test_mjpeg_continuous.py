@@ -124,8 +124,7 @@ async def test_mjpeg_continuous_idle_serves_many_frames(mock_env: None) -> None:
 
     parts = _split_mjpeg_parts(raw)
     assert len(parts) >= 10, (
-        f"expected >=10 multipart JPEG frames, got {len(parts)} "
-        f"(total bytes {len(raw)})"
+        f"expected >=10 multipart JPEG frames, got {len(parts)} (total bytes {len(raw)})"
     )
     # Idle loop is 75 frames @ 25fps so within the first ~10 parts at least
     # two of them must differ (frame N != frame N+1).

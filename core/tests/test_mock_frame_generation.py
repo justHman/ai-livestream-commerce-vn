@@ -76,9 +76,7 @@ def test_frames_differ_over_time():
     # Among the first ~10 frames, at least 2 distinct byte strings (animation).
     head = frames[:10]
     distinct = {bytes(f) for f in head}
-    assert len(distinct) >= 2, (
-        f"expected >=2 distinct frames in first 10, got {len(distinct)}"
-    )
+    assert len(distinct) >= 2, f"expected >=2 distinct frames in first 10, got {len(distinct)}"
 
 
 # ---------- get_last_frame_png ----------

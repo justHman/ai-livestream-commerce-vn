@@ -59,12 +59,8 @@ def test_offline_lane_reports_required_coverage_and_metrics() -> None:
     assert result["coverage"]["pivot_enter"] is True
     assert result["coverage"]["pivot_resume"] is True
     assert result["turns"]
-    assert {"action", "stage", "product_id", "revisions", "latency_ms"} <= set(
-        result["turns"][0]
-    )
-    assert {"queue_peak", "retries", "stale", "drops", "underflow"} <= set(
-        result["queue"]
-    )
+    assert {"action", "stage", "product_id", "revisions", "latency_ms"} <= set(result["turns"][0])
+    assert {"queue_peak", "retries", "stale", "drops", "underflow"} <= set(result["queue"])
     assert result["critical_path"]["stage"] in result["p95_latency_ms"]
     assert result["cleanup"]["clean"] is True
 

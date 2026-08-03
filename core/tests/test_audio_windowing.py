@@ -165,16 +165,34 @@ def test_merge_coalesces_sub_min_chunks_into_previous():
     # Three windows: 50, 5, 5 ms; min 20 -> 50 stays, 5+5 merge into a 10 ms tail
     # (tail may remain < min per spec).
     w1 = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(50), sample_rate=SAMPLE_RATE, duration_ms=50, is_final=False,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(50),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=50,
+        is_final=False,
     )
     w2 = AudioWindow(
-        id="b", session_id="s", utterance_id="u", seq=1,
-        pcm=make_pcm(5), sample_rate=SAMPLE_RATE, duration_ms=5, is_final=False,
+        id="b",
+        session_id="s",
+        utterance_id="u",
+        seq=1,
+        pcm=make_pcm(5),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=5,
+        is_final=False,
     )
     w3 = AudioWindow(
-        id="c", session_id="s", utterance_id="u", seq=2,
-        pcm=make_pcm(5), sample_rate=SAMPLE_RATE, duration_ms=5, is_final=True,
+        id="c",
+        session_id="s",
+        utterance_id="u",
+        seq=2,
+        pcm=make_pcm(5),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=5,
+        is_final=True,
     )
     merged = merge_small_chunks([w1, w2, w3], min_ms=20)
     # w1 is >= min, stays. w2 < min -> merge into previous (w1)? Spec says coalesce
@@ -190,12 +208,24 @@ def test_merge_coalesces_sub_min_chunks_into_previous():
 
 def test_merge_keeps_chunks_at_or_above_min():
     w1 = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(50), sample_rate=SAMPLE_RATE, duration_ms=50, is_final=False,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(50),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=50,
+        is_final=False,
     )
     w2 = AudioWindow(
-        id="b", session_id="s", utterance_id="u", seq=1,
-        pcm=make_pcm(50), sample_rate=SAMPLE_RATE, duration_ms=50, is_final=True,
+        id="b",
+        session_id="s",
+        utterance_id="u",
+        seq=1,
+        pcm=make_pcm(50),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=50,
+        is_final=True,
     )
     merged = merge_small_chunks([w1, w2], min_ms=20)
     assert len(merged) == 2
@@ -206,8 +236,14 @@ def test_merge_keeps_chunks_at_or_above_min():
 def test_merge_final_window_may_remain_short():
     # Single short window stays as-is.
     w = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(5), sample_rate=SAMPLE_RATE, duration_ms=5, is_final=True,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(5),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=5,
+        is_final=True,
     )
     merged = merge_small_chunks([w], min_ms=20)
     assert len(merged) == 1
@@ -216,14 +252,26 @@ def test_merge_final_window_may_remain_short():
 
 def test_merge_concatenates_text_spans():
     w1 = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(50), sample_rate=SAMPLE_RATE, duration_ms=50,
-        text_span="Hello ", is_final=False,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(50),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=50,
+        text_span="Hello ",
+        is_final=False,
     )
     w2 = AudioWindow(
-        id="b", session_id="s", utterance_id="u", seq=1,
-        pcm=make_pcm(5), sample_rate=SAMPLE_RATE, duration_ms=5,
-        text_span="world", is_final=True,
+        id="b",
+        session_id="s",
+        utterance_id="u",
+        seq=1,
+        pcm=make_pcm(5),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=5,
+        text_span="world",
+        is_final=True,
     )
     merged = merge_small_chunks([w1, w2], min_ms=20)
     # w2 (5 ms) < min 20 -> merges into w1.
@@ -233,12 +281,24 @@ def test_merge_concatenates_text_spans():
 
 def test_merge_preserves_session_and_utterance_from_first_in_group():
     w1 = AudioWindow(
-        id="a", session_id="s1", utterance_id="u1", seq=0,
-        pcm=make_pcm(50), sample_rate=SAMPLE_RATE, duration_ms=50, is_final=False,
+        id="a",
+        session_id="s1",
+        utterance_id="u1",
+        seq=0,
+        pcm=make_pcm(50),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=50,
+        is_final=False,
     )
     w2 = AudioWindow(
-        id="b", session_id="s2", utterance_id="u2", seq=1,
-        pcm=make_pcm(5), sample_rate=SAMPLE_RATE, duration_ms=5, is_final=True,
+        id="b",
+        session_id="s2",
+        utterance_id="u2",
+        seq=1,
+        pcm=make_pcm(5),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=5,
+        is_final=True,
     )
     merged = merge_small_chunks([w1, w2], min_ms=20)
     assert len(merged) == 1
@@ -255,8 +315,14 @@ def test_merge_empty_list_returns_empty_list():
 
 def test_num_frames_for_exact_second():
     w = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(1000), sample_rate=SAMPLE_RATE, duration_ms=1000, is_final=True,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(1000),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=1000,
+        is_final=True,
     )
     assert num_frames_for(w, fps=25) == 25
 
@@ -264,8 +330,14 @@ def test_num_frames_for_exact_second():
 def test_num_frames_for_non_integer_ceil():
     # 750 ms at 25 fps -> 18.75 -> ceil 19.
     w = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(750), sample_rate=SAMPLE_RATE, duration_ms=750, is_final=True,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(750),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=750,
+        is_final=True,
     )
     assert num_frames_for(w, fps=25) == 19
     assert num_frames_for(w, fps=30) == math.ceil(750 / 1000 * 30) == 23
@@ -273,8 +345,14 @@ def test_num_frames_for_non_integer_ceil():
 
 def test_num_frames_for_zero_duration_returns_zero():
     w = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=b"", sample_rate=SAMPLE_RATE, duration_ms=0, is_final=True,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=b"",
+        sample_rate=SAMPLE_RATE,
+        duration_ms=0,
+        is_final=True,
     )
     assert num_frames_for(w, fps=25) == 0
 
@@ -282,16 +360,28 @@ def test_num_frames_for_zero_duration_returns_zero():
 def test_num_frames_for_tiny_duration_returns_at_least_one():
     # 1 ms at 25 fps -> 0.025 -> ceil 1, and spec says at least 1 if duration>0.
     w = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(1), sample_rate=SAMPLE_RATE, duration_ms=1, is_final=True,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(1),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=1,
+        is_final=True,
     )
     assert num_frames_for(w, fps=25) == 1
 
 
 def test_num_frames_for_raises_on_non_positive_fps():
     w = AudioWindow(
-        id="a", session_id="s", utterance_id="u", seq=0,
-        pcm=make_pcm(100), sample_rate=SAMPLE_RATE, duration_ms=100, is_final=True,
+        id="a",
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=make_pcm(100),
+        sample_rate=SAMPLE_RATE,
+        duration_ms=100,
+        is_final=True,
     )
     with pytest.raises(ValueError):
         num_frames_for(w, fps=0)
@@ -311,17 +401,27 @@ def test_text_chunk_auto_generates_id():
 
 def test_audio_window_auto_generates_id():
     w = AudioWindow(
-        session_id="s", utterance_id="u", seq=0,
-        pcm=b"\x00\x01", sample_rate=SAMPLE_RATE, duration_ms=1, is_final=True,
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        pcm=b"\x00\x01",
+        sample_rate=SAMPLE_RATE,
+        duration_ms=1,
+        is_final=True,
     )
     assert w.id is not None and len(w.id) > 0
 
 
 def test_video_window_auto_generates_id():
     v = VideoWindow(
-        session_id="s", utterance_id="u", seq=0,
-        frames=[], fps=25, duration_ms=1000,
-        audio_window_id="aw-1", is_final=True,
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        frames=[],
+        fps=25,
+        duration_ms=1000,
+        audio_window_id="aw-1",
+        is_final=True,
     )
     assert v.id is not None and len(v.id) > 0
     assert v.audio_window_id == "aw-1"
@@ -329,8 +429,12 @@ def test_video_window_auto_generates_id():
 
 def test_audio_window_accepts_audio_path_instead_of_pcm():
     w = AudioWindow(
-        session_id="s", utterance_id="u", seq=0,
-        audio_path="/tmp/a.wav", sample_rate=SAMPLE_RATE, duration_ms=500,
+        session_id="s",
+        utterance_id="u",
+        seq=0,
+        audio_path="/tmp/a.wav",
+        sample_rate=SAMPLE_RATE,
+        duration_ms=500,
         is_final=True,
     )
     assert w.pcm is None

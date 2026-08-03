@@ -16,6 +16,7 @@ Usage:
         "sample_rate": 24000,
     })
 """
+
 from __future__ import annotations
 
 import os
@@ -49,6 +50,7 @@ def _decode_mp3_to_float32(mp3_bytes: bytes, sample_rate: int) -> np.ndarray:
     if not mp3_bytes:
         return np.zeros(0, dtype=np.float32)
     import wave
+
     in_fd, in_path = tempfile.mkstemp(suffix=".mp3")
     out_fd, out_path = tempfile.mkstemp(suffix=".wav")
     os.close(in_fd)
@@ -57,9 +59,21 @@ def _decode_mp3_to_float32(mp3_bytes: bytes, sample_rate: int) -> np.ndarray:
         with open(in_path, "wb") as inf:
             inf.write(mp3_bytes)
         subprocess.run(
-            ["ffmpeg", "-y", "-i", in_path, "-ar", str(sample_rate),
-             "-ac", "1", "-f", "wav", out_path],
-            check=True, capture_output=True,
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                in_path,
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-f",
+                "wav",
+                out_path,
+            ],
+            check=True,
+            capture_output=True,
         )
         with wave.open(out_path, "rb") as wf:
             frames = wf.readframes(wf.getnframes())
@@ -89,20 +103,12 @@ class ElevenLabsTTSEngine(TTSEngine):
     @classmethod
     def from_config(cls, cfg: dict) -> "ElevenLabsTTSEngine":
         e = cls()
-        e._api_key = str(
-            cfg.get("api_key")
-            or os.environ.get("ELEVENLABS_API_KEY", "")
-            or ""
-        )
+        e._api_key = str(cfg.get("api_key") or os.environ.get("ELEVENLABS_API_KEY", "") or "")
         if not e._api_key:
-            raise ValueError(
-                "elevenlabs TTS needs cfg['api_key'] or env ELEVENLABS_API_KEY"
-            )
+            raise ValueError("elevenlabs TTS needs cfg['api_key'] or env ELEVENLABS_API_KEY")
         e._voice_id = str(cfg.get("voice_id") or DEFAULT_VOICE_ID)
         e._model_id = str(cfg.get("model_id") or DEFAULT_MODEL_ID)
-        e._base_url = _strip_trailing_slash(
-            cfg.get("base_url") or DEFAULT_BASE_URL
-        )
+        e._base_url = _strip_trailing_slash(cfg.get("base_url") or DEFAULT_BASE_URL)
         e._timeout = float(cfg.get("timeout", 30.0))
         e.sample_rate = int(cfg.get("sample_rate", 24_000))
         client = cfg.get("http_client")
@@ -132,16 +138,12 @@ class ElevenLabsTTSEngine(TTSEngine):
         try:
             resp = client.post(url, json=body, headers=headers)
         except httpx.RequestError as exc:
-            raise RuntimeError(
-                f"elevenlabs TTS request failed: {exc}"
-            ) from exc
+            raise RuntimeError(f"elevenlabs TTS request failed: {exc}") from exc
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = (resp.text or "")[:300]
-            raise RuntimeError(
-                f"elevenlabs TTS failed: HTTP {resp.status_code} {detail}"
-            ) from exc
+            raise RuntimeError(f"elevenlabs TTS failed: HTTP {resp.status_code} {detail}") from exc
         pcm = _decode_mp3_to_float32(resp.content or b"", self.sample_rate)
         if pcm.size == 0:
             raise RuntimeError("elevenlabs TTS: empty audio body")

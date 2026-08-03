@@ -192,8 +192,17 @@ class _StubTTS(TTSEngine):
     def synthesize(self, req: TTSRequest) -> AudioChunk:  # pragma: no cover
         raise RuntimeError("stub: use stream_audio()")
 
-    def stream_audio(self, text_or_chunk, *, session_id="", utterance_id="", req=None,
-                     min_ms=500, target_ms=1000, max_ms=2000) -> Iterator[AudioWindow]:
+    def stream_audio(
+        self,
+        text_or_chunk,
+        *,
+        session_id="",
+        utterance_id="",
+        req=None,
+        min_ms=500,
+        target_ms=1000,
+        max_ms=2000,
+    ) -> Iterator[AudioWindow]:
         text = text_or_chunk.text if isinstance(text_or_chunk, TextChunk) else text_or_chunk
         sid = text_or_chunk.session_id if isinstance(text_or_chunk, TextChunk) else session_id
         uid = text_or_chunk.utterance_id if isinstance(text_or_chunk, TextChunk) else utterance_id
@@ -246,7 +255,9 @@ class _SlowStreamingBackend:
         )
 
 
-def _build_orchestrator(deltas: list[str], max_queue: int = 5) -> tuple[StreamOrchestrator, MockRenderBackend, BoundedVideoQueue, CoordinatorMetrics]:
+def _build_orchestrator(
+    deltas: list[str], max_queue: int = 5
+) -> tuple[StreamOrchestrator, MockRenderBackend, BoundedVideoQueue, CoordinatorMetrics]:
     backend = MockRenderBackend()
     backend.start(StartOptions())
     llm = _StubLLM(deltas)
@@ -260,7 +271,12 @@ def _build_orchestrator(deltas: list[str], max_queue: int = 5) -> tuple[StreamOr
         "text_chunk_flush_timeout_ms": 350,
     }
     orch = StreamOrchestrator(
-        llm=llm, tts=tts, backend=backend, queue=queue, metrics=metrics, config=cfg,
+        llm=llm,
+        tts=tts,
+        backend=backend,
+        queue=queue,
+        metrics=metrics,
+        config=cfg,
     )
     return orch, backend, queue, metrics
 
@@ -437,7 +453,11 @@ async def test_orchestrator_forwards_pcm_window_to_callback_before_rendering():
         backend=backend,
         queue=BoundedVideoQueue(max_size=5),
         metrics=CoordinatorMetrics(),
-        config={"text_chunk_min_chars": 4, "text_chunk_target_chars": 20, "text_chunk_max_chars": 40},
+        config={
+            "text_chunk_min_chars": 4,
+            "text_chunk_target_chars": 20,
+            "text_chunk_max_chars": 40,
+        },
         audio_window_callback=capture,
     )
 
@@ -460,7 +480,11 @@ async def test_orchestrator_propagates_callback_failure():
         backend=backend,
         queue=BoundedVideoQueue(max_size=5),
         metrics=CoordinatorMetrics(),
-        config={"text_chunk_min_chars": 4, "text_chunk_target_chars": 20, "text_chunk_max_chars": 40},
+        config={
+            "text_chunk_min_chars": 4,
+            "text_chunk_target_chars": 20,
+            "text_chunk_max_chars": 40,
+        },
         audio_window_callback=fail,
     )
 

@@ -9,7 +9,10 @@ from .cluster import Comment
 
 
 _INTENT_PHRASES: list[tuple[str, tuple[str, ...]]] = [
-    ("complaint", ("giao sai", "bị lỗi", "bị rát", "giao chậm", "móp", "đổi size", "không phản hồi")),
+    (
+        "complaint",
+        ("giao sai", "bị lỗi", "bị rát", "giao chậm", "móp", "đổi size", "không phản hồi"),
+    ),
     ("buy_intent", ("chốt", "đặt hàng", "đặt ", "mua ngay", "lấy ", "thanh toán")),
     ("promotion", ("khuyến mãi", "giảm", "sale", "voucher", "deal", "ưu đãi")),
     ("shipping", ("ship", "giao hàng", "vận chuyển", "freeship", "bao lâu nhận")),
@@ -44,7 +47,9 @@ _OFF_TOPIC = (
 )
 
 
-def _route_product(text: str, products: list[Product], current_product_id: str | None) -> str | None:
+def _route_product(
+    text: str, products: list[Product], current_product_id: str | None
+) -> str | None:
     normalized = text.lower()
     matches: list[tuple[int, str]] = []
     for product in products:

@@ -111,8 +111,17 @@ class _StubTTS(TTSEngine):
     def synthesize(self, req: TTSRequest) -> AudioChunk:  # pragma: no cover
         raise RuntimeError("stub: use stream_audio()")
 
-    def stream_audio(self, text_or_chunk, *, session_id="", utterance_id="", req=None,
-                     min_ms=500, target_ms=1000, max_ms=2000) -> Iterator[AudioWindow]:
+    def stream_audio(
+        self,
+        text_or_chunk,
+        *,
+        session_id="",
+        utterance_id="",
+        req=None,
+        min_ms=500,
+        target_ms=1000,
+        max_ms=2000,
+    ) -> Iterator[AudioWindow]:
         text = text_or_chunk.text if isinstance(text_or_chunk, TextChunk) else text_or_chunk
         sid = text_or_chunk.session_id if isinstance(text_or_chunk, TextChunk) else session_id
         uid = text_or_chunk.utterance_id if isinstance(text_or_chunk, TextChunk) else utterance_id
@@ -144,8 +153,9 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DIRECTOR_ENABLED", "0")
 
 
-def _deps_with_stubs(llm: LLMEngine | None = None, tts: TTSEngine | None = None,
-                     backend: RenderBackend | None = None) -> v1.V1Deps:
+def _deps_with_stubs(
+    llm: LLMEngine | None = None, tts: TTSEngine | None = None, backend: RenderBackend | None = None
+) -> v1.V1Deps:
     """Build V1Deps with mock backend + a stub-loaded EngineManager.
 
     The EngineManager is populated with the given llm/tts so /lite/say in mock
@@ -188,13 +198,17 @@ async def test_concurrent_say_one_200_one_409(mock_env: None):
     from core.server import create_app
 
     backend = MockRenderBackend()
-    deps = _deps_with_stubs(llm=_SlowStubLLM(n_chunks=10, delay_s=0.02), tts=_StubTTS(), backend=backend)
+    deps = _deps_with_stubs(
+        llm=_SlowStubLLM(n_chunks=10, delay_s=0.02), tts=_StubTTS(), backend=backend
+    )
     app = create_app(config=_prod_cfg(), deps=deps)
 
     # Start a session.
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        start = await client.post("/api/v1/lite/start", json={"avatar_id": None, "is_sandbox": True})
+        start = await client.post(
+            "/api/v1/lite/start", json={"avatar_id": None, "is_sandbox": True}
+        )
         assert start.status_code == 200
         sid = start.json()["session_id"]
 
@@ -207,7 +221,10 @@ async def test_concurrent_say_one_200_one_409(mock_env: None):
         assert codes == [200, 409], f"expected [200, 409], got {codes}"
         # The 409 body must carry already_speaking detail.
         err = r1 if r1.status_code == 409 else r2
-        assert "already_speaking" in err.json().get("detail", "") or err.json().get("detail") == "already_speaking"
+        assert (
+            "already_speaking" in err.json().get("detail", "")
+            or err.json().get("detail") == "already_speaking"
+        )
 
 
 async def test_lock_released_after_say_completes(mock_env: None):

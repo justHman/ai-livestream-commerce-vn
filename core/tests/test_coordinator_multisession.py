@@ -305,9 +305,7 @@ async def test_cancel_one_session_does_not_cancel_the_other():
     # B's queue must NOT have been cleared by A's cancel.
     # Note: B's worker may still be producing frames, so qsize can change,
     # but the queue object must still be the live one (not replaced).
-    assert registry.get(sid_b) is not None, (
-        "session B's registry entry vanished after cancelling A"
-    )
+    assert registry.get(sid_b) is not None, "session B's registry entry vanished after cancelling A"
     assert registry[sid_b]["orchestrator"] is orch_b, (
         "session B's orchestrator was replaced/corrupted by A's cancel"
     )

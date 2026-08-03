@@ -42,9 +42,7 @@ def test_mark_coverage_exact_point_with_hash_embedder() -> None:
     emb = HashingEmbedder(dim=64)
     points = ["vải cotton 100%", "freeship toàn quốc"]
     # Identical text → cosine ~1.0 with hashing embedder.
-    covered = mark_coverage(
-        emb, "vải cotton 100%", points, threshold=0.75, already_covered=set()
-    )
+    covered = mark_coverage(emb, "vải cotton 100%", points, threshold=0.75, already_covered=set())
     assert "vải cotton 100%" in covered
     assert coverage_ratio(covered, points) == 0.5
 
@@ -64,9 +62,7 @@ def test_cursor_advance_and_covered_points() -> None:
 
 
 def test_run_plan_roundtrip_json() -> None:
-    plan = build_run_plan(
-        [ProductIn(id="x", name="X", features=["f1"])], persona=None
-    )
+    plan = build_run_plan([ProductIn(id="x", name="X", features=["f1"])], persona=None)
     raw = plan.model_dump()
     restored = RunPlan.model_validate(raw)
     assert restored.selling[0].product_id == "x"

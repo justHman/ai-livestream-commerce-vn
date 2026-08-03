@@ -103,7 +103,9 @@ async def _connect_postgres(pg) -> None:
                 )
                 return
             delay = _POSTGRES_RETRY_DELAYS[attempt]
-            logger.warning("Postgres startup failed attempt=%s retry_in_seconds=%s", attempt + 1, delay)
+            logger.warning(
+                "Postgres startup failed attempt=%s retry_in_seconds=%s", attempt + 1, delay
+            )
             await asyncio.sleep(delay)
 
 

@@ -32,6 +32,7 @@ from ..config import AppConfig
 
 # ── constant-time token compare ─────────────────────────────────────
 
+
 def _tokens_match(a: str, b: str) -> bool:
     """Constant-time comparison for two non-empty token strings.
 
@@ -115,11 +116,7 @@ async def admin_auth(request: Request) -> None:
     if presented is not None and _tokens_match(presented, admin_token):
         return
     # Distinguish a valid-but-insufficient viewer token from a wrong token.
-    if (
-        presented
-        and cfg.backend_api_token
-        and _tokens_match(presented, cfg.backend_api_token)
-    ):
+    if presented and cfg.backend_api_token and _tokens_match(presented, cfg.backend_api_token):
         raise HTTPException(status_code=403, detail="admin privilege required")
     raise HTTPException(status_code=401, detail="invalid credentials")
 

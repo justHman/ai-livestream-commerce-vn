@@ -74,9 +74,7 @@ class VLLMEngine(LLMEngine):
             speculative_model=cfg.get("speculative_model") or None,
             num_speculative_tokens=int(cfg.get("num_speculative_tokens", 5)),
         )
-        e._tokenizer = get_tokenizer(
-            model, trust_remote_code=cfg.get("trust_remote_code", False)
-        )
+        e._tokenizer = get_tokenizer(model, trust_remote_code=cfg.get("trust_remote_code", False))
         e._default_sampling = SamplingParams
         e.name = "vllm"
         return e

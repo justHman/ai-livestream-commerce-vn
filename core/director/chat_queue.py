@@ -29,8 +29,8 @@ class IncomingComment:
 
     text: str
     author: str
-    ts: float       # unix seconds
-    id: str          # uuid4 hex, assigned at put()
+    ts: float  # unix seconds
+    id: str  # uuid4 hex, assigned at put()
 
 
 class ChatQueue:
@@ -112,9 +112,7 @@ class ChatQueue:
             else sum(comment.ts >= snapshot_at - window_sec for comment in items)
         )
         oldest_ms_ago = (
-            None
-            if not items
-            else round(max(0.0, snapshot_at - items[0].ts) * 1000.0, 1)
+            None if not items else round(max(0.0, snapshot_at - items[0].ts) * 1000.0, 1)
         )
         return {
             "received_total": received_total,

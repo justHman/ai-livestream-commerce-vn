@@ -41,7 +41,9 @@ class BodyLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])
+        }
         content_length = headers.get("content-length")
         if content_length is not None:
             try:

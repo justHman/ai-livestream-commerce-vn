@@ -11,7 +11,6 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 
-
 ROOT = Path(__file__).resolve().parents[2]
 PRODUCT_DOCKERFILES = {
     "backend_service": "backend",
@@ -134,7 +133,9 @@ def test_canonical_dockerfiles_copy_existing_nonignored_sources() -> None:
             if line.strip() and not line.startswith("#")
         ]
         for source in _local_copy_sources(dockerfile):
-            assert (ROOT / source.rstrip("/")).exists(), f"{dockerfile}: missing COPY source {source}"
+            assert (ROOT / source.rstrip("/")).exists(), (
+                f"{dockerfile}: missing COPY source {source}"
+            )
             assert not _is_ignored(source, patterns), f"{dockerfile}: ignored COPY source {source}"
 
 
@@ -240,11 +241,15 @@ def test_postgres_documentation_references_only_the_current_schema_owner() -> No
 
 def test_notebook_bootstraps_before_provider_import_and_compiles() -> None:
     notebook = json.loads((ROOT / "notebooks/colab_demo.ipynb").read_text(encoding="utf-8"))
-    code_cells = ["".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"]
+    code_cells = [
+        "".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"
+    ]
 
     for source in code_cells:
         compile(source, "colab_demo.ipynb", "exec")
-    bootstrap_cell = next(source for source in code_cells if "Provider module import passed" in source)
+    bootstrap_cell = next(
+        source for source in code_cells if "Provider module import passed" in source
+    )
     assert bootstrap_cell.index("sys.path[:0]") < bootstrap_cell.index(
         "from providers.liveavatar_cloud.service import colab_server"
     )

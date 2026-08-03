@@ -27,9 +27,9 @@ class Phase(str, enum.Enum):
 
 
 class ProductStatus(str, enum.Enum):
-    PENDING = "pending"      # not introduced yet
-    ACTIVE = "active"        # currently being presented
-    DONE = "done"            # already presented (can be revisited)
+    PENDING = "pending"  # not introduced yet
+    ACTIVE = "active"  # currently being presented
+    DONE = "done"  # already presented (can be revisited)
 
 
 @dataclass
@@ -39,8 +39,8 @@ class ProductState:
     product_id: str
     name: str
     status: ProductStatus = ProductStatus.PENDING
-    ref_image: Optional[str] = None        # asset keyed by product_id, NOT timeline
-    cluster_count: int = 0                  # Q&A clusters answered for this product
+    ref_image: Optional[str] = None  # asset keyed by product_id, NOT timeline
+    cluster_count: int = 0  # Q&A clusters answered for this product
     # Pre-embedded target vector (filled by the embedder); used for retrieval/scoring.
     embedding: Optional[list[float]] = None
     is_introduced: bool = False
@@ -159,9 +159,7 @@ class StreamState:
         """Advance talking_point_idx after a proactive speak (clamp to n_points)."""
         if n_points <= 0:
             return
-        self.cursor.talking_point_idx = min(
-            self.cursor.talking_point_idx + 1, max(n_points - 1, 0)
-        )
+        self.cursor.talking_point_idx = min(self.cursor.talking_point_idx + 1, max(n_points - 1, 0))
 
     def mark_product_covered(self, product_id: str, points: set[str]) -> None:
         """Union coverage set for a product_id."""

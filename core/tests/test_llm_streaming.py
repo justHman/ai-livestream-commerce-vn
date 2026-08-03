@@ -56,8 +56,9 @@ class _FakeLlama:
     def __init__(self, deltas: list[str]) -> None:
         self._deltas = list(deltas)
 
-    def create_chat_completion(self, *, messages, max_tokens, temperature, top_p,
-                                stop, seed, stream, **kwargs):
+    def create_chat_completion(
+        self, *, messages, max_tokens, temperature, top_p, stop, seed, stream, **kwargs
+    ):
         if not stream:
             full = "".join(self._deltas)
             return {
@@ -244,9 +245,7 @@ def test_qwen35_preset_present_by_label():
 def test_qwen35_preset_exact_fields():
     from core.engine_manager import AVAILABLE_LLM_PRESETS
 
-    qwen35 = next(
-        p for p in AVAILABLE_LLM_PRESETS if p.get("label", "").startswith("Qwen3.5")
-    )
+    qwen35 = next(p for p in AVAILABLE_LLM_PRESETS if p.get("label", "").startswith("Qwen3.5"))
     assert qwen35["engine"] == "llamacpp"
     assert qwen35["model"] == "unsloth/Qwen3.5-4B-GGUF"
     assert qwen35["gguf_file"] == "Qwen3.5-4B-Q4_K_M.gguf"
@@ -266,6 +265,7 @@ def test_llamacpp_missing_gguf_raises_clear_error(tmp_path):
     Deterministic, offline, no network."""
     try:
         import llama_cpp  # noqa: F401
+
         llama_available = True
     except ImportError:
         llama_available = False
@@ -303,6 +303,7 @@ def test_llamacpp_bogus_file_path_raises_filenotfounderror(tmp_path):
     """
     try:
         import llama_cpp  # noqa: F401
+
         llama_available = True
     except ImportError:
         llama_available = False

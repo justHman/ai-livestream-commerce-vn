@@ -24,7 +24,7 @@ import pytest
 
 pytestmark = pytest.mark.skip(
     reason="integration smoke script — needs LIVEAVATAR_API_KEY / real sandbox; "
-           "run via `DIRECTOR_EMBEDDER=hash python -m core.tests.director_smoke_test`"
+    "run via `DIRECTOR_EMBEDDER=hash python -m core.tests.director_smoke_test`"
 )
 
 from core.director import (
@@ -63,8 +63,9 @@ def main() -> None:
         for (pid, desc), e in zip(catalog, prod_embs)
     ]
 
-    cfg = StreamConfig(viewer_threshold=3, max_clusters_per_product=2,
-                       interrupt_score_threshold=1.5)
+    cfg = StreamConfig(
+        viewer_threshold=3, max_clusters_per_product=2, interrupt_score_threshold=1.5
+    )
     state = StreamState(products=list(products))
     director = Director(state=state, cfg=cfg, hook_pool=HookPool())
 
@@ -83,9 +84,9 @@ def main() -> None:
     # 2 + 3. comments: price question about serum (P002) + chitchat
     now = 20.0
     texts = [
-        "Serum Vitamin C giá bao nhiêu shop?",   # high intent, P002
-        "Serum này bao nhiêu tiền vậy ạ?",       # same cluster (price/P002)
-        "Chị ơi đẹp quá",                         # chitchat low intent
+        "Serum Vitamin C giá bao nhiêu shop?",  # high intent, P002
+        "Serum này bao nhiêu tiền vậy ạ?",  # same cluster (price/P002)
+        "Chị ơi đẹp quá",  # chitchat low intent
     ]
     embs = _embed(emb, texts)
     comments = [Comment(text=t, embedding=list(e), t=now) for t, e in zip(texts, embs)]
@@ -96,13 +97,16 @@ def main() -> None:
 
     clusters = cluster_comments(comments, merge_threshold=cfg.cluster_merge_threshold)
     ranked = rank_clusters(clusters, state, cfg, now)
-    print(f"[cluster]   {len(clusters)} clusters; top score={ranked[0].score:.2f} "
-          f"intent={ranked[0].intent:.2f} product={ranked[0].cluster.product_id}")
+    print(
+        f"[cluster]   {len(clusters)} clusters; top score={ranked[0].score:.2f} "
+        f"intent={ranked[0].intent:.2f} product={ranked[0].cluster.product_id}"
+    )
     assert ranked[0].intent >= 0.9, "price cluster should be high intent"
 
     d2 = director.decide(comments, now=now)
-    print(f"[answer]    action={d2.action!r} may_interrupt={d2.may_interrupt} "
-          f"product={d2.product_id}")
+    print(
+        f"[answer]    action={d2.action!r} may_interrupt={d2.may_interrupt} product={d2.product_id}"
+    )
     print(f"            reason: {d2.reason}")
     assert d2.action == "answer_cluster"
 
@@ -110,8 +114,9 @@ def main() -> None:
     state.products[1].cluster_count = cfg.max_clusters_per_product
     d3 = director.decide([], now=now + 1)
     cur_after = state.current_product()
-    print(f"[switch]    after max clusters -> current="
-          f"{cur_after.product_id if cur_after else None}")
+    print(
+        f"[switch]    after max clusters -> current={cur_after.product_id if cur_after else None}"
+    )
 
     moved = state.goto_product("P001")
     print(f"[goback]    goto P001 -> {moved}, current={state.current_product().product_id}")

@@ -144,7 +144,9 @@ class TextChunker:
         self._buffer_len = 0
         self._last_flush_time = self._clock()
 
-    def _flush_buffer(self, is_final: bool, *, prefer_word_boundary: bool = False) -> list[TextChunk]:
+    def _flush_buffer(
+        self, is_final: bool, *, prefer_word_boundary: bool = False
+    ) -> list[TextChunk]:
         """Flush buffered text without cutting a word at the hard-size boundary."""
         if self._buffer_len == 0:
             return []

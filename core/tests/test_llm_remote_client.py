@@ -23,9 +23,7 @@ def _make_transport(*, stream_deltas: list[str] | None = None) -> httpx.MockTran
         if body.get("stream"):
             lines = []
             for d in deltas:
-                chunk = {
-                    "choices": [{"delta": {"content": d}, "finish_reason": None}]
-                }
+                chunk = {"choices": [{"delta": {"content": d}, "finish_reason": None}]}
                 lines.append(f"data: {json.dumps(chunk)}\n\n")
             lines.append("data: [DONE]\n\n")
             return httpx.Response(
