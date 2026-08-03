@@ -65,9 +65,7 @@ def test_validation_error_bad_body() -> None:
 
 
 def test_auth_required_when_enabled() -> None:
-    app = _app(
-        security=SecurityConfig(auth_enabled=True, auth_token="secret")
-    )
+    app = _app(security=SecurityConfig(auth_enabled=True, auth_token="secret"))
     with TestClient(app) as client:
         resp = client.get("/v1/models")
         assert resp.status_code == 401

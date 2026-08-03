@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 from providers.liveavatar_cloud.sdk.client import (
     LiveAvatarClient as _SDKLiveAvatarClient,
-    LiveAvatarError,
     SANDBOX_AVATAR_ID,
 )
 

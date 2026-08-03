@@ -42,9 +42,21 @@ def _decode_mp3_to_float32(audio_bytes: bytes, sample_rate: int) -> np.ndarray:
         with open(in_path, "wb") as inf:
             inf.write(audio_bytes)
         subprocess.run(
-            ["ffmpeg", "-y", "-i", in_path, "-ar", str(sample_rate),
-             "-ac", "1", "-f", "wav", out_path],
-            check=True, capture_output=True,
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                in_path,
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-f",
+                "wav",
+                out_path,
+            ],
+            check=True,
+            capture_output=True,
         )
         with wave.open(out_path, "rb") as wf:
             frames = wf.readframes(wf.getnframes())

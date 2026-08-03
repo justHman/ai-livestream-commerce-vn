@@ -137,13 +137,21 @@ def _draw_avatar(
         )
     else:
         draw.ellipse(
-            [cx - eye_dx - eye_r, head_cy - eye_dy - eye_r,
-             cx - eye_dx + eye_r, head_cy - eye_dy + eye_r],
+            [
+                cx - eye_dx - eye_r,
+                head_cy - eye_dy - eye_r,
+                cx - eye_dx + eye_r,
+                head_cy - eye_dy + eye_r,
+            ],
             fill=(40, 30, 20),
         )
         draw.ellipse(
-            [cx + eye_dx - eye_r, head_cy - eye_dy - eye_r,
-             cx + eye_dx + eye_r, head_cy - eye_dy + eye_r],
+            [
+                cx + eye_dx - eye_r,
+                head_cy - eye_dy - eye_r,
+                cx + eye_dx + eye_r,
+                head_cy - eye_dy + eye_r,
+            ],
             fill=(40, 30, 20),
         )
 
@@ -152,8 +160,7 @@ def _draw_avatar(
     mouth_h = max(2, int(2 + mouth_open * (head_r // 2)))
     mouth_cy = head_cy + head_r // 2 + 4
     draw.ellipse(
-        [cx - mouth_w // 2, mouth_cy - mouth_h // 2,
-         cx + mouth_w // 2, mouth_cy + mouth_h // 2],
+        [cx - mouth_w // 2, mouth_cy - mouth_h // 2, cx + mouth_w // 2, mouth_cy + mouth_h // 2],
         fill=(120, 40, 40),
     )
 
@@ -176,8 +183,7 @@ def _draw_avatar(
 
     # Static left arm.
     draw.rectangle(
-        [cx - torso_w // 2 - arm_w, arm_top,
-         cx - torso_w // 2, arm_top + arm_len],
+        [cx - torso_w // 2 - arm_w, arm_top, cx - torso_w // 2, arm_top + arm_len],
         fill=(70, 110, 160),
         outline=(40, 60, 90),
         width=2,
@@ -244,10 +250,14 @@ def _synthesize_frame(
     blink = (frame_idx % 15) in (0, 1)
 
     _draw_avatar(
-        img, draw,
-        width=width, height=height,
-        frame_idx=frame_idx, fps=fps,
-        mouth_open=mouth_open, blink=blink,
+        img,
+        draw,
+        width=width,
+        height=height,
+        frame_idx=frame_idx,
+        fps=fps,
+        mouth_open=mouth_open,
+        blink=blink,
         text_lines=text_lines,
     )
 
@@ -326,13 +336,21 @@ def _synthesize_idle_frame(
         )
     else:
         draw.ellipse(
-            [cx - eye_dx - eye_r, head_cy - eye_dy - eye_r,
-             cx - eye_dx + eye_r, head_cy - eye_dy + eye_r],
+            [
+                cx - eye_dx - eye_r,
+                head_cy - eye_dy - eye_r,
+                cx - eye_dx + eye_r,
+                head_cy - eye_dy + eye_r,
+            ],
             fill=(40, 30, 20),
         )
         draw.ellipse(
-            [cx + eye_dx - eye_r, head_cy - eye_dy - eye_r,
-             cx + eye_dx + eye_r, head_cy - eye_dy + eye_r],
+            [
+                cx + eye_dx - eye_r,
+                head_cy - eye_dy - eye_r,
+                cx + eye_dx + eye_r,
+                head_cy - eye_dy + eye_r,
+            ],
             fill=(40, 30, 20),
         )
 
@@ -341,8 +359,7 @@ def _synthesize_idle_frame(
     mouth_h = 2
     mouth_cy = head_cy + head_r // 2 + 4
     draw.ellipse(
-        [cx - mouth_w // 2, mouth_cy - mouth_h // 2,
-         cx + mouth_w // 2, mouth_cy + mouth_h // 2],
+        [cx - mouth_w // 2, mouth_cy - mouth_h // 2, cx + mouth_w // 2, mouth_cy + mouth_h // 2],
         fill=(120, 40, 40),
     )
 
@@ -365,8 +382,7 @@ def _synthesize_idle_frame(
     arm_top = torso_top + 6
 
     draw.rectangle(
-        [cx - torso_w // 2 - arm_w, arm_top,
-         cx - torso_w // 2, arm_top + arm_len],
+        [cx - torso_w // 2 - arm_w, arm_top, cx - torso_w // 2, arm_top + arm_len],
         fill=(70, 110, 160),
         outline=(40, 60, 90),
         width=2,
@@ -481,9 +497,7 @@ class MockRenderBackend(StreamingAvatarBackend):
         )
 
     def say(self, session_id: str, text: str, generate: bool = True) -> str:
-        raise NotImplementedError(
-            "MockRenderBackend is streaming-only; use stream_audio()"
-        )
+        raise NotImplementedError("MockRenderBackend is streaming-only; use stream_audio()")
 
     def interrupt(self, session_id: str) -> None:
         sess = self._sessions.get(session_id)
@@ -534,9 +548,7 @@ class MockRenderBackend(StreamingAvatarBackend):
         duration_ms = audio_window.duration_ms
         if duration_ms <= 0 and audio_window.pcm:
             # int16 mono: 2 bytes/sample.
-            duration_ms = int(
-                len(audio_window.pcm) // 2 * 1000 / max(1, audio_window.sample_rate)
-            )
+            duration_ms = int(len(audio_window.pcm) // 2 * 1000 / max(1, audio_window.sample_rate))
 
         # Build a derived AudioWindow with the resolved duration for frame
         # counting (don't mutate the caller's frozen dataclass).
@@ -666,9 +678,7 @@ class MockRenderBackend(StreamingAvatarBackend):
         boundary = _MJPEG_BOUNDARY
         for jpeg in frames:
             header = (
-                f"--{boundary}\r\n"
-                f"Content-Type: image/jpeg\r\n"
-                f"Content-Length: {len(jpeg)}\r\n\r\n"
+                f"--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
             ).encode("ascii")
             yield header + jpeg + b"\r\n"
         # Closing boundary.

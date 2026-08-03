@@ -253,7 +253,6 @@ class AudioTrackPublisher:
             raise RuntimeError("LiveKit room has no local participant publish_track method")
         await _await_result(publish_track(track))
 
-
     async def _capture_real_pcm(self, pcm: bytes) -> None:
         from livekit import rtc  # type: ignore
 

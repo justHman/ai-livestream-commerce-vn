@@ -9,9 +9,7 @@ from fastapi.testclient import TestClient
 
 from avatar import create_app
 
-CONTRACT_PATH = (
-    Path(__file__).resolve().parents[2] / "contracts" / "v1" / "openapi.json"
-)
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "v1" / "openapi.json"
 
 
 def test_contract_file_exists() -> None:

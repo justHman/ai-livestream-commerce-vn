@@ -44,9 +44,21 @@ def _decode_mp3_to_float32(mp3_bytes: bytes, sample_rate: int) -> np.ndarray:
         with open(in_path, "wb") as inf:
             inf.write(mp3_bytes)
         subprocess.run(
-            ["ffmpeg", "-y", "-i", in_path, "-ar", str(sample_rate),
-             "-ac", "1", "-f", "wav", out_path],
-            check=True, capture_output=True,
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                in_path,
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-f",
+                "wav",
+                out_path,
+            ],
+            check=True,
+            capture_output=True,
         )
         with wave.open(out_path, "rb") as wf:
             frames = wf.readframes(wf.getnframes())
@@ -75,9 +87,7 @@ class ElevenLabsTTSClient:
     ) -> None:
         self._api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "") or ""
         if not self._api_key:
-            raise ElevenLabsError(
-                "ElevenLabsTTSClient needs api_key or env ELEVENLABS_API_KEY"
-            )
+            raise ElevenLabsError("ElevenLabsTTSClient needs api_key or env ELEVENLABS_API_KEY")
         self._voice_id = voice_id
         self._model_id = model_id
         self._base_url = base_url.rstrip("/")
@@ -111,9 +121,7 @@ class ElevenLabsTTSClient:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = (resp.text or "")[:300]
-            raise ElevenLabsError(
-                f"elevenlabs failed: HTTP {resp.status_code} {detail}"
-            ) from exc
+            raise ElevenLabsError(f"elevenlabs failed: HTTP {resp.status_code} {detail}") from exc
         pcm = _decode_mp3_to_float32(resp.content or b"", self._sample_rate)
         if pcm.size == 0:
             raise ElevenLabsError("elevenlabs: empty audio body")

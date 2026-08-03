@@ -122,9 +122,7 @@ def load_server_config() -> ServerConfig:
         log_level=os.environ.get("LOG_LEVEL", "INFO").strip().upper(),
         runtime_root=Path(os.environ.get("RUNTIME_ROOT", ".runtime")),
         max_body_bytes=_parse_int(os.environ.get("TTS_MAX_BODY_BYTES"), 200_000),
-        max_concurrent_requests=_parse_int(
-            os.environ.get("TTS_MAX_CONCURRENT"), 4
-        ),
+        max_concurrent_requests=_parse_int(os.environ.get("TTS_MAX_CONCURRENT"), 4),
         request_timeout_sec=float(os.environ.get("TTS_REQUEST_TIMEOUT", "120.0")),
     )
 
@@ -136,10 +134,6 @@ def load_security_config() -> SecurityConfig:
         auth_enabled=_parse_bool(os.environ.get("TTS_AUTH_ENABLED"), bool(token)),
         auth_token=token,
         admin_token=os.environ.get("TTS_ADMIN_TOKEN", "").strip(),
-        max_concurrent_requests=_parse_int(
-            os.environ.get("TTS_MAX_CONCURRENT"), 4
-        ),
-        max_gpu_concurrent_requests=_parse_int(
-            os.environ.get("TTS_MAX_GPU_CONCURRENT"), 1
-        ),
+        max_concurrent_requests=_parse_int(os.environ.get("TTS_MAX_CONCURRENT"), 4),
+        max_gpu_concurrent_requests=_parse_int(os.environ.get("TTS_MAX_GPU_CONCURRENT"), 1),
     )

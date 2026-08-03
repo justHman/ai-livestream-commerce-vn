@@ -49,7 +49,4 @@ def test_auth_required_when_enabled() -> None:
     app = create_app(security=SecurityConfig(auth_enabled=True, auth_token="tok"))
     with TestClient(app) as client:
         assert client.get("/v1/avatars").status_code == 401
-        assert (
-            client.get("/v1/avatars", headers={"Authorization": "Bearer tok"}).status_code
-            == 200
-        )
+        assert client.get("/v1/avatars", headers={"Authorization": "Bearer tok"}).status_code == 200

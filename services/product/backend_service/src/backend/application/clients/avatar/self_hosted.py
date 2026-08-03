@@ -42,9 +42,7 @@ class SelfHostedAvatarClient:
     ) -> None:
         base = (base_url or os.environ.get("AVATAR_BASE_URL", "") or "").strip()
         if not base:
-            raise AvatarClientError(
-                "SelfHostedAvatarClient needs base_url or env AVATAR_BASE_URL"
-            )
+            raise AvatarClientError("SelfHostedAvatarClient needs base_url or env AVATAR_BASE_URL")
         self._base_url = base.rstrip("/")
         self._api_key = api_key or os.environ.get("AVATAR_AUTH_TOKEN", "") or ""
         self._timeout = float(timeout)
@@ -55,9 +53,7 @@ class SelfHostedAvatarClient:
             self._client = httpx.Client(timeout=self._timeout)
         return self._client
 
-    def start(
-        self, *, avatar_id: str = "default", is_sandbox: bool = True
-    ) -> AvatarStartResult:
+    def start(self, *, avatar_id: str = "default", is_sandbox: bool = True) -> AvatarStartResult:
         client = self._get_client()
         url = urljoin(self._base_url + "/", "v1/sessions")
         headers: dict[str, str] = {}
@@ -96,9 +92,7 @@ class SelfHostedAvatarClient:
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise AvatarClientError(
-                f"self-host avatar stop: HTTP {resp.status_code}"
-            ) from exc
+            raise AvatarClientError(f"self-host avatar stop: HTTP {resp.status_code}") from exc
 
     def close(self) -> None:
         if self._client is not None:

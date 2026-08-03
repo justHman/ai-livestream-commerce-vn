@@ -29,9 +29,7 @@ def test_speech_returns_pcm() -> None:
 def test_speech_wav_format() -> None:
     app = _app()
     with TestClient(app) as client:
-        resp = client.post(
-            "/v1/speech", json={"text": "Xin chào", "response_format": "wav"}
-        )
+        resp = client.post("/v1/speech", json={"text": "Xin chào", "response_format": "wav"})
     assert resp.status_code == 200
     assert resp.content[:4] == b"RIFF"
 
@@ -53,9 +51,7 @@ def test_speech_validation_long_text() -> None:
 def test_speech_bad_format_rejected() -> None:
     app = _app()
     with TestClient(app) as client:
-        resp = client.post(
-            "/v1/speech", json={"text": "x", "response_format": "mp3"}
-        )
+        resp = client.post("/v1/speech", json={"text": "x", "response_format": "mp3"})
     assert resp.status_code == 422
 
 
@@ -72,6 +68,5 @@ def test_auth_required_when_enabled() -> None:
     with TestClient(app) as client:
         assert client.get("/v1/voices").status_code == 401
         assert (
-            client.get("/v1/voices", headers={"Authorization": "Bearer s3cr3t"}).status_code
-            == 200
+            client.get("/v1/voices", headers={"Authorization": "Bearer s3cr3t"}).status_code == 200
         )

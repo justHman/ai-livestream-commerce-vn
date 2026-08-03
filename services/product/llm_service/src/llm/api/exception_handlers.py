@@ -42,9 +42,7 @@ async def _engine_error_handler(request: Request, exc: EngineError) -> JSONRespo
     return _envelope("engine_error", str(exc), 502)
 
 
-async def _engine_unavailable_handler(
-    request: Request, exc: EngineUnavailable
-) -> JSONResponse:
+async def _engine_unavailable_handler(request: Request, exc: EngineUnavailable) -> JSONResponse:
     return _envelope("engine_unavailable", str(exc), 503)
 
 

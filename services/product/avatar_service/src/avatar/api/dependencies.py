@@ -41,8 +41,6 @@ def get_gpu_concurrency_limiter(request: Request) -> GPUConcurrencyLimiter:
     return GPUConcurrencyLimiter(max_gpu_concurrent=config.max_gpu_concurrent_requests)
 
 
-def create_dependency_overrides(
-    server: ServerConfig, security: object
-) -> dict:
+def create_dependency_overrides(server: ServerConfig, security: object) -> dict:
     """Wire overrides so tests can inject fakes for engine/limits."""
     return {}

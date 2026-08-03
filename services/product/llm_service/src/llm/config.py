@@ -41,9 +41,7 @@ class EngineConfig:
                 f"expected one of {sorted(SELF_HOST_ENGINES)}"
             )
         if self.engine != "none" and not (self.model or self.model_path):
-            raise ValueError(
-                f"LLM_ENGINE={self.engine} requires LLM_MODEL or LLM_WEIGHTS_PATH"
-            )
+            raise ValueError(f"LLM_ENGINE={self.engine} requires LLM_MODEL or LLM_WEIGHTS_PATH")
         if self.max_model_len < 1:
             raise ValueError("LLM_MAX_MODEL_LEN must be >= 1")
         if not (0.0 < self.gpu_memory_utilization <= 1.0):
@@ -134,17 +132,13 @@ def load_engine_config() -> EngineConfig:
         model_path=os.environ.get("LLM_WEIGHTS_PATH", "").strip(),
         device=os.environ.get("LLM_DEVICE", "auto").strip().lower(),
         max_model_len=_parse_int(os.environ.get("LLM_MAX_MODEL_LEN"), 4096),
-        gpu_memory_utilization=_parse_float(
-            os.environ.get("LLM_GPU_MEMORY_UTILIZATION"), 0.6
-        ),
+        gpu_memory_utilization=_parse_float(os.environ.get("LLM_GPU_MEMORY_UTILIZATION"), 0.6),
         dtype=os.environ.get("LLM_DTYPE", "auto").strip().lower(),
         quantization=os.environ.get("LLM_QUANTIZATION") or None,
         max_num_seqs=_parse_int(os.environ.get("LLM_MAX_NUM_SEQS"), 64),
         seed=_parse_int(os.environ.get("LLM_SEED"), 42),
         enforce_eager=_parse_bool(os.environ.get("LLM_ENFORCE_EAGER")),
-        enable_prefix_caching=_parse_bool(
-            os.environ.get("LLM_ENABLE_PREFIX_CACHING"), True
-        ),
+        enable_prefix_caching=_parse_bool(os.environ.get("LLM_ENABLE_PREFIX_CACHING"), True),
     )
 
 
@@ -156,12 +150,8 @@ def load_server_config() -> ServerConfig:
         log_level=os.environ.get("LOG_LEVEL", "INFO").strip().upper(),
         runtime_root=Path(os.environ.get("RUNTIME_ROOT", ".runtime")),
         max_body_bytes=_parse_int(os.environ.get("LLM_MAX_BODY_BYTES"), 100_000),
-        max_concurrent_requests=_parse_int(
-            os.environ.get("LLM_MAX_CONCURRENT"), 8
-        ),
-        request_timeout_sec=_parse_float(
-            os.environ.get("LLM_REQUEST_TIMEOUT"), 300.0
-        ),
+        max_concurrent_requests=_parse_int(os.environ.get("LLM_MAX_CONCURRENT"), 8),
+        request_timeout_sec=_parse_float(os.environ.get("LLM_REQUEST_TIMEOUT"), 300.0),
     )
 
 
@@ -172,10 +162,6 @@ def load_security_config() -> SecurityConfig:
         auth_enabled=_parse_bool(os.environ.get("LLM_AUTH_ENABLED"), bool(token)),
         auth_token=token,
         admin_token=os.environ.get("LLM_ADMIN_TOKEN", "").strip(),
-        max_concurrent_requests=_parse_int(
-            os.environ.get("LLM_MAX_CONCURRENT"), 8
-        ),
-        max_gpu_concurrent_requests=_parse_int(
-            os.environ.get("LLM_MAX_GPU_CONCURRENT"), 1
-        ),
+        max_concurrent_requests=_parse_int(os.environ.get("LLM_MAX_CONCURRENT"), 8),
+        max_gpu_concurrent_requests=_parse_int(os.environ.get("LLM_MAX_GPU_CONCURRENT"), 1),
     )

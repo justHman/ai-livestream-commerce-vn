@@ -55,8 +55,7 @@ class PublishingConfig:
             raise ValueError("LIVEKIT_URL is required for avatar publishing")
         if not self.livekit_api_key or not self.livekit_api_secret:
             raise ValueError(
-                "LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required "
-                "for avatar publishing"
+                "LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required for avatar publishing"
             )
         if self.room_ttl_sec < 60:
             raise ValueError("LIVEKIT_ROOM_TTL_SEC must be >= 60")
@@ -141,9 +140,7 @@ def load_server_config() -> ServerConfig:
         log_level=os.environ.get("LOG_LEVEL", "INFO").strip().upper(),
         runtime_root=Path(os.environ.get("RUNTIME_ROOT", ".runtime")),
         max_body_bytes=_parse_int(os.environ.get("AVATAR_MAX_BODY_BYTES"), 100_000),
-        max_concurrent_requests=_parse_int(
-            os.environ.get("AVATAR_MAX_CONCURRENT"), 4
-        ),
+        max_concurrent_requests=_parse_int(os.environ.get("AVATAR_MAX_CONCURRENT"), 4),
         request_timeout_sec=float(os.environ.get("AVATAR_REQUEST_TIMEOUT", "60.0")),
     )
 
@@ -154,10 +151,6 @@ def load_security_config() -> SecurityConfig:
         auth_enabled=_parse_bool(os.environ.get("AVATAR_AUTH_ENABLED"), bool(token)),
         auth_token=token,
         admin_token=os.environ.get("AVATAR_ADMIN_TOKEN", "").strip(),
-        max_concurrent_requests=_parse_int(
-            os.environ.get("AVATAR_MAX_CONCURRENT"), 4
-        ),
-        max_gpu_concurrent_requests=_parse_int(
-            os.environ.get("AVATAR_MAX_GPU_CONCURRENT"), 1
-        ),
+        max_concurrent_requests=_parse_int(os.environ.get("AVATAR_MAX_CONCURRENT"), 4),
+        max_gpu_concurrent_requests=_parse_int(os.environ.get("AVATAR_MAX_GPU_CONCURRENT"), 1),
     )

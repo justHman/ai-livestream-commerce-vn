@@ -20,9 +20,7 @@ class RateLimitError(HTTPException):
 
 class ConcurrencyLimitError(HTTPException):
     def __init__(self, detail: str = "concurrency limit exceeded") -> None:
-        super().__init__(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail
-        )
+        super().__init__(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
 
 class RateLimiter:

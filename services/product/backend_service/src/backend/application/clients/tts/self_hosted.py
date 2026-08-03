@@ -7,9 +7,7 @@ code, no hosted-provider logic.
 
 from __future__ import annotations
 
-import io
 import os
-import wave
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin
@@ -48,9 +46,7 @@ class SelfHostedTTSClient:
     ) -> None:
         base = (base_url or os.environ.get("TTS_BASE_URL", "") or "").strip()
         if not base:
-            raise TTSClientError(
-                "SelfHostedTTSClient needs base_url or env TTS_BASE_URL"
-            )
+            raise TTSClientError("SelfHostedTTSClient needs base_url or env TTS_BASE_URL")
         self._base_url = _strip_trailing_slash(base)
         self._api_key = api_key or os.environ.get("TTS_AUTH_TOKEN", "") or ""
         self._timeout = float(timeout)
@@ -89,9 +85,7 @@ class SelfHostedTTSClient:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = (resp.text or "")[:300]
-            raise TTSClientError(
-                f"self-host TTS failed: HTTP {resp.status_code} {detail}"
-            ) from exc
+            raise TTSClientError(f"self-host TTS failed: HTTP {resp.status_code} {detail}") from exc
         sample_rate = int(resp.headers.get("x-audio-sample-rate", "24000"))
         duration_ms = int(resp.headers.get("x-audio-duration-ms", "0"))
         engine = resp.headers.get("x-audio-engine", "")

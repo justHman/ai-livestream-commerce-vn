@@ -43,9 +43,7 @@ class AvatarForcingEngine(AvatarEngine):
     def from_config(cls, cfg: dict) -> "AvatarForcingEngine":
         model = cfg.get("model") or cfg.get("weights_path") or ""
         if not model:
-            raise ValueError(
-                "avatarforcing engine requires AVATAR_MODEL or AVATAR_WEIGHTS"
-            )
+            raise ValueError("avatarforcing engine requires AVATAR_MODEL or AVATAR_WEIGHTS")
         return cls(model=model)
 
     def start(self, opts: StartOptions) -> StartResult:
