@@ -16,7 +16,7 @@ The repository SHALL maintain a concise tracked workflow inventory covering ever
 - **THEN** the inventory surfaces the shared actions and environment references so overlapping release behavior is visible before refactoring
 
 ### Requirement: Validated workflow inputs
-Dispatch and release workflows SHALL validate an immutable commit SHA, a target environment, and a supported service list through one shared reusable validation script before changing any environment. The SHA MUST be a full 40-hexadecimal commit object that resolves in the repository; the environment MUST be an exact lowercase allowlist value per workflow; the service list MUST be a comma-separated, normalized, deduplicated, non-empty subset of `backend_service,llm_service,tts_service,avatar_service` and platform services, with no shell-injection or whitespace ambiguity. Validation SHALL emit safe JSON/matrix outputs through `GITHUB_OUTPUT` and MUST NOT use `eval`.
+Dispatch and release workflows SHALL validate an immutable commit SHA, a target environment, and a supported service list through one shared reusable validation script before changing any environment. The SHA MUST be a full 40-hexadecimal commit object that resolves in the repository; the environment MUST be an exact lowercase allowlist value per workflow; the service list MUST be a comma-separated, normalized, deduplicated, non-empty subset of the canonical `backend_service,llm_service,tts_service,avatar_service` identifiers, with no shell-injection or whitespace ambiguity. The CLI SHALL fail when any input required for the selected mode is missing rather than returning success. Validation SHALL emit safe JSON/matrix outputs through `GITHUB_OUTPUT` and MUST NOT use `eval`.
 
 #### Scenario: Deploy a valid SHA
 - **WHEN** an operator dispatches a deployment with the full 40-hex commit SHA that resolves in the repository
@@ -31,8 +31,12 @@ Dispatch and release workflows SHALL validate an immutable commit SHA, a target 
 - **THEN** validation rejects it with the allowed set and no environment is changed
 
 #### Scenario: Reject an invalid service
-- **WHEN** a dispatch specifies an unknown, mixed-case, or shell-injected service identifier
+- **WHEN** a dispatch specifies an unknown, mixed-case, short-form, or shell-injected service identifier
 - **THEN** validation rejects it before deployment and reports the unknown value without echoing untrusted content into a shell command
+
+#### Scenario: Execute without required inputs
+- **WHEN** the validation CLI is invoked without the `--sha`, `--env`, or `--services` inputs it declares required
+- **THEN** the CLI exits non-zero and names each missing required input before any environment change
 
 ### Requirement: Static workflow validation
 The repository SHALL validate workflow YAML statically, rejecting unsupported triggers, invalid reusable-workflow references, and malformed service tag patterns. YAML SHALL be parsed with a pinned/declared tooling dependency or a narrow stdlib parser proven correct. Event entry names SHALL follow the descriptive convention and underscore-prefixed reusable workflows SHALL expose `workflow_call` only. Local reusable references MUST exist and use the allowed `./.github/workflows/<name>.yml` form. Reusable workflows MUST NOT declare push, pull_request, schedule, repository_dispatch, or workflow_dispatch triggers. Service tags MUST match the exact `<service>-vSEMVER` pattern. CI MUST NOT contain an implicit deployment step. Permission, environment, and secret reference shape SHALL be validated without reading values.
@@ -58,7 +62,7 @@ The repository SHALL validate workflow YAML statically, rejecting unsupported tr
 - **THEN** validation fails and names the allowed service tag format
 
 ### Requirement: Repository-aware affected areas
-CI SHALL compute a deterministic affected-area map from changed paths and fan out only required areas. Direct owner paths select their owner. A service contract artifact selects its owner plus the exact consumers: backend contract fans to backend and Workbench, and LLM, TTS, and avatar contracts fan to their owner plus backend. Backend shared schema roots fan to backend and Workbench. Shared source policy, build, CI, and root tool changes fan only required areas, conservatively all areas when truly global. Renames and deletes SHALL be handled safely. Docs-only changes SHALL be neutral unless runtime docs are consumed by the build. Unknown paths MUST NOT be silently ignored; they classify to a safe conservative result.
+CI SHALL compute a deterministic affected-area map from changed paths and fan out only required areas. Direct owner paths select their owner. A service contract artifact or a canonical source DTO under `services/product/<service>/src/<pkg>/api/v1/schemas/` selects its owner plus the exact consumers: backend contract fans to backend and Workbench, and LLM, TTS, and avatar contracts fan to their owner plus backend. Backend shared schema roots fan to backend and Workbench. Root shared source-policy, dependency-lock, build, and CI files map to their explicit shared areas (`shared-config`, `shared-locks`, `shared-build`, or `ci`) and never fan every service. Renames and deletes SHALL be handled safely. Docs-only changes SHALL be neutral unless runtime docs are consumed by the build. Unknown paths MUST NOT be silently dropped and MUST NOT fan every service; they classify to a conservative single shared-source area.
 
 #### Scenario: Change a product service
 - **WHEN** a change touches `services/product/backend_service/` source
@@ -66,15 +70,19 @@ CI SHALL compute a deterministic affected-area map from changed paths and fan ou
 
 #### Scenario: Change a service contract
 - **WHEN** a change touches `services/product/tts_service/contracts/`
-- **THEN** the detector emits `tts_service` plus `backend_service` and never recursively fans to Workbench
+- **THEN** the detector emits `tts_service` plus the consuming backend client area and never recursively fans to Workbench
 
-#### Scenario: Change the backend contract
+#### Scenario: Change a canonical source DTO
+- **WHEN** a change touches `services/product/backend_service/src/backend/api/v1/schemas/`
+- **THEN** the detector emits `backend_service` plus `workbench`; a LLM, TTS, or avatar DTO change emits its owner plus `backend_service`
+
+#### Scenario: Change the backend legacy contract root
 - **WHEN** a change touches the backend `contracts/` or shared `core/api/v1/schemas/` roots
 - **THEN** the detector emits `backend_service` plus `workbench`
 
 #### Scenario: Change shared configuration
-- **WHEN** a change touches `pyproject.toml`, `uv.lock`, or `.github/`
-- **THEN** the detector emits the corresponding shared-config, shared-locks, or CI area
+- **WHEN** a change touches `pyproject.toml`, `uv.lock`, `ruff.toml`, `pyrightconfig.json`, or `.github/`
+- **THEN** the detector emits only the corresponding shared-config, shared-locks, shared-config, or CI area and no other area
 
 #### Scenario: Change a docs-only file
 - **WHEN** a change touches only `docs/` or `README.md`
@@ -82,4 +90,4 @@ CI SHALL compute a deterministic affected-area map from changed paths and fan ou
 
 #### Scenario: Encounter an unknown path
 - **WHEN** a changed path matches no known owner
-- **THEN** the detector emits a safe conservative full fan-out and never drops the path silently
+- **THEN** the detector emits the conservative single `shared-source` area and never drops the path silently

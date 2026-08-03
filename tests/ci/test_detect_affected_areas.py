@@ -41,7 +41,7 @@ def test_direct_owner(path, expected):
     assert classify_path(path) == expected
 
 
-# ── Contract fan-out ────────────────────────────────────────────────────────
+# ── Service contract artifacts fan-out ──────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -74,16 +74,53 @@ def test_contract_fanout(path, expected):
 
 
 def test_contract_never_recursive():
-    # TTS contract fans to tts + backend only, NOT workbench (one level).
     areas = classify_path("services/product/tts_service/contracts/v1/openapi.json")
     assert "workbench" not in areas
+
+
+# ── Canonical source DTOs fan-out (finding #7) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (
+            "services/product/backend_service/src/backend/api/v1/schemas/sessions.py",
+            ["backend_service", "workbench"],
+        ),
+        (
+            "services/product/llm_service/src/llm/api/v1/schemas/chat.py",
+            ["backend_service", "llm_service"],
+        ),
+        (
+            "services/product/tts_service/src/tts/api/v1/schemas/speech.py",
+            ["backend_service", "tts_service"],
+        ),
+        (
+            "services/product/avatar_service/src/avatar/api/v1/schemas/sessions.py",
+            ["avatar_service", "backend_service"],
+        ),
+    ],
+)
+def test_canonical_src_dto_fanout_all_four(path, expected):
+    assert classify_path(path) == expected
+
+
+def test_canonical_src_dto_not_recursive():
+    areas = classify_path("services/product/llm_service/src/llm/api/v1/schemas/chat.py")
+    assert "workbench" not in areas
+
+
+def test_plain_service_src_not_dto():
+    # A route/engine change does NOT fan out; only DTO schemas do.
+    assert classify_path("services/product/llm_service/src/llm/engines/vllm.py") == ["llm_service"]
 
 
 def test_backend_schema_fans_to_workbench():
     assert classify_path("core/api/v1/schemas/sessions.py") == sorted(BACKEND_SCHEMA_CONSUMERS)
 
 
-# ── Shared config / locks / build ───────────────────────────────────────────
+# ── Shared config / locks / build (finding #8) ──────────────────────────────
 
 
 def test_pyproject_toml_shared_config():
@@ -94,8 +131,26 @@ def test_uv_lock_shared_locks():
     assert classify_path("uv.lock") == ["shared-locks"]
 
 
+def test_pyrightconfig_shared_config():
+    assert classify_path("pyrightconfig.json") == ["shared-config"]
+
+
+def test_ruff_editorconfig_shared_config():
+    assert classify_path("ruff.toml") == ["shared-config"]
+    assert classify_path(".editorconfig") == ["shared-config"]
+
+
+def test_makefile_compose_shared_build():
+    assert classify_path("Makefile") == ["shared-build"]
+    assert classify_path("compose.yaml") == ["shared-build"]
+
+
 def test_scripts_ci_is_ci_area():
     assert classify_path("scripts/ci/detect_affected_areas.py") == ["ci"]
+
+
+def test_other_scripts_is_shared_source():
+    assert classify_path("scripts/bench_api.py") == ["shared-source"]
 
 
 def test_github_workflow_is_ci():
@@ -112,17 +167,16 @@ def test_docs_neutral():
     assert classify_path("openspec/changes/x/proposal.md") == []
 
 
-# ── Unknown ─────────────────────────────────────────────────────────────────
+# ── Unknown conservative (no full fan-out, finding #8) ───────────────────
 
 
-def test_unknown_path_conservative():
+def test_unknown_path_conservative_shared_source():
     areas = classify_path("unknown/random/file.txt")
-    assert areas == sorted(ALL_AREAS)
+    assert areas == ["shared-source"]
 
 
 def test_root_misc_file_conservative():
-    areas = classify_path("data.csv")
-    assert areas == sorted(ALL_AREAS)
+    assert classify_path("data.csv") == ["shared-source"]
 
 
 # ── Multi-change union ──────────────────────────────────────────────────────
@@ -147,8 +201,6 @@ def test_dedup_union_deterministic():
 
 
 def test_rename_safe_union():
-    # A rename surfaces as delete(old) + add(new); union must be deterministic
-    # and safe (old path classify is harmless; new path carries the owner).
     r = detect_affected_areas(
         [
             "services/product/tts_service/src/old_tts.py",
@@ -170,10 +222,10 @@ def test_matrix_covers_all_areas():
 
 
 def test_no_silent_unknown():
-    # Unknown paths are classified (conservative full fan-out), never dropped.
+    # Unknown paths are classified (never dropped from by_path).
     r = detect_affected_areas(["weird/path"])
     assert r["unclassified"] == []
-    assert set(r["areas"]) == set(ALL_AREAS)
+    assert r["areas"] == ["shared-source"]
 
 
 # ── CLI smoke ───────────────────────────────────────────────────────────────

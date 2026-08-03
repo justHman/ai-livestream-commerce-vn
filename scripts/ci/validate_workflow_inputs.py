@@ -9,35 +9,38 @@ Smallest reusable validation shared by dispatch/release workflows:
 - No shell injection or whitespace ambiguity
 - Emit safe JSON/matrix outputs via GITHUB_OUTPUT, never eval
 - Validate branch ancestry / CI separately in owning workflows
+
+Canonical service identifiers follow the design / refactor-microservices-monorepo
+vocabulary: `backend_service`, `llm_service`, `tts_service`, `avatar_service`.
+Release image tags use the short service name (`backend-v1.2.0`), mapped below.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 # ── Supported services ──────────────────────────────────────────────────────
 
-# Product services (project-owned, independently deployable)
-PRODUCT_SERVICES = frozenset({"backend", "llm", "tts", "avatar"})
+# Canonical product service identifiers (design §4 dispatch contract).
+PRODUCT_SERVICE_IDS = frozenset({"backend_service", "llm_service", "tts_service", "avatar_service"})
 
-# Platform services (upstream runtimes with project config/assets)
-PLATFORM_SERVICES = frozenset({"livekit", "lmcache"})
+# All dispatch-validated service identifiers.
+SUPPORTED_SERVICES: frozenset[str] = PRODUCT_SERVICE_IDS
 
-# All supported service identifiers
-SUPPORTED_SERVICES: frozenset[str] = PRODUCT_SERVICES | PLATFORM_SERVICES
-
-# Service → short identifier used in image tags, ECS service names
+# Canonical identifier -> short identifier used in release image tags.
 SERVICE_SHORT = {
-    "backend": "backend",
-    "llm": "llm",
-    "tts": "tts",
-    "avatar": "avatar",
-    "livekit": "livekit",
-    "lmcache": "lmcache",
+    "backend_service": "backend",
+    "llm_service": "llm",
+    "tts_service": "tts",
+    "avatar_service": "avatar",
 }
+
+# Allowed service prefixes for release tags `<short>-vMAJOR.MINOR.PATCH`.
+SERVICE_TAG_NAMES = frozenset(SERVICE_SHORT.values())
 
 # ── Supported environments ──────────────────────────────────────────────────
 
@@ -100,7 +103,7 @@ def validate_environment(env: str, allowed: Optional[Set[str]] = None) -> str:
 
     Raises ValueError on:
     - Empty or whitespace-only
-    - Contains characters other than lowercase letters (a-z)
+    - Mixed case / non-lowercase characters
     - Not in the allowed set
     """
     if env != env.strip():
@@ -126,17 +129,20 @@ def validate_environment(env: str, allowed: Optional[Set[str]] = None) -> str:
     return env
 
 
-def validate_services(services_str: str, allowed: Optional[Set[str]] = None) -> List[str]:
-    """Validate a comma-separated service list.
+DEFAULT_SERVICE_ALLOWLIST = SUPPORTED_SERVICES
 
-    Returns a deduplicated, sorted list of service identifiers.
 
-    Raises ValueError on:
-    - Empty string after stripping
-    - Unknown service identifier
-    - Whitespace-only entries
+def validate_services(
+    services_str: str,
+    allowed: Optional[Set[str]] = None,
+) -> List[str]:
+    """Validate a comma-separated canonical service list.
+
+    Returns a deduplicated, sorted list of canonical service identifiers
+    (e.g. ``backend_service``). Raises ValueError on empty, unknown, mixed-case,
+    empty-entry, or shell-metacharacter input.
     """
-    allowed = allowed or SUPPORTED_SERVICES
+    allowed = allowed or DEFAULT_SERVICE_ALLOWLIST
 
     if not services_str or not services_str.strip():
         raise ValueError("Service list must not be empty.")
@@ -172,31 +178,41 @@ def validate_services(services_str: str, allowed: Optional[Set[str]] = None) -> 
     return sorted(result)
 
 
-def validate_service_tag(tag: str) -> dict:
-    """Validate a service release tag of the form <service>-vSEMVER.
+def validate_service_tag(tag: str) -> Dict[str, str]:
+    """Validate a service release tag of the form `<short>-vSEMVER`.
 
-    Returns dict with 'service', 'version', 'tag' on success.
-    Raises ValueError on malformed tag.
+    Returns ``{"service", "version", "tag"}`` on success, where ``service`` is
+    the derived canonical service (e.g. ``backend`` stays ``backend``).
+    Raises ValueError on malformed tag or unsupported service name.
     """
     tag = tag.strip()
 
     if not tag:
         raise ValueError("Tag must not be empty.")
 
-    # Pattern: <service>-vMAJOR.MINOR.PATCH
     m = re.match(
-        r"^(backend|llm|tts|avatar|livekit|lmcache)-v(\d+)\.(\d+)\.(\d+)$",
+        r"^([a-z][a-z0-9_]*)-v(\d+)\.(\d+)\.(\d+)$",
         tag,
     )
     if not m:
         raise ValueError(
-            f"Tag '{tag}' does not match '<service>-vMAJOR.MINOR.PATCH' "
-            f"pattern. Service must be one of: "
-            f"{', '.join(sorted(SUPPORTED_SERVICES))}."
+            f"Tag '{tag}' does not match '<service>-vMAJOR.MINOR.PATCH' pattern. "
+            f"Service must be one of: {', '.join(sorted(SERVICE_TAG_NAMES))}."
         )
 
+    service_short = m.group(1)
+    if service_short not in SERVICE_TAG_NAMES:
+        raise ValueError(
+            f"Tag '{tag}' uses unsupported service '{service_short}'. "
+            f"Service must be one of: {', '.join(sorted(SERVICE_TAG_NAMES))}."
+        )
+
+    # Map short tag service -> canonical identifier.
+    canonical = next(k for k, v in SERVICE_SHORT.items() if v == service_short)
+
     return {
-        "service": m.group(1),
+        "service": canonical,
+        "service_short": service_short,
         "version": f"v{m.group(2)}.{m.group(3)}.{m.group(4)}",
         "tag": tag,
     }
@@ -206,36 +222,34 @@ def validate_service_tag(tag: str) -> dict:
 
 
 def emit_github_output(key: str, value: str) -> None:
-    """Emit a key=value pair to GITHUB_OUTPUT.
-
-    Uses the GITHUB_OUTPUT environment variable if set, otherwise
-    writes to stdout with the expected delimiter.
-    """
-    output_path = Path(__import__("os").environ.get("GITHUB_OUTPUT", "/dev/stdout"))
-    # Simple value: no newlines, no special chars that need delimiting
+    """Emit a key=value pair to GITHUB_OUTPUT."""
+    output_path = Path(os.environ.get("GITHUB_OUTPUT", "/dev/stdout"))
     with open(output_path, "a") as f:
         f.write(f"{key}={value}\n")
 
 
 def emit_github_json_output(key: str, value: object) -> None:
-    """Emit a JSON value to GITHUB_OUTPUT."""
-    output_path = Path(__import__("os").environ.get("GITHUB_OUTPUT", "/dev/stdout"))
+    """Emit a JSON value (joined via heredoc) to GITHUB_OUTPUT."""
+    output_path = Path(os.environ.get("GITHUB_OUTPUT", "/dev/stdout"))
     json_str = json.dumps(value, separators=(",", ":"))
     with open(output_path, "a") as f:
         f.write(f"{key}<<EOF\n{json_str}\nEOF\n")
 
 
-# ── CLI entry point ─────────────────────────────────────────────────────────
+# ── CLI ─────────────────────────────────────────────────────────────────────
+
+REQUIRED_INPUTS = frozenset({"sha", "env", "services"})
 
 
-def main() -> None:
+def main(argv: Optional[List[str]] = None) -> None:
     """CLI entry point for validating workflow dispatch inputs.
 
     Usage:
         python scripts/ci/validate_workflow_inputs.py \\
             --sha <commit-sha> \\
             --env <environment> \\
-            --services <comma-separated-list>
+            --services <comma-separated-canonical-list> \\
+            [--require sha,env,services] [--github-output]
     """
     import argparse
 
@@ -246,7 +260,7 @@ def main() -> None:
     parser.add_argument("--env", help="Target environment (dev/staging/prod)")
     parser.add_argument(
         "--services",
-        help="Comma-separated list of service identifiers",
+        help="Comma-separated canonical service identifiers",
     )
     parser.add_argument(
         "--repo-root",
@@ -255,14 +269,29 @@ def main() -> None:
         help="Repository root for git resolution (default: cwd)",
     )
     parser.add_argument(
+        "--require",
+        default="sha,env,services",
+        help="Which inputs are required (comma list of sha/env/services). Defaults to all three.",
+    )
+    parser.add_argument(
         "--github-output",
         action="store_true",
         help="Emit validated values to GITHUB_OUTPUT",
     )
 
-    args = parser.parse_args()
-    errors: List[str] = []
+    args = parser.parse_args(argv)
 
+    required: Set[str] = {r.strip() for r in args.require.split(",") if r.strip()}
+    unknown_required = required - REQUIRED_INPUTS
+    if unknown_required:
+        print(
+            f"ERROR: unknown --require values: {', '.join(sorted(unknown_required))}. "
+            f"Allowed: sha, env, services.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    errors: List[str] = []
     sha = None
     env = None
     services = None
@@ -272,18 +301,24 @@ def main() -> None:
             sha = validate_sha(args.sha, args.repo_root)
         except ValueError as e:
             errors.append(str(e))
+    elif "sha" in required:
+        errors.append("Missing required input: --sha")
 
     if args.env:
         try:
             env = validate_environment(args.env)
         except ValueError as e:
             errors.append(str(e))
+    elif "env" in required:
+        errors.append("Missing required input: --env")
 
     if args.services:
         try:
             services = validate_services(args.services)
         except ValueError as e:
             errors.append(str(e))
+    elif "services" in required:
+        errors.append("Missing required input: --services")
 
     if errors:
         for err in errors:
@@ -291,17 +326,17 @@ def main() -> None:
         sys.exit(1)
 
     if args.github_output:
-        if sha:
-            emit_github_output("validated_sha", sha)
-        if env:
-            emit_github_output("validated_env", env)
-        if services is not None:
-            emit_github_output("validated_services", ",".join(services))
-            emit_github_json_output("services_matrix", services)
+        assert sha is not None
+        emit_github_output("validated_sha", sha)
+        assert env is not None
+        emit_github_output("validated_env", env)
+        assert services is not None
+        emit_github_output("validated_services", ",".join(services))
+        emit_github_json_output("services_matrix", services)
 
-    result = {"sha": sha, "env": env, "services": services}
+    result: Dict[str, Any] = {"sha": sha, "env": env, "services": services}
     print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

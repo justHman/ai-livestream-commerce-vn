@@ -3,10 +3,11 @@ Task 82 — OpenSpec 2.3: Static workflow validation.
 
 Parses YAML safely with a pinned/declared tooling dependency. Enforces:
 - Event entry names/triggers and underscore reusable workflow_call only
+- Unsupported trigger events are rejected (not silently accepted)
 - Reusable local refs exist and use allowed ref form
-- No reusable workflow has push/PR/dispatch/tag trigger
-- Service tags exact `<service>-vSEMVER` pattern
-- No implicit deployment on CI
+- No reusable workflow has push/PR/dispatch/schedule/repository_dispatch trigger
+- Service tags exact `<service>-vSEMVER` pattern (error, not warning)
+- No implicit deployment on CI (job-level `uses`, step-level `uses` and `run`)
 - Validate permissions/environment/secrets reference shape without reading values
 - Add fail fixtures for each rule and run against repo
 """
@@ -15,7 +16,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 # Use shared GHA-safe YAML loader
 import importlib.util as _util
@@ -47,11 +48,35 @@ ENTRY_ONLY_TRIGGERS = frozenset({"push", "pull_request", "schedule", "repository
 # Allowed ref forms for reusable workflow_call targets
 REUSABLE_REF_PATTERN = re.compile(r"^\./\.github/workflows/[_a-z][_a-z0-9-]*\.yml$")
 
-# Service tag pattern: <service>-vSEMVER
-SERVICE_TAG_PATTERN = re.compile(r"^(backend|llm|tts|avatar|livekit|lmcache)-v\d+\.\d+\.\d+$")
+# Canonical service short names allowed in `<short>-vSEMVER` release tags.
+SERVICE_TAG_NAMES = frozenset({"backend", "llm", "tts", "avatar"})
 
-# Forbidden triggers on CI
+# Service tag pattern: `<service>-vSEMVER`, exact canonical list.
+SERVICE_TAG_PATTERN = re.compile(r"^([a-z][a-z0-9_]*)-v\d+\.\d+\.\d+$")
+
+# Forbidden on CI
 CI_FORBIDDEN_TRIGGERS = frozenset({"workflow_dispatch"})
+
+# Keywords that indicate a deploy/apply mutation in a run or step.
+DEPLOY_KEYWORDS = (
+    "deploy",
+    "ecs update-service",
+    "kubectl apply",
+    "terraform apply",
+    "aws ecs",
+)
+
+# Known deploy-capable action references (uses form) treated as a deploy mutation.
+DEPLOY_ACTIONS = (
+    "aws-actions/amazon-ecs-deploy-task-definition@",
+    "azure/webapps-deploy@",
+    "google-github-actions/deploy-cloudrun@",
+    "google-github-actions/deploy-appengine@",
+    "cloudflare/wrangler-action@",
+    "SamKirkland/FTP-Deploy-Action@",
+    "selefra/terraform-apply-action@",
+    "hashicorp/terraform-github-actions@",
+)
 
 # Service name validation pattern
 SERVICE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -93,31 +118,48 @@ def load_yaml_safe(path: Path) -> Optional[dict]:
     return load_yaml(path)
 
 
+def _on_mapping(on: object) -> Dict[str, object]:
+    """Normalize the `on` key into a {event: filter} mapping."""
+    if on is None:
+        return {}
+    if isinstance(on, str):
+        return {on: {}}
+    if isinstance(on, list):
+        return {e: {} for e in on if isinstance(e, str)}
+    if isinstance(on, dict):
+        return {k: v for k, v in on.items()}
+    return {}
+
+
 def validate_trigger_rules(workflow: dict, result: ValidationResult) -> None:
     """Validate trigger/event rules.
 
     Rules:
     - R1: Event entry workflows use descriptive names without leading underscore
     - R2: Reusable workflows MUST use workflow_call only
-    - R3: Reusable workflows MUST NOT have push/PR/dispatch/tag triggers
+    - R3: Reusable workflows MUST NOT have push/PR/dispatch/schedule/repository_dispatch
     - R4: CI workflow MUST NOT have workflow_dispatch trigger
+    - R5: Unsupported trigger events are rejected (no silent pass)
     """
-    on = workflow.get("on", {})
-    if isinstance(on, str):
-        on = {on: {}}
+    on = _on_mapping(workflow.get("on"))
 
-    triggers = set()
-    if isinstance(on, dict):
-        for key in on:
-            triggers.add(key)
+    triggers: Set[str] = set(on.keys())
+
+    # R5: Reject any trigger not in the supported set.
+    unsupported = triggers - SUPPORTED_TRIGGERS
+    if unsupported:
+        result.add_error(
+            f"Unsupported trigger(s): {', '.join(sorted(unsupported))}. "
+            f"Supported triggers: {', '.join(sorted(SUPPORTED_TRIGGERS))}."
+        )
 
     is_reusable = "workflow_call" in triggers
     is_entry = not is_reusable
     filename = Path(result.workflow_path).name
 
-    # R2: Reusable workflows must use workflow_call only
+    # R1+R2+R3 combined: reusable workflows MUST be underscore-prefixed and
+    # expose workflow_call ONLY.
     if is_reusable:
-        # A reusable workflow should only have workflow_call
         extra_triggers = triggers - {"workflow_call"}
         if extra_triggers:
             result.add_error(
@@ -125,8 +167,13 @@ def validate_trigger_rules(workflow: dict, result: ValidationResult) -> None:
                 f"{', '.join(sorted(extra_triggers))}. "
                 f"Reusable workflows must use workflow_call only."
             )
+        if not filename.startswith("_"):
+            result.add_error(
+                f"Reusable workflow '{filename}' must use a leading underscore "
+                f"filename (reusable = workflow_call only)."
+            )
 
-    # R3: Reusable: no push/PR/dispatch/tag
+    # R3: Reusable: no entry-only triggers
     if is_reusable:
         forbidden = triggers & ENTRY_ONLY_TRIGGERS
         if forbidden:
@@ -144,20 +191,19 @@ def validate_trigger_rules(workflow: dict, result: ValidationResult) -> None:
         )
 
     # R1: Entry workflow naming
-    if is_entry:
-        if filename.startswith("_"):
-            result.add_warning(
-                f"Entry workflow '{filename}' starts with underscore. "
-                f"Entry workflows should use descriptive names without leading underscore."
-            )
+    if is_entry and filename.startswith("_"):
+        result.add_error(
+            f"Entry workflow '{filename}' starts with underscore. "
+            f"Entry workflows must use descriptive names without leading underscore."
+        )
 
 
 def validate_reusable_refs(workflow: dict, result: ValidationResult, workflows_dir: Path) -> None:
     """Validate reusable workflow references.
 
     Rules:
-    - R5: Reusable local refs must exist as .yml files
-    - R6: Reusable refs must use allowed form: ./github/workflows/<name>.yml
+    - R6: Reusable local refs must exist as .yml files
+    - R7: Reusable refs must use allowed form: ./github/workflows/<name>.yml
     """
     jobs = workflow.get("jobs", {})
     if not isinstance(jobs, dict):
@@ -184,12 +230,6 @@ def validate_reusable_refs(workflow: dict, result: ValidationResult, workflows_d
             continue
 
         # Check file exists
-        ref_path = (workflows_dir.parent / uses).resolve()
-        try:
-            ref_path = ref_path.relative_to(workflows_dir.parent)
-        except ValueError:
-            pass
-
         target = workflows_dir / Path(uses).name
         if not target.exists():
             result.add_error(
@@ -202,38 +242,60 @@ def validate_service_tags(workflow: dict, result: ValidationResult) -> None:
     """Validate service tag patterns.
 
     Rules:
-    - R7: Service tags must match <service>-vSEMVER pattern
+    - R8: Service tags must match `<service>-vSEMVER` exactly; a tag that does
+          not match or uses an unsupported service is an ERROR.
     """
-    on = workflow.get("on", {})
-    if isinstance(on, str):
-        return
-
-    if not isinstance(on, dict):
-        return
+    on = _on_mapping(workflow.get("on"))
 
     push = on.get("push")
-    if isinstance(push, dict):
-        tags = push.get("tags", []) or []
-        if isinstance(tags, list):
-            for tag_pattern in tags:
-                if isinstance(tag_pattern, str):
-                    # Check if this looks like a service tag pattern
-                    if "v" in tag_pattern and "-" in tag_pattern:
-                        # Extract the concrete pattern
-                        if not SERVICE_TAG_PATTERN.match(tag_pattern):
-                            # Allow glob patterns like v*
-                            if tag_pattern != "v*":
-                                result.add_warning(
-                                    f"Tag pattern '{tag_pattern}' may not match "
-                                    f"service tag format '<service>-vMAJOR.MINOR.PATCH'."
-                                )
+    if not isinstance(push, dict):
+        return
+
+    tags = push.get("tags")
+    if not isinstance(tags, list):
+        return
+
+    for tag_pattern in tags:
+        if not isinstance(tag_pattern, str):
+            continue
+        # Glob-style broad tags (e.g. `v*`) are allowed at the entry level but
+        # a pattern that looks like a service tag must be exact.
+        m = SERVICE_TAG_PATTERN.match(tag_pattern)
+        if m:
+            service_short = m.group(1)
+            if service_short not in SERVICE_TAG_NAMES:
+                result.add_error(
+                    f"Service tag pattern '{tag_pattern}' uses unsupported service "
+                    f"'{service_short}'. Allowed: {', '.join(sorted(SERVICE_TAG_NAMES))}."
+                )
+        # Service-shaped tag that fails SEMVER or is v-prefixed-but-not-service:
+        # reject as malformed release tag. Covers `backend-v1.2`, `v1.2.3`,
+        # `backend-v`, and any `<name>-v...` shape.
+        elif _is_service_shaped(tag_pattern) or (
+            tag_pattern != "v*" and tag_pattern.startswith("v")
+        ):
+            result.add_error(
+                f"Service tag pattern '{tag_pattern}' is not a valid release tag. "
+                f"Must match <service>-vMAJOR.MINOR.PATCH, e.g. backend-v1.2.0."
+            )
 
 
-def validate_ci_no_deploy(workflow: dict, result: ValidationResult) -> None:
+def _is_service_shaped(tag: str) -> bool:
+    """True if a tag looks like `<word>-v...` (service release shape)."""
+    return bool(re.match(r"^[a-z][a-z0-9_]*-[vV]", tag))
+
+
+def _is_deploy_uses(uses: str) -> bool:
+    """True if a uses reference is a known deploy-capable action."""
+    return any(uses.startswith(prefix) for prefix in DEPLOY_ACTIONS)
+
+
+def validate_no_deploy(workflow: dict, result: ValidationResult) -> None:
     """Validate CI workflow has no implicit deployment.
 
     Rules:
-    - R8: CI workflow must not have deployment steps
+    - R9: CI must NOT contain a deployment step/action. Checks job-level `uses`
+          and step-level `uses` + `run` for deploy keywords.
     """
     filename = Path(result.workflow_path).name
     if filename != "ci.yml":
@@ -246,44 +308,89 @@ def validate_ci_no_deploy(workflow: dict, result: ValidationResult) -> None:
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             continue
+
+        # Job-level reusable deploy action
+        job_uses = job.get("uses")
+        if isinstance(job_uses, str) and _is_deploy_uses(job_uses):
+            result.add_error(
+                f"CI workflow job '{job_name}' uses deploy action '{job_uses}'. CI must not deploy."
+            )
+
         steps = job.get("steps", [])
         if not isinstance(steps, list):
             continue
-        for step in steps:
+
+        for idx, step in enumerate(steps, start=1):
             if not isinstance(step, dict):
                 continue
-            run = step.get("run", "") or ""
-            if isinstance(run, str) and any(
-                keyword in run.lower() for keyword in ["deploy", "ecs update-service", "kubectl"]
-            ):
+            uses = step.get("uses")
+            if isinstance(uses, str) and _is_deploy_uses(uses):
                 result.add_error(
-                    f"CI workflow has deployment step in job '{job_name}': "
+                    f"CI workflow job '{job_name}' step {idx} uses deploy action "
+                    f"'{uses}'. CI must not deploy."
+                )
+            run = step.get("run", "")
+            if isinstance(run, str) and any(keyword in run.lower() for keyword in DEPLOY_KEYWORDS):
+                result.add_error(
+                    f"CI workflow job '{job_name}' step {idx} has deployment command "
                     f"'{run[:80]}...'. CI must not deploy."
                 )
 
 
 def validate_permissions_shape(workflow: dict, result: ValidationResult) -> None:
-    """Validate permissions block shape without reading values.
+    """Validate permissions block and environment/secret reference shape.
 
     Rules:
-    - R9: Permissions block must exist and be a mapping
-    - R10: Environment reference must exist and be a string
+    - R10: Deployment workflows MUST have a permissions block that is a mapping.
+    - R11: Job `environment` reference must be a string or a mapping with a
+           `name` (never an unexpected type).
+    - R12: `secrets:` block references must be a mapping (shape only, values
+           never read).
     """
-    # workflows with deployment should have a permissions block
+    filename = Path(result.workflow_path).name
+    is_deploy = "deploy" in filename
+
     jobs = workflow.get("jobs", {})
     if not isinstance(jobs, dict):
         return
 
-    # Check if any job references an environment
+    # R10: deploy workflows need a permissions block
+    if is_deploy:
+        perms = workflow.get("permissions")
+        if perms is None:
+            result.add_error(
+                f"Deployment workflow '{filename}' must declare a 'permissions' block."
+            )
+        elif not isinstance(perms, (dict, str)):
+            result.add_error(
+                f"Deployment workflow '{filename}' permissions block must be a "
+                f"mapping or 'read-all'/'write-all' string; got {type(perms).__name__}."
+            )
+
+    # R11/R12: per-job environment + secrets shape
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             continue
         env = job.get("environment")
         if env is not None and not isinstance(env, (str, dict)):
-            result.add_warning(
+            result.add_error(
                 f"Job '{job_name}' has an environment reference that is not a "
                 f"string or mapping: {type(env).__name__}."
             )
+        secrets = job.get("secrets")
+        if secrets is not None and not isinstance(secrets, dict):
+            result.add_error(
+                f"Job '{job_name}' secrets block must be a mapping "
+                f"(shape check only); got {type(secrets).__name__}."
+            )
+
+    # Workflow-level secrets (reusable): must be a mapping
+    wf_secrets = workflow.get("secrets")
+    if wf_secrets is not None and not isinstance(wf_secrets, dict):
+        result.add_error(
+            f"Workflow '{filename}' secrets block must be a mapping "
+            f"(shape check only); got {type(wf_secrets).__name__}."
+        )
 
 
 def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationResult:
@@ -302,7 +409,7 @@ def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationRes
     validate_trigger_rules(workflow, result)
     validate_reusable_refs(workflow, result, workflows_dir)
     validate_service_tags(workflow, result)
-    validate_ci_no_deploy(workflow, result)
+    validate_no_deploy(workflow, result)
     validate_permissions_shape(workflow, result)
 
     return result

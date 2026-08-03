@@ -8,22 +8,27 @@ Areas:
 - platform runtimes: platform_livekit, platform_lmcache, platform_postgres, platform_redis
 - workbench (frontend developer console, legacy path frontend/)
 - infra (Terraform)
-- contracts (service-owned artifacts + consumer fan-out)
-- shared-config, shared-locks, shared-build (root shared files)
+- contracts (service-owned artifacts + consumer fan-out implied by service areas)
+- shared-config, shared-locks, shared-build, shared-source (root shared files)
 - ci (workflow/build definition)
 - docs (neutral)
 
 Rules:
 - Direct owner paths select owner.
-- Service contract selects owner + exact consumers:
-    backend_service contract -> backend_service + workbench
-    llm/tts/avatar contract   -> owner + backend_service (consumer)
-- Backend shared schema (core/api/v1/schemas, core/schemas) -> backend + workbench.
-- Shared source/build/CI/root tool changes fan only required areas,
-  conservatively all where truly global.
-- Renames/deletes handled (union is rename-safe; classification is path-based).
+- Service contract artifacts select owner + exact consumers (one level):
+    backend_service contract/source-DTO -> backend_service + workbench
+    llm/tts/avatar contract/source-DTO   -> owner + backend_service
+- Canonical source DTOs under
+  `services/product/<service>/src/<pkg>/api/v1/schemas/` fan out like contracts
+  (they are the shipped API surface).
+- Root shared config / lock / build files map to explicit shared areas, never
+  full fan-out. Every known root source-policy file is mapped (pyrightconfig.json,
+  ruff.toml, .editorconfig, pyproject.toml, uv.lock, ...).
 - Docs-only neutral unless runtime docs consumed by build.
-- No silent unknown path; unknown -> safe conservative full fan-out.
+- Unknown path -> conservative single shared-source area; a genuinely global
+  unknown file is surfaced but never fans every service silently.
+
+Renames/deletes handled (union is rename-safe; classification is path-based).
 """
 
 import json
@@ -50,15 +55,16 @@ ALL_AREAS = (
             "shared-config",
             "shared-locks",
             "shared-build",
+            "shared-source",
             "ci",
             "docs",
         }
     )
 )
 
-# Service contract consumers.
-#   backend_service contract is consumed by backend + workbench (canonical /api/v1).
-#   llm/tts/avatar contracts are consumed by their owner + backend (outbound client).
+# Service contract/source-DTO consumers (one level, never recursive).
+#  backend_service -> backend + workbench (canonical /api/v1)
+#  llm/tts/avatar  -> owner + backend (outbound client)
 SERVICE_CONTRACT_CONSUMERS: Dict[str, frozenset] = {
     "backend_service": frozenset({"backend_service", "workbench"}),
     "llm_service": frozenset({"llm_service", "backend_service"}),
@@ -66,29 +72,69 @@ SERVICE_CONTRACT_CONSUMERS: Dict[str, frozenset] = {
     "avatar_service": frozenset({"avatar_service", "backend_service"}),
 }
 
-# Shared schema roots fan to backend + workbench.
+# Legacy backend shared schema roots fan to backend + workbench.
 BACKEND_SCHEMA_CONSUMERS = frozenset({"backend_service", "workbench"})
 
-# Contract artifact dirs (checked before direct-owner prefix match).
-SERVICE_CONTRACT_DIRS = [f"services/product/{s}_service/contracts" for s in PRODUCT_SERVICES]
+# Canonical source package name per product service (design §11 vocabulary).
+SERVICE_SRC_PACKAGE = {
+    "backend": "backend",
+    "llm": "llm",
+    "tts": "tts",
+    "avatar": "avatar",
+}
 
+# Root shared files: explicit map from root filename to shared area. This is the
+# complete list of known root source-policy / config / lock / build files; any
+# unmatched root file falls to the shared-source conservative area.
+ROOT_SHARED_AREA: Dict[str, str] = {
+    # config
+    "pyproject.toml": "shared-config",
+    "ruff.toml": "shared-config",
+    ".editorconfig": "shared-config",
+    "pyrightconfig.json": "shared-config",
+    "mypy.ini": "shared-config",
+    ".python-version": "shared-config",
+    # locks (dependency resolution -> runtime of all services)
+    "uv.lock": "shared-locks",
+    "poetry.lock": "shared-locks",
+    "package-lock.json": "shared-locks",
+    # build / tooling
+    "Makefile": "shared-build",
+    "Dockerfile": "shared-build",
+    "compose.yaml": "shared-build",
+    "docker-compose.yml": "shared-build",
+    "docker-compose.yaml": "shared-build",
+}
 
-# ── Path prefix owners (ordered; first match wins) ─────────────────────────
-
-_SERVICE_PREFIX = {s: f"services/product/{s}_service/" for s in PRODUCT_SERVICES}
-_PLATFORM_PREFIX = {
-    "livekit": "services/platform/livekit/",
-    "lmcache": "services/platform/lmcache/",
-    "postgres": "services/platform/postgres/",
-    "redis": "services/platform/redis/",
+# Root paths that map to a specific area.
+ROOT_PREFIX_AREA = {
+    ".github/": "ci",
+    "scripts/ci/": "ci",
+    "scripts/": "shared-source",
+    "infra/scripts/": "shared-build",
 }
 
 
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
 def _fanout(areas: Iterable[str]) -> List[str]:
-    """Return sorted area list. Fan-out is baked into classification rules,
-    one level only (owner + exact consumers); never recursive.
-    """
+    """Return sorted unique area list. Fan-out is baked into the rule keys."""
     return sorted(set(areas))
+
+
+def _canonical_src_dto(p: str) -> List[str]:
+    """Fan out canonical source DTOs be`<pkg>/api/v1/schemas/` roots.
+
+    Matches `services/product/<service>_service/src/<pkg>/api/v1/schemas/`.
+    These are the shipped API surface and consume like contract artifacts.
+    """
+    for svc in PRODUCT_SERVICES:
+        pkg = SERVICE_SRC_PACKAGE[svc]
+        prefix = f"services/product/{svc}_service/src/{pkg}/api/v1/schemas/"
+        if p == prefix.rstrip("/") or p.startswith(prefix):
+            return _fanout(SERVICE_CONTRACT_CONSUMERS[f"{svc}_service"])
+    return []
 
 
 def classify_path(path: str) -> List[str]:
@@ -110,42 +156,44 @@ def classify_path(path: str) -> List[str]:
     if p.startswith("docs/") or p.startswith("notes/") or p.startswith("openspec/"):
         return []
 
-    # 2. Service contract artifacts (fan out to exact consumers, one level)
+    # 2. Canonical source DTOs fan out like contracts (before direct-owner).
+    dto = _canonical_src_dto(p)
+    if dto:
+        return dto
+
+    # 3. Service contract artifacts (fan out to exact consumers, one level)
     for service in PRODUCT_SERVICES:
         contracts_dir = f"services/product/{service}_service/contracts"
         if p == contracts_dir or p.startswith(contracts_dir + "/"):
             return _fanout(SERVICE_CONTRACT_CONSUMERS[f"{service}_service"])
 
-    # 3. Backend shared schema → backend + workbench
+    # 4. Legacy backend shared schema -> backend + workbench
     if p.startswith("core/api/v1/schemas/") or p.startswith("core/schemas/"):
         return _fanout(BACKEND_SCHEMA_CONSUMERS)
 
-    # 4. Root shared config / lock / build files
-    shared_config = {
-        "pyproject.toml": "shared-config",
-        "ruff.toml": "shared-config",
-        ".editorconfig": "shared-config",
-        "uv.lock": "shared-locks",
-        "Makefile": "shared-build",
-        "README.md": None,
-    }
-    if p in shared_config:
-        area = shared_config[p]
-        return _fanout({area}) if area else []
+    # 5. Root shared files (explicit, required-area precision)
+    if p in ROOT_SHARED_AREA:
+        return [ROOT_SHARED_AREA[p]]
 
-    if p.startswith("scripts/ci/") or p.startswith("scripts/"):
-        return ["ci"] if p.startswith("scripts/ci/") else _fanout({"shared-build"})
+    # Match the MOST SPECIFIC prefix first (longest), so `scripts/ci/` wins
+    # over `scripts/`.
+    for prefix, area in sorted(ROOT_PREFIX_AREA.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if p == prefix.rstrip("/") or p.startswith(prefix):
+            return [area]
 
-    if p.startswith(".github/"):
-        return ["ci"]
-
-    # 5. Direct-owner paths
+    # 6. Direct-owner paths
     for svc in PRODUCT_SERVICES:
-        prefix = _SERVICE_PREFIX[svc]
+        prefix = f"services/product/{svc}_service/"
         if p == prefix.rstrip("/") or p.startswith(prefix):
             return [f"{svc}_service"]
 
-    for runtime, prefix in _PLATFORM_PREFIX.items():
+    platform_prefix = {
+        "livekit": "services/platform/livekit/",
+        "lmcache": "services/platform/lmcache/",
+        "postgres": "services/platform/postgres/",
+        "redis": "services/platform/redis/",
+    }
+    for runtime, prefix in platform_prefix.items():
         if p == prefix.rstrip("/") or p.startswith(prefix):
             return [f"platform_{runtime}"]
 
@@ -155,23 +203,24 @@ def classify_path(path: str) -> List[str]:
         return ["workbench"]  # legacy path is a workbench concern during Stage 2
     if p == "infra" or p.startswith("infra/"):
         return ["infra"]
-
-    # 6. Legacy backend source roots
-    if p.startswith("core/") or p.startswith("providers/"):
+    if p == "core" or p.startswith("core/"):
+        return ["backend_service"]
+    if p == "providers" or p.startswith("providers/"):
         return ["backend_service"]
 
-    # 7. Unknown path → safe conservative result (all required areas)
-    return _fanout(ALL_AREAS)
+    # 7. Unknown path -> conservative single shared-source area. It is surfaced
+    # but never fans every service, and never silently dropped.
+    return ["shared-source"]
 
 
 def detect_affected_areas(changed_paths: List[str]) -> Dict[str, object]:
     """Compute the affected-area matrix for a set of changed paths.
 
     Returns:
-        areas:      sorted list of distinct affected area ids
-        matrix:     {area: bool} for every known area
-        by_path:    {path: [areas]}
-        unclassified: paths that classified to no area (docs, neutral)
+        areas:          sorted list of distinct affected area ids
+        matrix:         {area: bool} for every known area
+        by_path:        {path: [areas]}
+        unclassified:   paths that classified to no area (docs, neutral)
     """
     normalized = [p.replace("\\", "/").lstrip("/") for p in changed_paths]
     seen: Set[str] = set()
