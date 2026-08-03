@@ -17,10 +17,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.exception_handlers import request_validation_exception_handler
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from core.api import v1
 from core.config import AppConfig
