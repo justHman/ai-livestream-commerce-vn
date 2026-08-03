@@ -10,7 +10,7 @@ __all__ = ["app", "create_app"]
 
 def __getattr__(name: str) -> Any:
     if name == "app":
-        return import_module("core.server").app
+        return import_module("backend.main").app
     if name == "create_app":
-        return import_module("core.server").create_app
+        return import_module("backend.bootstrap").create_app
     raise AttributeError(name)
