@@ -560,13 +560,11 @@ def test_coordinator_keeps_generated_script_and_selected_cluster() -> None:
 
         completed = coordinator.stats(session_id)["speech_queue"]["completed"]
         assert completed["script"] == "Mũ lưỡi trai có giá chín mươi chín nghìn đồng."
-        assert completed["selected_cluster"] == ["Mũ lưỡi trai giá bao nhiêu?"]
-        assert set(completed["prompt_layers"]) == {
-            "base_role",
-            "shop_profile",
-            "stage_task",
-            "final_prompt",
-        }
+        # No prompt text, customer data, or comment text in successful speech items.
+        assert "prompt_layers" not in completed
+        assert "selected_cluster" not in completed
+        assert "prompt" not in completed
+        assert "verbatim_input" not in completed
 
     asyncio.run(run())
 
@@ -624,8 +622,10 @@ def test_coordinator_stats_exposes_current_and_upcoming_speech() -> None:
 
     speech = coordinator.stats(session_id)["speech_queue"]
 
-    assert speech["current"]["text"] == "Giới thiệu P004"
-    assert speech["upcoming"][0]["text"] == "Trả lời giá"
+    assert speech["current"]["action"] == "introduce_product"
+    assert speech["current"]["product_id"] == "P004"
+    assert speech["upcoming"][0]["action"] == "answer_cluster"
+    assert speech["upcoming"][0]["product_id"] == "P004"
 
 
 def director_decision(action: str, product_id: str, prompt: str):

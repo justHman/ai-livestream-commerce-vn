@@ -63,7 +63,8 @@ logger = logging.getLogger(__name__)
 def _decision_to_event(decision: Decision) -> dict:
     """Project a Director Decision to a frontend-friendly WS event payload.
 
-    Drops non-serializable fields and keeps only what the UI ticker needs.
+    Drops non-serializable fields and keeps only safe decision metadata —
+    never rendered prompt text, shop/product data, or comment text.
     """
     return {
         "turn_id": decision.turn_id,
@@ -72,7 +73,6 @@ def _decision_to_event(decision: Decision) -> dict:
         "field": decision.field,
         "stage": decision.stage,
         "task_id": decision.task_id,
-        "prompt_layers": decision.prompt_layers,
         "may_interrupt": decision.may_interrupt,
         "reason": decision.reason,
     }
@@ -390,20 +390,12 @@ class DirectorCoordinator:
             "product_id": decision.product_id,
             "stage": decision.stage,
             "task_id": decision.task_id,
-            "prompt_layers": decision.prompt_layers,
-            "prompt": decision.prompt,
-            "verbatim_input": decision.text if decision.prompt is None else None,
-            "selected_cluster": list(decision.cluster_members),
-            "cluster_member_ids": list(decision.cluster_member_ids),
-            "topic": decision.topic,
-            "score": decision.score,
             "revision_token": decision.revision_token,
             "attempt": decision.attempt,
             "script": decision.prepared_script,
-            "score_breakdown": dict(decision.score_breakdown),
+            # ponytail: latency_spans kept for diagnostics; prompt/input/score
+            # dropped to avoid leaking customer data in WS events.
             "latency_spans": dict(decision.latency_spans),
-            # Temporary UI alias; prompt/input remain canonical and distinct.
-            "text": decision.prompt or decision.text,
         }
 
     def update_traffic(
@@ -510,8 +502,7 @@ class DirectorCoordinator:
                 {
                     "keys": len(ds.director.state.answer_variants),
                     "variants": sum(
-                        len(variants)
-                        for variants in ds.director.state.answer_variants.values()
+                        len(variants) for variants in ds.director.state.answer_variants.values()
                     ),
                 }
                 if ds is not None
@@ -560,7 +551,9 @@ class DirectorCoordinator:
         unanswered = [
             item.cluster
             for item in ranked
-            if not any(member_id in state.answered_comments for member_id in item.cluster.member_ids)
+            if not any(
+                member_id in state.answered_comments for member_id in item.cluster.member_ids
+            )
         ]
         status = embedder_status(ds.embedder)
         sorted_clusters = sorted(clusters, key=lambda cluster: cluster.size, reverse=True)
@@ -674,8 +667,7 @@ class DirectorCoordinator:
         ds = self._runtime.get_session(session_id)
         projection = copy.deepcopy(ds.director)
         completed_ids = {
-            item.get("turn_id")
-            for item in self._completed_history.get(session_id, ())
+            item.get("turn_id") for item in self._completed_history.get(session_id, ())
         }
         current = self._current_speech.get(session_id)
         if current is not None and current.turn_id not in completed_ids:
@@ -723,7 +715,9 @@ class DirectorCoordinator:
                 task._stage2_decision = decision  # type: ignore[attr-defined]
                 self._prepare_tasks[session_id].add(task)
                 task.add_done_callback(
-                    lambda finished, sid=session_id: self._prepare_tasks.get(sid, set()).discard(finished)
+                    lambda finished, sid=session_id: self._prepare_tasks.get(sid, set()).discard(
+                        finished
+                    )
                 )
 
     async def _prepare_turn(self, session_id: str, decision: Decision) -> None:
@@ -765,9 +759,7 @@ class DirectorCoordinator:
                 )
                 variants = []
                 for variant_index in range(variant_count):
-                    variants.append(
-                        await asyncio.to_thread(generate_script, variant_index)
-                    )
+                    variants.append(await asyncio.to_thread(generate_script, variant_index))
                 decision.prepared_variants = tuple(variants)
                 decision.prepared_script = decision.prepared_variants[0]
             elif decision.prompt is None and decision.prepared_script is None:
@@ -831,7 +823,9 @@ class DirectorCoordinator:
                 queue = self._speech_queue.get(session_id)
                 while queue:
                     decision = queue.popleft()
-                    if decision.revision_token != self._runtime.current_generation_token(session_id):
+                    if decision.revision_token != self._runtime.current_generation_token(
+                        session_id
+                    ):
                         self._record_cancelled(session_id, decision, "generation_revision")
                         continue
                     consumed = await self._maybe_speak(session_id, decision)
@@ -907,6 +901,7 @@ class DirectorCoordinator:
         # Cloud (FullPipelineBackend) path: backend.say() — no stream_audio
         # (StreamOrchestrator needs streaming avatar, only self-host Stage 3).
         from ..render.base import FullPipelineBackend
+
         queue = BoundedVideoQueue(max_size=self._max_queue_windows)
         metrics = CoordinatorMetrics()
         orchestrator = StreamOrchestrator(
@@ -926,22 +921,13 @@ class DirectorCoordinator:
                     "type": "coordinator.speak_started",
                     "turn_id": decision.turn_id,
                     "state": "processing",
-                    "text": text,
-                    "utterance": text,
-                    "prompt": decision.prompt,
-                    "prompt_layers": decision.prompt_layers,
                     "stage": decision.stage,
                     "task_id": decision.task_id,
-                    "verbatim_input": decision.text if decision.prompt is None else None,
-                    "selected_cluster": list(decision.cluster_members),
-                    "score_breakdown": {"total": decision.score, "cluster_size": len(decision.cluster_member_ids)},
                     "action": decision.action,
                     "product": decision.product_id,
                 },
             )
-            max_attempts = 1 + (
-                ds.director.cfg.transient_retry_count if ds is not None else 0
-            )
+            max_attempts = 1 + (ds.director.cfg.transient_retry_count if ds is not None else 0)
             spoken_script = None
             for attempt in range(max_attempts):
                 decision.attempt = attempt
@@ -987,17 +973,12 @@ class DirectorCoordinator:
             completed = {
                 "turn_id": decision.turn_id,
                 "latency_spans": dict(decision.latency_spans),
-                "score_breakdown": dict(decision.score_breakdown),
                 "state": "completed",
                 "action": decision.action,
                 "product_id": decision.product_id,
                 "stage": decision.stage,
                 "task_id": decision.task_id,
-                "prompt_layers": decision.prompt_layers,
-                "prompt": decision.prompt,
-                "verbatim_input": decision.text if decision.prompt is None else None,
                 "script": spoken_script,
-                "selected_cluster": list(decision.cluster_members),
                 "attempt": decision.attempt,
             }
             self._completed_speech[session_id] = completed
@@ -1020,16 +1001,8 @@ class DirectorCoordinator:
                     "type": "coordinator.speak_finished",
                     "turn_id": decision.turn_id,
                     "state": "completed",
-                    "text": spoken_script,
-                    "utterance": spoken_script,
-                    "script": spoken_script,
-                    "prompt": decision.prompt,
-                    "prompt_layers": decision.prompt_layers,
                     "stage": decision.stage,
                     "task_id": decision.task_id,
-                    "verbatim_input": decision.text if decision.prompt is None else None,
-                    "selected_cluster": list(decision.cluster_members),
-                    "score_breakdown": {"total": decision.score, "cluster_size": len(decision.cluster_member_ids)},
                     "action": decision.action,
                     "product_id": decision.product_id,
                 },
@@ -1038,7 +1011,9 @@ class DirectorCoordinator:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("speech pipeline failed session=%s turn=%s", session_id, decision.turn_id)
+            logger.exception(
+                "speech pipeline failed session=%s turn=%s", session_id, decision.turn_id
+            )
             failure_state = "playback_timeout" if isinstance(exc, TimeoutError) else "failed"
             await self._emit(
                 session_id,

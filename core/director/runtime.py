@@ -104,8 +104,7 @@ class DirectorRuntime:
 
         catalog = {p.id: p for p in products}
         prod_states = [
-            ProductState(product_id=p.id, name=p.name, ref_image=p.ref_image,
-                         embedding=p.embedding)
+            ProductState(product_id=p.id, name=p.name, ref_image=p.ref_image, embedding=p.embedding)
             for p in products
         ]
         from ..config import BASE_SALE_PERSONA, _build_persona
@@ -114,7 +113,9 @@ class DirectorRuntime:
         opening_lines = [
             f"Chào cả nhà, hôm nay shop có MC đồng hành. Thông tin shop: {profile or 'Livento'}.",
             "Mọi người nhớ like, share, comment và follow để cùng săn deal trong phiên live hôm nay nhé!",
-            "Agenda hôm nay gồm: " + ", ".join(f"{index + 1}. {product.name}" for index, product in enumerate(products)) + ".",
+            "Agenda hôm nay gồm: "
+            + ", ".join(f"{index + 1}. {product.name}" for index, product in enumerate(products))
+            + ".",
         ]
         hook_pool = hooks or HookPool()
         hook_pool.populate("opening", opening_lines)
@@ -160,7 +161,11 @@ class DirectorRuntime:
             state.products = prod_states
             state.run_plan = run_plan
             state.current_product_index = next(
-                (index for index, item in enumerate(prod_states) if item.product_id == old_current_id),
+                (
+                    index
+                    for index, item in enumerate(prod_states)
+                    if item.product_id == old_current_id
+                ),
                 min(state.current_product_index, max(len(prod_states) - 1, 0)),
             )
             state.cursor.product_idx = state.current_product_index
@@ -204,9 +209,7 @@ class DirectorRuntime:
         session.accepted_snapshot = {
             "shop_profile": profile,
             "products": [
-                product.model_dump()
-                if hasattr(product, "model_dump")
-                else dict(product.__dict__)
+                product.model_dump() if hasattr(product, "model_dump") else dict(product.__dict__)
                 for product in products
             ],
             "runtime_config": dict(session.runtime_config),
@@ -247,12 +250,16 @@ class DirectorRuntime:
         session = self.get_session(session_id)
         known_fields = set(type(session.director.cfg).__dataclass_fields__)
         director_values = {key: value for key, value in values.items() if key in known_fields}
-        candidate = type(session.director.cfg)(**{**session.director.cfg.__dict__, **director_values})
+        candidate = type(session.director.cfg)(
+            **{**session.director.cfg.__dict__, **director_values}
+        )
         candidate.validate_runtime()
         session.director.cfg = candidate
         session.config_revision += 1
         session.runtime_config = {**session.runtime_config, **values}
-        session.generation_token = f"{session.profile_revision}:{session.catalog_revision}:{session.config_revision}"
+        session.generation_token = (
+            f"{session.profile_revision}:{session.catalog_revision}:{session.config_revision}"
+        )
         session.director.state.cursor.config_revision = session.config_revision
         session.director.state.cursor.generation_token += 1
         session.accepted_snapshot["runtime_config"] = dict(session.runtime_config)
@@ -322,15 +329,45 @@ class DirectorRuntime:
         }
 
     def prompt_layers(self, session_id: str, decision: Decision) -> dict[str, str]:
+        """Compose prompt via the canonical composer (OpenSpec 1.13).
+
+        Static base/guardrails/decision/fallback files come from the validated
+        bundle. Runtime context (shop, product, stage_task) is serialized as
+        untrusted data inside explicit begin/end delimiters — it can never
+        select, reorder, or replace static files.
+
+        Returns the composed prompt (``final_prompt``) plus diagnostic metadata
+        (no rendered prompt text is exposed in events — see coordinator).
+        """
+        from backend.application.director.prompts.composer import (
+            compose_decision_prompt,
+            compose_fallback_prompt,
+            select_flow,
+        )
+        from backend.application.director.prompts.loader import load_bundle
+
         session = self.get_session(session_id)
         stage_task = decision.prompt or decision.text or ""
-        final_prompt = (
-            f"SYSTEM ROLE\n{session.base_role}\n\n"
-            f"SHOP PROFILE\n{session.shop_profile or 'Chưa cấu hình'}\n\n"
-            f"STAGE TASK\n{stage_task}"
-        )
+
+        # Build context from untrusted runtime data only.
+        context: dict[str, str] = {}
+        if stage_task:
+            context["stage_task"] = stage_task
+        if session.shop_profile:
+            context["shop_profile"] = session.shop_profile
+        # Runtime config and product/comment data are never added to context
+        # — they are untrusted content that cannot replace static files.
+
+        bundle = load_bundle()
+        has_ctx = bool(stage_task)
+        flow = select_flow(has_required_context=has_ctx)
+        if flow == "fallback":
+            final_prompt = compose_fallback_prompt(bundle=bundle, context=context or None)
+        else:
+            final_prompt = compose_decision_prompt(bundle=bundle, context=context or None)
+
         return {
-            "base_role": session.base_role,
+            "base_role": bundle.prompt("base_sales_vi"),
             "shop_profile": session.shop_profile,
             "stage_task": stage_task,
             "final_prompt": final_prompt,

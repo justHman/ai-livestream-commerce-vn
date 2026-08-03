@@ -57,37 +57,42 @@ _DEFAULT_PERSONA = BASE_SALE_PERSONA + "\n\n" + _DEFAULT_SHOP_PROFILE
 
 
 def _build_persona(shop_profile: str = "") -> str:
-    """Compose system prompt: base sale persona + shop profile.
+    """Compose system prompt: canonical base persona + guardrails + shop profile.
 
-    - LLM_SYSTEM_PROMPT (if set) overrides the BASE sale persona.
+    - LLM_SYSTEM_PROMPT (if set) overrides only the base persona, NEVER the
+      guardrails — guardrails always come from the canonical Markdown bundle.
     - shop_profile (if passed via session attach from FE) is the per-shop info
       (name, address, phone, ...). Falls back to env SHOP_PROFILE or default.
-    - Canonical base comes from the tracked Markdown bundle; this legacy seam
-      keeps current behavior until callers migrate.
+    - Canonical base and guardrails come from the tracked Markdown bundle; this
+      legacy seam keeps current behavior until callers migrate to the composer.
     """
-    base = os.environ.get("LLM_SYSTEM_PROMPT") or BASE_SALE_PERSONA
+    from backend.application.director.prompts.loader import load_bundle
+
+    bundle = load_bundle()
+    base = os.environ.get("LLM_SYSTEM_PROMPT") or bundle.prompt("base_sales_vi")
+    guardrails = bundle.prompt("response_guardrails_vi")
     shop = shop_profile or os.environ.get("SHOP_PROFILE") or _DEFAULT_SHOP_PROFILE
-    return base + "\n\n" + shop
+    return base + "\n\n" + guardrails + "\n\n" + shop
 
 
 @dataclass
 class LLMConfig:
     """LLM engine configuration (env-driven)."""
 
-    engine: str = "none"               # vllm | llamacpp | sglang | hf | openai_compat | none
-    model: str = ""                     # HF model id or path
-    model_path: str = ""                # local path (for llamacpp GGUF dir)
-    device: str = "auto"               # cuda | cpu | auto
+    engine: str = "none"  # vllm | llamacpp | sglang | hf | openai_compat | none
+    model: str = ""  # HF model id or path
+    model_path: str = ""  # local path (for llamacpp GGUF dir)
+    device: str = "auto"  # cuda | cpu | auto
     max_tokens: int = 128
     temperature: float = 0.7
     system_prompt: str = _DEFAULT_PERSONA
     max_model_len: int = 4096
     quantization: Optional[str] = None  # awq | gptq | fp8 | None
-    n_ctx: int = 4096                   # llamacpp context
-    n_gpu_layers: int = -1              # llamacpp GPU layers
-    stream: bool = False               # LLM_STREAM=1 -> emit TextChunks via stream_chunks()
-    base_url: str = ""                 # remote OpenAI-compat endpoint (LLM_BASE_URL)
-    guided_json: bool = False          # LLM_GUIDED_JSON / outlines structured output
+    n_ctx: int = 4096  # llamacpp context
+    n_gpu_layers: int = -1  # llamacpp GPU layers
+    stream: bool = False  # LLM_STREAM=1 -> emit TextChunks via stream_chunks()
+    base_url: str = ""  # remote OpenAI-compat endpoint (LLM_BASE_URL)
+    guided_json: bool = False  # LLM_GUIDED_JSON / outlines structured output
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -131,32 +136,38 @@ class LLMConfig:
         cfg["stream"] = self.stream
         cfg["guided_json"] = self.guided_json
         cfg["seed"] = int(os.environ.get("LLM_SEED", "42"))
-        cfg["enable_prefix_caching"] = os.environ.get(
-            "LLM_PREFIX_CACHE", "1"
-        ).lower() in ("1", "true", "yes")
-        cfg["gpu_memory_utilization"] = float(
-            os.environ.get("LLM_GPU_MEM_UTIL", "0.9")
+        cfg["enable_prefix_caching"] = os.environ.get("LLM_PREFIX_CACHE", "1").lower() in (
+            "1",
+            "true",
+            "yes",
         )
-        cfg["trust_remote_code"] = os.environ.get(
-            "LLM_TRUST_REMOTE_CODE", "0"
-        ).lower() in ("1", "true", "yes")
+        cfg["gpu_memory_utilization"] = float(os.environ.get("LLM_GPU_MEM_UTIL", "0.9"))
+        cfg["trust_remote_code"] = os.environ.get("LLM_TRUST_REMOTE_CODE", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         # ── Additional optimizations (low-hanging fruit) ──
         # FP8 KV cache: halve KV VRAM → more sessions/longer context per GPU.
         # Default ON for production (Ampere+ GPUs). Set LLM_KV_CACHE_DTYPE=auto to disable.
         cfg["kv_cache_dtype"] = os.environ.get("LLM_KV_CACHE_DTYPE", "fp8")
         # Chunked prefill: reduce TTFT for long prompts (persona + catalog > 1K tokens).
         # vLLM processes prefill in chunks interleaved with decode → lower first-token latency.
-        cfg["enable_chunked_prefill"] = os.environ.get(
-            "LLM_CHUNKED_PREFILL", "1"
-        ).lower() in ("1", "true", "yes")
+        cfg["enable_chunked_prefill"] = os.environ.get("LLM_CHUNKED_PREFILL", "1").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         # Speculative decoding: draft model proposes tokens, main model verifies.
         # Needs a small draft model (e.g. 0.5B) → 1.5-3.6x speedup. Off by default (needs draft model).
         cfg["speculative_model"] = os.environ.get("LLM_SPECULATIVE_MODEL", "")
         # FlashAttention: vLLM auto-detects on Ampere+. Set explicitly if needed.
         # FA2: Ampere+ (A10G, L4, L40S, A100). FA3: Hopper only (H100). T4 = NOT supported.
-        cfg["enforce_eager"] = os.environ.get(
-            "LLM_ENFORCE_EAGER", "0"
-        ).lower() in ("1", "true", "yes")
+        cfg["enforce_eager"] = os.environ.get("LLM_ENFORCE_EAGER", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         cfg.update(self.extra)
         return cfg
 
@@ -177,13 +188,13 @@ class TTSConfig:
         dropdown default AND the loaded engine.
     """
 
-    engine: str = "transformers"       # transformers(default) | vieneu | cosyvoice | tone | remote_http
-    model: str = ""                     # HF model id or path
+    engine: str = "transformers"  # transformers(default) | vieneu | cosyvoice | tone | remote_http
+    model: str = ""  # HF model id or path
     device: str = "auto"
     sample_rate: int = 24_000
     ref_audio: Optional[str] = None
     preset_id: str = "vieneu-v3-turbo"
-    base_url: str = ""                 # remote TTS service URL (TTS_BASE_URL)
+    base_url: str = ""  # remote TTS service URL (TTS_BASE_URL)
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -201,6 +212,7 @@ class TTSConfig:
         if "TTS_PRESET_ID" in os.environ:
             try:
                 from .engine_manager import get_tts_preset  # local import: avoid cycles
+
                 preset = get_tts_preset(preset_id)
             except Exception:
                 preset = None
@@ -286,8 +298,8 @@ class AppConfig:
     director_enabled: bool = False
 
     # Auth tokens (Task 7). Empty + app_env="dev" -> auth disabled.
-    backend_api_token: str = ""   # viewer token: /lite/* + /ws/control
-    admin_api_token: str = ""     # admin token: /engines/* + /debug/*
+    backend_api_token: str = ""  # viewer token: /lite/* + /ws/control
+    admin_api_token: str = ""  # admin token: /engines/* + /debug/*
 
     # Debug mode gate (Task 7). When False, /debug/* -> 404.
     debug_enabled: bool = False
@@ -353,9 +365,7 @@ class AppConfig:
             in ("1", "true", "on", "yes"),
             pipecat_enabled=os.environ.get("PIPECAT_ENABLED", "0").lower()
             in ("1", "true", "on", "yes"),
-            coverage_match_threshold=float(
-                os.environ.get("COVERAGE_MATCH_THRESHOLD", "0.75")
-            ),
+            coverage_match_threshold=float(os.environ.get("COVERAGE_MATCH_THRESHOLD", "0.75")),
             database_url=os.environ.get("DATABASE_URL", ""),
             livekit_publish=os.environ.get("LIVEKIT_PUBLISH", "0").lower()
             in ("1", "true", "on", "yes"),

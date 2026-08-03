@@ -164,7 +164,8 @@ async def test_speech_turn_keeps_one_id_from_start_to_completed_history() -> Non
     assert [event["turn_id"] for event in lifecycle] == [decision.turn_id, decision.turn_id]
     assert lifecycle[1]["action"] == "answer_cluster"
     assert lifecycle[1]["product_id"] == "P004"
-    assert lifecycle[1]["script"] == "Kịch bản đã phát xong."
+    # No prompt/script text in WS events — only safe metadata.
+    assert "script" not in lifecycle[1]
 
 
 @pytest.mark.asyncio

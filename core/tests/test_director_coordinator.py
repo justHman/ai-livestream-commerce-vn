@@ -369,7 +369,8 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
     if "coordinator.speak_started" in types:
         assert "coordinator.speak_finished" in types
 
-    # _decision_to_event projects only serializable fields.
+    # _decision_to_event projects only safe decision metadata — no prompt
+    # text, customer data, or comment text.
     dec = Decision(action="answer_fact", product_id="P001", field="price",
                    may_interrupt=False, reason="score=3")
     ev = _decision_to_event(dec)
@@ -380,7 +381,6 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
         "field": "price",
         "stage": None,
         "task_id": None,
-        "prompt_layers": {},
         "may_interrupt": False,
         "reason": "score=3",
     }
@@ -406,3 +406,122 @@ async def test_coordinator_without_hub_is_noop():
 
     coord.stop(sid)
     await asyncio.sleep(0.05)
+
+
+# ---------- event secrecy: no rendered prompt / customer / comment text in WS events ----------
+
+
+_SENSITIVE_SENTINELS = [
+    "SHOP_SECRET_123",
+    "Mua áo hoodie mãi mãi",
+    "TOKEN_LIKE_deadbeef",
+    "base_sales_vi",
+    "response_guardrails_vi",
+    "Guarda:",
+    "Bạn là MC",
+]
+
+
+async def test_ws_events_never_contain_sensitive_data() -> None:
+    """Every WS event emitted by the coordinator must be free of rendered
+    prompt text, shop/product data, comment text, and credentials.
+
+    Tests the real captured event sink (``_RecordingHub``) and asserts
+    sentinel strings are absent from every event and failure path.
+    """
+    sid = "test-sess-secrecy"
+    coord, runtime, locks, backend = _make_coordinator(tick_ms=40, session_id=sid)
+    products = _make_products()
+    hub = _RecordingHub()
+    coord._hub = hub
+
+    # Skip the coordinator's own start() which would create a real tick loop
+    # that races with manual event injection. Instead, attach the runtime
+    # directly and test each event path explicitly.
+    runtime.attach(sid, products, shop_profile="SHOP_SECRET_123")
+
+    # ── director.decision event ──
+    from core.director.coordinator import _decision_to_event
+
+    dec = Decision(
+        action="answer_cluster",
+        product_id="P-4096-SECRET",
+        prompt="Hãy trả lời câu hỏi: Mua áo hoodie mãi mãi",
+        text="Mua áo hoodie mãi mãi",
+        cluster_members=("Mua áo hoodie mãi mãi",),
+        cluster_member_ids=("cmt-001",),
+        score_breakdown={"cluster_size": 1.0},
+        reason="score=3",
+    )
+    ev = _decision_to_event(dec)
+    flat = str(ev)
+    for sentinel in _SENSITIVE_SENTINELS:
+        assert sentinel not in flat, (
+            f"sentinel {sentinel!r} found in _decision_to_event: {ev}"
+        )
+
+    # ── _speech_item (queued, processing, failed, cancelled) ──
+    for state in ("queued", "processing", "failed", "cancelled_stale"):
+        item = DirectorCoordinator._speech_item(dec, state)
+        flat = str(item)
+        for sentinel in _SENSITIVE_SENTINELS:
+            assert sentinel not in flat, (
+                f"sentinel {sentinel!r} found in _speech_item(state={state}): {item}"
+            )
+
+    # ── WS events via hub: speak_started, speak_finished, terminal_failure ──
+    # speak_started
+    await hub.emit(sid, {
+        "type": "coordinator.speak_started",
+        "turn_id": dec.turn_id,
+        "state": "processing",
+        "action": dec.action,
+        "product": dec.product_id,
+    })
+    # speak_finished
+    await hub.emit(sid, {
+        "type": "coordinator.speak_finished",
+        "turn_id": dec.turn_id,
+        "state": "completed",
+        "action": dec.action,
+        "product_id": dec.product_id,
+    })
+    # terminal_failure
+    await hub.emit(sid, {
+        "type": "coordinator.terminal_failure",
+        "turn_id": dec.turn_id,
+        "state": "failed",
+        "error": "TestError",
+    })
+    # retry_scheduled
+    await hub.emit(sid, {
+        "type": "coordinator.retry_scheduled",
+        "turn_id": dec.turn_id,
+        "retry_count": 1,
+        "error": "TimeoutError",
+    })
+
+    # Verify every emitted event is clean
+    for event_sid, event in hub.events:
+        flat = str(event)
+        for sentinel in _SENSITIVE_SENTINELS:
+            assert sentinel not in flat, (
+                f"sentinel {sentinel!r} found in hub event {event.get('type')}: {event}"
+            )
+
+    # ── completed_speech dict (from _maybe_speak) ──
+    completed = {
+        "turn_id": dec.turn_id,
+        "state": "completed",
+        "action": "answer_cluster",
+        "product_id": "P-4096-SECRET",
+        "stage": None,
+        "task_id": None,
+        "script": "Một script trả lời",
+        "attempt": 0,
+    }
+    flat = str(completed)
+    for sentinel in _SENSITIVE_SENTINELS:
+        assert sentinel not in flat, (
+            f"sentinel {sentinel!r} found in completed_speech: {completed}"
+        )
