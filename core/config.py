@@ -10,6 +10,12 @@ Engine selection (the production seam):
   LLM_ENGINE       vllm | llamacpp | sglang | hf | none(default echo)
   TTS_ENGINE       transformers(default) | vieneu | cosyvoice | tone
   DIRECTOR_ENABLED 0 | 1
+
+Prompt ownership (OpenSpec 1.11): canonical Director prompt text lives in the
+Markdown bundle under ``backend/application/director/prompts/``. This module
+keeps only non-prompt config values and exposes loader-backed compatibility
+symbols (``BASE_SALE_PERSONA``) so legacy callers keep current behavior until
+they migrate.
 """
 
 from __future__ import annotations
@@ -19,23 +25,21 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
-# Default livestream persona — split into 2 layers:
-#   1. BASE_SALE_PERSONA (chung mọi shop): dạy AI làm sale chuyên nghiệp,
-#      dí dỏm, vui, text normalization (no icon/emoji/special chars).
-#   2. SHOP_PROFILE (riêng từng shop): tên shop, địa chỉ, SĐT, liên hệ, thông tin.
-# Backend ghép: system = BASE_SALE_PERSONA + "\n\n" + SHOP_PROFILE.
-# Override qua env LLM_SYSTEM_PROMPT (base) + SHOP_PROFILE (shop info).
+def _canonical_base_sales() -> str:
+    """Compatibility seam: canonical base sales persona text from the bundle.
 
-BASE_SALE_PERSONA = (
-    "Bạn là MC bán hàng livestream tiếng Việt, chuyên nghiệp như người sale thật. "
-    "Giọng điệu dí dỏm, vui tính, tự nhiên, gần gũi như con người, không giống máy. "
-    "Tập trung sản phẩm, khuyến mãi, giá cả, đặt hàng. Trả lời ngắn gọn 1-3 câu. "
-    "Khi nhắc sản phẩm dùng tên + giá + khuyến mãi + kêu gọi đặt hàng. "
-    "Từ chối lịch sự câu hỏi không liên quan hoặc nhạy cảm. "
-    "QUAN TRỌNG: output chỉ chữ tiếng Việt, số, dấu chấm/phẩy/dấu hỏi. "
-    "KHÔNG dùng icon, emoji, kí tự đặc biệt, markdown, hay ký hiệu. "
-    "Text sạch để bộ đọc TTS phát âm đúng."
-)
+    The legacy ``BASE_SALE_PERSONA`` string combined the persona and the
+    response-guardrail text in one literal. The canonical bundle splits them
+    into ``base_sales_vi.md`` and ``response_guardrails_vi.md``; recompose them
+    here so legacy callers observe the same semantic content.
+    """
+    from backend.application.director.prompts.loader import load_bundle
+
+    bundle = load_bundle()
+    base = bundle.prompt("base_sales_vi")
+    guardrails = bundle.prompt("response_guardrails_vi")
+    return base + "\n\n" + guardrails
+
 
 # Default shop profile (thay bằng thông tin shop thật qua env SHOP_PROFILE).
 _DEFAULT_SHOP_PROFILE = (
@@ -44,6 +48,9 @@ _DEFAULT_SHOP_PROFILE = (
     "- Liên hệ: Chưa cấu hình\n"
     "Khi viewer hỏi thông tin shop (địa chỉ, SĐT, liên hệ), dùng SHOP_PROFILE trên."
 )
+
+# Backward-compatible constant — loader-backed seam over the canonical bundle.
+BASE_SALE_PERSONA = _canonical_base_sales()
 
 # Composed persona (base + shop profile). Overridable via LLM_SYSTEM_PROMPT.
 _DEFAULT_PERSONA = BASE_SALE_PERSONA + "\n\n" + _DEFAULT_SHOP_PROFILE
@@ -55,7 +62,8 @@ def _build_persona(shop_profile: str = "") -> str:
     - LLM_SYSTEM_PROMPT (if set) overrides the BASE sale persona.
     - shop_profile (if passed via session attach from FE) is the per-shop info
       (name, address, phone, ...). Falls back to env SHOP_PROFILE or default.
-    - Default: BASE_SALE_PERSONA + _DEFAULT_SHOP_PROFILE.
+    - Canonical base comes from the tracked Markdown bundle; this legacy seam
+      keeps current behavior until callers migrate.
     """
     base = os.environ.get("LLM_SYSTEM_PROMPT") or BASE_SALE_PERSONA
     shop = shop_profile or os.environ.get("SHOP_PROFILE") or _DEFAULT_SHOP_PROFILE
