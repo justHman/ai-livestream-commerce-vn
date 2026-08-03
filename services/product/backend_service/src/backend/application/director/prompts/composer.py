@@ -45,9 +45,8 @@ class ContextBundle:
         lines = [BOUNDARY_BEGIN]
         for key in sorted(self.values):
             raw = self.values[key]
-            escaped = (
-                raw.replace(BOUNDARY_BEGIN, "<escaped:untrusted_begin>")
-                .replace(BOUNDARY_END, "<escaped:untrusted_end>")
+            escaped = raw.replace(BOUNDARY_BEGIN, "<escaped:untrusted_begin>").replace(
+                BOUNDARY_END, "<escaped:untrusted_end>"
             )
             lines.append(f"[{key}]\n{escaped}")
         lines.append(BOUNDARY_END)
@@ -75,9 +74,7 @@ def compose_decision_prompt(
     guardrails = b.prompt("response_guardrails_vi")
     decision = b.prompt("director_decision_vi")
     context_block = _serialize_context(context)
-    return "\n\n".join(
-        part for part in (base, guardrails, decision, context_block) if part
-    )
+    return "\n\n".join(part for part in (base, guardrails, decision, context_block) if part)
 
 
 def compose_fallback_prompt(
@@ -95,9 +92,7 @@ def compose_fallback_prompt(
     guardrails = b.prompt("response_guardrails_vi")
     fallback = b.prompt("fallback_response_vi")
     context_block = _serialize_context(context)
-    return "\n\n".join(
-        [part for part in (base, guardrails, fallback, context_block) if part]
-    )
+    return "\n\n".join([part for part in (base, guardrails, fallback, context_block) if part])
 
 
 def select_flow(

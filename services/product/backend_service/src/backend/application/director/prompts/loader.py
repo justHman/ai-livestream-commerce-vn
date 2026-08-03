@@ -140,17 +140,13 @@ def _validate_file(path: Path, name: str) -> PromptPair:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        raise PromptBundleValidationError(
-            f"cannot read prompt file: {name}"
-        ) from exc
+        raise PromptBundleValidationError(f"cannot read prompt file: {name}") from exc
     if len(raw) > _MAX_PROMPT_BYTES:
         raise PromptBundleValidationError(f"prompt file exceeds size limit: {name}")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise PromptBundleValidationError(
-            f"prompt file is not valid UTF-8: {name}"
-        ) from None
+        raise PromptBundleValidationError(f"prompt file is not valid UTF-8: {name}") from None
     if not text.strip():
         raise PromptBundleValidationError(f"prompt file is empty: {name}")
     sha = hashlib.sha256(raw).hexdigest()

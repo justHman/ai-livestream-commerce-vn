@@ -35,3 +35,6 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["backend*"]
+
+[tool.setuptools.package-data]
+"backend.application.director.prompts" = ["*.md"]
