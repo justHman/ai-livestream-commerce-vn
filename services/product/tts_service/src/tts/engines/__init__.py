@@ -1,5 +1,9 @@
-"""Self-host TTS engines (Task 1.29/1.33: vieneu | cosyvoice only)."""
+"""Self-host TTS engines (vieneu | cosyvoice | transformers).
 
-from . import cosyvoice, vieneu
+transformers remains for the legacy offline fallback path; the core shim's
+``ENGINES`` registry and the parity contract require it.
+"""
 
-__all__ = ["cosyvoice", "vieneu"]
+from . import cosyvoice, transformers, vieneu
+
+__all__ = ["cosyvoice", "transformers", "vieneu"]

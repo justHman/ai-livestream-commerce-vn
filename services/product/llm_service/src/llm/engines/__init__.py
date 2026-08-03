@@ -1,5 +1,9 @@
-"""Self-host LLM engines (Task 1.28/1.33: vllm | sglang | transformers only)."""
+"""Self-host LLM engines (vllm | sglang | transformers | llamacpp).
 
-from . import sglang, transformers, vllm
+llamacpp remains for the legacy offline/Colab GGUF path; the core shim's
+``ENGINES`` registry and the parity contract require it.
+"""
 
-__all__ = ["sglang", "transformers", "vllm"]
+from . import llamacpp, sglang, transformers, vllm
+
+__all__ = ["llamacpp", "sglang", "transformers", "vllm"]

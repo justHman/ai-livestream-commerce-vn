@@ -247,7 +247,7 @@ def load_engine(cfg: dict) -> LLMEngine:
         return _NoopEngine()
     if engine not in ENGINES:
         try:
-            from . import sglang, transformers, vllm  # noqa: F401
+            from . import llamacpp, sglang, transformers, vllm  # noqa: F401
         except Exception:
             pass
     if engine not in ENGINES:

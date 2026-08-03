@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .engines.windows import AudioWindow
+from ..engines.windows import AudioWindow
 
 log = logging.getLogger(__name__)
 
@@ -208,7 +208,7 @@ class AudioTrackPublisher:
         log.info("livekit_publish started session=%s room=%s", self.session_id, self.room_name)
 
     def _mint_publish_token(self, key: str, secret: str) -> str:
-        from .livekit_tokens import mint_room_token
+        from .livekit import mint_room_token
 
         return mint_room_token(
             api_key=key,

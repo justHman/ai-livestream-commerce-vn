@@ -26,7 +26,7 @@ from typing import Iterator
 from .base import LLMEngine, LLMRequest, LLMResponse, register_engine
 
 
-@register_engine("transformers")
+@register_engine("hf")
 class HFTransformersEngine(LLMEngine):
     """HuggingFace transformers backend (self-host fallback)."""
 

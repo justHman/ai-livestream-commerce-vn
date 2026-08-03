@@ -264,7 +264,7 @@ def load_engine(cfg: dict) -> TTSEngine:
     if engine not in ENGINES:
         # lazy-import adapters so optional model deps don't break base import
         try:
-            from . import cosyvoice, vieneu  # noqa: F401
+            from . import cosyvoice, transformers, vieneu  # noqa: F401
         except Exception:
             pass
     if engine not in ENGINES:

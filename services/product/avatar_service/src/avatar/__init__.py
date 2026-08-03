@@ -5,10 +5,14 @@ from avatar.engines.base import (
     AvatarEngine,
     EngineError,
     EngineUnavailable,
+    FullPipelineBackend,
+    RenderBackend,
     StartOptions,
     StartResult,
+    StreamingAvatarBackend,
 )
 from avatar.engines.avatarforcing import AvatarForcingEngine
+from avatar.engines.mock import MockRenderBackend
 from avatar.sessions import SessionManager
 
 __all__ = [
@@ -16,8 +20,12 @@ __all__ = [
     "AvatarForcingEngine",
     "EngineError",
     "EngineUnavailable",
+    "FullPipelineBackend",
+    "MockRenderBackend",
+    "RenderBackend",
     "SessionManager",
     "StartOptions",
     "StartResult",
+    "StreamingAvatarBackend",
     "create_app",
 ]

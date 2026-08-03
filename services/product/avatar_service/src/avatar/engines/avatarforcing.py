@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from typing import Iterator
 
-from .base import AvatarEngine, StartOptions, StartResult
+from .base import AvatarEngine, StartOptions, StartResult, StreamingAvatarBackend
+from .windows import AudioWindow, VideoWindow
 
 
 @dataclass
@@ -23,6 +25,42 @@ class _Session:
 
 _SESSIONS: dict[str, _Session] = {}
 _LOCK = threading.Lock()
+
+
+class SelfHostRenderBackend(StreamingAvatarBackend):
+    """Fail-loud placeholder for one explicit self-host model target.
+
+    Kept for the legacy ``RENDER_BACKEND=self_host_*`` selector path
+    (``core.config`` builds it directly). The real engine is
+    ``AvatarForcingEngine``; this placeholder raises until the avatar service
+    runtime is wired end-to-end.
+    """
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.name = f"self_host_{model}"
+
+    def _unavailable(self) -> NotImplementedError:
+        return NotImplementedError(
+            f"Self-host {self.model} renderer is not integrated yet. "
+            "Run its benchmark before enabling this renderer."
+        )
+
+    def start(self, opts: StartOptions) -> StartResult:
+        raise self._unavailable()
+
+    def stream_audio(
+        self,
+        session_id: str,
+        audio_window: AudioWindow,
+    ) -> Iterator[VideoWindow]:
+        raise self._unavailable()
+
+    def interrupt(self, session_id: str) -> None:
+        raise self._unavailable()
+
+    def stop(self, session_id: str) -> None:
+        raise self._unavailable()
 
 
 class AvatarForcingEngine(AvatarEngine):
