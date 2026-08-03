@@ -745,6 +745,9 @@ def test_windows_job_handle_closes_on_assign_failure(
         stdout = None
         stderr = None
 
+        def poll(self) -> None:
+            return None
+
         def kill(self) -> None:
             pass
 
@@ -759,6 +762,7 @@ def test_windows_job_handle_closes_on_assign_failure(
         "_assign_windows_job",
         lambda *_args: (_ for _ in ()).throw(ProcessCleanupError("assign failed")),
     )
+    monkeypatch.setattr(platform_collector, "_terminate_tree_fallback", lambda *a: None)
     monkeypatch.setattr(platform_collector, "_close_windows_job", lambda job: closed.append(job))
     monkeypatch.setattr(
         platform_collector.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess()
@@ -854,3 +858,132 @@ def test_platform_collector_rejects_unknown_service_and_closes_idempotently() ->
             )
         finally:
             collector.close()
+
+
+def test_start_session_reactivates_cached_handler_after_end() -> None:
+    """Explicit start after an ended session re-activates and truncates."""
+    with removable_temp_dir() as active_root:
+        collector = PlatformCollector(active_root=active_root)
+        collector.start_session('livekit')
+        collector.emit_event('livekit', 'evt=first')
+        collector.end_session()
+        assert (
+            active_root.joinpath('platform', 'livekit.log').read_text(encoding='utf-8')
+            == "evt=platform_event\n"
+        )
+        collector.start_session('livekit')
+        collector.emit_event('livekit', 'evt=second')
+        collector.end_session()
+        assert (
+            active_root.joinpath('platform', 'livekit.log').read_text(encoding='utf-8')
+            == "evt=platform_event\n"
+        )
+
+
+def test_repeated_start_session_truncates_each_time() -> None:
+    """Every explicit start_session writes to a freshly truncated file."""
+    with removable_temp_dir() as active_root:
+        collector = PlatformCollector(active_root=active_root)
+        collector.start_session('livekit')
+        collector.emit_event('livekit', 'evt=first')
+        collector.end_session()
+        collector.start_session('livekit')
+        collector.emit_event('livekit', 'evt=second')
+        assert (
+            active_root.joinpath('platform', 'livekit.log').read_text(encoding='utf-8')
+            == "evt=platform_event\n"
+        )
+        collector.close()
+
+
+def test_windows_job_assign_failure_fallback_kills_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When AssignProcessToJobObject fails on Windows, taskkill /T /F runs."""
+    from backend.observability.logging import platform_collector
+
+    taskkill_called: list[int] = []
+    process = type('Proc', (), {'pid': 9999, 'poll': lambda self: None, 'kill': lambda self: None})()
+
+    def fake_popen(*args, **kwargs):
+        return process
+
+    def fake_taskkill(*args, timeout, **kwargs):
+        taskkill_called.append(args[0])
+        return type('Result', (), {'returncode': 0})()
+
+    # capture the import for _terminate_tree_fallback
+    monkeypatch.setattr(platform_collector.subprocess, 'run', fake_taskkill)
+    monkeypatch.setattr(platform_collector.os, 'name', 'nt')
+    monkeypatch.setattr(platform_collector, '_create_windows_job', lambda: 7)
+    monkeypatch.setattr(
+        platform_collector,
+        '_assign_windows_job',
+        lambda *a: (_ for _ in ()).throw(platform_collector.ProcessCleanupError('assign failed')),
+    )
+    monkeypatch.setattr(platform_collector, '_close_windows_job', lambda job: None)
+    monkeypatch.setattr(platform_collector.subprocess, 'Popen', fake_popen)
+
+    with pytest.raises(platform_collector.ProcessCleanupError, match='assign failed'):
+        platform_collector.run_command(['prog'], service='livekit')
+    assert len(taskkill_called) == 1
+    assert taskkill_called[0][:2] == ['taskkill', '/PID']
+    assert taskkill_called[0][2] == '9999'
+
+
+def test_windows_job_assign_failure_taskkill_fallback_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When taskkill /T /F returns nonzero, the error surfaces sanitized."""
+    from backend.observability.logging import platform_collector
+
+    process = type('Proc', (), {'pid': 9999, 'poll': lambda self: None, 'kill': lambda self: None})()
+
+    def fake_popen(*args, **kwargs):
+        return process
+
+    def fake_taskkill(*args, timeout, **kwargs):
+        return type('Result', (), {'returncode': 1})()
+
+    monkeypatch.setattr(platform_collector.subprocess, 'run', fake_taskkill)
+    monkeypatch.setattr(platform_collector.os, 'name', 'nt')
+    monkeypatch.setattr(platform_collector, '_create_windows_job', lambda: 7)
+    monkeypatch.setattr(
+        platform_collector,
+        '_assign_windows_job',
+        lambda *a: (_ for _ in ()).throw(platform_collector.ProcessCleanupError('assign failed')),
+    )
+    monkeypatch.setattr(platform_collector, '_close_windows_job', lambda job: None)
+    monkeypatch.setattr(platform_collector.subprocess, 'Popen', fake_popen)
+
+    with pytest.raises(platform_collector.ProcessCleanupError) as raised:
+        platform_collector.run_command(['prog'], service='livekit')
+    assert 'cleanup failed' in str(raised.value)
+    assert '9999' not in str(raised.value)
+    assert 'prog' not in str(raised.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="cannot simulate non-Windows pathlib")
+def test_windows_job_assign_failure_non_nt_skips_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-Windows platforms skip taskkill fallback in assign-failure path."""
+    from backend.observability.logging import platform_collector
+
+    process = type('Proc', (), {'pid': 9999, 'poll': lambda self: None, 'kill': lambda self: None})()
+
+    def fake_popen(*args, **kwargs):
+        return process
+
+    monkeypatch.setattr(platform_collector.os, 'name', 'posix')
+    monkeypatch.setattr(platform_collector, '_create_windows_job', lambda: 7)
+    monkeypatch.setattr(
+        platform_collector,
+        '_assign_windows_job',
+        lambda *a: (_ for _ in ()).throw(platform_collector.ProcessCleanupError('assign failed')),
+    )
+    monkeypatch.setattr(platform_collector, '_close_windows_job', lambda job: None)
+    monkeypatch.setattr(platform_collector.subprocess, 'Popen', fake_popen)
+
+    with pytest.raises(platform_collector.ProcessCleanupError, match='assign failed'):
+        platform_collector.run_command(['prog'], service='livekit')

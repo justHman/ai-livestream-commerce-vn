@@ -65,8 +65,21 @@ class PlatformCollector:
         return self._active_root
 
     def start_session(self, service: str) -> None:
-        """Validate the service and open its active log."""
-        self._handler_for(service)
+        """Validate the service and open/reactivate its active log (truncates).
+
+        Every explicit start re-activates the handler: a cached handler left
+        inactive by a prior end_session is restarted (truncating the file), so
+        a new session after an ended one still writes.
+        """
+        _validate_service(service)
+        with self._lock:
+            handler = self._handlers.get(service)
+            if handler is None:
+                handler = ActiveSessionHandler(
+                    service=service, group="platform", active_root=self._active_root
+                )
+                self._handlers[service] = handler
+            handler.start_session()
 
     def emit_event(self, service: str, message: str, *, level: int = logging.INFO) -> None:
         """Classify one event without retaining caller-controlled field values."""
@@ -255,6 +268,38 @@ def _assign_windows_job(job: int, process: subprocess.Popen[str]) -> None:
         raise _cleanup_error(ctypes.get_last_error())
 
 
+def _terminate_tree_fallback(
+    process: subprocess.Popen[str], deadline: float
+) -> ProcessCleanupError | None:
+    """Windows cleanup after AssignProcessToJobObject failure: taskkill /T /F.
+
+    taskkill is bounded by the cleanup deadline; its stdout/stderr are discarded
+    so neither argv nor raw output ever escapes. returncode 0 (tree terminated)
+    and 128 (process already gone) pass; any other status, timeout, or platform
+    error surfaces a sanitized ProcessCleanupError.
+    """
+    if os.name != "nt":
+        return _cleanup_error()
+    wait_for = _remaining(deadline)
+    if wait_for == 0:
+        return _cleanup_error()
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            timeout=wait_for,
+        )
+    except subprocess.TimeoutExpired:
+        return _cleanup_error()
+    except OSError as error:
+        return _cleanup_error(error.errno)
+    if completed.returncode not in (0, 128):
+        return _cleanup_error(completed.returncode)
+    return None
+
+
 def _terminate_windows_job(job: int, deadline: float) -> None:
     import ctypes
 
@@ -414,15 +459,24 @@ def run_command(
         if windows_job is not None:
             try:
                 _assign_windows_job(windows_job, process)
-            except BaseException:
-                try:
-                    process.kill()
-                    process.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
-                finally:
-                    _close_windows_job(windows_job)
-                    windows_job = None
-                    process = None
-                raise
+            except BaseException as assign_error:
+                deadline = time.monotonic() + _CLEANUP_TIMEOUT_SECONDS
+                fallback_error: ProcessCleanupError | None = None
+                if os.name == "nt":
+                    fallback_error = _terminate_tree_fallback(process, deadline)
+                    if process.poll() is None:
+                        try:
+                            process.kill()
+                        except OSError:
+                            fallback_error = fallback_error or _cleanup_error()
+                close_error = _close_windows_job(windows_job)
+                windows_job = None
+                process = None
+                if fallback_error is not None:
+                    raise fallback_error from None
+                if close_error is not None:
+                    raise close_error from None
+                raise assign_error
         threads = [
             threading.Thread(
                 target=_drain,
