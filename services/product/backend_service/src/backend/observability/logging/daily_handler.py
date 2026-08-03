@@ -71,12 +71,18 @@ class DailyHandler(logging.Handler):
     def daily_root(self) -> Path:
         return self._root
 
+    @property
+    def utc_day(self) -> date:
+        """UTC date of the current clock reading."""
+        now = self._clock()
+        return now.astimezone(_UTC).date()
+
     def emit(self, record: logging.LogRecord) -> None:
         with self.lock:
             if self._closed:
                 return
             try:
-                today = self._clock().date()
+                today = self.utc_day
                 if self._stream is None or today != self._current_day:
                     self._rotate(today)
                 self._stream.write(self.format(record) + "\n")  # type: ignore[union-attr]
@@ -85,7 +91,7 @@ class DailyHandler(logging.Handler):
                 self._close_stream()
                 self.handleError(record)
 
-    def retain(self, days: int | None = None) -> list[Path]:
+    def retain(self, days: int | None = None, *, today: date | None = None) -> list[Path]:
         """Delete expired daily files and return the deleted paths.
 
         A file is deleted only when it is strictly older than the configured
@@ -97,7 +103,7 @@ class DailyHandler(logging.Handler):
         window = self._retention_days if days is None else days
         if not isinstance(window, int) or isinstance(window, bool) or window < 1:
             raise ValueError("LOG_RETENTION_DAYS must be a positive integer")
-        cutoff = self._clock().date() - timedelta(days=window)
+        cutoff = (today or self.utc_day) - timedelta(days=window)
         directory = self._root / self._group / self._service
         if not directory.is_dir():
             return []
@@ -127,6 +133,7 @@ class DailyHandler(logging.Handler):
         directory.mkdir(parents=True, exist_ok=True)
         self._stream = (directory / f"{day.isoformat()}.log").open("a", encoding="utf-8")
         self._current_day = day
+        self.retain(today=day)
 
     def _close_stream(self) -> None:
         if self._stream is not None and not self._stream.closed:

@@ -8,7 +8,7 @@ from threading import Lock
 
 from backend.observability.logging.config import LoggingConfig, validate_config
 from backend.observability.logging.daily_handler import DailyHandler
-from backend.observability.logging.filters import ContextFilter, StructuredFieldsFilter
+from backend.observability.logging.filters import ContextFilter, LevelFilter, StructuredFieldsFilter
 from backend.observability.logging.formatter import ContextFormatter
 
 _HANDLER_MARKER = "_backend_observability_handler"
@@ -51,8 +51,8 @@ def setup_logging(config: LoggingConfig | None = None, **overrides: object) -> l
         daily.setLevel(resolved.level)
         daily.setFormatter(ContextFormatter(service=resolved.service, colorize=False))
         daily.addFilter(ContextFilter())
+        daily.addFilter(LevelFilter())
         daily.addFilter(StructuredFieldsFilter())
-        daily.retain()
 
         logger.addHandler(console)
         logger.addHandler(daily)

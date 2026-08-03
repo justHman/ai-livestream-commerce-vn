@@ -18,6 +18,7 @@ from typing import Iterable, TextIO
 
 from backend.observability.logging.active_session_handler import ActiveSessionHandler
 from backend.observability.logging.daily_handler import DailyHandler
+from backend.observability.logging.filters import LevelFilter, StructuredFieldsFilter
 from backend.observability.logging.formatter import ContextFormatter
 
 _PLATFORM_SERVICES = frozenset({"livekit", "lmcache", "postgres", "redis"})
@@ -148,6 +149,8 @@ class PlatformCollector:
                 handler = ActiveSessionHandler(
                     service=service, group="platform", active_root=self._active_root
                 )
+                handler.addFilter(LevelFilter())
+                handler.addFilter(StructuredFieldsFilter())
                 handler.start_session()
                 self._handlers[service] = handler
             return handler
@@ -161,6 +164,8 @@ class PlatformCollector:
                     service=service, group="platform", daily_root=self._daily_root
                 )
                 handler.setFormatter(ContextFormatter(service=service, colorize=False))
+                handler.addFilter(LevelFilter())
+                handler.addFilter(StructuredFieldsFilter())
                 self._daily_handlers[service] = handler
             return handler
 
