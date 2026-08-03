@@ -13,12 +13,17 @@ Covers, independently for each contract:
   changes; runtime/customer data does not alter the static bundle hash.
 - Log/error hygiene: no rendered prompt, shop profile, product, comment,
   credential, or injected delimiter payload in captured logs/exceptions.
+- Path safety: symlink ancestry rejected.
+- Bundle immutability: prompts, token counts, byte counts are read-only.
+- Packaging: load from an installed wheel, not from the source checkout.
 """
 
 from __future__ import annotations
 
 import importlib.resources as resources
 import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -336,3 +341,197 @@ def test_canonical_bundle_matches_files_on_disk() -> None:
         path = root / f"{name}.md"
         assert path.is_file()
         assert path.stat().st_size > 0
+
+
+# ── path safety: symlink ancestry rejected ──────────────────────────────
+
+
+def test_loader_rejects_symlink_ancestor(bundle_dir: Path) -> None:
+    """Any symlink between the resolved directory and the real filesystem root
+    must be rejected — not just a direct symlink on the file itself."""
+    try:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            for name, text in _BUNDLE_TEXTS.items():
+                (real / f"{name}.md").write_text(text, encoding="utf-8")
+            link = Path(tmp) / "link"
+            link.symlink_to(real, target_is_directory=True)
+            with pytest.raises(PromptBundleValidationError) as exc:
+                load_bundle_from_dir(link)
+            assert "symlink" in str(exc.value).lower()
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+
+
+def test_loader_rejects_path_with_symlink_beyond_directory(
+    bundle_dir: Path,
+) -> None:
+    """Reject when the directory itself is a symlink into a real directory."""
+    try:
+        link = bundle_dir.parent / "p_symlink_test"
+        if link.exists():
+            link.unlink()
+        link.symlink_to(bundle_dir, target_is_directory=True)
+        with pytest.raises(PromptBundleValidationError) as exc:
+            load_bundle_from_dir(link)
+        assert "symlink" in str(exc.value).lower()
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+
+
+# ── bundle immutability: prompts, token_counts, byte_counts read-only ──
+
+
+def test_bundle_prompts_immutable(bundle_dir: Path) -> None:
+    bundle = load_bundle_from_dir(bundle_dir)
+    with pytest.raises(TypeError):
+        bundle.prompts["base_sales_vi"] = "MUTATE"  # type: ignore[index]
+
+
+def test_bundle_token_counts_immutable(bundle_dir: Path) -> None:
+    bundle = load_bundle_from_dir(bundle_dir)
+    with pytest.raises(TypeError):
+        bundle.token_counts["base_sales_vi"] = 9999  # type: ignore[index]
+
+
+def test_bundle_byte_counts_immutable(bundle_dir: Path) -> None:
+    bundle = load_bundle_from_dir(bundle_dir)
+    with pytest.raises(TypeError):
+        bundle.byte_counts["base_sales_vi"] = 9999  # type: ignore[index]
+
+
+def test_metadata_returns_plain_dicts(bundle_dir: Path) -> None:
+    """metadata() must return plain dicts (not proxies) so callers can
+    inspect/serialize freely."""
+    bundle = load_bundle_from_dir(bundle_dir)
+    meta = bundle.metadata()
+    assert isinstance(meta["token_counts"], dict)
+    assert isinstance(meta["byte_counts"], dict)
+
+
+# ── packaging: wheel build → install → load from installed package ──────
+
+
+def test_wheel_install_loads_prompts(tmp_path: Path) -> None:
+    """Build a wheel from the backend service, install it into an isolated
+    venv, and verify the four prompt files load from the installed package
+    — not from the source checkout.  This proves pyproject.toml package-data
+    works correctly and that the loader's importlib.resources path resolves
+    inside the installed wheel."""
+    backend_dir = Path(
+        __file__,
+        "..",
+        "..",
+    ).resolve()
+
+    # Safety: ensure we are inside the agent worktree.
+    assert "agent-" in str(backend_dir), (
+        f"backend_dir {backend_dir} is not inside an agent worktree"
+    )
+    assert backend_dir.is_dir(), f"backend service dir {backend_dir} not found"
+
+    wheel_dir = tmp_path / "wheel"
+    wheel_dir.mkdir()
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+
+    try:
+        # Build the wheel.
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--wheel",
+                "--outdir",
+                str(wheel_dir),
+                str(backend_dir),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(f"wheel build failed: {exc.stderr}")
+
+    wheels = list(wheel_dir.glob("*.whl"))
+    assert len(wheels) == 1, f"expected one wheel, got {wheels}"
+    wheel_path = wheels[0]
+
+    # Create an isolated venv.
+    venv_python = install_dir / "venv" / "bin" / "python"
+    if os.name == "nt":
+        venv_python = install_dir / "venv" / "Scripts" / "python.exe"
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(install_dir / "venv")],
+        check=True,
+        capture_output=True,
+    )
+
+    # Install the wheel into the isolated venv (no deps, no build deps).
+    subprocess.run(
+        [
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--ignore-requires-python",
+            "--quiet",
+            str(wheel_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    # Load from the installed package and prove the four prompt files exist.
+    code = """
+import sys
+sys.path[:] = [p for p in sys.path if 'backend' not in p.lower()]
+
+from backend.application.director.prompts.loader import (
+    ALL_PROMPT_NAMES,
+    load_bundle,
+    load_bundle_from_dir,
+)
+from backend.application.director.prompts.loader import _default_resource_dir
+
+# 1. Default resource dir must be inside site-packages, not the source checkout.
+root = _default_resource_dir()
+assert 'site-packages' in str(root), (
+    f"default_resource_dir is {root}, expected inside site-packages"
+)
+
+# 2. All four prompt files load from the installed package.
+bundle = load_bundle()
+for name in ALL_PROMPT_NAMES:
+    text = bundle.prompt(name)
+    assert len(text.strip()) > 0, f"empty prompt {name}"
+
+# 3. Content hash is deterministic.
+assert len(bundle.content_hash) == 64
+
+# 4. load_bundle_from_dir still works with a real path.
+import tempfile
+from pathlib import Path
+with tempfile.TemporaryDirectory() as td:
+    for n in ALL_PROMPT_NAMES:
+        (Path(td) / f"{n}.md").write_text("test", encoding="utf-8")
+    b2 = load_bundle_from_dir(Path(td))
+    assert b2.prompt("base_sales_vi") == "test"
+
+print("OK")
+"""
+    result = subprocess.run(
+        [str(venv_python), "-c", code],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"installed wheel load failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+    assert result.stdout.strip().endswith("OK"), result.stdout

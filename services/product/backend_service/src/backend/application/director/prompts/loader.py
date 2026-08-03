@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
+from types import MappingProxyType
 
 _MAX_PROMPT_BYTES = 64 * 1024  # bounded reasonable size per file
 _TOKEN_RE = re.compile(r"[\wÀ-ỹ]+|[^\w\s]", re.UNICODE)
@@ -62,12 +64,20 @@ class PromptBundle:
 
     version: int = 1
     files: frozenset[str] = frozenset(ALL_PROMPT_NAMES)
-    prompts: dict[str, PromptPair] = None  # type: ignore[assignment]
+    prompts: Mapping[str, PromptPair] = None  # type: ignore[assignment]
     content_hash: str = ""
     total_bytes: int = 0
     total_tokens: int = 0
-    token_counts: dict[str, int] = None  # type: ignore[assignment]
-    byte_counts: dict[str, int] = None  # type: ignore[assignment]
+    token_counts: Mapping[str, int] = None  # type: ignore[assignment]
+    byte_counts: Mapping[str, int] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        """Wrap mutable dicts in immutable proxies so stored values cannot
+        be mutated after construction."""
+        # Use object.__setattr__ because the dataclass is frozen.
+        object.__setattr__(self, "prompts", MappingProxyType(dict(self.prompts)))
+        object.__setattr__(self, "token_counts", MappingProxyType(dict(self.token_counts)))
+        object.__setattr__(self, "byte_counts", MappingProxyType(dict(self.byte_counts)))
 
     def prompt(self, name: str) -> str:
         try:
@@ -130,6 +140,27 @@ def _resolve_name(name: str) -> str:
         ) from None
 
 
+def _validate_dir_safe(path: Path) -> None:
+    """Reject if the path or any of its ancestors is a symlink.
+
+    A canonical loader must not follow symlinks into arbitrary directories,
+    even when the final target is a regular file or directory.
+    """
+    abs_path = path.absolute()
+    walk = abs_path
+    while walk != walk.parent:
+        try:
+            if walk.is_symlink():
+                raise PromptBundleValidationError(
+                    f"symlink ancestry is not allowed: {walk}"
+                )
+        except OSError as exc:
+            raise PromptBundleValidationError(
+                f"cannot inspect path ancestry: {walk}"
+            ) from exc
+        walk = walk.parent
+
+
 def _validate_file(path: Path, name: str) -> PromptPair:
     if not path.exists():
         raise PromptBundleValidationError(f"missing prompt file: {name}")
@@ -161,6 +192,7 @@ def _validate_file(path: Path, name: str) -> PromptPair:
 
 def _load_from_directory(directory: Path) -> PromptBundle:
     """Load and validate all four fixed files from a known owned directory."""
+    _validate_dir_safe(directory)
     if not directory.is_dir():
         raise PromptBundleValidationError("prompt directory is not a directory")
     prompts: dict[str, PromptPair] = {}
