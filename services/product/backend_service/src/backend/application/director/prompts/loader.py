@@ -151,13 +151,9 @@ def _validate_dir_safe(path: Path) -> None:
     while walk != walk.parent:
         try:
             if walk.is_symlink():
-                raise PromptBundleValidationError(
-                    f"symlink ancestry is not allowed: {walk}"
-                )
+                raise PromptBundleValidationError(f"symlink ancestry is not allowed: {walk}")
         except OSError as exc:
-            raise PromptBundleValidationError(
-                f"cannot inspect path ancestry: {walk}"
-            ) from exc
+            raise PromptBundleValidationError(f"cannot inspect path ancestry: {walk}") from exc
         walk = walk.parent
 
 
@@ -230,11 +226,12 @@ def load_bundle() -> PromptBundle:
     return _load_bundle()
 
 
-def load_bundle_from_dir(directory: Path) -> PromptBundle:
-    """Load a bundle from a caller-supplied directory (test/package-resource hook).
+def _load_bundle_from_dir(directory: Path) -> PromptBundle:
+    """Load a bundle from a caller-supplied directory (test-only helper).
 
-    Used only by tests and by package-resource checks. Production callers use
-    ``load_bundle()`` against the fixed owned directory.
+    Tests use this to validate loader behavior with synthetic directories
+    (missing files, invalid content, symlinks, etc.). Production callers must
+    use ``load_bundle()`` against the canonical owned resource directory.
     """
     return _load_from_directory(directory)
 
@@ -262,5 +259,4 @@ __all__ = [
     "bundle_metadata",
     "bundle_token_count",
     "load_bundle",
-    "load_bundle_from_dir",
 ]
