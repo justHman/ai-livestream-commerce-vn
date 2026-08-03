@@ -1,19 +1,23 @@
 """Canonical self-host avatar service package."""
 
-from .engines.base import (
-    FullPipelineBackend,
-    RenderBackend,
+from avatar.bootstrap.app_factory import create_app
+from avatar.engines.base import (
+    AvatarEngine,
+    EngineError,
+    EngineUnavailable,
     StartOptions,
     StartResult,
-    StreamingAvatarBackend,
 )
-from .engines.mock import MockRenderBackend
+from avatar.engines.avatarforcing import AvatarForcingEngine
+from avatar.sessions import SessionManager
 
 __all__ = [
-    "FullPipelineBackend",
-    "RenderBackend",
+    "AvatarEngine",
+    "AvatarForcingEngine",
+    "EngineError",
+    "EngineUnavailable",
+    "SessionManager",
     "StartOptions",
     "StartResult",
-    "StreamingAvatarBackend",
-    "MockRenderBackend",
+    "create_app",
 ]

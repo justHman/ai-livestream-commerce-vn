@@ -1,19 +1,19 @@
-"""Self-host avatar engines."""
+"""Self-host avatar engines (Task 1.30/1.33: avatarforcing only)."""
 
-from .base import (
-    FullPipelineBackend,
-    RenderBackend,
+from avatar.engines.avatarforcing import AvatarForcingEngine
+from avatar.engines.base import (
+    AvatarEngine,
+    EngineError,
+    EngineUnavailable,
     StartOptions,
     StartResult,
-    StreamingAvatarBackend,
 )
-from .mock import MockRenderBackend
 
 __all__ = [
-    "FullPipelineBackend",
-    "RenderBackend",
+    "AvatarEngine",
+    "AvatarForcingEngine",
+    "EngineError",
+    "EngineUnavailable",
     "StartOptions",
     "StartResult",
-    "StreamingAvatarBackend",
-    "MockRenderBackend",
 ]

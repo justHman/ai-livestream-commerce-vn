@@ -80,6 +80,14 @@ except ModuleNotFoundError:
         ]
 
 
+class EngineError(RuntimeError):
+    """Typed engine failure surfaced at the API boundary."""
+
+
+class EngineUnavailable(EngineError):
+    """Raised when no engine is started or the engine is not ready."""
+
+
 @dataclass
 class TTSRequest:
     """One synthesis request."""
@@ -251,10 +259,12 @@ def load_engine(cfg: dict) -> TTSEngine:
     deps are missing, that adapter raises on from_config (not at import).
     """
     engine = cfg.get("engine", "tone")
+    if engine in ("none", "", None):
+        return ENGINES["tone"].from_config(cfg)
     if engine not in ENGINES:
         # lazy-import adapters so optional model deps don't break base import
         try:
-            from . import cosyvoice, transformers, vieneu  # noqa: F401
+            from . import cosyvoice, vieneu  # noqa: F401
         except Exception:
             pass
     if engine not in ENGINES:

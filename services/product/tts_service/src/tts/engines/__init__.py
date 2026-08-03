@@ -1,9 +1,5 @@
-"""Self-host TTS engines."""
+"""Self-host TTS engines (Task 1.29/1.33: vieneu | cosyvoice only)."""
 
-for _module in ("transformers", "vieneu", "cosyvoice"):
-    try:
-        __import__(f"{__name__}.{_module}", fromlist=["*"])
-    except Exception:
-        pass
+from . import cosyvoice, vieneu
 
-__all__ = ["transformers", "vieneu", "cosyvoice"]
+__all__ = ["cosyvoice", "vieneu"]

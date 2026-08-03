@@ -1,7 +1,10 @@
 """Canonical self-host LLM service package."""
 
-from .engines.base import (
+from llm.bootstrap.app_factory import create_app
+from llm.engines.base import (
     ENGINES,
+    EngineError,
+    EngineUnavailable,
     LLMEngine,
     LLMRequest,
     LLMResponse,
@@ -11,11 +14,14 @@ from .engines.base import (
 )
 
 __all__ = [
+    "ENGINES",
+    "EngineError",
+    "EngineUnavailable",
     "LLMEngine",
     "LLMRequest",
     "LLMResponse",
+    "create_app",
     "load_engine",
-    "to_llm_fn",
     "register_engine",
-    "ENGINES",
+    "to_llm_fn",
 ]

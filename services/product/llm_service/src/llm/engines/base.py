@@ -46,6 +46,14 @@ except ModuleNotFoundError:
         id: str = field(default_factory=lambda: uuid4().hex)
 
 
+class EngineError(RuntimeError):
+    """Typed engine failure surfaced at the API boundary."""
+
+
+class EngineUnavailable(EngineError):
+    """Raised when no engine is started or the engine is not ready."""
+
+
 @dataclass
 class LLMRequest:
     """One generation request (engine-agnostic).
@@ -237,7 +245,7 @@ def load_engine(cfg: dict) -> LLMEngine:
         return _NoopEngine()
     if engine not in ENGINES:
         try:
-            from . import llamacpp, sglang, transformers, vllm  # noqa: F401
+            from . import sglang, transformers, vllm  # noqa: F401
         except Exception:
             pass
     if engine not in ENGINES:

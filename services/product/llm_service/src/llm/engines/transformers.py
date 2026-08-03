@@ -26,9 +26,9 @@ from typing import Iterator
 from .base import LLMEngine, LLMRequest, LLMResponse, register_engine
 
 
-@register_engine("hf")
+@register_engine("transformers")
 class HFTransformersEngine(LLMEngine):
-    """HuggingFace transformers backend (universal fallback)."""
+    """HuggingFace transformers backend (self-host fallback)."""
 
     def __init__(self) -> None:
         self._model = None
@@ -43,7 +43,7 @@ class HFTransformersEngine(LLMEngine):
         e = cls()
         model_id = cfg.get("model") or cfg.get("weights_path")
         if not model_id:
-            raise ValueError("hf adapter needs cfg['model'] (HF id or path)")
+            raise ValueError("transformers adapter needs cfg['model'] (HF id or path)")
 
         dtype_str = cfg.get("dtype", "auto")
         dtype_map = {
@@ -70,7 +70,7 @@ class HFTransformersEngine(LLMEngine):
             e._model = e._model.cpu()
         e._model.eval()
         e._device = device
-        e.name = "hf"
+        e.name = "transformers"
         return e
 
     def generate(self, req: LLMRequest) -> LLMResponse:

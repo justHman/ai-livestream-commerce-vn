@@ -1,5 +1,5 @@
-"""Self-host LLM engines."""
+"""Self-host LLM engines (Task 1.28/1.33: vllm | sglang | transformers only)."""
 
-from . import llamacpp, sglang, transformers, vllm
+from . import sglang, transformers, vllm
 
-__all__ = ["llamacpp", "sglang", "transformers", "vllm"]
+__all__ = ["sglang", "transformers", "vllm"]

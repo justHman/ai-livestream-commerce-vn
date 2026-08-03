@@ -1,21 +1,25 @@
 """Canonical self-host TTS service package."""
 
-from .engines.base import (
+from tts.bootstrap.app_factory import create_app
+from tts.engines.base import (
+    ENGINES,
     AudioChunk,
+    EngineError,
+    EngineUnavailable,
     TTSEngine,
     TTSRequest,
-    ToneEngine,
     load_engine,
     register_engine,
-    to_tts_fn,
 )
 
 __all__ = [
+    "ENGINES",
+    "AudioChunk",
+    "EngineError",
+    "EngineUnavailable",
     "TTSEngine",
     "TTSRequest",
-    "AudioChunk",
-    "ToneEngine",
+    "create_app",
     "load_engine",
     "register_engine",
-    "to_tts_fn",
 ]

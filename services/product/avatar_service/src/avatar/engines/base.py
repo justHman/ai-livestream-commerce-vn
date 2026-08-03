@@ -1,32 +1,29 @@
-"""Render backend interfaces — the seam that makes avatar renderers swappable.
+"""Avatar engine interfaces — self-host session lifecycle.
 
-All renderers share the session lifecycle:
+Every renderer shares the session lifecycle:
+  start(opts)   -> StartResult (frontend-safe creds only)
+  stop(sid)     -> tear down the session
+  interrupt(sid) -> stop current utterance (barge-in)
 
-  start(opts)       -> StartResult (frontend-safe creds only)
-  interrupt(sid)   -> stop current utterance (barge-in)
-  stop(sid)        -> tear down the session
-
-Then they split by how they produce speech/video:
-
-  FullPipelineBackend.say(sid, text, generate=True) -> str
-      The backend owns the full LLM/TTS/render turn. LiveAvatar cloud uses this.
-
-  StreamingAvatarBackend.stream_audio(sid, audio_window) -> Iterator[VideoWindow]
-      Core owns LLM+TTS and streams AudioWindow chunks into the renderer. Mock and
-      future self-host avatar models use this.
-
-Security invariant: start() returns ONLY frontend-safe fields (session_id +
-livekit_url + livekit_client_token). Secrets (X-API-KEY, session_token, audio
-ws_url) never cross this boundary.
+Security invariant: start() returns ONLY browser-safe fields
+(session_id + livekit_url + livekit_client_token). Provider secrets and
+provider session tokens never cross this boundary or appear in responses
+or logs.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
-from .windows import AudioWindow, VideoWindow
+
+class EngineError(RuntimeError):
+    """Typed engine failure surfaced at the API boundary."""
+
+
+class EngineUnavailable(EngineError):
+    """Raised when no engine is started or the engine is not ready."""
 
 
 @dataclass
@@ -45,7 +42,7 @@ class StartResult:
     session_id: str
     livekit_url: str
     livekit_client_token: str
-    mode: str = "LITE"
+    mode: str = "self-host"
 
     def public_dict(self) -> dict[str, Any]:
         """Only the fields safe to hand to the browser."""
@@ -57,64 +54,37 @@ class StartResult:
         }
 
 
-class RenderBackend(ABC):
-    """Abstract renderer lifecycle shared by all backend types."""
+class AvatarEngine(ABC):
+    """Abstract self-host avatar renderer lifecycle."""
 
     name: str = "abstract"
 
+    @classmethod
+    @abstractmethod
+    def from_config(cls, cfg: dict) -> "AvatarEngine":
+        """Build from cfg = {engine, model, device, ...}."""
+        ...
+
     @abstractmethod
     def start(self, opts: StartOptions) -> StartResult:
-        """Create + start a session. Blocking; the API runs it off-loop."""
-        ...
+        """Create + start a session, returning browser-safe data."""
 
     @abstractmethod
     def interrupt(self, session_id: str) -> None:
         """Barge-in: stop the current utterance."""
-        ...
 
     @abstractmethod
     def stop(self, session_id: str) -> None:
         """Tear down a session."""
-        ...
+
+    @abstractmethod
+    def session_status(self, session_id: str) -> str:
+        """Return a status string for a session."""
 
     def stop_all(self) -> None:
         """Stop all tracked sessions; stateless backends need no cleanup."""
         return None
 
-    def session_status(self, session_id: str) -> str:
-        """Return a status string for a session.
-
-        Concrete default: returns ``"unknown"`` so backends that do not track
-        per-session status (e.g. the cloud backend) are unaffected. Streaming
-        backends that track session state (e.g. MockRenderBackend) override this
-        to return the real status and raise KeyError for unknown sessions.
-        """
-        return "unknown"
-
-
-class FullPipelineBackend(RenderBackend):
-    """Renderer that owns a full text -> speech/video turn internally."""
-
-    @abstractmethod
-    def say(self, session_id: str, text: str, generate: bool = True) -> str:
-        """One turn.
-
-        generate=True: backend does LLM(text)->TTS->stream (text is the user msg
-        or an LLM prompt). generate=False: speak ``text`` VERBATIM via TTS only
-        (no LLM) — used for templated hooks / O(1) factual answers. Returns the
-        spoken text.
-        """
-        ...
-
-
-class StreamingAvatarBackend(RenderBackend):
-    """Renderer that consumes TTS AudioWindows and yields VideoWindows."""
-
-    @abstractmethod
-    def stream_audio(
-        self,
-        session_id: str,
-        audio_window: AudioWindow,
-    ) -> Iterator[VideoWindow]:
-        """Render one TTS audio window into one or more video windows."""
-        ...
+    def unload(self) -> None:
+        """Free resources when the lifecycle ends."""
+        return None
