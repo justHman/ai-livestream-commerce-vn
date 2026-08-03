@@ -11,13 +11,12 @@ Verifies:
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.bootstrap import BootstrapContainer, create_app, create_container
 from core.api import v1
 from core.config import AppConfig
-from core.engine_manager import EngineManager
 from core.render.mock import MockRenderBackend
 from core.store import InMemorySessionStore
 
@@ -93,6 +92,8 @@ def test_two_apps_rest_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     app_a = create_app(config=config, container=container_a)
     app_b = create_app(config=config, container=container_b)
 
+    # Bridge the legacy v1 deps so HTTP routes through core/api/v1 work.
+    v1.init_deps(v1.V1Deps(backend=backend, store=store_a, hub=v1.ControlHub(), config=config))
     with TestClient(app_a) as client_a:
         client_a.post("/api/v1/lite/start", json={})
     with TestClient(app_b) as client_b:
@@ -104,7 +105,6 @@ def test_two_apps_rest_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_missing_container_fails_safe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Requesting container dependencies without a container raises RuntimeError."""
     _env(monkeypatch)
-    from backend.api.dependencies import container_from_request
 
     config = AppConfig(render_backend="mock", app_env="dev")
     store = InMemorySessionStore()

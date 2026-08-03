@@ -22,6 +22,9 @@ def _make_app(config=None,container=None):
     config=AppConfig(render_backend="mock",app_env="dev")
   if container is None:
     container=create_container(backend=MockRenderBackend(),store=InMemorySessionStore(),config=config)
+  # Bridge legacy v1 deps so HTTP routes through core/api/v1 work.
+  from core.api import v1
+  v1.init_deps(v1.V1Deps(backend=MockRenderBackend(),store=InMemorySessionStore(),hub=v1.ControlHub(),config=config))
   return create_app(config=config,container=container)
 
 def test_tokens_match():
