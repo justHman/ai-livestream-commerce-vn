@@ -97,9 +97,7 @@ class ActiveSessionHandler(logging.Handler):
             self._state = INACTIVE
             if flush_error is not None:
                 if close_error is not None:
-                    flush_error.add_note(
-                        f"Secondary stream close failure: {type(close_error).__name__}: {close_error}"
-                    )
+                    raise flush_error from close_error
                 raise flush_error
             if close_error is not None:
                 raise close_error
