@@ -41,6 +41,7 @@ test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -59,6 +60,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'test'" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
     { name = "redis" },
     { name = "requests" },
     { name = "sentence-transformers", marker = "extra == 'director'", specifier = ">=5,<6" },

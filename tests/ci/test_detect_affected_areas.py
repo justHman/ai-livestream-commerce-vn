@@ -1,0 +1,197 @@
+"""Tests for OpenSpec 2.4 affected-area detection."""
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from scripts.ci.detect_affected_areas import (
+    ALL_AREAS,
+    BACKEND_SCHEMA_CONSUMERS,
+    classify_path,
+    detect_affected_areas,
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+# ── Direct owner ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("services/product/backend_service/src/backend/main.py", ["backend_service"]),
+        ("services/product/llm_service/src/llm/config.py", ["llm_service"]),
+        ("services/product/tts_service/src/tts/main.py", ["tts_service"]),
+        ("services/product/avatar_service/src/avatar/main.py", ["avatar_service"]),
+        ("services/platform/livekit/Dockerfile", ["platform_livekit"]),
+        ("services/platform/lmcache/lmcache.yaml", ["platform_lmcache"]),
+        ("services/platform/postgres/scripts/smoke_test.py", ["platform_postgres"]),
+        ("services/platform/redis/redis.dev.conf", ["platform_redis"]),
+        ("workbench/src/main.ts", ["workbench"]),
+        ("frontend/stage2.html", ["workbench"]),
+        ("infra/environments/dev/main.tf", ["infra"]),
+        ("core/director/config.py", ["backend_service"]),
+        ("providers/liveavatar_cloud/service/lite_agent.py", ["backend_service"]),
+    ],
+)
+def test_direct_owner(path, expected):
+    assert classify_path(path) == expected
+
+
+# ── Contract fan-out ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (
+            "services/product/tts_service/contracts/v1/openapi.json",
+            ["backend_service", "tts_service"],
+        ),
+        (
+            "services/product/llm_service/contracts/v1/openapi.json",
+            ["backend_service", "llm_service"],
+        ),
+        (
+            "services/product/avatar_service/contracts/v1/openapi.json",
+            ["avatar_service", "backend_service"],
+        ),
+        (
+            "services/product/backend_service/contracts/v1/openapi.json",
+            ["backend_service", "workbench"],
+        ),
+        (
+            "services/product/backend_service/contracts/v1/websocket/control.schema.json",
+            ["backend_service", "workbench"],
+        ),
+    ],
+)
+def test_contract_fanout(path, expected):
+    assert classify_path(path) == expected
+
+
+def test_contract_never_recursive():
+    # TTS contract fans to tts + backend only, NOT workbench (one level).
+    areas = classify_path("services/product/tts_service/contracts/v1/openapi.json")
+    assert "workbench" not in areas
+
+
+def test_backend_schema_fans_to_workbench():
+    assert classify_path("core/api/v1/schemas/sessions.py") == sorted(BACKEND_SCHEMA_CONSUMERS)
+
+
+# ── Shared config / locks / build ───────────────────────────────────────────
+
+
+def test_pyproject_toml_shared_config():
+    assert classify_path("pyproject.toml") == ["shared-config"]
+
+
+def test_uv_lock_shared_locks():
+    assert classify_path("uv.lock") == ["shared-locks"]
+
+
+def test_scripts_ci_is_ci_area():
+    assert classify_path("scripts/ci/detect_affected_areas.py") == ["ci"]
+
+
+def test_github_workflow_is_ci():
+    assert classify_path(".github/workflows/ci.yml") == ["ci"]
+
+
+# ── Docs neutral ────────────────────────────────────────────────────────────
+
+
+def test_docs_neutral():
+    assert classify_path("docs/architecture.md") == []
+    assert classify_path("notes/foo.md") == []
+    assert classify_path("README.md") == []
+    assert classify_path("openspec/changes/x/proposal.md") == []
+
+
+# ── Unknown ─────────────────────────────────────────────────────────────────
+
+
+def test_unknown_path_conservative():
+    areas = classify_path("unknown/random/file.txt")
+    assert areas == sorted(ALL_AREAS)
+
+
+def test_root_misc_file_conservative():
+    areas = classify_path("data.csv")
+    assert areas == sorted(ALL_AREAS)
+
+
+# ── Multi-change union ──────────────────────────────────────────────────────
+
+
+def test_multi_change_union():
+    r = detect_affected_areas(
+        [
+            "services/product/tts_service/contracts/v1/openapi.json",
+            "workbench/src/main.ts",
+            "infra/environments/dev/main.tf",
+        ]
+    )
+    assert r["areas"] == ["backend_service", "infra", "tts_service", "workbench"]
+
+
+def test_dedup_union_deterministic():
+    a = detect_affected_areas(["core/api/v1/schemas/sessions.py", "core/director/config.py"])
+    b = detect_affected_areas(["core/director/config.py", "core/api/v1/schemas/sessions.py"])
+    assert a["areas"] == b["areas"]
+    assert a["matrix"] == b["matrix"]
+
+
+def test_rename_safe_union():
+    # A rename surfaces as delete(old) + add(new); union must be deterministic
+    # and safe (old path classify is harmless; new path carries the owner).
+    r = detect_affected_areas(
+        [
+            "services/product/tts_service/src/old_tts.py",
+            "services/product/tts_service/src/tts/new_name.py",
+        ]
+    )
+    assert r["areas"] == ["tts_service"]
+
+
+# ── Matrix shape ────────────────────────────────────────────────────────────
+
+
+def test_matrix_covers_all_areas():
+    r = detect_affected_areas(["workbench/src/main.ts"])
+    for area in ALL_AREAS:
+        assert area in r["matrix"]
+    assert r["matrix"]["workbench"] is True
+    assert r["matrix"]["infra"] is False
+
+
+def test_no_silent_unknown():
+    # Unknown paths are classified (conservative full fan-out), never dropped.
+    r = detect_affected_areas(["weird/path"])
+    assert r["unclassified"] == []
+    assert set(r["areas"]) == set(ALL_AREAS)
+
+
+# ── CLI smoke ───────────────────────────────────────────────────────────────
+
+
+def test_cli_json_output():
+    proc = subprocess.run(
+        [
+            "python",
+            "scripts/ci/detect_affected_areas.py",
+            "--json",
+            "--paths",
+            "services/product/llm_service/src/llm/main.py",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["areas"] == ["llm_service"]

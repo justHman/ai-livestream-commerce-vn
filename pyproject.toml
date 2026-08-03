@@ -26,6 +26,8 @@ test = [
   "pytest-asyncio",
   "pytest-timeout",
   "async_timeout",
+  # Static GitHub Actions workflow validation (OpenSpec 2.3) parses YAML.
+  "PyYAML>=6.0",
 ]
 livekit = ["livekit"]
 postgres = ["asyncpg"]
@@ -36,7 +38,7 @@ package = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["core/tests"]
+testpaths = ["core/tests", "tests/ci"]
 pythonpath = [
   ".",
   "services/product/backend_service/src",
