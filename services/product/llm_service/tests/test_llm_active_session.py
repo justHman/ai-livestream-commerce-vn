@@ -834,7 +834,9 @@ def test_platform_collector_writes_only_normalized_events_to_exact_log() -> None
             collector.emit_event("postgres", "evt=connection_accepted latency_ms=7")
             livekit = active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
             postgres = active_root.joinpath("platform", "postgres.log").read_text(encoding="utf-8")
-            assert " | INFO    | livekit : evt=platform_event evt=sensitive_field_dropped\n" in livekit
+            assert (
+                " | INFO    | livekit : evt=platform_event evt=sensitive_field_dropped\n" in livekit
+            )
             assert " | INFO    | postgres: evt=platform_event latency_ms=7\n" in postgres
             assert not active_root.joinpath("platform", "backend.log").exists()
         finally:
@@ -850,10 +852,9 @@ def test_platform_collector_rejects_unknown_service_and_closes_idempotently() ->
                 collector.emit_event("backend", "boom")
             collector.close()
             collector.close()
-            assert (
-                " | INFO    | livekit : evt=platform_event\n"
-                in active_root.joinpath("platform", "livekit.log").read_text(encoding="utf-8")
-            )
+            assert " | INFO    | livekit : evt=platform_event\n" in active_root.joinpath(
+                "platform", "livekit.log"
+            ).read_text(encoding="utf-8")
         finally:
             collector.close()
 

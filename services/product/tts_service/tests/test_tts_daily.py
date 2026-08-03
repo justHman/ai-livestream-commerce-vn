@@ -416,9 +416,7 @@ def test_setup_attaches_console_and_daily_handlers() -> None:
     with removable_temp_dir() as runtime_root:
         logger = setup_logging(validate_config(runtime_root=runtime_root))
         try:
-            owned = [
-                h for h in logger.handlers if getattr(h, "_tts_observability_handler", False)
-            ]
+            owned = [h for h in logger.handlers if getattr(h, "_tts_observability_handler", False)]
             assert len(owned) == 2
             assert sum(isinstance(h, DailyHandler) for h in owned) == 1
             assert sum(isinstance(h, logging.StreamHandler) for h in owned) == 1

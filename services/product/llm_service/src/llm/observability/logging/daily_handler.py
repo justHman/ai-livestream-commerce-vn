@@ -63,9 +63,7 @@ class DailyHandler(logging.Handler):
         if not isinstance(retention_days, int) or isinstance(retention_days, bool):
             raise ValueError("LOG_RETENTION_DAYS must be a bounded integer")
         if not 1 <= retention_days <= _MAX_RETENTION_DAYS:
-            raise ValueError(
-                f"LOG_RETENTION_DAYS must be between 1 and {_MAX_RETENTION_DAYS}"
-            )
+            raise ValueError(f"LOG_RETENTION_DAYS must be between 1 and {_MAX_RETENTION_DAYS}")
         self.createLock()
 
     @property
@@ -117,9 +115,7 @@ class DailyHandler(logging.Handler):
             or isinstance(window, bool)
             or not 1 <= window <= _MAX_RETENTION_DAYS
         ):
-            raise ValueError(
-                f"LOG_RETENTION_DAYS must be between 1 and {_MAX_RETENTION_DAYS}"
-            )
+            raise ValueError(f"LOG_RETENTION_DAYS must be between 1 and {_MAX_RETENTION_DAYS}")
         cutoff = (today or self.utc_day) - timedelta(days=window)
         directory = self._service_directory()
         if not directory.is_dir():

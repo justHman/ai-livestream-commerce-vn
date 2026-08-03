@@ -68,9 +68,7 @@ class LoggingConfig:
         if not isinstance(self.retention_days, int) or isinstance(self.retention_days, bool):
             raise ValueError("LOG_RETENTION_DAYS must be a bounded integer")
         if not 1 <= self.retention_days <= MAX_RETENTION_DAYS:
-            raise ValueError(
-                f"LOG_RETENTION_DAYS must be between 1 and {MAX_RETENTION_DAYS}"
-            )
+            raise ValueError(f"LOG_RETENTION_DAYS must be between 1 and {MAX_RETENTION_DAYS}")
         if self.color not in {"auto", "never"}:
             raise ValueError("LOG_COLOR must be 'auto' or 'never'")
 
