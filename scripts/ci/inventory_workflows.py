@@ -16,6 +16,7 @@ it to a tracked path and assert it does not drift from the source of truth.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -81,6 +82,51 @@ def _normalize_path(uses: str) -> str:
     return uses.removeprefix("./").removeprefix(".github/workflows/")
 
 
+_SECRETS_REF = re.compile(r"\$\{\{\s*secrets\.([A-Za-z0-9_.-]+)\s*\}\}")
+
+
+def extract_secret_refs(value: Any) -> List[str]:
+    """Recursively extract `${{ secrets.NAME }}` references from any value.
+
+    Scans strings, and recursively into dicts/lists (e.g. `with:` blocks,
+    `env:` blocks, `run:` scripts). Returns deduplicated sorted secret names.
+    Never reads secret values — only the referenced name is surfaced.
+    """
+    found: List[str] = []
+
+    def _walk(v: Any) -> None:
+        if isinstance(v, str):
+            for m in _SECRETS_REF.finditer(v):
+                found.append(m.group(1))
+        elif isinstance(v, dict):
+            for k, val in v.items():
+                _walk(k)
+                _walk(val)
+        elif isinstance(v, list):
+            for item in v:
+                _walk(item)
+
+    _walk(value)
+    return sorted(set(found))
+
+
+def step_push_semantics(step: dict) -> bool:
+    """Return True if a step is a build-push-action that actually pushes.
+
+    Honors `with.push`: `true` (or YAML bool) means push; `false` means the
+    action builds/loads without pushing. Absence of `push` under the build-push
+    action is treated as push (action default). Any other action is not a
+    build-push and returns False.
+    """
+    uses = step.get("uses", "")
+    if not isinstance(uses, str) or "docker/build-push-action@" not in uses:
+        return False
+    with_block = step.get("with")
+    if isinstance(with_block, dict) and "push" in with_block:
+        return bool(with_block["push"])
+    return True
+
+
 # ── Inventory schema ────────────────────────────────────────────────────────
 
 
@@ -88,15 +134,17 @@ def _inventory_job(
     name: str, job: dict, wf_path: Path, workflows_dir: Path, seen: set
 ) -> Dict[str, Any]:
     """Inventory a single job with step-level uses, secrets, environment."""
+    job_secrets: List[str] = (
+        list(job.get("secrets", {}).keys()) if isinstance(job.get("secrets"), dict) else []
+    )
+    job_secrets_ext = extract_secret_refs(job.get("env")) + extract_secret_refs(job.get("with"))
     entry: Dict[str, Any] = {
         "name": name,
         "runs_on": job.get("runs-on"),
         "uses": [],
         "steps": [],
         "environment": job.get("environment"),
-        "secrets": list(job.get("secrets", {}).keys())
-        if isinstance(job.get("secrets"), dict)
-        else [],
+        "secrets": sorted(set(job_secrets + job_secrets_ext)),
         "key_actions": [],
     }
 
@@ -124,6 +172,16 @@ def _inventory_job(
                 entry.setdefault("raw_runs", []).append(run)
             if "with" in step:
                 step_info["with"] = sorted(step["with"].keys())
+                step_info["with_push_semantics"] = step_push_semantics(step)
+            # Extract secret references from this step (with/env/run) without
+            # reading values.
+            step_secrets = extract_secret_refs(step.get("with"))
+            step_secrets += extract_secret_refs(step.get("env"))
+            step_secrets += extract_secret_refs(run)
+            for s in step_secrets:
+                if s not in entry["secrets"]:
+                    entry["secrets"].append(s)
+            entry["secrets"] = sorted(set(entry["secrets"]))
             entry["steps"].append(step_info)
 
             # Recursively inventory a local reusable workflow referenced by this step.
@@ -193,7 +251,14 @@ def inventory_workflow(
     all_uses = [u for job in job_snapshots for u in job.get("uses", [])]
     all_runs = " ".join(r for job in job_snapshots for r in job.get("raw_runs", []))
 
-    if any("docker/build-push-action@" in u for u in all_uses):
+    # artifact_push honors step-level with.push semantics under build-push-action.
+    artifact_push_steps = [
+        step
+        for job in job_snapshots
+        for step in job.get("steps", [])
+        if step.get("with_push_semantics") is True
+    ]
+    if artifact_push_steps:
         mutation["artifact_push"] = True
     if any(u.startswith(p) for u in all_uses for p in DEPLOY_ACTIONS):
         mutation["deploy"] = True

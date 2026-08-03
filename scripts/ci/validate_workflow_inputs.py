@@ -131,6 +131,46 @@ def validate_environment(env: str, allowed: Optional[Set[str]] = None) -> str:
 
 DEFAULT_SERVICE_ALLOWLIST = SUPPORTED_SERVICES
 
+# ── Workflow profiles: bind environment + service allowlist ─────────────────
+# deploy-dev      -> dev + all product services
+# deploy-staging  -> staging + all product services
+# release         -> prod + single eligible product service
+
+_WORKFLOW_PROFILES = {
+    "deploy-dev": {"env": "dev", "services": PRODUCT_SERVICE_IDS},
+    "deploy-staging": {"env": "staging", "services": PRODUCT_SERVICE_IDS},
+    "release": {"env": "prod", "services": PRODUCT_SERVICE_IDS},
+}
+
+SUPPORTED_PROFILES = frozenset(_WORKFLOW_PROFILES)
+
+
+def workflow_profile(profile: str) -> Dict[str, object]:
+    """Resolve a named workflow profile to {env, services} binding.
+
+    Raises ValueError for unknown profile. Callers MUST pass an explicit
+    profile for dispatch/release; there is no permissive global fallback.
+    """
+    profile = profile.strip().lower()
+    if profile not in _WORKFLOW_PROFILES:
+        raise ValueError(
+            f"Unknown workflow profile: '{profile}'. Available: "
+            f"{', '.join(sorted(SUPPORTED_PROFILES))}."
+        )
+    return _WORKFLOW_PROFILES[profile]
+
+
+def release_services_single(services: List[str], profile: str) -> List[str]:
+    """Release profile permits exactly one eligible product service per run."""
+    if profile != "release":
+        return sorted(services)
+    if len(services) != 1:
+        raise ValueError(
+            f"release profile requires exactly one service; got {len(services)}: "
+            f"{', '.join(sorted(services))}."
+        )
+    return sorted(services)
+
 
 def validate_services(
     services_str: str,
@@ -257,6 +297,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         description="Validate workflow dispatch inputs (SHA, environment, services)."
     )
     parser.add_argument("--sha", help="Full 40-hex commit SHA to validate")
+    parser.add_argument(
+        "--profile",
+        help="Workflow profile that binds env and services "
+        f"(one of: {', '.join(sorted(SUPPORTED_PROFILES))})",
+    )
     parser.add_argument("--env", help="Target environment (dev/staging/prod)")
     parser.add_argument(
         "--services",
@@ -269,29 +314,31 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Repository root for git resolution (default: cwd)",
     )
     parser.add_argument(
-        "--require",
-        default="sha,env,services",
-        help="Which inputs are required (comma list of sha/env/services). Defaults to all three.",
-    )
-    parser.add_argument(
         "--github-output",
         action="store_true",
         help="Emit validated values to GITHUB_OUTPUT",
     )
 
     args = parser.parse_args(argv)
-
-    required: Set[str] = {r.strip() for r in args.require.split(",") if r.strip()}
-    unknown_required = required - REQUIRED_INPUTS
-    if unknown_required:
-        print(
-            f"ERROR: unknown --require values: {', '.join(sorted(unknown_required))}. "
-            f"Allowed: sha, env, services.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
     errors: List[str] = []
+
+    # Resolve environment + service allowlist from the explicit profile when
+    # given. There is NO permissive global fallback: dispatch/release MUST name
+    # a profile (or fully explicit env+services whose allowlist is derived).
+    profile = None
+    if args.profile:
+        try:
+            profile = workflow_profile(args.profile)
+        except ValueError as e:
+            errors.append(str(e))
+
+    if profile is None:
+        # Fallback: allow explicit env+services, but scope services to the
+        # canonical product allowlist (no accidental permissive superset).
+        env_override_present = bool(args.env)
+        if env_override_present and profile is None and not args.services:
+            errors.append("Missing required input: --services")
+
     sha = None
     env = None
     services = None
@@ -301,24 +348,47 @@ def main(argv: Optional[List[str]] = None) -> None:
             sha = validate_sha(args.sha, args.repo_root)
         except ValueError as e:
             errors.append(str(e))
-    elif "sha" in required:
+    else:
         errors.append("Missing required input: --sha")
 
-    if args.env:
+    if profile is not None:
+        env = str(profile["env"])
+        if env not in SUPPORTED_ENVIRONMENTS:
+            errors.append(f"Profile binds unsupported env '{env}'.")
+        if args.env and args.env != env:
+            errors.append(
+                f"--env '{args.env}' contradicts profile '{args.profile}' which binds '{env}'."
+            )
+    elif args.env:
         try:
             env = validate_environment(args.env)
         except ValueError as e:
             errors.append(str(e))
-    elif "env" in required:
+    else:
         errors.append("Missing required input: --env")
 
-    if args.services:
+    if profile is not None:
+        allow = profile["services"]  # type: ignore[union-attr]
+        if args.services:
+            try:
+                services = validate_services(args.services, allowed=allow)
+                services = release_services_single(services, args.profile or "")
+            except ValueError as e:
+                errors.append(str(e))
+        else:
+            # Profile default: all bound services (release needs exactly one).
+            try:
+                services = release_services_single(
+                    sorted(allow), args.profile if args.profile else ""
+                )
+            except ValueError as e:
+                errors.append(str(e))
+                services = None
+    elif args.services:
         try:
             services = validate_services(args.services)
         except ValueError as e:
             errors.append(str(e))
-    elif "services" in required:
-        errors.append("Missing required input: --services")
 
     if errors:
         for err in errors:
