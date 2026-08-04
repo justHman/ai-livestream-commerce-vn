@@ -263,7 +263,7 @@ import sys
 
 os.environ.update(APP_ENV="dev", DIRECTOR_ENABLED="0", LLM_ENGINE="none", RENDER_BACKEND="mock", SESSION_STORE="memory", TTS_ENGINE="tone")
 {loader}
-assert sys.path[:2] == [str(module.BACKEND_SRC), str(module.REPO_ROOT)]
+assert sys.path[0] == str(module.BACKEND_SRC)
 assert sys.path.count(str(module.BACKEND_SRC)) == 1
 assert sys.path.count(str(module.REPO_ROOT)) == 1
 from backend.main import app

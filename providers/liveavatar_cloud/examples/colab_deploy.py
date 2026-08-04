@@ -47,11 +47,21 @@ def _find_repo_root() -> Path:
 
 
 def _prepend_import_paths(repo_root: Path) -> Path:
+    # Canonical service packages (backend + sibling llm/tts/avatar) — the
+    # backend's COPY-DON'T-IMPORT seam imports ``avatar.*``/``llm.*``/``tts.*``
+    # at runtime (e.g. ``config.build_render_backend`` -> avatar.engines.mock).
     backend_src = repo_root / "services" / "product" / "backend_service" / "src"
-    for path in (str(backend_src), str(repo_root)):
+    import_paths = [
+        str(backend_src),
+        str(repo_root / "services" / "product" / "llm_service" / "src"),
+        str(repo_root / "services" / "product" / "tts_service" / "src"),
+        str(repo_root / "services" / "product" / "avatar_service" / "src"),
+        str(repo_root),
+    ]
+    for path in import_paths:
         while path in sys.path:
             sys.path.remove(path)
-    sys.path[:0] = [str(backend_src), str(repo_root)]
+    sys.path[:0] = import_paths
     return backend_src
 
 
