@@ -6,9 +6,7 @@ the v1 router, and attaches a typed ``BootstrapContainer`` to ``app.state``.
 
 Canonical dependency access goes through ``app.state.container`` (see
 ``backend.api.dependencies``); the bootstrap never touches the legacy
-``core.api.v1`` process-global seam (``init_deps``/``deps``).  The committed
-``core.server`` entrypoint keeps its own legacy wiring for tests/parity until
-1.26 removes it.
+``core.api.v1`` process-global seam (``init_deps``/``deps``).
 """
 
 from __future__ import annotations

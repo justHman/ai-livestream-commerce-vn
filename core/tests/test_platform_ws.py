@@ -21,7 +21,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _client() -> TestClient:
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(render_backend="mock", app_env="dev", backend_api_token="")
     deps = v1.V1Deps(
@@ -47,7 +47,7 @@ def test_platform_ws_stores_when_no_coordinator(mock_env: None) -> None:
 
 
 def test_platform_ws_auth_rejects_in_prod(mock_env: None) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(
         render_backend="mock",
@@ -72,7 +72,7 @@ def test_platform_ws_auth_rejects_in_prod(mock_env: None) -> None:
 
 
 def test_platform_ws_burst_closes_with_policy_violation(mock_env: None) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(
         render_backend="mock",
@@ -100,7 +100,7 @@ def test_platform_ws_burst_closes_with_policy_violation(mock_env: None) -> None:
 
 
 def test_platform_ws_reconnect_keeps_session_budget(mock_env: None) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(
         render_backend="mock",
@@ -132,7 +132,7 @@ def test_platform_ws_reconnect_keeps_session_budget(mock_env: None) -> None:
 
 
 def test_platform_ws_connections_have_separate_budgets(mock_env: None) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(
         render_backend="mock",

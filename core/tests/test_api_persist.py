@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from core.api import v1
 from core.config import AppConfig
-from core.server import create_app
+from backend.main import create_app
 
 
 class _FakePgStore:
@@ -73,7 +73,7 @@ def _app_with_pg(pg, monkeypatch) -> TestClient:
 def test_lite_start_persists_session(monkeypatch):
     pg = _FakePgStore()
     with _app_with_pg(pg, monkeypatch) as client:
-        r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
+        r = client.post("/api/v1/sessions", json={"is_sandbox": True})
         assert r.status_code == 200
         sid = r.json()["session_id"]
     assert len(pg.sessions) == 1
@@ -128,8 +128,8 @@ def test_lite_ingest_no_pg_behaves_unchanged(monkeypatch):
     )
     with TestClient(create_app(config=config, deps=deps)) as client:
         r = client.post(
-            "/api/v1/lite/ingest",
-            json={"session_id": "x", "comments": [], "viewer_count": 0, "msg_rate": 0},
+            "/api/v1/sessions/x/ingest",
+            json={"comments": [], "viewer_count": 0, "msg_rate": 0},
         )
         # Director not enabled -> 501, but no persistence crash.
         assert r.status_code in (501, 409)

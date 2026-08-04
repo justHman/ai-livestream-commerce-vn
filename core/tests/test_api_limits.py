@@ -18,7 +18,7 @@ from core.store import InMemorySessionStore
 
 
 def _client(config: AppConfig) -> TestClient:
-    from core.server import create_app
+    from backend.main import create_app
 
     deps = v1.V1Deps(
         backend=MockRenderBackend(),

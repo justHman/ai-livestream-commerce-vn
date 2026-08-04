@@ -40,7 +40,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_app():
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(
         render_backend="mock",

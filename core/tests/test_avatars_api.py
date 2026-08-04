@@ -21,7 +21,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _client() -> TestClient:
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(render_backend="mock", app_env="dev")
     deps = v1.V1Deps(

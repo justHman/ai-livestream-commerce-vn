@@ -92,7 +92,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         config=cfg,
     )
     v1.init_deps(deps)
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=deps)
     return TestClient(app)
@@ -131,10 +131,10 @@ def test_endpoint_503_when_secret_missing(monkeypatch: pytest.MonkeyPatch):
         config=cfg,
     )
     v1.init_deps(deps)
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=deps)
     with TestClient(app) as c:
         resp = c.post("/api/v1/media/livekit/room/s1")
         assert resp.status_code == 503
-        assert "LiveKit" in resp.json()["detail"]
+        assert "LiveKit" in resp.json()["error"]["message"]

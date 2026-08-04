@@ -6,7 +6,6 @@ import asyncio
 
 import pytest
 
-from core import server
 from core.api import v1
 from core.config import AppConfig
 from core.livekit_publish import LiveKitPublisherRegistry
@@ -306,16 +305,18 @@ async def test_server_shutdown_stops_livekit_publishers_after_orchestrators() ->
             events.append("backend")
 
     config = AppConfig(render_backend="mock", app_env="dev")
-    deps = v1.V1Deps(
+    from backend.bootstrap import create_container
+    from backend.bootstrap.lifespan import _shutdown
+
+    container = create_container(
         backend=Backend(),
         store=InMemorySessionStore(),
-        hub=v1.ControlHub(),
         config=config,
-        orchestrators={"session": {"orchestrator": Orchestrator()}},
         livekit_publishers=registry,
     )
+    container.orchestrators = {"session": {"orchestrator": Orchestrator()}}
 
-    await server._shutdown(deps, None)
+    await _shutdown(container)
 
     assert events == ["orchestrator:session", "publisher", "backend"]
 

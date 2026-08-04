@@ -54,7 +54,7 @@ def test_health_ready_reports_director_embedder_status(monkeypatch) -> None:
         engine_manager=EngineManager(),
         config=AppConfig(app_env="dev", render_backend="mock", director_enabled=True),
     )
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=dependencies)
     with TestClient(app) as client:

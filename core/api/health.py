@@ -2,8 +2,8 @@
 
 Excluded from the versioned v1 contract: ``/health/live`` (liveness, no
 dependencies) and ``/health/ready`` (readiness, checks configured
-dependencies) are mounted on the app directly by the app factories
-(``core.server`` and ``backend.bootstrap.app_factory``). The ready probe
+dependencies) are mounted on the app directly by the app factory
+(``backend.bootstrap.app_factory``). The ready probe
 fails loud when the app has no ``app.state.container`` (the typed
 ``BootstrapContainer``) — it never calls external services.
 """

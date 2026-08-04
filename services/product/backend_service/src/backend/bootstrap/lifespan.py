@@ -3,7 +3,7 @@
 Owns the full container lifecycle:
   startup:  connect Postgres / configured store in explicit dependency order;
             a bounded retry keeps the app bootable when the DB is briefly
-            unavailable (matching ``core.server`` parity), while any other
+            unavailable, while any other
             startup failure cleans every resource already initialized.
   shutdown: bounded, dependency-ordered cleanup — orchestrator/session
             cancellation first, then coordinator, publishers, render clients,
@@ -36,7 +36,7 @@ _WS_RATE_LIMIT_CLOSE_CODE = 1008
 
 
 async def _connect_postgres(container: BootstrapContainer) -> None:
-    """Connect + apply schema with bounded retries (parity with core.server).
+    """Connect + apply schema with bounded retries.
 
     ``CancelledError`` propagates immediately; other failures log and retry
     up to ``_STARTUP_ATTEMPTS`` at ``_STARTUP_RETRY_DELAYS``; on exhaustion the

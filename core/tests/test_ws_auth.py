@@ -49,7 +49,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _client(cfg: AppConfig) -> TestClient:
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(config=cfg, deps=_deps())
     return TestClient(app)

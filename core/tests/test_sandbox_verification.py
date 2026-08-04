@@ -47,7 +47,7 @@ class _VerificationBackend(FullPipelineBackend):
 
 
 def _client(backend: FullPipelineBackend) -> TestClient:
-    from core.server import create_app
+    from backend.main import create_app
 
     config = AppConfig(render_backend="cloud_liveavatar", app_env="dev")
     dependencies = v1.V1Deps(

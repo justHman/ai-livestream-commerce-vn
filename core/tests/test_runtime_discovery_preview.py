@@ -22,7 +22,7 @@ class _PreviewTone(ToneEngine):
 
 
 def _client() -> tuple[TestClient, EngineManager, v1.AvatarStore]:
-    from core.server import create_app
+    from backend.main import create_app
 
     config = AppConfig(
         render_backend="mock",

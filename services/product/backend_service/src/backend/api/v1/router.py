@@ -657,6 +657,7 @@ async def health_ready(request: Request) -> dict[str, Any]:
 
 @router.post("/media/livekit/room/{session_id}")
 async def media_livekit_room(
+    request: Request,
     session_id: str,
     _: None = Depends(viewer_auth),
 ) -> dict[str, Any]:
@@ -676,13 +677,17 @@ async def media_livekit_room(
             status_code=503,
             detail="LiveKit not configured (LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET)",
         )
-    from avatar.publishing import LiveKitConfigError, mint_session_viewer_token
+    from avatar.publishing import LiveKitConfigError, mint_room_token
 
     try:
-        token = mint_session_viewer_token(
+        token = mint_room_token(
             api_key=api_key,
             api_secret=api_secret,
-            session_id=session_id,
+            room=session_id,
+            identity=f"viewer-{session_id}",
+            name=f"viewer-{session_id}",
+            can_publish=False,
+            can_subscribe=True,
         )
     except (LiveKitConfigError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
