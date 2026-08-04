@@ -52,6 +52,10 @@ def main() -> int:
         keys.append(m.group(1) if m else None)
         if '"workspace' in text:
             errors.append(f"{backend}: uses Terraform workspaces")
+        if "use_lockfile" not in text:
+            errors.append(f"{backend}: missing use_lockfile=true (native S3 lockfile)")
+        if "dynamodb_table" in text:
+            errors.append(f"{backend}: still references DynamoDB locking")
         for tf in env.glob("*.tf"):
             if re.search(r'terraform_remote_state|data\s+"terraform_remote_state"', tf.read_text(encoding="utf-8")):
                 errors.append(f"{tf}: cross-state reference")

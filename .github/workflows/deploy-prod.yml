@@ -25,7 +25,6 @@ permissions:
 env:
   AWS_REGION: ap-northeast-2
   STATE_BUCKET: ai-livestream-tfstate-191918535424
-  STATE_LOCK_TABLE: ai-livestream-tf-lock
 
 concurrency:
   group: deploy-prod
@@ -211,7 +210,6 @@ jobs:
         run: |
           set -euo pipefail
           aws s3api head-bucket --bucket "$STATE_BUCKET"
-          aws dynamodb describe-table --table-name "$STATE_LOCK_TABLE" >/dev/null
           terraform -chdir=infra/environments/prod init -input=false
           output=$(terraform -chdir=infra/environments/prod output -json)
           cluster=$(jq -r '.ecs_cluster_name.value // empty' <<<"$output")

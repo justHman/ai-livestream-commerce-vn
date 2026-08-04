@@ -152,30 +152,27 @@ data "aws_iam_policy_document" "github_deploy_dev" {
     actions   = ["logs:DescribeLogGroups", "logs:DescribeLogStreams"]
     resources = ["*"]
   }
-  # Terraform state bucket + lock table: preflight verifies both, terraform
-  # init/output reads state objects. Scope to the single tfstate bucket + lock
-  # table managed by this stack.
+  # Terraform state bucket: preflight verifies it, terraform init/output reads
+  # state objects. Scoped to the exact dev state key prefix (native S3
+  # lockfiles: .tflock objects live beside the state key).
   statement {
     effect = "Allow"
     actions = [
       "s3:ListBucket",
-      "s3:GetObject",
-      "s3:HeadBucket",
     ]
-    resources = [
-      "arn:aws:s3:::${var.tfstate_bucket_name}",
-      "arn:aws:s3:::${var.tfstate_bucket_name}/*",
-    ]
+    resources = ["arn:aws:s3:::${var.tfstate_bucket_name}"]
   }
   statement {
     effect = "Allow"
     actions = [
-      "dynamodb:DescribeTable",
-      "dynamodb:GetItem",
-      "dynamodb:PutItem",
-      "dynamodb:DeleteItem",
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:HeadObject",
     ]
-    resources = ["arn:aws:dynamodb:*:*:table/${var.tf_lock_table_name}"]
+    resources = [
+      "arn:aws:s3:::${var.tfstate_bucket_name}/dev/*",
+    ]
   }
   # DEV assets bucket: seed-weights workflow uploads model weights to
   # s3://ai-livestream-dev-assets-<acct>/weights/. Scoped to the dev env bucket.
