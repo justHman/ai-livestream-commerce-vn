@@ -75,6 +75,8 @@ jobs:
         run: terraform -chdir=infra/environments/${{ matrix.workspace }} init -backend=false
       - name: Validate
         run: terraform -chdir=infra/environments/${{ matrix.workspace }} validate
+      - name: Module boundary check
+        run: python scripts/ci/check_infra_module_boundaries.py
 
   docker-build-backend:
     runs-on: ubuntu-latest
