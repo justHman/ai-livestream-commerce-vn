@@ -36,9 +36,7 @@ redis_url         = ""
 app_env           = "dev"
 render_backend    = "mock"
 llm_engine        = "none"
-llm_base_url      = ""
 tts_engine        = "tone"
-tts_base_url      = ""
 spot_capacity_percentage = 0
 
 alert_email           = ""

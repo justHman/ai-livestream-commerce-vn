@@ -60,9 +60,7 @@ redis_url         = ""
 app_env           = "dev"
 render_backend    = "self_host_avatarforcing_half"
 llm_engine        = "vllm"
-llm_base_url      = ""
 tts_engine        = "vieneu"
-tts_base_url      = ""
 
 alert_email           = ""
 enable_billing_alarms = false

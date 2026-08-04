@@ -39,7 +39,8 @@ resource "aws_ecs_task_definition" "backend" {
         # finish=length. Raise to 8192 so reasoning (2-4k) + content (1-2k) fit.
         { name = "LLM_MAX_TOKENS", value = "8192" },
         { name = "TTS_ENGINE", value = var.tts_engine },
-        { name = "TTS_BASE_URL", value = var.tts_base_url },
+        # Cloud Map private DNS for self-host adapters; var override for hosted providers.
+        { name = "TTS_BASE_URL", value = var.tts_base_url != "" ? var.tts_base_url : "http://tts.${var.env}.ai-live.local:8002" },
         { name = "TTS_VOICE_ID", value = var.tts_voice_id },
         { name = "TTS_MODEL_ID", value = "eleven_turbo_v2_5" },
         { name = "SESSION_STORE", value = var.session_store },

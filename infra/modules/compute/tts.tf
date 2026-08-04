@@ -76,13 +76,6 @@ resource "aws_ecs_service" "tts" {
     container_name = "tts"
   }
 
-  # Internal NLB target group: stable DNS endpoint for backend (Fargate).
-  load_balancer {
-    target_group_arn = aws_lb_target_group.tts[0].arn
-    container_name   = "tts"
-    container_port   = 8002
-  }
-
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.tts[0].name
     weight            = 1

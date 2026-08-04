@@ -50,8 +50,6 @@ redis_url         = ""
 app_env           = "staging"
 render_backend    = "mock"
 llm_engine        = "none"
-llm_base_url      = ""
 tts_engine        = "tone"
-tts_base_url      = ""
 
 # Replace with the approved avatar/LMCache image tags for a real GPU release.

@@ -216,7 +216,7 @@ variable "llm_engine" {
 }
 
 variable "llm_base_url" {
-  description = "Remote LLM OpenAI-compat base URL (service discovery). Empty when llm_engine=none."
+  description = "LLM OpenAI-compat base URL. Empty = Cloud Map private DNS llm.<env>.ai-live.local for self-host adapters; override for hosted providers."
   type        = string
   default     = ""
 }
@@ -234,7 +234,7 @@ variable "tts_engine" {
 }
 
 variable "tts_base_url" {
-  description = "Remote TTS base URL (service discovery). Empty when tts_engine=tone."
+  description = "TTS base URL. Empty = Cloud Map private DNS tts.<env>.ai-live.local for self-host adapters; override for hosted providers."
   type        = string
   default     = ""
 }

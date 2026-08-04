@@ -65,7 +65,3 @@ output "asg_names" {
   } : {}
 }
 
-output "llm_tts_internal_nlb_dns" {
-  description = "Internal NLB DNS name for llm/tts (backend uses this as LLM_BASE_URL/TTS_BASE_URL). Empty when create_ec2_capacity=false."
-  value       = var.create_ec2_capacity ? aws_lb.llm_tts_internal[0].dns_name : ""
-}

@@ -48,5 +48,3 @@ session_store     = "memory"
 app_env           = "dev"
 cors_origins      = "*"
 debug_enabled     = true
-llm_base_url      = ""
-tts_base_url      = ""

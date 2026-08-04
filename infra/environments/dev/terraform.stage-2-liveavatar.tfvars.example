@@ -65,9 +65,7 @@ redis_url         = ""
 app_env           = "dev"
 render_backend    = "cloud_liveavatar"
 llm_engine        = "vllm"
-llm_base_url      = ""
 tts_engine        = "vieneu"
-tts_base_url      = ""
 
 alert_email           = ""
 enable_billing_alarms = false
