@@ -193,7 +193,8 @@ def test_database_url_arn_is_merged_into_backend_secret_map() -> None:
 
 
 def _policy_statements() -> list[str]:
-    source = _read(COMPUTE)
+    # SSM execution policy lives in compute/iam.tf after the 1.61 split.
+    source = _read(COMPUTE) + _read(ROOT / "infra/modules/compute/iam.tf")
     policy = source.split('resource "aws_iam_role_policy" "ecs_execution_ssm"', 1)[1].split(
         'resource "aws_iam_role" "ecs_task"', 1
     )[0]
