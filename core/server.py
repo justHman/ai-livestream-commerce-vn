@@ -60,7 +60,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .api import v1
+from .api import health, v1
 from .api.limits import MaxBodySizeMiddleware, SlidingWindowLimiter, WebSocketLimiters
 from .config import AppConfig
 from .engine_manager import EngineManager
@@ -408,6 +408,7 @@ def create_app(config: AppConfig | None = None, deps: v1.V1Deps | None = None) -
         )
 
     app.include_router(v1.router)
+    app.include_router(health.router)
 
     @app.get("/")
     async def root() -> dict:

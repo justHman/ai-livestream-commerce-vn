@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import sys as _sys
 
+from . import admin, avatars, sessions, voices, websockets  # noqa: F401  (register routes on the shared router)
+
 import core.api.v1.router as _router_module  # noqa: F401  (bind submodule first)
 
 from ..auth import admin_auth, debug_enabled_dep, validate_ws_token, viewer_auth  # noqa: F401
+from .sessions import lite_say, lite_start, lite_stop  # noqa: F401
 from .router import (  # noqa: F401
     AvatarCreateReq,
     AvatarStore,
@@ -33,11 +36,7 @@ from .router import (  # noqa: F401
     build_run_plan,
     deps,
     init_deps,
-    lite_say,
-    lite_start,
-    lite_stop,
     router,
-    _sandbox_layer_timeout,  # noqa: F401
 )
 
 # FastAPI/starlette re-exported for parity with the pre-split module.

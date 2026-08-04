@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.api import v1
+from core.api import health, v1
 from core.config import AppConfig
 
 from .container import BootstrapContainer, create_container
@@ -193,6 +193,7 @@ def create_app(
     _register_middleware(app, config)
     _register_exception_handlers(app)
     app.include_router(v1.router)
+    app.include_router(health.router)
 
     @app.get("/")
     async def root() -> dict:
