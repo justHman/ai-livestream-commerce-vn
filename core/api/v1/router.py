@@ -40,19 +40,19 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from ..config import AppConfig
-from ..llm.base import LLMEngine, _NoopEngine
-from ..render.base import FullPipelineBackend, RenderBackend, StartOptions, StreamingAvatarBackend
-from ..render.mock import MockRenderBackend
-from ..render.orchestrator import StreamOrchestrator
-from ..render.queue import BoundedVideoQueue, CoordinatorMetrics
-from ..render.locks import SessionLockRegistry
-from ..tts.base import TTSEngine, ToneEngine
-from .auth import admin_auth, debug_enabled_dep, validate_ws_token, viewer_auth
+from ...config import AppConfig
+from ...llm.base import LLMEngine, _NoopEngine
+from ...render.base import FullPipelineBackend, RenderBackend, StartOptions, StreamingAvatarBackend
+from ...render.mock import MockRenderBackend
+from ...render.orchestrator import StreamOrchestrator
+from ...render.queue import BoundedVideoQueue, CoordinatorMetrics
+from ...render.locks import SessionLockRegistry
+from ...tts.base import TTSEngine, ToneEngine
+from ..auth import admin_auth, debug_enabled_dep, validate_ws_token, viewer_auth
 
 # Phase B coordinator — optional, constructed in server.py.
 # Imported here for type annotations; actual import is safe (no heavy deps).
-from ..director.coordinator import DirectorCoordinator
+from ...director.coordinator import DirectorCoordinator
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
@@ -500,7 +500,7 @@ def build_run_plan(
     persona: Optional[str] = None,
 ) -> RunPlan:
     """Deterministic offline RunPlan from products (no LLM)."""
-    from ..schemas.run_plan import (
+    from ...schemas.run_plan import (
         ClosingPhase,
         OpeningPhase,
         ProductSellingPhase,
@@ -642,7 +642,7 @@ def build_run_plan(
 
 @router.get("/health")
 async def health() -> dict[str, Any]:
-    from ..config import AppConfig
+    from ...config import AppConfig
 
     cfg = AppConfig.from_env()
     return {
@@ -720,7 +720,7 @@ async def health_ready() -> dict[str, Any]:
 
     embedder: Optional[dict] = None
     if d.director is not None:
-        from ..director.embedder import embedder_status
+        from ...director.embedder import embedder_status
 
         try:
             embedder = embedder_status(d.director.embedder)
@@ -787,7 +787,7 @@ async def media_livekit_room(
             status_code=503,
             detail="LiveKit not configured (LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET)",
         )
-    from ..livekit_tokens import LiveKitConfigError, mint_session_viewer_token
+    from ...livekit_tokens import LiveKitConfigError, mint_session_viewer_token
 
     try:
         token = mint_session_viewer_token(
@@ -1022,7 +1022,7 @@ async def lite_attach(req: AttachReq, _: None = Depends(viewer_auth)) -> dict[st
     d = deps()
     if d.director is None:
         raise HTTPException(status_code=501, detail="Director not enabled")
-    from ..director.catalog import Product
+    from ...director.catalog import Product
 
     if await d.store.get(req.session_id) is None:
         raise HTTPException(status_code=404, detail="unknown session_id")
@@ -1340,7 +1340,7 @@ async def preview_tts(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    from ..tts.base import TTSRequest
+    from ...tts.base import TTSRequest
 
     try:
         audio = await asyncio.wait_for(
@@ -1395,7 +1395,7 @@ async def debug_start(
         raise HTTPException(status_code=501, detail="Director not enabled")
     if not d.director.has(req.session_id):
         raise HTTPException(status_code=409, detail="call /lite/attach first")
-    from ..debug.traffic_sim import TrafficSimulator
+    from ...debug.traffic_sim import TrafficSimulator
 
     sim = TrafficSimulator(
         director=d.director,
@@ -1468,7 +1468,7 @@ async def debug_mock_products(
     _adm: None = Depends(admin_auth),
 ) -> dict[str, Any]:
     """Return a mock product catalog for debug/testing."""
-    from ..debug.mock_data import MOCK_PRODUCTS
+    from ...debug.mock_data import MOCK_PRODUCTS
 
     return {"products": [p for p in MOCK_PRODUCTS]}
 
@@ -1479,7 +1479,7 @@ async def debug_mock_viewer_msgs(
     _adm: None = Depends(admin_auth),
 ) -> dict[str, Any]:
     """Return the pool of mock viewer messages for debug."""
-    from ..debug.mock_data import MOCK_VIEWER_MSGS
+    from ...debug.mock_data import MOCK_VIEWER_MSGS
 
     return {"count": len(MOCK_VIEWER_MSGS), "messages": MOCK_VIEWER_MSGS}
 
@@ -1893,6 +1893,14 @@ async def ws_platform(ws: WebSocket, session_id: str) -> None:
 # ── Admin ───────────────────────────────────────────────────────────
 
 
+def _sandbox_layer_timeout() -> float:
+    # Read through the package for monkeypatch parity (test sandbox swaps
+    # core.api.v1.SANDBOX_LAYER_TIMEOUT_SEC).
+    from . import SANDBOX_LAYER_TIMEOUT_SEC as _package_timeout
+
+    return _package_timeout
+
+
 @router.post("/admin/sandbox/verify")
 async def verify_sandbox(
     payload: SandboxVerifyReq,
@@ -1910,7 +1918,7 @@ async def verify_sandbox(
         try:
             result = await asyncio.wait_for(
                 asyncio.shield(worker),
-                timeout=SANDBOX_LAYER_TIMEOUT_SEC,
+                timeout=v1.SANDBOX_LAYER_TIMEOUT_SEC,
             )
         except asyncio.CancelledError:
             worker.cancel()
