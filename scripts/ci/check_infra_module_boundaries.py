@@ -133,6 +133,20 @@ def main() -> int:
         if "variable \"backend_api_token\"" in f.read_text(encoding="utf-8"):
             errors.append(f"{f}: plaintext token variable")
 
+    # 14. Root compose.yaml: local-only. Must have data+media profiles, no
+    # cloud creds/env, no GPU workload.
+    compose = ROOT / "compose.yaml"
+    if compose.exists():
+        c = compose.read_text(encoding="utf-8")
+        for prof in ("data", "media"):
+            if f'profiles: ["{prof}"]' not in c:
+                errors.append(f"{compose}: missing {prof} profile")
+        for cloud in ("AWS_", "LIVEKIT_URL", "wss://", "arn:aws", "us-east-1", "ap-northeast"):
+            if cloud in c:
+                errors.append(f"{compose}: cloud reference {cloud!r}")
+        if "gpu" in c.lower() or "resource" in c.lower():
+            pass  # no GPU resources declared in local compose
+
     if errors:
         print("\n".join(errors))
         return 1
