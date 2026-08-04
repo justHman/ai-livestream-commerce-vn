@@ -113,7 +113,6 @@ module "compute" {
   desired_tts     = var.desired_tts
   desired_avatar  = var.desired_avatar
   desired_livekit = var.desired_livekit
-  desired_lmcache = var.desired_lmcache
   weights_s3_uri  = module.storage.weights_uri
   secrets_arns = merge(module.secrets.parameter_arns,
     # Stage 2: LiveAvatar cloud API key (backend-only secret, put out-of-band

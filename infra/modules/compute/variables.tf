@@ -51,16 +51,16 @@ variable "image_avatar" {
   default     = "imjusthman/ai-live-avatar:latest"
 }
 
-variable "image_lmcache" {
-  description = "LMCache image URI"
-  type        = string
-  default     = "imjusthman/ai-live-lmcache:latest"
-}
-
 variable "image_livekit" {
   description = "LiveKit server image URI"
   type        = string
   default     = "imjusthman/ai-live-livekit:latest"
+}
+
+variable "image_lmcache" {
+  description = "LMCache sidecar image URI (colocated in LLM task; evidence-gated)"
+  type        = string
+  default     = "imjusthman/ai-live-lmcache:latest"
 }
 
 # --- desired counts ---
@@ -95,12 +95,6 @@ variable "desired_livekit" {
   default     = 0
 }
 
-variable "desired_lmcache" {
-  description = "LMCache EC2 service desired count (0 = off)"
-  type        = number
-  default     = 0
-}
-
 variable "lmcache_enabled" {
   description = "When false, force lmcache desired_count=0"
   type        = bool
@@ -119,12 +113,6 @@ variable "instance_type_avatar" {
   description = "EC2 Spot type for Avatar (g4dn T4)"
   type        = string
   default     = "g4dn.xlarge"
-}
-
-variable "instance_type_lmcache" {
-  description = "EC2 Spot type for LMCache (ARM)"
-  type        = string
-  default     = "c7g.2xlarge"
 }
 
 variable "backend_cpu" {

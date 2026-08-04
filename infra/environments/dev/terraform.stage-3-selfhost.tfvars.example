@@ -31,7 +31,6 @@ certificate_arn      = ""
 db_instance_class       = "db.t4g.medium"
 db_allocated_storage_gb = 100
 redis_node_type         = "cache.t4g.small"
-lmcache_enabled         = false
 
 # Money-safe boot Phase 1 values. Phase 0: set all desired_llm_tts/avatar/livekit=0.
 desired_backend     = 1
@@ -39,7 +38,6 @@ desired_llm     = 0
 desired_tts     = 0
 desired_avatar      = 1
 desired_livekit     = 1
-desired_lmcache     = 0
 create_ec2_capacity = true
 spot_capacity_percentage = 100
 
@@ -48,7 +46,6 @@ image_backend = "imjusthman/ai-live-backend:dev-<sha>"
 image_llm     = "imjusthman/ai-live-llm:dev-<sha>"
 image_tts     = "imjusthman/ai-live-tts:dev-<sha>"
 image_avatar  = "imjusthman/ai-live-avatar:dev-<sha>"
-image_lmcache = "imjusthman/ai-live-lmcache:dev-<sha>"
 image_livekit = "imjusthman/ai-live-livekit:dev-<sha>"
 
 # Tokens: TF_VAR_backend_api_token / TF_VAR_admin_api_token (min 32 chars).

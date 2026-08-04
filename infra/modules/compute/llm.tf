@@ -190,47 +190,6 @@ resource "aws_launch_template" "avatar" {
   }
 }
 
-resource "aws_launch_template" "lmcache" {
-  count = var.create_ec2_capacity ? 1 : 0
-
-  name_prefix   = "${local.name_prefix}-lt-lmcache-"
-  image_id      = data.aws_ssm_parameter.ecs_arm_ami[0].value
-  instance_type = var.instance_type_lmcache
-
-  iam_instance_profile {
-    arn = aws_iam_instance_profile.ecs[0].arn
-  }
-
-  vpc_security_group_ids = compact([try(var.sg_map["lmcache"], "")])
-
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 1
-  }
-
-  user_data = base64encode(<<-EOT
-    #!/bin/bash
-    echo ECS_CLUSTER=${aws_ecs_cluster.this.name} >> /etc/ecs/ecs.config
-    echo ECS_ENABLE_SPOT_INSTANCE_DRAINING=true >> /etc/ecs/ecs.config
-  EOT
-  )
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = merge(local.common_tags, {
-      Name = "${local.name_prefix}-ecs-lmcache"
-      Role = "lmcache"
-    })
-  }
-
-  tags = local.common_tags
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
 resource "aws_autoscaling_group" "llm" {
   count = var.create_ec2_capacity ? 1 : 0
 
@@ -375,54 +334,6 @@ resource "aws_autoscaling_group" "avatar" {
   }
 }
 
-resource "aws_autoscaling_group" "lmcache" {
-  count = var.create_ec2_capacity ? 1 : 0
-
-  name                      = "${local.name_prefix}-asg-lmcache"
-  vpc_zone_identifier       = var.subnet_ids
-  min_size                  = 0
-  max_size                  = 2
-  desired_capacity          = 0
-  health_check_type         = "EC2"
-  health_check_grace_period = 120
-  capacity_rebalance        = true
-
-  mixed_instances_policy {
-    instances_distribution {
-      on_demand_base_capacity                  = 0
-      on_demand_percentage_above_base_capacity = 100 - var.spot_capacity_percentage
-      spot_allocation_strategy                 = "price-capacity-optimized"
-    }
-
-    launch_template {
-      launch_template_specification {
-        launch_template_id = aws_launch_template.lmcache[0].id
-        version            = "$Latest"
-      }
-    }
-  }
-
-  tag {
-    key                 = "Name"
-    value               = "${local.name_prefix}-asg-lmcache"
-    propagate_at_launch = true
-  }
-  tag {
-    key                 = "AmazonECSManaged"
-    value               = "true"
-    propagate_at_launch = true
-  }
-  tag {
-    key                 = "Env"
-    value               = var.env
-    propagate_at_launch = true
-  }
-
-  lifecycle {
-    ignore_changes = [desired_capacity]
-  }
-}
-
 resource "aws_ecs_capacity_provider" "llm" {
   count = var.create_ec2_capacity ? 1 : 0
 
@@ -483,26 +394,6 @@ resource "aws_ecs_capacity_provider" "avatar" {
   tags = local.common_tags
 }
 
-resource "aws_ecs_capacity_provider" "lmcache" {
-  count = var.create_ec2_capacity ? 1 : 0
-
-  name = local.cp_lmcache
-
-  auto_scaling_group_provider {
-    auto_scaling_group_arn         = aws_autoscaling_group.lmcache[0].arn
-    managed_termination_protection = "DISABLED"
-
-    managed_scaling {
-      status                    = "ENABLED"
-      target_capacity           = 100
-      minimum_scaling_step_size = 1
-      maximum_scaling_step_size = 1
-    }
-  }
-
-  tags = local.common_tags
-}
-
 # ---------------------------------------------------------------------------
 # Task definitions
 # ---------------------------------------------------------------------------
@@ -518,7 +409,7 @@ resource "aws_ecs_task_definition" "llm" {
   execution_role_arn = aws_iam_role.ecs_execution.arn
   task_role_arn      = aws_iam_role.ecs_task.arn
 
-  container_definitions = jsonencode([
+  container_definitions = jsonencode(concat([
     {
       name      = "llm"
       image     = var.image_llm
@@ -566,52 +457,31 @@ resource "aws_ecs_task_definition" "llm" {
         }
       }
     }
-  ])
-
-  tags = merge(local.common_tags, { Role = "llm" })
-}
-
-# LMCache — EC2 ARM (no GPU); colocated with LLM GPU topology.
-resource "aws_ecs_task_definition" "lmcache" {
-  family                   = "${local.name_prefix}-lmcache"
-  requires_compatibilities = ["EC2"]
-  network_mode             = "awsvpc"
-  cpu                      = 4096
-  memory                   = 14336
-  execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  container_definitions = jsonencode([
-    {
-      name      = "lmcache"
-      image     = var.image_lmcache
-      essential = true
-      portMappings = [
-        {
-          containerPort = 5555
-          hostPort      = 5555
-          protocol      = "tcp"
-        }
-      ]
-      environment = [
-        { name = "ENV", value = var.env },
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = "${local.log_prefix}/lmcache"
-          awslogs-region        = data.aws_region.current.region
-          awslogs-stream-prefix = "lmcache"
+    ],
+    # LMCache sidecar — colocated in the LLM task, no standalone capacity.
+    # Disabled by default; enabled only when lmcache_enabled=true AND verified
+    # benchmark evidence exists (ponytail: evidence-gated, see design §15).
+    var.lmcache_enabled ? [
+      {
+        name      = "lmcache"
+        image     = var.image_lmcache
+        essential = false
+        environment = [
+          { name = "ENV", value = var.env },
+        ]
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            awslogs-group         = "${local.log_prefix}/lmcache"
+            awslogs-region        = data.aws_region.current.region
+            awslogs-stream-prefix = "lmcache"
+          }
         }
       }
-    }
-  ])
+    ] : [])
+  )
 
-  tags = merge(local.common_tags, { Role = "lmcache" })
+  tags = merge(local.common_tags, { Role = "llm" })
 }
 
 # LiveKit — Fargate ARM64
@@ -818,37 +688,6 @@ resource "aws_ecs_service" "llm" {
   }
 
   tags = merge(local.common_tags, { Role = "llm" })
-
-  lifecycle {
-    # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
-    ignore_changes = [desired_count, task_definition]
-  }
-}
-
-resource "aws_ecs_service" "lmcache" {
-  count = var.create_ec2_capacity ? 1 : 0
-
-  name                   = "${local.name_prefix}-lmcache"
-  cluster                = aws_ecs_cluster.this.id
-  task_definition        = aws_ecs_task_definition.lmcache.arn
-  desired_count          = local.lmcache_desired
-  enable_execute_command = var.enable_execute_command
-
-  capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.lmcache[0].name
-    weight            = 1
-  }
-
-  network_configuration {
-    subnets          = var.subnet_ids
-    security_groups  = compact([try(var.sg_map["lmcache"], "")])
-    assign_public_ip = false
-  }
-
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
-
-  tags = merge(local.common_tags, { Role = "lmcache" })
 
   lifecycle {
     # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.

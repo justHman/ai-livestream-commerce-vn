@@ -189,16 +189,6 @@ variable "desired_livekit" {
   }
 }
 
-variable "desired_lmcache" {
-  type    = number
-  default = 0
-
-  validation {
-    condition     = var.desired_lmcache >= 0 && floor(var.desired_lmcache) == var.desired_lmcache
-    error_message = "desired_lmcache must be a nonnegative integer."
-  }
-}
-
 variable "image_backend" {
   type    = string
   default = "imjusthman/ai-live-backend:latest"
@@ -256,14 +246,15 @@ variable "tts_voice_id" {
   default     = ""
 }
 
+variable "image_lmcache" {
+  description = "LMCache sidecar image URI (colocated in LLM task; evidence-gated)"
+  type        = string
+  default     = "imjusthman/ai-live-lmcache:latest"
+}
+
 variable "image_avatar" {
   type    = string
   default = "imjusthman/ai-live-avatar:latest"
-}
-
-variable "image_lmcache" {
-  type    = string
-  default = "imjusthman/ai-live-lmcache:latest"
 }
 
 variable "image_livekit" {

@@ -38,7 +38,6 @@ output "desired_optional_services" {
     tts     = var.create_ec2_capacity ? var.desired_tts : 0
     avatar  = var.create_ec2_capacity ? var.desired_avatar : 0
     livekit = var.desired_livekit
-    lmcache = var.create_ec2_capacity && var.lmcache_enabled ? var.desired_lmcache : 0
   }
 }
 

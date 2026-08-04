@@ -6,11 +6,6 @@ data "aws_ssm_parameter" "ecs_gpu_ami" {
   # ECS-optimized GPU AMI (x86_64) for g6/g4dn
   name = "/aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended/image_id"
 }
-data "aws_ssm_parameter" "ecs_arm_ami" {
-  count = var.create_ec2_capacity ? 1 : 0
-  # ECS-optimized ARM AMI for c7g lmcache
-  name = "/aws/service/ecs/optimized-ami/amazon-linux-2/arm64/recommended/image_id"
-}
 
 resource "aws_ecs_cluster" "this" {
   name = "${local.name_prefix}-cluster"
@@ -34,7 +29,6 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
       aws_ecs_capacity_provider.llm[0].name,
       aws_ecs_capacity_provider.tts[0].name,
       aws_ecs_capacity_provider.avatar[0].name,
-      aws_ecs_capacity_provider.lmcache[0].name,
     ] : [],
   ))
 

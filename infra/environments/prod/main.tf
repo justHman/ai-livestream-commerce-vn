@@ -106,7 +106,6 @@ module "compute" {
   desired_tts     = var.desired_tts
   desired_avatar  = var.desired_avatar
   desired_livekit = var.desired_livekit
-  desired_lmcache = var.desired_lmcache
   weights_s3_uri  = module.storage.weights_uri
   secrets_arns = merge(module.secrets.parameter_arns, var.enable_database_url ? {
     "backend/database_url" = var.database_url_parameter_arn

@@ -28,13 +28,11 @@ db_instance_class       = "db.t4g.medium"
 db_allocated_storage_gb = 100
 redis_node_type         = "cache.t4g.small"
 
-lmcache_enabled     = false
 desired_backend     = 1
 desired_llm     = 0
 desired_tts     = 0
 desired_avatar      = 0
 desired_livekit     = 0
-desired_lmcache     = 0
 create_ec2_capacity = false
 # Set create_ec2_capacity=true and opt in desired_* only after GPU/avatar E2E validation.
 
@@ -45,7 +43,6 @@ image_backend = "imjusthman/ai-live-backend:latest"
 image_llm     = "imjusthman/ai-live-llm:latest"
 image_tts     = "imjusthman/ai-live-tts:latest"
 image_avatar  = "imjusthman/ai-live-avatar:latest"
-image_lmcache = "imjusthman/ai-live-lmcache:latest"
 image_livekit = "imjusthman/ai-live-livekit:latest"
 
 cors_origins      = "https://staging.example.com"
