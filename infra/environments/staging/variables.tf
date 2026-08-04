@@ -125,28 +125,6 @@ variable "db_password" {
   }
 }
 
-variable "backend_api_token" {
-  description = "Backend API bearer token. Set via TF_VAR_backend_api_token — never commit."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.backend_api_token) >= 32 && var.backend_api_token != "CHANGE_ME"
-    error_message = "backend_api_token must be at least 32 chars and not a placeholder."
-  }
-}
-
-variable "admin_api_token" {
-  description = "Admin API bearer token. Set via TF_VAR_admin_api_token — never commit."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.admin_api_token) >= 32 && var.admin_api_token != "CHANGE_ME"
-    error_message = "admin_api_token must be at least 32 chars and not a placeholder."
-  }
-}
-
 variable "enable_database_url" {
   description = "Explicitly enable DATABASE_URL injection from an existing SSM SecureString parameter."
   type        = bool

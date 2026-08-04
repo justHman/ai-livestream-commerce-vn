@@ -127,6 +127,12 @@ def main() -> int:
         if "resource \"aws_ecs_service\"" in text and "deployment_circuit_breaker" not in text:
             errors.append(f"{f}: ECS service without circuit breaker")
 
+    # 13. No plaintext token inputs: no backend_api_token/admin_api_token vars
+    # anywhere; tfvars examples must not assign real token values.
+    for f in (INFRA / "modules" / "secrets").glob("*.tf"):
+        if "variable \"backend_api_token\"" in f.read_text(encoding="utf-8"):
+            errors.append(f"{f}: plaintext token variable")
+
     if errors:
         print("\n".join(errors))
         return 1

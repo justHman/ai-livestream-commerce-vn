@@ -47,11 +47,9 @@ module "storage" {
 module "secrets" {
   source = "../../modules/secrets"
 
-  env               = var.env
-  project           = var.project
-  tags              = var.tags
-  backend_api_token = var.backend_api_token
-  admin_api_token   = var.admin_api_token
+  env     = var.env
+  project = var.project
+  tags    = var.tags
   # other values set out-of-band: aws ssm put-parameter --overwrite
 }
 

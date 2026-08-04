@@ -62,6 +62,17 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.14.8"
+      - name: Provision SSM SecureString secrets from protected environment
+        env:
+          BACKEND_API_TOKEN: ${{ secrets.BACKEND_API_TOKEN }}
+          ADMIN_API_TOKEN: ${{ secrets.ADMIN_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Out-of-band provisioning: protected GitHub Environment secrets -> SSM
+          # SecureString. Terraform never receives plaintext; values are masked
+          # by GitHub and never echoed.
+          aws ssm put-parameter --name "/dev/backend/api_token" --type SecureString --value "$BACKEND_API_TOKEN" --overwrite >/dev/null
+          aws ssm put-parameter --name "/dev/admin/api_token" --type SecureString --value "$ADMIN_API_TOKEN" --overwrite >/dev/null
       - name: Read deployed Terraform contract
         id: tf
         run: |
