@@ -41,10 +41,10 @@ create_ec2_capacity = false
 # Staging backend is on-demand Fargate; no spot eviction during E2E runs.
 spot_capacity_percentage = 0
 
-image_backend = "imjusthman/ai-live-backend:latest"
-image_llm     = "imjusthman/ai-live-llm:latest"
-image_tts     = "imjusthman/ai-live-tts:latest"
-image_avatar  = "imjusthman/ai-live-avatar:latest"
+image_backend = "imjusthman/ai-live-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_llm = "imjusthman/ai-live-llm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_tts = "imjusthman/ai-live-tts@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_avatar = "imjusthman/ai-live-avatar@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 cors_origins      = "https://staging.example.com"
 debug_enabled     = false

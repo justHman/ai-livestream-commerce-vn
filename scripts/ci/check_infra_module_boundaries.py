@@ -111,6 +111,18 @@ def main() -> int:
             if term in text and f.suffix == ".tfvars.example":
                 errors.append(f"{f}: legacy selector {term!r}")
 
+    # 12. Immutable digests: no mutable image tags in tfvars examples; every
+    # service declares a circuit breaker.
+    for f in list((INFRA / "environments" / "dev").glob("*.tfvars.example")) + list((INFRA / "environments" / "staging").glob("*.tfvars.example")) + list((INFRA / "environments" / "prod").glob("*.tfvars.example")):
+        text = f.read_text(encoding="utf-8")
+        for m in re.finditer(r'image_[a-z]+\s*=\s*"([^"]+)"', text):
+            if "@sha256:" not in m.group(1):
+                errors.append(f"{f}: mutable image tag {m.group(1)!r}")
+    for f in (INFRA / "modules" / "compute").glob("*.tf"):
+        text = f.read_text(encoding="utf-8")
+        if "resource \"aws_ecs_service\"" in text and "deployment_circuit_breaker" not in text:
+            errors.append(f"{f}: ECS service without circuit breaker")
+
     if errors:
         print("\n".join(errors))
         return 1

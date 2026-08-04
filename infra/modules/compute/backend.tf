@@ -126,8 +126,6 @@ resource "aws_ecs_task_definition" "backend" {
   tags = merge(local.common_tags, { Role = "backend" })
 }
 
-# LLM + TTS — EC2 GPU, same task family / host; ONLY llm declares GPU resource
-# TTS shares the GPU process-level (0.25 fraction) — no resourceRequirements on tts.
 resource "aws_ecs_service" "backend" {
   name                   = "${local.name_prefix}-backend"
   cluster                = aws_ecs_cluster.this.id
@@ -158,6 +156,13 @@ resource "aws_ecs_service" "backend" {
 
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 200
+
+  # Real health endpoint; circuit breaker rolls back on repeated failures.
+  health_check_grace_period_seconds = 60
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   tags = merge(local.common_tags, { Role = "backend" })
 

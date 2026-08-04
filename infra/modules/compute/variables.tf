@@ -28,33 +28,53 @@ variable "assign_public_ip" {
 # --- images (Docker Hub public) ---
 
 variable "image_backend" {
-  description = "Backend image URI"
+  description = "Backend image URI (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-backend:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_backend))
+    error_message = "image_backend must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_llm" {
-  description = "LLM image URI (vLLM + Qwen3.5-4B-AWQ)"
+  description = "LLM image URI (vLLM + Qwen3.5-4B-AWQ) (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-llm:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_llm))
+    error_message = "image_llm must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_tts" {
-  description = "TTS image URI (vllm-omni + VieNeu-TTS-v2)"
+  description = "TTS image URI (vllm-omni + VieNeu-TTS-v2) (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-tts:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_tts))
+    error_message = "image_tts must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_avatar" {
-  description = "Avatar image URI"
+  description = "Avatar image URI (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-avatar:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_avatar))
+    error_message = "image_avatar must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_lmcache" {
-  description = "LMCache sidecar image URI (colocated in LLM task; evidence-gated)"
+  description = "LMCache sidecar image URI (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-lmcache:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_lmcache))
+    error_message = "image_lmcache must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "livekit_url" {

@@ -22,10 +22,10 @@ desired_tts     = 0
 desired_avatar      = 0
 create_ec2_capacity = false
 
-image_backend = "imjusthman/ai-live-backend:dev"
-image_llm     = "imjusthman/ai-live-llm:dev"
-image_tts     = "imjusthman/ai-live-tts:dev"
-image_avatar  = "imjusthman/ai-live-avatar:dev"
+image_backend = "imjusthman/ai-live-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_llm = "imjusthman/ai-live-llm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_tts = "imjusthman/ai-live-tts@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_avatar = "imjusthman/ai-live-avatar@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 # Tokens: set via TF_VAR_backend_api_token / TF_VAR_admin_api_token (min 32 chars).
 # db_password: set via TF_VAR_db_password (8-128 chars)

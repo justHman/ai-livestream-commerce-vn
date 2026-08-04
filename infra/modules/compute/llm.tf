@@ -523,9 +523,11 @@ resource "aws_ecs_service" "llm" {
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 
-  # Rollback: a failed rollout restores the previous task definition.
-  deployment_controller {
-    type = "ECS"
+  # Real health endpoint; circuit breaker rolls back on repeated failures.
+  health_check_grace_period_seconds = 60
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
   }
 
   tags = merge(local.common_tags, { Role = "llm" })
