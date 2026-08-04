@@ -179,16 +179,6 @@ variable "desired_avatar" {
   }
 }
 
-variable "desired_livekit" {
-  type    = number
-  default = 0
-
-  validation {
-    condition     = var.desired_livekit >= 0 && floor(var.desired_livekit) == var.desired_livekit
-    error_message = "desired_livekit must be a nonnegative integer."
-  }
-}
-
 variable "image_backend" {
   type    = string
   default = "imjusthman/ai-live-backend:latest"
@@ -202,6 +192,12 @@ variable "image_llm" {
 variable "image_tts" {
   type    = string
   default = "imjusthman/ai-live-tts:dev"
+}
+
+variable "livekit_url" {
+  description = "LiveKit Cloud WebSocket URL (wss://...). Empty = LiveKit disabled."
+  type        = string
+  default     = ""
 }
 
 variable "render_backend" {
@@ -255,11 +251,6 @@ variable "image_lmcache" {
 variable "image_avatar" {
   type    = string
   default = "imjusthman/ai-live-avatar:latest"
-}
-
-variable "image_livekit" {
-  type    = string
-  default = "imjusthman/ai-live-livekit:dev"
 }
 
 variable "alert_email" {

@@ -20,7 +20,6 @@ output "task_definition_arns" {
     llm     = aws_ecs_task_definition.llm.arn
     tts     = aws_ecs_task_definition.tts.arn
     avatar  = aws_ecs_task_definition.avatar.arn
-    livekit = aws_ecs_task_definition.livekit.arn
   }
 }
 
@@ -29,7 +28,6 @@ output "service_names" {
   value = merge(
     {
       backend = aws_ecs_service.backend.name
-      livekit = aws_ecs_service.livekit.name
     },
     var.create_ec2_capacity ? {
       llm    = aws_ecs_service.llm[0].name

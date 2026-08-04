@@ -37,7 +37,6 @@ desired_backend     = 1
 desired_llm     = 0
 desired_tts     = 0
 desired_avatar      = 1
-desired_livekit     = 1
 create_ec2_capacity = true
 spot_capacity_percentage = 100
 
@@ -46,7 +45,6 @@ image_backend = "imjusthman/ai-live-backend:dev-<sha>"
 image_llm     = "imjusthman/ai-live-llm:dev-<sha>"
 image_tts     = "imjusthman/ai-live-tts:dev-<sha>"
 image_avatar  = "imjusthman/ai-live-avatar:dev-<sha>"
-image_livekit = "imjusthman/ai-live-livekit:dev-<sha>"
 
 # Tokens: TF_VAR_backend_api_token / TF_VAR_admin_api_token (min 32 chars).
 # db_password: TF_VAR_db_password (8-128 chars).

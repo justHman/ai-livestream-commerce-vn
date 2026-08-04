@@ -108,13 +108,11 @@ module "compute" {
   image_tts       = var.image_tts
   image_avatar    = var.image_avatar
   image_lmcache   = var.image_lmcache
-  image_livekit   = var.image_livekit
   lmcache_enabled = var.lmcache_enabled
   desired_backend = var.desired_backend
   desired_llm     = var.desired_llm
   desired_tts     = var.desired_tts
   desired_avatar  = var.desired_avatar
-  desired_livekit = var.desired_livekit
   weights_s3_uri  = module.storage.weights_uri
   secrets_arns = merge(module.secrets.parameter_arns, var.enable_database_url ? {
     "backend/database_url" = var.database_url_parameter_arn
@@ -131,6 +129,7 @@ module "compute" {
   redis_url                = var.redis_url != "" ? var.redis_url : "redis://${module.database.redis_connection_string}"
   app_env                  = var.app_env
   render_backend           = var.render_backend
+  livekit_url              = var.livekit_url
   llm_engine               = var.llm_engine
   llm_base_url             = var.llm_base_url
   llm_model                = var.llm_model

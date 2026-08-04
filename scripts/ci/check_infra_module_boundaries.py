@@ -69,9 +69,9 @@ def main() -> int:
         # 6. No standalone LMCache: no dedicated launch template/ASG/CP/task/service.
         for m in re.finditer(r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group)"\s+"lmcache"', text):
             errors.append(f"{f}: standalone LMCache block {m.group(2)!r}")
-        # LMCache may only appear as a colocated container inside the llm task.
-        for m in re.finditer(r'resource\s+"aws_ecs_task_definition"\s+"(\w+)"', text):
-            pass  # container-level check below is sufficient
+        # 7. No self-host LiveKit: no livekit ECS task/service/SG/capacity.
+        for m in re.finditer(r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group|aws_security_group)"\s+"livekit"', text):
+            errors.append(f"{f}: self-host LiveKit block {m.group(2)!r}")
 
     if errors:
         print("\n".join(errors))

@@ -48,7 +48,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "DIRECTOR_EMBEDDER_MODEL", value = "bkai-foundation-models/vietnamese-bi-encoder" },
         { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
         { name = "PIPECAT_ENABLED", value = "0" },
-        { name = "LIVEKIT_PUBLISH", value = "0" },
+        { name = "LIVEKIT_URL", value = var.livekit_url },
         { name = "DEBUG_ENABLED", value = var.debug_enabled ? "1" : "0" },
         { name = "CORS_ORIGINS", value = var.cors_origins },
         { name = "REDIS_URL", value = var.redis_url },
@@ -93,6 +93,20 @@ resource "aws_ecs_task_definition" "backend" {
           {
             name      = "TTS_API_KEY"
             valueFrom = var.secrets_arns["tts/api_key"]
+          },
+        ] : [],
+        # LiveKit Cloud (no self-host): URL is plaintext env; key/secret are
+        # server-side SSM SecureString refs — never sent to the browser.
+        lookup(var.secrets_arns, "livekit/api_key", "") != "" ? [
+          {
+            name      = "LIVEKIT_API_KEY"
+            valueFrom = var.secrets_arns["livekit/api_key"]
+          },
+        ] : [],
+        lookup(var.secrets_arns, "livekit/api_secret", "") != "" ? [
+          {
+            name      = "LIVEKIT_API_SECRET"
+            valueFrom = var.secrets_arns["livekit/api_secret"]
           },
         ] : [],
       )

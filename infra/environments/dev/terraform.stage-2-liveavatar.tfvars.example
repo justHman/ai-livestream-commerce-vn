@@ -41,7 +41,6 @@ desired_backend     = 1
 desired_llm     = 0
 desired_tts     = 0
 desired_avatar      = 0
-desired_livekit     = 0
 # Engine box (g6) capacity providers must exist for desired_llm_tts>0.
 create_ec2_capacity = true
 spot_capacity_percentage = 100
@@ -52,7 +51,6 @@ image_backend = "imjusthman/ai-live-backend:dev-<sha>"
 image_llm     = "imjusthman/ai-live-llm:dev-<sha>"
 image_tts     = "imjusthman/ai-live-tts:dev-<sha>"
 image_avatar  = "imjusthman/ai-live-avatar:dev-<sha>"
-image_livekit = "imjusthman/ai-live-livekit:dev-<sha>"
 
 # Tokens: set via TF_VAR_backend_api_token / TF_VAR_admin_api_token (min 32 chars).
 # db_password: set via TF_VAR_db_password (8-128 chars)

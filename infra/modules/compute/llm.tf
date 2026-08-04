@@ -484,69 +484,6 @@ resource "aws_ecs_task_definition" "llm" {
   tags = merge(local.common_tags, { Role = "llm" })
 }
 
-# LiveKit — Fargate ARM64
-resource "aws_ecs_task_definition" "livekit" {
-  family                   = "${local.name_prefix}-livekit"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = var.livekit_cpu
-  memory                   = var.livekit_memory
-  execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task.arn
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  container_definitions = jsonencode([
-    {
-      name      = "livekit"
-      image     = var.image_livekit
-      essential = true
-      portMappings = [
-        {
-          containerPort = 7880
-          hostPort      = 7880
-          protocol      = "tcp"
-        },
-        {
-          containerPort = 7881
-          hostPort      = 7881
-          protocol      = "tcp"
-        },
-        {
-          containerPort = 50000
-          hostPort      = 50000
-          protocol      = "udp"
-        }
-      ]
-      environment = [
-        { name = "ENV", value = var.env },
-      ]
-      secrets = [
-        {
-          name      = "LIVEKIT_API_KEY",
-          valueFrom = var.secrets_arns["livekit/api_key"]
-        },
-        {
-          name      = "LIVEKIT_API_SECRET",
-          valueFrom = var.secrets_arns["livekit/api_secret"]
-        },
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = "${local.log_prefix}/livekit"
-          awslogs-region        = data.aws_region.current.region
-          awslogs-stream-prefix = "livekit"
-        }
-      }
-    }
-  ])
-
-  tags = merge(local.common_tags, { Role = "livekit" })
-}
-
 # ---------------------------------------------------------------------------
 # Internal NLB for model services (stable DNS for backend Fargate → GPU engines)
 # Fargate backend cannot resolve Cloud Map private namespace reliably; NLB
@@ -695,31 +632,3 @@ resource "aws_ecs_service" "llm" {
   }
 }
 
-resource "aws_ecs_service" "livekit" {
-  name                   = "${local.name_prefix}-livekit"
-  cluster                = aws_ecs_cluster.this.id
-  task_definition        = aws_ecs_task_definition.livekit.arn
-  desired_count          = var.desired_livekit
-  enable_execute_command = var.enable_execute_command
-
-  capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
-    weight            = 1
-  }
-
-  network_configuration {
-    subnets          = var.subnet_ids
-    security_groups  = compact([try(var.sg_map["livekit"], "")])
-    assign_public_ip = var.assign_public_ip
-  }
-
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 200
-
-  tags = merge(local.common_tags, { Role = "livekit" })
-
-  lifecycle {
-    # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
-    ignore_changes = [desired_count, task_definition]
-  }
-}

@@ -51,16 +51,16 @@ variable "image_avatar" {
   default     = "imjusthman/ai-live-avatar:latest"
 }
 
-variable "image_livekit" {
-  description = "LiveKit server image URI"
-  type        = string
-  default     = "imjusthman/ai-live-livekit:latest"
-}
-
 variable "image_lmcache" {
   description = "LMCache sidecar image URI (colocated in LLM task; evidence-gated)"
   type        = string
   default     = "imjusthman/ai-live-lmcache:latest"
+}
+
+variable "livekit_url" {
+  description = "LiveKit Cloud WebSocket URL (wss://...). Empty = LiveKit disabled."
+  type        = string
+  default     = ""
 }
 
 # --- desired counts ---
@@ -85,12 +85,6 @@ variable "desired_tts" {
 
 variable "desired_avatar" {
   description = "Avatar EC2 GPU service desired count"
-  type        = number
-  default     = 0
-}
-
-variable "desired_livekit" {
-  description = "LiveKit Fargate service desired count"
   type        = number
   default     = 0
 }
@@ -125,18 +119,6 @@ variable "backend_memory" {
   description = "Fargate memory MiB for backend"
   type        = number
   default     = 2048
-}
-
-variable "livekit_cpu" {
-  description = "Fargate CPU units for LiveKit"
-  type        = number
-  default     = 2048
-}
-
-variable "livekit_memory" {
-  description = "Fargate memory MiB for LiveKit"
-  type        = number
-  default     = 4096
 }
 
 variable "backend_target_group_arn" {

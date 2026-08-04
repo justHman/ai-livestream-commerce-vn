@@ -34,10 +34,9 @@ output "ecs_service_names" {
 output "desired_optional_services" {
   description = "Effective desired counts: EC2-gated services are 0 when capacity is absent."
   value = {
-    llm     = var.create_ec2_capacity ? var.desired_llm : 0
-    tts     = var.create_ec2_capacity ? var.desired_tts : 0
-    avatar  = var.create_ec2_capacity ? var.desired_avatar : 0
-    livekit = var.desired_livekit
+    llm    = var.create_ec2_capacity ? var.desired_llm : 0
+    tts    = var.create_ec2_capacity ? var.desired_tts : 0
+    avatar = var.create_ec2_capacity ? var.desired_avatar : 0
   }
 }
 
