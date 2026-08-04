@@ -26,6 +26,7 @@ db_allocated_storage_gb  = 100
 redis_node_type          = "cache.t4g.small"
 
 desired_backend     = 1
+backend_capacity_provider = "FARGATE_SPOT"  # FARGATE_SPOT: dev Spot, staging/prod on-demand
 desired_llm     = 0
 desired_tts     = 0
 desired_avatar      = 0

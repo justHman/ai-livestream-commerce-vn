@@ -89,22 +89,23 @@ module "loadbalancer" {
 module "compute" {
   source = "../../modules/compute"
 
-  env             = var.env
-  project         = var.project
-  vpc_id          = module.network.vpc_id
-  subnet_ids      = module.network.public_subnet_ids
-  sg_map          = module.security.sg_map
-  image_backend   = var.image_backend
-  image_llm       = var.image_llm
-  image_tts       = var.image_tts
-  image_avatar    = var.image_avatar
-  image_lmcache   = var.image_lmcache
-  lmcache_enabled = var.lmcache_enabled
-  desired_backend = var.desired_backend
-  desired_llm     = var.desired_llm
-  desired_tts     = var.desired_tts
-  desired_avatar  = var.desired_avatar
-  weights_s3_uri  = module.storage.weights_uri
+  env                       = var.env
+  project                   = var.project
+  vpc_id                    = module.network.vpc_id
+  subnet_ids                = module.network.public_subnet_ids
+  sg_map                    = module.security.sg_map
+  image_backend             = var.image_backend
+  image_llm                 = var.image_llm
+  image_tts                 = var.image_tts
+  image_avatar              = var.image_avatar
+  image_lmcache             = var.image_lmcache
+  lmcache_enabled           = var.lmcache_enabled
+  desired_backend           = var.desired_backend
+  backend_capacity_provider = var.backend_capacity_provider
+  desired_llm               = var.desired_llm
+  desired_tts               = var.desired_tts
+  desired_avatar            = var.desired_avatar
+  weights_s3_uri            = module.storage.weights_uri
   secrets_arns = merge(module.secrets.parameter_arns, var.enable_database_url ? {
     "backend/database_url" = var.database_url_parameter_arn
   } : {})

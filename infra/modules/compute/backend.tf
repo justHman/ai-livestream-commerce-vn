@@ -135,7 +135,7 @@ resource "aws_ecs_service" "backend" {
   enable_execute_command = var.enable_execute_command
 
   capacity_provider_strategy {
-    capacity_provider = "FARGATE_SPOT"
+    capacity_provider = var.backend_capacity_provider
     weight            = 1
     base              = 0
   }

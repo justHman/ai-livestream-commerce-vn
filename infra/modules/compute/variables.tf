@@ -71,6 +71,17 @@ variable "desired_backend" {
   default     = 1
 }
 
+variable "backend_capacity_provider" {
+  description = "Backend capacity provider: FARGATE_SPOT (dev) or FARGATE (staging/prod)"
+  type        = string
+  default     = "FARGATE_SPOT"
+
+  validation {
+    condition     = contains(["FARGATE", "FARGATE_SPOT"], var.backend_capacity_provider)
+    error_message = "backend_capacity_provider must be FARGATE or FARGATE_SPOT."
+  }
+}
+
 variable "desired_llm" {
   description = "LLM EC2 GPU service desired count"
   type        = number

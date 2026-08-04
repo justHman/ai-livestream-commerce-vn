@@ -186,6 +186,17 @@ variable "lmcache_enabled" {
   default = false
 }
 
+variable "backend_capacity_provider" {
+  description = "Backend capacity provider: FARGATE_SPOT (dev) or FARGATE (staging/prod)"
+  type        = string
+  default     = "FARGATE"
+
+  validation {
+    condition     = contains(["FARGATE", "FARGATE_SPOT"], var.backend_capacity_provider)
+    error_message = "backend_capacity_provider must be FARGATE or FARGATE_SPOT."
+  }
+}
+
 variable "desired_backend" {
   type    = number
   default = 1

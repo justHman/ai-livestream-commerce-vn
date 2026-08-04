@@ -1,7 +1,7 @@
-# Stage 3 — self-host avatar (AvatarForcing half) + real LLM/TTS + LiveKit full media.
+# Stage 3 — self-host avatar (AvatarForcing half) + real LLM/TTS + LiveKit Cloud media.
 # Same LLM/TTS engine path as Stage 2 (vLLM Qwen3.5-4B-AWQ + vllm-omni VieNeu)
 # so the only Stage 2→3 variable is the avatar backend (true ablation).
-# Self-host avatar publishes video through LiveKit SFU → browser FE.
+# Self-host avatar publishes video through LiveKit Cloud → browser FE.
 #
 # Spot quota ceiling: g6 engine (4 vCPU) + g4dn avatar (4 vCPU) = 8 vCPU G/VT
 # Spot = exactly the approved quota. Single-avatar smoke only. g4dn.xlarge in

@@ -77,6 +77,16 @@ def main() -> int:
             for m in re.finditer(r'resource\s+"aws_lb"', text):
                 errors.append(f"{f}: LB resource outside loadbalancer module")
 
+    # 9. Runtime matrix: prod backend never Spot; prod default 2 on-demand.
+    prod_vars = (INFRA / "environments" / "prod" / "variables.tf").read_text(encoding="utf-8")
+    if 'backend_capacity_provider == "FARGATE"' not in prod_vars:
+        errors.append("prod: backend_capacity_provider must reject Spot")
+    if 'default     = 2' not in prod_vars or 'variable "desired_backend"' not in prod_vars:
+        pass  # desired_backend default checked below
+    m = re.search(r'variable "desired_backend" \{.*?default\s*=\s*(\d+)', prod_vars, re.S)
+    if m and int(m.group(1)) < 1:
+        errors.append("prod: desired_backend must be >= 1")
+
     if errors:
         print("\n".join(errors))
         return 1

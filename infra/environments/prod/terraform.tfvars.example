@@ -28,12 +28,13 @@ db_instance_class       = "db.t4g.medium"
 db_allocated_storage_gb = 100
 redis_node_type         = "cache.t4g.small"
 
-desired_backend     = 1
+desired_backend     = 2  # two on-demand Fargate tasks in prod
+backend_capacity_provider = "FARGATE"  # FARGATE: dev Spot, staging/prod on-demand
 desired_llm     = 0
 desired_tts     = 0
 desired_avatar      = 0
 create_ec2_capacity = false
-# Set create_ec2_capacity=true and opt in desired_* only after GPU/avatar/LiveKit E2E validation.
+# Set create_ec2_capacity=true and opt in desired_* only after GPU/avatar E2E validation.
 
 image_backend = "imjusthman/ai-live-backend:latest"
 image_llm     = "imjusthman/ai-live-llm:latest"

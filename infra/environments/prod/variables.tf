@@ -186,6 +186,17 @@ variable "lmcache_enabled" {
   default = false
 }
 
+variable "backend_capacity_provider" {
+  description = "Backend capacity provider: FARGATE only in prod — no Spot for production backend."
+  type        = string
+  default     = "FARGATE"
+
+  validation {
+    condition     = var.backend_capacity_provider == "FARGATE"
+    error_message = "prod backend must use FARGATE (on-demand); Spot is not allowed in production."
+  }
+}
+
 variable "desired_backend" {
   type    = number
   default = 1
