@@ -28,6 +28,8 @@ resource "aws_ecs_task_definition" "avatar" {
       ]
       environment = [
         { name = "ENV", value = var.env },
+        # Service-local engine selector; adapters live on the backend.
+        { name = "AVATAR_ENGINE", value = var.avatar_engine },
         { name = "WEIGHTS_S3_URI", value = var.weights_s3_uri },
       ]
       logConfiguration = {

@@ -223,16 +223,26 @@ variable "livekit_url" {
   default     = ""
 }
 
-variable "render_backend" {
-  description = "Render backend: mock (no GPU), cloud (LiveAvatar), self_host (MuseTalk future)"
+variable "avatar_adapter" {
+  description = "Backend avatar adapter: self_hosted|liveavatar|baidu_xiling"
   type        = string
-  default     = "mock"
+  default     = "liveavatar"
+
+  validation {
+    condition     = contains(["self_hosted", "liveavatar", "baidu_xiling"], var.avatar_adapter)
+    error_message = "avatar_adapter must be one of: self_hosted, liveavatar, baidu_xiling."
+  }
 }
 
-variable "llm_engine" {
-  description = "LLM engine: none (stub), openai_compat (remote vLLM GPU)"
+variable "llm_adapter" {
+  description = "Backend LLM adapter (always openai_compatible)"
   type        = string
-  default     = "none"
+  default     = "openai_compatible"
+
+  validation {
+    condition     = var.llm_adapter == "openai_compatible"
+    error_message = "llm_adapter must be openai_compatible."
+  }
 }
 
 variable "llm_base_url" {
@@ -247,10 +257,15 @@ variable "llm_model" {
   default     = ""
 }
 
-variable "tts_engine" {
-  description = "TTS engine: tone (stub), remote_http (remote vllm-omni GPU)"
+variable "tts_adapter" {
+  description = "Backend TTS adapter: self_hosted|elevenlabs|openai_speech"
   type        = string
-  default     = "tone"
+  default     = "self_hosted"
+
+  validation {
+    condition     = contains(["self_hosted", "elevenlabs", "openai_speech"], var.tts_adapter)
+    error_message = "tts_adapter must be one of: self_hosted, elevenlabs, openai_speech."
+  }
 }
 
 variable "tts_base_url" {

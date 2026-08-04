@@ -131,12 +131,12 @@ module "compute" {
   session_store            = var.session_store
   redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? "redis://${module.database.redis_connection_string}" : "")
   app_env                  = var.app_env
-  render_backend           = var.render_backend
+  avatar_adapter           = var.avatar_adapter
   livekit_url              = var.livekit_url
-  llm_engine               = var.llm_engine
+  llm_adapter              = var.llm_adapter
   llm_base_url             = var.llm_base_url
   llm_model                = var.llm_model
-  tts_engine               = var.tts_engine
+  tts_adapter              = var.tts_adapter
   tts_base_url             = var.tts_base_url
   tts_voice_id             = var.tts_voice_id
   tags                     = var.tags

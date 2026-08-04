@@ -58,9 +58,9 @@ debug_enabled     = true
 session_store     = "redis"
 redis_url         = ""
 app_env           = "dev"
-render_backend    = "self_host_avatarforcing_half"
-llm_engine        = "vllm"
-tts_engine        = "vieneu"
+avatar_adapter  = "self_hosted"
+llm_adapter     = "openai_compatible"
+tts_adapter     = "self_hosted"
 
 alert_email           = ""
 enable_billing_alarms = false

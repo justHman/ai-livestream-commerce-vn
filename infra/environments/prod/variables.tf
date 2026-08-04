@@ -281,14 +281,26 @@ variable "livekit_url" {
   default     = ""
 }
 
-variable "render_backend" {
-  type    = string
-  default = "mock"
+variable "avatar_adapter" {
+  description = "Backend avatar adapter: self_hosted|liveavatar|baidu_xiling"
+  type        = string
+  default     = "liveavatar"
+
+  validation {
+    condition     = contains(["self_hosted", "liveavatar", "baidu_xiling"], var.avatar_adapter)
+    error_message = "avatar_adapter must be one of: self_hosted, liveavatar, baidu_xiling."
+  }
 }
 
-variable "llm_engine" {
-  type    = string
-  default = "none"
+variable "llm_adapter" {
+  description = "Backend LLM adapter (always openai_compatible)"
+  type        = string
+  default     = "openai_compatible"
+
+  validation {
+    condition     = var.llm_adapter == "openai_compatible"
+    error_message = "llm_adapter must be openai_compatible."
+  }
 }
 
 variable "llm_base_url" {
@@ -296,9 +308,15 @@ variable "llm_base_url" {
   default = ""
 }
 
-variable "tts_engine" {
-  type    = string
-  default = "tone"
+variable "tts_adapter" {
+  description = "Backend TTS adapter: self_hosted|elevenlabs|openai_speech"
+  type        = string
+  default     = "self_hosted"
+
+  validation {
+    condition     = contains(["self_hosted", "elevenlabs", "openai_speech"], var.tts_adapter)
+    error_message = "tts_adapter must be one of: self_hosted, elevenlabs, openai_speech."
+  }
 }
 
 variable "tts_base_url" {

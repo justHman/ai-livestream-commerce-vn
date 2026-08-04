@@ -31,6 +31,8 @@ resource "aws_ecs_task_definition" "tts" {
       ]
       environment = [
         { name = "ENV", value = var.env },
+        # Service-local engine selector; adapters live on the backend.
+        { name = "TTS_ENGINE", value = var.tts_engine },
         { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}tts/" },
         # Local dir (vLLM 0.22 supports --model <local-dir> via Path.exists()).
         # fetch_weights.sh syncs S3 weights/tts/vieneu/* -> /models/vieneu/

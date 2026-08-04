@@ -99,6 +99,18 @@ def main() -> int:
             if m.group(1) != want:
                 errors.append(f"{env}: {flag} default {m.group(1)} != {want}")
 
+    # 11. Adapter/engine ownership: backend receives only *_ADAPTER env; no
+    # legacy/ambiguous selector values anywhere in envs or compute.
+    legacy = ("remote_http", "remote_avatar", "openai_compat", "mock", "none", "tone", "cloud_liveavatar", "self_host_")
+    for f in list((INFRA / "modules" / "compute").glob("*.tf")) + list((INFRA / "environments" / "dev").glob("*.tfvars.example")) + list((INFRA / "environments" / "staging").glob("*.tfvars.example")) + list((INFRA / "environments" / "prod").glob("*.tfvars.example")):
+        text = f.read_text(encoding="utf-8")
+        if f.name == "backend.tf":
+            if 'name      = "LLM_ENGINE"' in text or 'name      = "TTS_ENGINE"' in text or 'name      = "RENDER_BACKEND"' in text:
+                errors.append(f"{f}: backend receives engine selector")
+        for term in legacy:
+            if term in text and f.suffix == ".tfvars.example":
+                errors.append(f"{f}: legacy selector {term!r}")
+
     if errors:
         print("\n".join(errors))
         return 1

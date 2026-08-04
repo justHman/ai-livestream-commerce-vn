@@ -44,9 +44,9 @@ enable_billing_alarms = false
 # First live smoke: API-only (desired GPU/livekit/lmcache = 0). See docs/runbook-live-smoke-and-teardown.md
 
 # Backend-only runtime contract (fail-safe defaults: mock/none/tone/memory).
-render_backend    = "mock"
-llm_engine        = "none"
-tts_engine        = "tone"
+avatar_adapter  = "liveavatar"
+llm_adapter     = "openai_compatible"
+tts_adapter     = "self_hosted"
 session_store     = "memory"
 app_env           = "dev"
 cors_origins      = "*"

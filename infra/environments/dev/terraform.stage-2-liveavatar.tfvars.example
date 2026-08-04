@@ -63,9 +63,9 @@ debug_enabled     = true
 session_store     = "redis"
 redis_url         = ""
 app_env           = "dev"
-render_backend    = "cloud_liveavatar"
-llm_engine        = "vllm"
-tts_engine        = "vieneu"
+avatar_adapter  = "liveavatar"
+llm_adapter     = "openai_compatible"
+tts_adapter     = "self_hosted"
 
 alert_email           = ""
 enable_billing_alarms = false

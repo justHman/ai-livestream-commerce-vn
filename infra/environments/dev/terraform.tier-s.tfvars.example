@@ -34,9 +34,9 @@ debug_enabled     = true
 session_store     = "memory"
 redis_url         = ""
 app_env           = "dev"
-render_backend    = "mock"
-llm_engine        = "none"
-tts_engine        = "tone"
+avatar_adapter  = "liveavatar"
+llm_adapter     = "openai_compatible"
+tts_adapter     = "self_hosted"
 spot_capacity_percentage = 0
 
 alert_email           = ""

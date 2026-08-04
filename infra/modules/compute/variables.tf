@@ -214,16 +214,26 @@ variable "vpc_id" {
   type        = string
   default     = ""
 }
-variable "render_backend" {
-  description = "Backend render backend: mock (no GPU) or cloud/self_host (GPU)"
+variable "avatar_adapter" {
+  description = "Backend avatar adapter: self_hosted|liveavatar|baidu_xiling"
   type        = string
-  default     = "mock"
+  default     = "liveavatar"
+
+  validation {
+    condition     = contains(["self_hosted", "liveavatar", "baidu_xiling"], var.avatar_adapter)
+    error_message = "avatar_adapter must be one of: self_hosted, liveavatar, baidu_xiling."
+  }
 }
 
-variable "llm_engine" {
-  description = "Backend LLM engine: none (stub), openai_compat (remote vLLM), vllm"
+variable "llm_adapter" {
+  description = "Backend LLM adapter (always openai_compatible)"
   type        = string
-  default     = "none"
+  default     = "openai_compatible"
+
+  validation {
+    condition     = var.llm_adapter == "openai_compatible"
+    error_message = "llm_adapter must be openai_compatible."
+  }
 }
 
 variable "llm_base_url" {
@@ -238,10 +248,48 @@ variable "llm_model" {
   default     = ""
 }
 
-variable "tts_engine" {
-  description = "Backend TTS engine: tone (stub), remote_http (remote vllm-omni), vieneu"
+variable "tts_adapter" {
+  description = "Backend TTS adapter: self_hosted|elevenlabs|openai_speech"
   type        = string
-  default     = "tone"
+  default     = "self_hosted"
+
+  validation {
+    condition     = contains(["self_hosted", "elevenlabs", "openai_speech"], var.tts_adapter)
+    error_message = "tts_adapter must be one of: self_hosted, elevenlabs, openai_speech."
+  }
+}
+
+variable "llm_engine" {
+  description = "Self-host LLM engine (service-local): vllm|sglang|transformers"
+  type        = string
+  default     = "vllm"
+
+  validation {
+    condition     = contains(["vllm", "sglang", "transformers"], var.llm_engine)
+    error_message = "llm_engine must be one of: vllm, sglang, transformers."
+  }
+}
+
+variable "tts_engine" {
+  description = "Self-host TTS engine (service-local): vieneu|cosyvoice"
+  type        = string
+  default     = "vieneu"
+
+  validation {
+    condition     = contains(["vieneu", "cosyvoice"], var.tts_engine)
+    error_message = "tts_engine must be one of: vieneu, cosyvoice."
+  }
+}
+
+variable "avatar_engine" {
+  description = "Self-host avatar engine (service-local): avatarforcing"
+  type        = string
+  default     = "avatarforcing"
+
+  validation {
+    condition     = var.avatar_engine == "avatarforcing"
+    error_message = "avatar_engine must be avatarforcing."
+  }
 }
 
 variable "tts_base_url" {

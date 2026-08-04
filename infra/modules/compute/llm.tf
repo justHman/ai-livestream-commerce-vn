@@ -429,6 +429,8 @@ resource "aws_ecs_task_definition" "llm" {
       ]
       environment = [
         { name = "ENV", value = var.env },
+        # Service-local engine selector; adapters live on the backend.
+        { name = "LLM_ENGINE", value = var.llm_engine },
         { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}llm/" },
         # Local dir (vLLM 0.22 supports --model <local-dir> when Path exists + config.json).
         # HF repo ID would phone home to HF (throttle VN -> hang -> SIGINT -> crash).

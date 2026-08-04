@@ -30,15 +30,16 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "APP_ENV", value = var.app_env != "" ? var.app_env : var.env },
         # API-only smoke: mock render + tone TTS + no LLM.
         # SESSION_STORE: memory (single-task) or redis (multi-task via redis_url).
-        { name = "RENDER_BACKEND", value = var.render_backend },
-        { name = "LLM_ENGINE", value = var.llm_engine },
-        { name = "LLM_BASE_URL", value = var.llm_base_url },
+        # Backend owns outbound *_ADAPTER selectors; *_ENGINE stays service-local.
+        { name = "AVATAR_ADAPTER", value = var.avatar_adapter },
+        { name = "LLM_ADAPTER", value = var.llm_adapter },
+        { name = "LLM_BASE_URL", value = var.llm_base_url != "" ? var.llm_base_url : "http://llm.${var.env}.ai-live.local:8001" },
         { name = "LLM_MODEL", value = var.llm_model },
         # DeepSeek reasoning model uses tokens for reasoning then content; default
         # max_tokens=128 -> all tokens consumed by reasoning -> content="" +
         # finish=length. Raise to 8192 so reasoning (2-4k) + content (1-2k) fit.
         { name = "LLM_MAX_TOKENS", value = "8192" },
-        { name = "TTS_ENGINE", value = var.tts_engine },
+        { name = "TTS_ADAPTER", value = var.tts_adapter },
         # Cloud Map private DNS for self-host adapters; var override for hosted providers.
         { name = "TTS_BASE_URL", value = var.tts_base_url != "" ? var.tts_base_url : "http://tts.${var.env}.ai-live.local:8002" },
         { name = "TTS_VOICE_ID", value = var.tts_voice_id },
