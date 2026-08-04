@@ -126,6 +126,57 @@ resource "aws_ecs_task_definition" "backend" {
   tags = merge(local.common_tags, { Role = "backend" })
 }
 
+# One-off pre-deploy migration task: same image, command override, runs once
+# via `aws ecs run-task` before the backend service rollout. Additive,
+# idempotent, transactional migrations only; aborts deployment on failure.
+# ponytail: gated on DATABASE_URL secret presence (create_rds); no migration
+# when data plane is off. Upgrade path: dedicated migration container when
+# migrations grow beyond one command.
+resource "aws_ecs_task_definition" "migrate" {
+  count = lookup(var.secrets_arns, "backend/database_url", "") != "" ? 1 : 0
+
+  family                   = "${local.name_prefix}-backend-migrate"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.backend_cpu
+  memory                   = var.backend_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "backend"
+      image     = var.image_backend
+      essential = true
+      command   = ["python", "-m", "backend.scripts.migrate"]
+      environment = [
+        { name = "ENV", value = var.env },
+        { name = "APP_ENV", value = var.app_env != "" ? var.app_env : var.env },
+      ]
+      secrets = [
+        {
+          name      = "DATABASE_URL"
+          valueFrom = var.secrets_arns["backend/database_url"]
+        },
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = "${local.log_prefix}/backend-migrate"
+          awslogs-region        = data.aws_region.current.region
+          awslogs-stream-prefix = "backend-migrate"
+        }
+      }
+    }
+  ])
+
+  tags = merge(local.common_tags, { Role = "backend-migrate" })
+}
+
 resource "aws_ecs_service" "backend" {
   name                   = "${local.name_prefix}-backend"
   cluster                = aws_ecs_cluster.this.id

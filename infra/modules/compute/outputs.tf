@@ -23,6 +23,16 @@ output "task_definition_arns" {
   }
 }
 
+output "backend_sg_id" {
+  description = "Backend security group ID (for migration task network config)"
+  value       = lookup(var.sg_map, "backend", "")
+}
+
+output "migrate_task_arn" {
+  description = "One-off pre-deploy migration task ARN (empty when no DATABASE_URL secret)"
+  value       = length(aws_ecs_task_definition.migrate) > 0 ? aws_ecs_task_definition.migrate[0].arn : ""
+}
+
 output "service_names" {
   description = "Map of role → ECS service name (GPU services only when create_ec2_capacity=true)"
   value = merge(

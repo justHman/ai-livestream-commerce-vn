@@ -23,6 +23,15 @@ output "redis_connection_string" {
   value = module.database.redis_connection_string
 }
 
+output "backend_sg_id" {
+  value = module.compute.backend_sg_id
+}
+
+output "migrate_task_arn" {
+  description = "One-off pre-deploy migration task ARN (empty when no DATABASE_URL secret)"
+  value       = module.compute.migrate_task_arn
+}
+
 output "ecs_cluster_name" {
   value = module.compute.cluster_name
 }
