@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        workspace: [global, dev, prod]
+        workspace: [global, dev, staging, prod]
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -77,6 +77,18 @@ jobs:
         run: terraform -chdir=infra/environments/${{ matrix.workspace }} validate
       - name: Module boundary check
         run: python scripts/ci/check_infra_module_boundaries.py
+
+  terraform-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.8'
+      - name: Native tests (plan-only, no credentials)
+        run: |
+          terraform -chdir=infra/tests init -backend=false
+          terraform -chdir=infra/tests test
 
   docker-build-backend:
     runs-on: ubuntu-latest
