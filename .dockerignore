@@ -1,13 +1,16 @@
-# Build context = repo root for service Dockerfiles.
+# Conservative fallback for root-context builds. Per-service policy lives in
+# each built Dockerfile's adjacent <Dockerfile>.dockerignore (1.56).
 # Weights NEVER enter the image (aws-architecture §2.5).
 
 .git
 .github
-.venv
+.claude
 .superpowers
 .codegraph
+.venv
 .runtime
 .pytest_cache
+.ruff_cache
 __pycache__
 *.py[cod]
 *.egg-info
@@ -24,9 +27,11 @@ weights/
 *.pth
 *.onnx
 model/
+models/
 data/
 sources/
 results/
+papers/
 notebooks/
 archived/
 archive/
@@ -41,6 +46,11 @@ configs/
 *.wav
 *.mp4
 tmp/
+
+# Terraform state (never part of an image)
+.terraform
+*.tfstate
+*.tfstate.*
 
 # IDE / OS
 .DS_Store
