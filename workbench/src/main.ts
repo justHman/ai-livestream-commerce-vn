@@ -663,7 +663,12 @@ function bindEvents(): void {
   );
   window.addEventListener("pagehide", () => {
     if (state.session.id) {
-      store.stopSession(state.session.id).catch(() => undefined);
+      // keepalive: unload may cancel the request mid-flight otherwise, orphaning the session
+      fetch(`/api/v1/sessions/${encodeURIComponent(state.session.id)}/stop`, {
+        method: "POST",
+        headers: store.viewerHeaders(),
+        keepalive: true,
+      }).catch(() => undefined);
     }
   });
 }
