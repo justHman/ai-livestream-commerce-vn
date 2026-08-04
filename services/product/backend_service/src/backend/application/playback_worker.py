@@ -1,0 +1,68 @@
+"""Canonical playback worker (OpenSpec 1.21).
+
+Coordinates LLM -> chunking -> TTS -> avatar execution for one prepared
+Director decision. Owns the pipeline sequencing; the media engines live in
+the llm/tts/avatar services and the avatar/voice clients. The legacy
+``core.render.orchestrator.StreamOrchestrator`` remains the executed
+pipeline until Task 1.26; this module is the canonical home for the
+playback policy that the orchestrator wires into.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from .playback_queue import PlaybackCancelled, PlaybackQueue, new_item
+from .text_chunker import TextChunker
+
+__all__ = ["PlaybackWorker", "PlaybackWorkerConfig", "PlaybackCancelled", "PlaybackQueue", "TextChunker"]
+
+
+@dataclass
+class PlaybackWorkerConfig:
+    """Tunable playback pipeline knobs (mirror AppConfig text_chunk_*)."""
+
+    min_chars: int = 12
+    target_chars: int = 40
+    max_chars: int = 80
+    flush_timeout_ms: int = 350
+    max_queue_windows: int = 5
+    transient_retry_count: int = 1
+
+
+@dataclass
+class PlaybackWorker:
+    """One session's LLM -> chunker -> TTS -> avatar playback executor.
+
+    Thin orchestration over the injected engines/backends:
+      - builds a fresh chunker per utterance,
+      - pushes windows into a bounded PlaybackQueue (backpressure),
+      - cooperates with cancellation via the queue's cancel flag.
+    """
+
+    config: PlaybackWorkerConfig = field(default_factory=PlaybackWorkerConfig)
+
+    def chunker(self, session_id: str, utterance_id: str) -> TextChunker:
+        """Fresh chunker for one utterance."""
+        return TextChunker(
+            session_id=session_id,
+            utterance_id=utterance_id,
+            min_chars=self.config.min_chars,
+            target_chars=self.config.target_chars,
+            max_chars=self.config.max_chars,
+            flush_timeout_ms=self.config.flush_timeout_ms,
+        )
+
+    def queue(self, session_id: str) -> PlaybackQueue:
+        """Fresh bounded queue for one turn."""
+        return PlaybackQueue(session_id, max_windows=self.config.max_queue_windows)
+
+    def new_queue_item(self, turn_id: str, seq: int, payload: Any, *, is_final: bool = False):
+        return new_item(turn_id, seq, payload, is_final=is_final)
+
+    def schedule_retry(self, attempt: int) -> float:
+        """Bounded exponential backoff for transient playback failures."""
+        if attempt >= self.config.transient_retry_count:
+            return 0.0
+        return min(0.1 * (2**attempt), 0.5)
