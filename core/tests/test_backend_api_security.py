@@ -67,7 +67,7 @@ def test_401_missing(monkeypatch):
             )
         )
     ) as c:
-        assert c.post("/api/v1/lite/start", json={}).status_code == 401
+        assert c.post("/api/v1/sessions", json={}).status_code == 401
 
 
 def test_401_wrong(monkeypatch):
@@ -84,7 +84,7 @@ def test_401_wrong(monkeypatch):
     ) as c:
         assert (
             c.post(
-                "/api/v1/lite/start", json={}, headers={"authorization": "Bearer wrong"}
+                "/api/v1/sessions", json={}, headers={"authorization": "Bearer wrong"}
             ).status_code
             == 401
         )
@@ -104,7 +104,7 @@ def test_200_valid(monkeypatch):
     ) as c:
         assert (
             c.post(
-                "/api/v1/lite/start", json={}, headers={"authorization": "Bearer tkn123"}
+                "/api/v1/sessions", json={}, headers={"authorization": "Bearer tkn123"}
             ).status_code
             != 401
         )
@@ -150,8 +150,8 @@ def test_rate_limit(monkeypatch):
         api_rate_limit_max_keys=100,
     )
     with TestClient(_make_app(config)) as c:
-        c.post("/api/v1/lite/start", json={})
-        assert c.post("/api/v1/lite/start", json={}).status_code == 429
+        c.post("/api/v1/sessions", json={})
+        assert c.post("/api/v1/sessions", json={}).status_code == 429
 
 
 def test_ws_rate_limit(monkeypatch):
@@ -184,10 +184,10 @@ def test_integration(monkeypatch):
     )
     with TestClient(_make_app(config)) as c:
         assert c.get("/api/v1/health/live").headers.get("x-content-type-options") == "nosniff"
-        assert c.post("/api/v1/lite/start", json={}).status_code == 401
+        assert c.post("/api/v1/sessions", json={}).status_code == 401
         assert (
             c.post(
-                "/api/v1/lite/start", json={}, headers={"authorization": "Bearer tkn"}
+                "/api/v1/sessions", json={}, headers={"authorization": "Bearer tkn"}
             ).status_code
             != 401
         )
