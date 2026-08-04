@@ -45,6 +45,14 @@ codegraph/
 .superpowers/
 .claude/worktrees/
 
+# ── Node / Workbench ─────────────────────────────────────────
+node_modules/
+workbench/node_modules/
+workbench/dist/
+workbench/test-results/
+workbench/playwright-report/
+*.tsbuildinfo
+
 # ── Claude Code local override (per-developer, never commit) ──
 CLAUDE.local.md
 

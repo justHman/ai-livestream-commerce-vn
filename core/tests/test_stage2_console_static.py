@@ -1,15 +1,63 @@
-"""Static regression contracts for the Stage 2 operator console."""
+"""Workbench structure contracts for the Stage 2 operator console (Task 1.43/1.44).
+
+The legacy one-file stage2.html was decomposed into the canonical Vite
+workbench. Behavior-equivalent coverage now lives in:
+  - workbench/__tests__/*.ts (Vitest module behavior)
+  - workbench/playwright/*.spec.ts (browser E2E)
+
+These tests assert the canonical layout that replaces the old static page:
+one index.html, flat responsibility modules, fixture/token sources, no legacy
+entrypoint references, and no /lite/* usage from the workbench API surface.
+"""
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+WORKBENCH = ROOT / "workbench"
+SRC = WORKBENCH / "src"
+INDEX = (WORKBENCH / "index.html").read_text(encoding="utf-8")
 
-HTML = (Path(__file__).parents[2] / "frontend" / "stage2.html").read_text(encoding="utf-8")
+REQUIRED_MODULES = (
+    "main.ts",
+    "api.ts",
+    "api_types.ts",
+    "websocket.ts",
+    "state.ts",
+    "sessions.ts",
+    "resources.ts",
+    "diagnostics.ts",
+    "livekit.ts",
+    "simulator.ts",
+    "styles.css",
+    "fixtures.ts",
+    "dev_tokens.ts",
+)
 
 
-def test_canonical_control_blocks_render_once() -> None:
+def _module_names() -> set[str]:
+    return {name for name in REQUIRED_MODULES if (SRC / name).is_file()}
+
+
+def test_workbench_has_single_index_html() -> None:
+    html_files = [p for p in WORKBENCH.iterdir() if p.suffix == ".html"]
+    assert html_files == [WORKBENCH / "index.html"]
+
+
+def test_all_flat_responsibility_modules_exist() -> None:
+    assert _module_names() == set(REQUIRED_MODULES)
+
+
+def test_index_boots_main_module_once() -> None:
+    assert INDEX.count('type="module" src="/src/main.ts"') == 1
+    assert "stage2.html" not in INDEX
+    assert "lite.html" not in INDEX
+
+
+def test_index_exposes_canonical_console_panels() -> None:
     block_ids = (
         "sessionPanel",
         "resourcePanel",
@@ -20,56 +68,10 @@ def test_canonical_control_blocks_render_once() -> None:
         "diagnosticsPanel",
         "eventLogPanel",
     )
-
-    assert all(HTML.count(f'id="{block_id}"') == 1 for block_id in block_ids)
-
-
-def test_console_uses_one_explicit_state_and_reducer() -> None:
-    assert re.search(r"const\s+initialState\s*=\s*\{", HTML)
-    assert re.search(r"function\s+reducer\s*\(", HTML)
-    assert re.search(r"function\s+dispatch\s*\(", HTML)
+    assert all(INDEX.count(f'id="{panel}"') == 1 for panel in block_ids)
 
 
-def test_auto_demo_ingests_and_displays_one_rolling_batch_of_20_comments() -> None:
-    assert "AUTO_DEMO_COMMENT_COUNT = 20" in HTML
-    assert "pendingComments" not in HTML
-    assert "flushPendingAutoComments" not in HTML
-    assert 'while ($("msgFeed").children.length > AUTO_DEMO_COMMENT_COUNT)' in HTML
-    assert "await ingestComments(comments, autoDemoAbortController.signal)" in HTML
-
-
-def test_console_prefills_local_test_tokens_and_local_fixtures() -> None:
-    assert 'id="apiToken" type="password" value="local-test-token-' in HTML
-    assert 'id="adminToken" type="password" value="local-admin-token-' in HTML
-    assert 'id="loadMockProductsBtn"' not in HTML
-    assert "LOCAL_PRODUCT_FIXTURES" in HTML
-    assert "LOCAL_DRAFT_KEY" in HTML
-    assert "LOCAL_DRAFT_VERSION" in HTML
-    assert "loadMockProducts()" in HTML
-
-
-def test_console_retries_protected_auto_loads_after_token_entry() -> None:
-    assert '$("adminToken").addEventListener("change", loadProtectedResources)' in HTML
-    assert '$("apiToken").addEventListener("change", discoverResources)' in HTML
-    assert "async function loadProtectedResources()" in HTML
-    assert "if (getAdminToken())" in HTML
-    assert "if (getViewerToken())" in HTML
-
-
-def test_console_has_continuous_demo_controls_and_no_bootstrap_fetch() -> None:
-    assert 'id="autoDemoRate"' in HTML
-    assert 'min="0.2" max="5"' in HTML
-    assert 'id="autoDemoMode"' in HTML
-    assert "loadProtectedResources();" not in HTML
-    assert "LOCAL_PRODUCT_FIXTURES" in HTML
-    assert "localStorage" in HTML
-    assert "setTimeout(async () =>" in HTML
-    assert "autoDemoGeneration" in HTML
-    assert "Auto Demo yêu cầu Start session và Attach cấu hình trước." in HTML
-    assert "generation !== autoDemoGeneration" in HTML
-
-
-def test_console_exposes_runtime_scheduling_controls() -> None:
+def test_index_has_runtime_config_and_validation_controls() -> None:
     controls = (
         "qaMaxClusters",
         "qaTimeout",
@@ -79,119 +81,72 @@ def test_console_exposes_runtime_scheduling_controls() -> None:
         "retryCount",
         "pivotEnter",
         "pivotExit",
+        "applyRuntimeConfigBtn",
+        "productsJson",
+        "configErrors",
     )
-    assert all(f'id="{control}"' in HTML for control in controls)
-    assert "applyRuntimeConfigBtn" in HTML
-    assert "/api/v1/lite/config" in HTML
+    assert all(f'id="{control}"' in INDEX for control in controls)
 
 
-def test_manual_speech_is_verbatim_tts_without_llm() -> None:
-    assert "Nội dung nói nguyên văn" in HTML
-    assert "generate: false" in HTML
+def test_index_preserves_accessibility_contracts() -> None:
+    styles = (SRC / "styles.css").read_text(encoding="utf-8")
+    assert ":focus-visible" in styles
+    assert '@media (max-width: 1024px)' in styles
+    assert 'aria-live="polite"' in INDEX
+    assert "sr-only" in styles
 
 
-def test_shop_profile_supports_presets_and_custom_values() -> None:
-    assert 'id="shopProfileSelect"' in HTML
-    assert 'value="custom"' in HTML
-    assert "SHOP_PROFILE_PRESETS" in HTML
+def test_workbench_src_never_uses_legacy_aliases() -> None:
+    for module in REQUIRED_MODULES:
+        path = SRC / module
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "/lite/" not in text, f"{module} references /lite/*"
+        assert "debug/mock_viewer_msgs" not in text, f"{module} uses debug API"
+        assert "debug/clusters" not in text, f"{module} uses debug clusters"
+        assert "mock/video" not in text, f"{module} uses MJPEG debug media"
+        assert "mock/frame" not in text, f"{module} uses debug frames"
 
 
-def test_product_controls_stay_outside_collapsed_details() -> None:
-    template = re.search(
-        r'<template id="productTemplate">(?P<body>.*?)</template>', HTML, re.DOTALL
-    ).group("body")
-
-    assert '<details class="product-card" open>' not in template
-    assert '<details class="product-details">' in template
-    details = re.search(
-        r'<details class="product-details">(?P<body>.*?)</details>', template, re.DOTALL
-    ).group("body")
-    assert 'data-field="selected"' not in details
-    assert 'data-action="move-up"' not in details
-    assert 'data-action="move-down"' not in details
-    assert ">↑</button>" in template
-    assert ">↓</button>" in template
+def test_workbench_api_points_to_canonical_sessions_paths() -> None:
+    api_source = (SRC / "api.ts").read_text(encoding="utf-8")
+    ws_source = (SRC / "websocket.ts").read_text(encoding="utf-8")
+    assert "/api/v1/sessions" in api_source
+    assert "ws/control" in ws_source and "ws/platform" in ws_source
+    assert "media/livekit/room" in api_source
 
 
-def test_console_declares_all_auto_demo_states() -> None:
-    expected = {
-        "idle",
-        "verifying",
-        "attaching",
-        "introducing",
-        "answering",
-        "generating",
-        "synthesizing",
-        "playback",
-        "advancing",
-        "stopped",
-        "failed",
-    }
-
-    assert expected <= set(re.findall(r'"([a-z]+)"', HTML))
+def test_fixture_json_exists_with_expected_sets() -> None:
+    fixtures = WORKBENCH / "src" / "fixtures"
+    for name in ("shop_profiles.json", "viewer_messages.json", "products.json"):
+        assert (fixtures / name).is_file()
+    products = json.loads((fixtures / "products.json").read_text(encoding="utf-8"))
+    assert len(products) >= 3
+    assert all(p["id"] and p["name"] for p in products)
 
 
-def test_console_uses_canonical_diagnostics_without_legacy_aliases() -> None:
-    expected = {
-        "received_total",
-        "buffered_comments",
-        "active_comments",
-        "director_cycles",
-        "active_decision",
-        "queued_decisions",
-        "completed_speeches",
-        "completed_speech_history",
-        "singleton_clusters",
-        "actionable_clusters",
-    }
-
-    assert expected <= set(re.findall(r"\b([a-z_]+)\b", HTML))
-    assert "queue.pending" not in HTML
-    assert "decisions_emitted" not in HTML
+def test_dev_tokens_exact_literals_live_only_in_dev_tokens_source() -> None:
+    dev_tokens = (SRC / "dev_tokens.ts").read_text(encoding="utf-8")
+    assert "local-test-token-123456789012345678901234567890" in dev_tokens
+    assert "local-admin-token-123456789012345678901234567890" in dev_tokens
+    # No other workbench source should embed those exact literals.
+    for spec in REQUIRED_MODULES:
+        if spec == "dev_tokens.ts":
+            continue
+        path = SRC / spec
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            assert "local-test-token-123456789012345678901234567890" not in text
+            assert "local-admin-token-123456789012345678901234567890" not in text
 
 
-def test_full_diagnostics_have_copyable_scroll_regions() -> None:
-    ids = (
-        "selectedCluster",
-        "currentPrompt",
-        "generatedScript",
-        "upcomingWork",
-        "completedHistory",
-    )
-
-    assert all(f'id="{item_id}"' in HTML for item_id in ids)
-    assert "function clearDiagnosticsView" in HTML
-    assert "if (!data) { clearDiagnosticsView();" in HTML
-    assert "diagnostic-content" in HTML
-    assert "overflow: auto" in HTML
-    assert ".slice(0," not in HTML
-
-
-def test_editable_draft_has_structured_shop_and_ordered_products() -> None:
-    fields = ("shopName", "hostName", "shopAddress", "shopPhone", "sellingStyle")
-
-    assert all(f'id="{field}"' in HTML for field in fields)
-    assert "selectedProductIds" in HTML
-    assert "productOrder" in HTML
-    assert 'data-action="move-up"' in HTML
-    assert 'data-action="move-down"' in HTML
-    assert 'id="productsJson"' in HTML
-    assert 'id="configErrors"' in HTML
-
-
-def test_product_id_edits_update_order_and_selection_references() -> None:
-    assert "function replaceProductId" in HTML
-    assert "productOrder.map" in HTML
-    assert "selectedProductIds.map" in HTML
-
-
-def test_backend_validation_errors_keep_field_locations() -> None:
-    assert "detail.map" in HTML
-    assert 'issue.loc.join(".")' in HTML
-
-
-def test_accessibility_and_tablet_layout_contracts() -> None:
-    assert ":focus-visible" in HTML
-    assert "@media (max-width: 1024px)" in HTML
-    assert 'aria-live="polite"' in HTML
-    assert 'aria-label="' in HTML
+def test_no_superseded_static_console_entrypoints() -> None:
+    frontend = ROOT / "frontend"
+    if frontend.exists():
+        html_files = [p for p in frontend.iterdir() if p.suffix == ".html"]
+        # The old console was a single blob; after migration no console entrypoint
+        # may remain in frontend/. index.html/lite.html may be retired separately,
+        # but stage2.html must be gone (decomposition complete).
+        names = {p.name for p in html_files}
+        assert "stage2.html" not in names

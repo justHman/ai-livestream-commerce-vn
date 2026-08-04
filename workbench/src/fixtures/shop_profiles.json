@@ -1,0 +1,38 @@
+[
+  {
+    "id": "beauty",
+    "shop_name": "Shop Nam Beauty",
+    "host_name": "Chị Lan",
+    "persona": "MC bán hàng nhiệt tình, chuyên mỹ phẩm skincare, 5 năm kinh nghiệm livestream",
+    "address": "123 Nguyễn Huệ, Q.1, TP.HCM",
+    "phone": "0909.123.456",
+    "selling_style": "Nhiệt tình, rõ giá, không phóng đại công dụng."
+  },
+  {
+    "id": "fashion",
+    "shop_name": "Livento Fashion",
+    "host_name": "Chị Lan",
+    "persona": "MC bán hàng thời trang năng động, nhấn mạnh form, chất liệu, size, giá và chốt đơn",
+    "address": "TP.HCM",
+    "phone": "0909.123.456",
+    "selling_style": "Năng động, nhấn mạnh form, chất liệu, size, giá và chốt đơn."
+  },
+  {
+    "id": "gadget",
+    "shop_name": "Livento Gadget",
+    "host_name": "Anh Nam",
+    "persona": "MC bán hàng công nghệ, rõ thông số kỹ thuật, lợi ích thực tế",
+    "address": "TP.HCM",
+    "phone": "0909.123.456",
+    "selling_style": "Rõ thông số, nói lợi ích thực tế, không phóng đại."
+  },
+  {
+    "id": "heaven",
+    "shop_name": "Shop Mỹ Phẩm Heaven",
+    "host_name": "Chị Lan",
+    "persona": "MC bán hàng nhiệt tình, 5 năm kinh nghiệm livestream skincare",
+    "address": "Số 45 Hai Bà Trưng, Q.1, TP.HCM",
+    "phone": "0912.345.678",
+    "selling_style": "Tư vấn cá nhân theo từng loại da, rõ giá vầ khuyến mãi, chốt đơn nhiệt tình."
+  }
+]

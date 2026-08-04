@@ -20,6 +20,7 @@ they migrate.
 
 from __future__ import annotations
 
+import hmac
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -40,6 +41,38 @@ def _canonical_base_sales() -> str:
     guardrails = bundle.prompt("response_guardrails_vi")
     return base + "\n\n" + guardrails
 
+
+# ── Workbench dev fixture values (Task 1.46) ──────────────────────────
+# Exact public local fixture values from workbench/src/dev_tokens.ts.
+# They are local-iteration values, NOT secrets; copied into staging/prod the
+# backend fails closed at startup (the literal is never logged).
+
+
+def _dev_fixture_viewer() -> str:
+    return "local-test-token-123456789012345678901234567890"
+
+
+def _dev_fixture_admin() -> str:
+    return "local-admin-token-123456789012345678901234567890"
+
+
+_DEV_FIXTURE_ENVS = frozenset({"dev", "test"})
+
+
+def validate_dev_fixture_credentials(app_env: str, viewer_credential: str, admin_credential: str) -> None:
+    """Fail startup if a Workbench fixture credential is configured outside
+    APP_ENV=dev|test. Constant-time compare; literal is never logged."""
+    if app_env in _DEV_FIXTURE_ENVS:
+        return
+    for candidate in (viewer_credential, admin_credential):
+        if candidate and (
+            hmac.compare_digest(candidate, _dev_fixture_viewer())
+            or hmac.compare_digest(candidate, _dev_fixture_admin())
+        ):
+            raise RuntimeError(
+                "refusing to start: a configured API credential is a local-only "
+                "Workbench fixture and APP_ENV is not dev or test"
+            )
 
 # Default shop profile (thay bằng thông tin shop thật qua env SHOP_PROFILE).
 _DEFAULT_SHOP_PROFILE = (
@@ -325,6 +358,14 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
+        # Workbench fixture credentials must never configure non-dev/test envs.
+        viewer_credential = os.environ.get("BACKEND_API_TOKEN", "")
+        admin_credential = os.environ.get("ADMIN_API_TOKEN", "")
+        validate_dev_fixture_credentials(
+            os.environ.get("APP_ENV", "dev").lower(),
+            viewer_credential,
+            admin_credential,
+        )
         return cls(
             app_env=os.environ.get("APP_ENV", "dev").lower(),
             render_backend=os.environ.get("RENDER_BACKEND", "cloud_liveavatar").lower(),
@@ -353,8 +394,8 @@ class AppConfig:
             text_chunk_flush_timeout_ms=int(os.environ.get("TEXT_CHUNK_FLUSH_TIMEOUT_MS", "350")),
             director_enabled=os.environ.get("DIRECTOR_ENABLED", "0").lower()
             in ("1", "true", "yes"),
-            backend_api_token=os.environ.get("BACKEND_API_TOKEN", ""),
-            admin_api_token=os.environ.get("ADMIN_API_TOKEN", ""),
+            backend_api_token=viewer_credential,
+            admin_api_token=admin_credential,
             debug_enabled=os.environ.get("DEBUG_ENABLED", "0").lower()
             in ("1", "true", "on", "yes"),
             avatar_base_url=os.environ.get("AVATAR_BASE_URL", ""),
