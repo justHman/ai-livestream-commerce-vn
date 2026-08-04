@@ -63,7 +63,7 @@ async def sessions_start(
     _limit: None = Depends(router.rate_limit_viewer),
 ) -> dict[str, Any]:
     d = _container(request)
-    from avatar.engines.base import StartOptions
+    from backend.application.render.engines_base import StartOptions
 
     try:
         result = await asyncio.to_thread(
@@ -113,7 +113,7 @@ async def sessions_say(
 
 async def _say(request: Request, req: router.SayReq) -> dict[str, Any]:
     d = _container(request)
-    from avatar.engines.base import FullPipelineBackend, StreamingAvatarBackend
+    from backend.application.render.engines_base import FullPipelineBackend, StreamingAvatarBackend
 
     # Phase E: streaming coordinator path for StreamingAvatarBackend (mock +
     # future self-host). FullPipelineBackend (cloud) keeps backend.say().
@@ -150,7 +150,7 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
     with 409 already_speaking. The lock is released in ``finally`` so a
     subsequent say always succeeds once this one finishes.
     """
-    from avatar.queue import BoundedVideoQueue, CoordinatorMetrics
+    from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
     from backend.application.render.orchestrator import StreamOrchestrator
     from llm.engines.base import LLMEngine, _NoopEngine
     from tts.engines.base import TTSEngine, ToneEngine

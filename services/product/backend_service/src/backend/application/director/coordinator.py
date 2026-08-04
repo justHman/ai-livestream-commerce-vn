@@ -47,8 +47,8 @@ from .session_context import DirectorRuntime
 from .routing import route_comment
 from .state import StreamState
 
-from avatar.locks import SessionLockRegistry
-from avatar.queue import BoundedVideoQueue, CoordinatorMetrics
+from backend.application.render.locks import SessionLockRegistry
+from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
 from ..render.orchestrator import StreamOrchestrator
 
@@ -870,7 +870,7 @@ class DirectorCoordinator:
         # 10. Build a FRESH orchestrator+queue+metrics for this turn and run it.
         # Cloud (FullPipelineBackend) path: backend.say() — no stream_audio
         # (StreamOrchestrator needs streaming avatar, only self-host Stage 3).
-        from avatar.engines.base import FullPipelineBackend
+        from backend.application.render.engines_base import FullPipelineBackend
 
         queue = BoundedVideoQueue(max_size=self._max_queue_windows)
         metrics = CoordinatorMetrics()

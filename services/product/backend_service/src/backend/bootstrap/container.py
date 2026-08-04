@@ -19,9 +19,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from avatar.engines.base import RenderBackend
-    from avatar.locks import SessionLockRegistry
-    from avatar.publishing import LiveKitPublisherRegistry
+    from backend.application.render.engines_base import RenderBackend
+    from backend.application.render.locks import SessionLockRegistry
+    from backend.application.publishing import LiveKitPublisherRegistry
     from backend.api.v1.hub import ControlHub
     from backend.application.db import SessionStore
     from backend.application.director.coordinator import DirectorCoordinator
@@ -83,7 +83,7 @@ def create_container(
     Callers (``build_lifespan`` and tests) pass already-constructed
     resources.  This function is a convenience factory, not a DI engine.
     """
-    from avatar.locks import SessionLockRegistry
+    from backend.application.render.locks import SessionLockRegistry
     from backend.api.v1.hub import AvatarStore, ControlHub
 
     return BootstrapContainer(

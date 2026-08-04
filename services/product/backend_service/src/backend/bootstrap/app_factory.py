@@ -34,7 +34,7 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     backend = config.build_render_backend()
     store = config.build_store()
     engine_manager = v1_engine_manager(config)
-    from avatar.publishing import LiveKitPublisherRegistry, publish_enabled
+    from backend.application.publishing import LiveKitPublisherRegistry, publish_enabled
 
     return create_container(
         backend=backend,

@@ -47,10 +47,10 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from llm.engines.base import LLMEngine, LLMRequest
-from avatar.engines.windows import AudioWindow, TextChunk, VideoWindow
-from avatar.queue import BoundedVideoQueue, CoordinatorMetrics
-from tts.engines.base import TTSEngine
+from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
+from backend.application.contracts.tts_engines import TTSEngine
+from .windows import AudioWindow, TextChunk, VideoWindow
+from .queue import BoundedVideoQueue, CoordinatorMetrics
 
 from ..text_chunker import TextChunker
 

@@ -30,8 +30,16 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-from llm.engines.base import LLMEngine, load_engine as load_llm_engine, to_llm_fn
-from tts.engines.base import TTSEngine, load_engine as load_tts_engine, to_tts_fn
+from backend.application.contracts.llm_engines import (
+    LLMEngine,
+    load_engine as load_llm_engine,
+    to_llm_fn,
+)
+from backend.application.contracts.tts_engines import (
+    TTSEngine,
+    load_engine as load_tts_engine,
+    to_tts_fn,
+)
 
 
 def _resource_id(engine: str, model: str) -> str:

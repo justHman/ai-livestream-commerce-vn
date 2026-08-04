@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from avatar.engines.base import RenderBackend
+from backend.application.render.engines_base import RenderBackend
 from .catalog import Product
 from .clustering import Comment
 from .config import StreamConfig

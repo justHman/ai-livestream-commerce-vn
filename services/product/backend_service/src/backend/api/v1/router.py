@@ -677,7 +677,7 @@ async def media_livekit_room(
             status_code=503,
             detail="LiveKit not configured (LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET)",
         )
-    from avatar.publishing import LiveKitConfigError, mint_room_token
+    from backend.application.publishing import LiveKitConfigError, mint_room_token
 
     try:
         token = mint_room_token(

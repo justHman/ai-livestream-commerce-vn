@@ -252,6 +252,29 @@ class TTSConfig:
         return cfg
 
 
+@dataclass(frozen=True)
+class PublishingConfig:
+    """LiveKit publishing settings — credentials stay server-side."""
+
+    livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+    room_ttl_sec: int = 3600
+    fps: int = 25
+
+    def __post_init__(self) -> None:
+        if not self.livekit_url:
+            raise ValueError("LIVEKIT_URL is required for avatar publishing")
+        if not self.livekit_api_key or not self.livekit_api_secret:
+            raise ValueError(
+                "LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required for avatar publishing"
+            )
+        if self.room_ttl_sec < 60:
+            raise ValueError("LIVEKIT_ROOM_TTL_SEC must be >= 60")
+        if self.fps < 1:
+            raise ValueError("LIVEKIT_FPS must be >= 1")
+
+
 @dataclass
 class AppConfig:
     """Runtime configuration, read from environment."""
@@ -396,7 +419,7 @@ class AppConfig:
         builds only what it can run offline.
         """
         if self.render_backend == "mock":
-            from avatar.engines.mock import MockRenderBackend
+            from backend.application.render.mock import MockRenderBackend
 
             return MockRenderBackend(
                 fps=self.mock_avatar_fps,
@@ -408,8 +431,12 @@ class AppConfig:
             "self_host_avatarforcing_half",
             "self_host_echoavatar_full",
         ):
-            from avatar.engines.base import RenderBackend, StartOptions, StartResult
-            from avatar.engines.windows import AudioWindow
+            from backend.application.render.engines_base import (
+                RenderBackend,
+                StartOptions,
+                StartResult,
+            )
+            from backend.application.render.windows import AudioWindow
 
             class _RemoteBackend(RenderBackend):
                 """Placeholder: cloud/self-host rendering runs in avatar_service.
