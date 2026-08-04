@@ -59,6 +59,7 @@ export type Action =
   | { type: "VERIFICATION_SET"; value: VerificationState }
   | { type: "SHOP_FIELD"; field: keyof ShopProfile; value: string }
   | { type: "PRODUCTS_SET"; value: Partial<Draft> }
+  | { type: "PRODUCT_ID_CHANGE"; productId: string; nextId: string; jsonText: string }
   | { type: "PRODUCT_FIELD"; productId: string; field: string; value: unknown; jsonText: string }
   | { type: "DRAFT_PATCH"; value: Partial<Draft> }
   | { type: "AUTO_PHASE"; phase: string; active?: boolean }
@@ -119,6 +120,22 @@ export function reducer(current: RootState, action: Action): RootState {
       };
     case "PRODUCTS_SET":
       return { ...current, draft: { ...current.draft, ...action.value } };
+    case "PRODUCT_ID_CHANGE":
+      if (action.nextId === action.productId || current.draft.products.some((p) => p.id === action.nextId)) {
+        return { ...current, draft: { ...current.draft, errors: [`products.id: trùng ID ${action.nextId}.`] } };
+      }
+      return {
+        ...current,
+        draft: {
+          ...current.draft,
+          products: current.draft.products.map((p) => (p.id === action.productId ? { ...p, id: action.nextId } : p)),
+          productOrder: current.draft.productOrder.map((id) => (id === action.productId ? action.nextId : id)),
+          selectedProductIds: current.draft.selectedProductIds.map((id) => (id === action.productId ? action.nextId : id)),
+          jsonText: action.jsonText,
+          jsonDirty: false,
+          errors: [],
+        },
+      };
     case "PRODUCT_FIELD":
       return {
         ...current,

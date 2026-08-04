@@ -14,13 +14,14 @@ import { reducer, initialState, type Action, type RootState } from "./state";
 import { ControlSocket, PlatformSocket } from "./websocket";
 import { ViewerSimulator, validateSimulatorInput } from "./simulator";
 import type { LifecycleEvent, Product } from "./api_types";
-import { validateProductCatalog, productJson } from "./validation";
+import { validateProductCatalog, validateShopLimits, productJson } from "./validation";
+import { clearDiagnostics } from "./diagnostics";
 
 import "./styles.css";
 
 const $ = (id: string): HTMLElement => document.getElementById(id) ?? document.body;
 
-const SHOP_PROFILE_PRESETS: Record<string, { shop_name: string; host_name: string; address: string; phone: string; selling_style: string }> = {};
+const SHOP_PROFILE_PRESETS = new Map(loadFixtures().shop_profiles.map((p) => [p.id, { shop_name: p.shop_name, host_name: p.host_name, address: p.address, phone: p.phone, selling_style: p.selling_style }]));
 type ShopKey = "shop_name" | "host_name" | "address" | "phone" | "selling_style";
 const SHOP_FIELD_MAP: Record<string, ShopKey> = {
   shopName: "shop_name",
@@ -40,6 +41,13 @@ let diagnosticTimer: ReturnType<typeof setTimeout> | null = null;
 let previewObjectUrl: string | null = null;
 
 const AUTO_DEMO_STATES = ["idle", "verifying", "attaching", "opening", "introducing", "answering", "generating", "synthesizing", "prepared", "playback", "advancing", "pivoting", "resuming", "stopped", "failed"];
+const AUTO_STATE_LABELS: Record<string, string> = {
+  idle: "đang chờ", verifying: "đang kiểm tra sandbox", attaching: "đang attach cấu hình",
+  introducing: "đang giới thiệu sản phẩm", answering: "đang trả lời cụm bình luận",
+  generating: "backend đang tạo nội dung", synthesizing: "backend đang tổng hợp giọng nói",
+  playback: "avatar đang phát", advancing: "đang chờ quyết định tiếp theo",
+  opening: "đang mở đầu livestream", stopped: "đã dừng", pivoting: "đang chuyển sản phẩm", resuming: "đang quay lại checkpoint", failed: "thất bại",
+};
 const AUTO_DEMO_COMMENT_COUNT = 20;
 const LOCAL_DRAFT_KEY = "livento-stage2-draft-v1";
 const LOCAL_DRAFT_VERSION = 1;
@@ -96,6 +104,8 @@ function render(_action: Action): void {
   if (state.diagnostics) {
     const data = state.diagnostics as Parameters<typeof renderDiagnostics>[0];
     renderDiagnostics(data, sink);
+  } else {
+    clearDiagnostics(sink);
   }
   renderEvents();
 }
@@ -189,10 +199,19 @@ function renderProducts(): void {
 
 function renderAutoDemo(): void {
   const demo = state.autoDemo;
-  ($("demoStateText") as HTMLElement).textContent = `Trạng thái Auto Demo: ${demo.phase}.`;
+  ($("demoStateText") as HTMLElement).textContent = `Trạng thái Auto Demo: ${demo.phase} — ${AUTO_STATE_LABELS[demo.phase] || "không xác định"}.`;
   ($("demoStateText") as HTMLElement).dataset.tone = demo.phase === "failed" ? "danger" : demo.active ? "warning" : "";
   ($("autoDemoBtn") as HTMLButtonElement).disabled = demo.active;
   ($("stopAutoBtn") as HTMLButtonElement).disabled = !demo.active;
+  const fragment = document.createDocumentFragment();
+  for (const phase of AUTO_DEMO_STATES) {
+    const item = document.createElement("span");
+    item.className = "demo-state";
+    item.textContent = phase;
+    if (phase === demo.phase) item.setAttribute("aria-current", "step");
+    fragment.appendChild(item);
+  }
+  ($("demoStates") as HTMLElement).replaceChildren(fragment);
 }
 
 function renderEvents(): void {
@@ -375,6 +394,7 @@ async function attachDraft(): Promise<void> {
     return;
   }
   const errors = validateProductCatalog(state.draft.products);
+  errors.push(...validateShopLimits(state.draft.shop as unknown as Record<string, unknown>));
   if (state.draft.selectedProductIds.length === 0) errors.push("products: chọn ít nhất một sản phẩm.");
   dispatch({ type: "DRAFT_PATCH", value: { errors } });
   if (errors.length) {
@@ -508,6 +528,11 @@ async function loadProtected(): Promise<void> {
   await loadProtectedResources();
 }
 
+function replaceProductId(productId: string, nextId: string): void {
+  const products = state.draft.products.map((p) => (p.id === productId ? { ...p, id: nextId } : p));
+  dispatch({ type: "PRODUCT_ID_CHANGE", productId, nextId, jsonText: productJson(products) });
+}
+
 function moveProduct(productId: string, offset: number): void {
   const order = [...state.draft.productOrder];
   const from = order.indexOf(productId);
@@ -573,6 +598,10 @@ function bindEvents(): void {
       dispatch({ type: "DRAFT_PATCH", value: { selectedProductIds: [...selected], errors: [] } });
       return;
     }
+    if (field === "id") {
+      replaceProductId(productId, input.value);
+      return;
+    }
     let value: unknown = input.value;
     if (input.dataset.type === "integer") value = input.value === "" ? null : Number(input.value);
     else if (input.dataset.type === "boolean") value = input.checked;
@@ -582,7 +611,7 @@ function bindEvents(): void {
   });
   ($("shopProfileSelect") as HTMLSelectElement).addEventListener("change", (event) => {
     const value = (event.target as HTMLSelectElement).value;
-    const preset = SHOP_PROFILE_PRESETS[value];
+    const preset = SHOP_PROFILE_PRESETS.get(value);
     if (preset) {
       dispatch({ type: "DRAFT_PATCH", value: { shop: { ...preset } } });
     } else {
