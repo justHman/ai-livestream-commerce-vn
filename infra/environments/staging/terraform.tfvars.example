@@ -25,6 +25,8 @@ enable_database_url        = false
 database_url_parameter_arn = ""
 
 db_instance_class       = "db.t4g.medium"
+create_rds          = true   # managed Postgres
+create_redis       = true   # managed Redis
 db_allocated_storage_gb = 100
 redis_node_type         = "cache.t4g.small"
 

@@ -87,6 +87,18 @@ def main() -> int:
     if m and int(m.group(1)) < 1:
         errors.append("prod: desired_backend must be >= 1")
 
+    # 10. Data matrix: dev managed data off by default; staging/prod on.
+    for env in ("dev", "staging", "prod"):
+        vars_t = (INFRA / "environments" / env / "variables.tf").read_text(encoding="utf-8")
+        for flag in ("create_rds", "create_redis"):
+            m = re.search(rf'variable "{flag}" \{{.*?default\s*=\s*(\w+)', vars_t, re.S)
+            if not m:
+                errors.append(f"{env}: missing {flag}")
+                continue
+            want = "false" if env == "dev" else "true"
+            if m.group(1) != want:
+                errors.append(f"{env}: {flag} default {m.group(1)} != {want}")
+
     if errors:
         print("\n".join(errors))
         return 1

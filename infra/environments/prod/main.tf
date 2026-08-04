@@ -59,6 +59,8 @@ module "database" {
   env                  = var.env
   project              = var.project
   subnet_ids           = local.public_subnet_ids
+  create_rds           = var.create_rds
+  create_redis         = var.create_redis
   rds_sg_id            = module.security.sg_rds_id
   redis_sg_id          = module.security.sg_redis_id
   db_password          = var.db_password
@@ -117,7 +119,7 @@ module "compute" {
   cors_origins             = var.cors_origins
   debug_enabled            = var.debug_enabled
   session_store            = var.session_store
-  redis_url                = var.redis_url != "" ? var.redis_url : "redis://${module.database.redis_connection_string}"
+  redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? "redis://${module.database.redis_connection_string}" : "")
   app_env                  = var.app_env
   render_backend           = var.render_backend
   livekit_url              = var.livekit_url

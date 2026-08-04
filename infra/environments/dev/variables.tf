@@ -118,6 +118,18 @@ variable "database_url_parameter_arn" {
   }
 }
 
+variable "create_rds" {
+  description = "Create RDS Postgres (false = memory sessions, no DB cost). Dev default: off."
+  type        = bool
+  default     = false
+}
+
+variable "create_redis" {
+  description = "Create ElastiCache Redis (false = no cache cost). Dev default: off."
+  type        = bool
+  default     = false
+}
+
 variable "db_instance_class" {
   type    = string
   default = "db.t4g.medium"
