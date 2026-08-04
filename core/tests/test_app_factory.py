@@ -9,7 +9,7 @@ Verifies:
   - ``/health/live`` is always 200 with ``{"ok": True, "status": "live"}``.
   - ``/health/ready`` reports backend readiness (200) with the active
     ``render_backend`` / ``llm_engine`` / ``tts_engine`` fields.
-  - Importing ``core.server`` with mock + empty key does NOT raise and
+  - Importing ``backend.main`` with mock + empty key does NOT raise and
     exposes a module-level ``app`` (FastAPI) + ``create_app`` callable.
   - The existing ``/health`` route is preserved.
   - Finding 1: mock mode with a configured real LLM/TTS engine loads it
@@ -72,7 +72,7 @@ def injected_deps() -> v1.V1Deps:
 
 
 def test_create_app_default_returns_fastapi_with_expected_title(mock_env: None) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app()
     assert isinstance(app, FastAPI)
@@ -92,18 +92,18 @@ def test_create_app_wires_livekit_registry_only_when_publishing_is_enabled(
     monkeypatch.setenv("LIVEKIT_API_KEY", "key")
     monkeypatch.setenv("LIVEKIT_API_SECRET", "test-secret-32-characters-harmless")
 
-    from core.server import create_app
+    from backend.main import create_app
 
-    create_app(config=AppConfig.from_env())
+    app = create_app(config=AppConfig.from_env())
 
-    assert v1.deps().livekit_publishers is not None
+    assert app.state.container.livekit_publishers is not None
 
 
 def test_module_level_app_is_fastapi_and_create_app_callable(mock_env: None) -> None:
-    """Importing core.server must not raise; module-level `app` must exist."""
+    """Importing backend.main must not raise; module-level `app` must exist."""
     import importlib
 
-    import core.server as server_mod
+    import backend.main as server_mod
 
     # Re-import under the mock env to make sure the module-level app was built
     # against RENDER_BACKEND=mock (idempotent if already imported).
@@ -116,7 +116,7 @@ def test_module_level_app_is_fastapi_and_create_app_callable(mock_env: None) -> 
 
 
 def test_health_live_always_200(mock_env: None, injected_deps: v1.V1Deps) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=injected_deps)
     with TestClient(app) as client:
@@ -128,7 +128,7 @@ def test_health_live_always_200(mock_env: None, injected_deps: v1.V1Deps) -> Non
 
 
 def test_health_ready_200_mock_backend(mock_env: None, injected_deps: v1.V1Deps) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=injected_deps)
     with TestClient(app) as client:
@@ -142,7 +142,7 @@ def test_health_ready_200_mock_backend(mock_env: None, injected_deps: v1.V1Deps)
 
 
 def test_health_existing_route_preserved(mock_env: None, injected_deps: v1.V1Deps) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=injected_deps)
     with TestClient(app) as client:
@@ -157,7 +157,7 @@ def test_health_existing_route_preserved(mock_env: None, injected_deps: v1.V1Dep
 
 
 def test_root_route_returns_render_backend(mock_env: None, injected_deps: v1.V1Deps) -> None:
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=injected_deps)
     with TestClient(app) as client:
@@ -180,7 +180,7 @@ def test_injected_deps_engine_manager_used_as_is(mock_env: None, injected_deps: 
     ``engine_manager.tts is None``). If create_app had loaded models, those
     attributes would be non-None (or the call would have failed offline).
     """
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=injected_deps)
     em: EngineManager = injected_deps.engine_manager  # type: ignore[assignment]
@@ -194,7 +194,7 @@ def test_health_ready_reports_llm_none_when_not_loaded(
     mock_env: None, injected_deps: v1.V1Deps
 ) -> None:
     """/health/ready on injected (no-model) deps reports llm_engine 'none'."""
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=injected_deps)
     with TestClient(app) as client:
@@ -242,14 +242,13 @@ def test_mock_mode_loads_configured_llm_when_set(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("SESSION_STORE", "memory")
     monkeypatch.setenv("DIRECTOR_ENABLED", "0")
 
-    from core.server import create_app
-    from core.api import v1
+    from backend.main import create_app
     from core.config import AppConfig
 
     # Build a fresh AppConfig from the patched env so the test sees the
     # monkeypatched values (the module-level CONFIG was built at import time).
-    create_app(config=AppConfig.from_env())
-    em = v1.deps().engine_manager
+    app = create_app(config=AppConfig.from_env())
+    em = app.state.container.engine_manager
     assert em is not None
     assert em.llm is not None, (
         "Finding 1: mock mode with a configured real LLM engine must load it "
@@ -295,12 +294,11 @@ def test_mock_mode_loads_configured_tts_when_set(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("SESSION_STORE", "memory")
     monkeypatch.setenv("DIRECTOR_ENABLED", "0")
 
-    from core.server import create_app
-    from core.api import v1
+    from backend.main import create_app
     from core.config import AppConfig
 
-    create_app(config=AppConfig.from_env())
-    em = v1.deps().engine_manager
+    app = create_app(config=AppConfig.from_env())
+    em = app.state.container.engine_manager
     assert em is not None
     assert em.tts is not None, (
         "Finding 1: mock mode with a configured real TTS engine must load it "
@@ -325,12 +323,11 @@ def test_mock_mode_with_default_stubs_still_works(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("SESSION_STORE", "memory")
     monkeypatch.setenv("DIRECTOR_ENABLED", "0")
 
-    from core.server import create_app
-    from core.api import v1
+    from backend.main import create_app
     from core.config import AppConfig
 
-    app = create_app(config=AppConfig.from_env())
-    em = v1.deps().engine_manager
+    app = app = create_app(config=AppConfig.from_env())
+    em = app.state.container.engine_manager
     assert em is not None
     # Defaults → stubs → no load → None.
     assert em.llm is None
@@ -353,7 +350,7 @@ def test_health_ready_not_ready_with_hash_embedder_outside_dev(
 ) -> None:
     from core.director.embedder import HashingEmbedder
     from core.director.runtime import DirectorRuntime
-    from core.server import create_app
+    from backend.main import create_app
 
     monkeypatch.setenv("APP_ENV", "prod")
     injected_deps.config = AppConfig(
@@ -382,7 +379,7 @@ def test_health_ready_not_ready_when_llm_load_failed(
     """Finding 2: a configured real LLM engine failed to load
     (em.llm_load_error set, em.llm is None) → /health/ready ok=False and the
     error is surfaced in the response."""
-    from core.server import create_app
+    from backend.main import create_app
 
     em: EngineManager = injected_deps.engine_manager  # type: ignore[assignment]
     # Simulate a failed real-engine load: configure a real engine name in the
@@ -408,7 +405,7 @@ def test_health_ready_not_ready_when_tts_load_failed(
 ) -> None:
     """Finding 2: a configured real TTS engine failed to load
     (em.tts_load_error set, em.tts is None) → /health/ready ok=False."""
-    from core.server import create_app
+    from backend.main import create_app
 
     em: EngineManager = injected_deps.engine_manager  # type: ignore[assignment]
     em._tts_cfg = {"engine": "transformers"}
@@ -428,7 +425,7 @@ def test_health_ready_ready_when_no_error_and_stubs(
 ) -> None:
     """Baseline: no load error, no engines loaded (stub defaults) → ready=True.
     Verifies the Finding 2 fix didn't break the normal stub path."""
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(deps=injected_deps)
     with TestClient(app) as client:
@@ -519,12 +516,11 @@ def test_create_app_records_llm_load_error_on_failure(
     monkeypatch.setenv("SESSION_STORE", "memory")
     monkeypatch.setenv("DIRECTOR_ENABLED", "0")
 
-    from core.server import create_app
-    from core.api import v1
+    from backend.main import create_app
     from core.config import AppConfig
 
-    app = create_app(config=AppConfig.from_env())
-    em = v1.deps().engine_manager
+    app = app = create_app(config=AppConfig.from_env())
+    em = app.state.container.engine_manager
     assert em is not None
     # The load failed → llm is None (stub fallback), error is recorded.
     assert em.llm is None

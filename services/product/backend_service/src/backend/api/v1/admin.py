@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 
 from backend.api.dependencies import container_from_request
 from backend.config import AppConfig
@@ -67,4 +67,4 @@ async def admin_health(request: Request, _: None = Depends(admin_auth)) -> dict[
     """Deep health — same payload as /health/ready."""
     from .router import health_ready
 
-    return await health_ready()
+    return await health_ready(request)

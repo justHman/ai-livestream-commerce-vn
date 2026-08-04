@@ -35,8 +35,15 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _make_app(mock_env) -> TestClient:
-    """Build a dev-mode app with director + coordinator wired."""
-    from core.server import create_app
+    """Build a dev-mode app with director + coordinator injected."""
+    from backend.main import create_app
+    from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
+    from backend.application.director.session_context import DirectorRuntime
+    from core.director.embedder import HashingEmbedder
+    from core.llm.base import _NoopEngine
+    from core.render.mock import MockRenderBackend
+    from core.store import InMemorySessionStore
+    from core.tts.base import ToneEngine
 
     cfg = AppConfig(
         render_backend="mock",
@@ -46,8 +53,28 @@ def _make_app(mock_env) -> TestClient:
         director_enabled=True,
         debug_enabled=True,
     )
-    # Build via env-driven path so the coordinator is constructed in server.py.
-    app = create_app(config=cfg)
+    backend = MockRenderBackend()
+    runtime = DirectorRuntime(backend, embedder=HashingEmbedder())
+    coordinator = DirectorCoordinator(
+        runtime=runtime,
+        llm=_NoopEngine(),
+        tts=ToneEngine(),
+        backend=backend,
+        cfg=CoordinatorConfig(tick_ms=300, window_sec=75.0),
+        hub=v1.ControlHub(),
+    )
+    deps = v1.V1Deps(
+        backend=backend,
+        store=InMemorySessionStore(),
+        hub=v1.ControlHub(),
+        director=runtime,
+        coordinator=coordinator,
+        engine_manager=None,
+        config=cfg,
+    )
+    app = create_app(config=cfg, deps=deps)
+    _make_app._coordinator = coordinator
+    _make_app._runtime = runtime
     return TestClient(app)
 
 
@@ -55,15 +82,14 @@ def test_lite_chat_10_comments_accepted(mock_env: None) -> None:
     """POST /lite/start -> /lite/attach -> /lite/chat x10 -> /lite/stop."""
     with _make_app(mock_env) as client:
         # Start session.
-        r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
+        r = client.post("/api/v1/sessions", json={"is_sandbox": True})
         assert r.status_code == 200, r.text
         sid = r.json()["session_id"]
 
         # Attach with empty product list (coordinator starts on attach).
         r = client.post(
-            "/api/v1/lite/attach",
+            f"/api/v1/sessions/{sid}/attach",
             json={
-                "session_id": sid,
                 "products": [],
             },
         )
@@ -74,9 +100,8 @@ def test_lite_chat_10_comments_accepted(mock_env: None) -> None:
         comment_ids = []
         for i in range(10):
             r = client.post(
-                "/api/v1/lite/chat",
+                f"/api/v1/sessions/{sid}/chat",
                 json={
-                    "session_id": sid,
                     "text": f"Comment #{i}: Gia bao nhieu?",
                     "author": f"Viewer{i}",
                 },
@@ -94,7 +119,7 @@ def test_lite_chat_10_comments_accepted(mock_env: None) -> None:
         assert len(set(comment_ids)) == 10
 
         # Stop session.
-        r = client.post("/api/v1/lite/stop", json={"session_id": sid})
+        r = client.post(f"/api/v1/sessions/{sid}/stop")
         assert r.status_code == 200, r.text
         assert r.json()["ok"] is True
 
@@ -102,12 +127,11 @@ def test_lite_chat_10_comments_accepted(mock_env: None) -> None:
 def test_debug_clusters_returns_canonical_cached_snapshot(mock_env: None) -> None:
     """Polling diagnostics uses Coordinator state and canonical cluster metrics."""
     with _make_app(mock_env) as client:
-        response = client.post("/api/v1/lite/start", json={"is_sandbox": True})
+        response = client.post("/api/v1/sessions", json={"is_sandbox": True})
         session_id = response.json()["session_id"]
         response = client.post(
-            "/api/v1/lite/attach",
+            f"/api/v1/sessions/{session_id}/attach",
             json={
-                "session_id": session_id,
                 "products": [
                     {
                         "id": "P004",
@@ -120,40 +144,38 @@ def test_debug_clusters_returns_canonical_cached_snapshot(mock_env: None) -> Non
         assert response.status_code == 200
         for text in ("Áo hoodie giá bao nhiêu?", "Hoodie này bao nhiêu tiền?"):
             response = client.post(
-                "/api/v1/lite/chat",
-                json={"session_id": session_id, "text": text, "author": "viewer"},
+                f"/api/v1/sessions/{session_id}/chat",
+                json={"text": text, "author": "viewer"},
             )
             assert response.status_code == 202
 
-        coordinator = v1.deps().coordinator
+        coordinator = _make_app._coordinator
         assert coordinator is not None
         import asyncio
 
         asyncio.run(coordinator._tick_once(session_id))
-        first = client.get(f"/api/v1/debug/clusters/{session_id}")
-        second = client.get(f"/api/v1/debug/clusters/{session_id}")
+        first = coordinator.cluster_snapshot(session_id)
+        second = coordinator.cluster_snapshot(session_id)
 
-        assert first.status_code == 200
-        assert first.json()["received_total"] == 2
-        assert first.json()["buffered_comments"] == 2
-        assert first.json()["embedder_name"] == "hashing-fallback"
+        assert first["received_total"] == 2
+        assert first["buffered_comments"] == 2
+        assert first["embedder_name"] == "hashing-fallback"
         from core.director.config import StreamConfig
 
-        assert first.json()["cluster_merge_threshold"] == StreamConfig().cluster_merge_threshold
-        assert first.json()["clusters"] == second.json()["clusters"]
-        client.post("/api/v1/lite/stop", json={"session_id": session_id})
+        assert first["cluster_merge_threshold"] == StreamConfig().cluster_merge_threshold
+        assert first["clusters"] == second["clusters"]
+        client.post(f"/api/v1/sessions/{session_id}/stop")
 
 
 def test_lite_chat_without_attach_returns_404(mock_env: None) -> None:
     """POST /lite/chat on a session that was started but not attached -> 404."""
     with _make_app(mock_env) as client:
-        r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
+        r = client.post("/api/v1/sessions", json={"is_sandbox": True})
         sid = r.json()["session_id"]
 
         r = client.post(
-            "/api/v1/lite/chat",
+            f"/api/v1/sessions/{sid}/chat",
             json={
-                "session_id": sid,
                 "text": "hello",
                 "author": "test",
             },
@@ -161,54 +183,51 @@ def test_lite_chat_without_attach_returns_404(mock_env: None) -> None:
         assert r.status_code == 404
 
         # Cleanup.
-        client.post("/api/v1/lite/stop", json={"session_id": sid})
+        client.post(f"/api/v1/sessions/{sid}/stop")
 
 
 def test_lite_chat_text_too_long_returns_413(mock_env: None) -> None:
     """POST /lite/chat with text > 500 chars -> 413."""
     with _make_app(mock_env) as client:
-        r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
+        r = client.post("/api/v1/sessions", json={"is_sandbox": True})
         sid = r.json()["session_id"]
         client.post(
-            "/api/v1/lite/attach",
+            f"/api/v1/sessions/{sid}/attach",
             json={
-                "session_id": sid,
                 "products": [],
             },
         )
 
         r = client.post(
-            "/api/v1/lite/chat",
+            f"/api/v1/sessions/{sid}/chat",
             json={
-                "session_id": sid,
                 "text": "x" * 501,
                 "author": "test",
             },
         )
         assert r.status_code == 413
 
-        client.post("/api/v1/lite/stop", json={"session_id": sid})
+        client.post(f"/api/v1/sessions/{sid}/stop")
 
 
 def test_lite_stop_drops_coordinator_session(mock_env: None) -> None:
     """After /lite/stop, coordinator.has(sid) == False."""
     with _make_app(mock_env) as client:
-        r = client.post("/api/v1/lite/start", json={"is_sandbox": True})
+        r = client.post("/api/v1/sessions", json={"is_sandbox": True})
         sid = r.json()["session_id"]
         client.post(
-            "/api/v1/lite/attach",
+            f"/api/v1/sessions/{sid}/attach",
             json={
-                "session_id": sid,
                 "products": [],
             },
         )
         # Coordinator should be active.
-        d = v1.deps()
-        assert d.coordinator is not None
-        assert d.coordinator.has(sid)
+        coordinator = _make_app._coordinator
+        assert coordinator is not None
+        assert coordinator.has(sid)
 
         # Stop.
-        client.post("/api/v1/lite/stop", json={"session_id": sid})
+        client.post(f"/api/v1/sessions/{sid}/stop")
 
         # Coordinator should have dropped the session.
-        assert not d.coordinator.has(sid)
+        assert not coordinator.has(sid)

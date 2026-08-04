@@ -36,12 +36,15 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     backend = config.build_render_backend()
     store = config.build_store()
     engine_manager = v1_engine_manager(config)
+    from avatar.publishing import LiveKitPublisherRegistry, publish_enabled
+
     return create_container(
         backend=backend,
         store=store,
         config=config,
         engine_manager=engine_manager,
         pg_store=_build_pg_store(config),
+        livekit_publishers=LiveKitPublisherRegistry() if publish_enabled() else None,
     )
 
 

@@ -31,7 +31,7 @@ pytestmark = pytest.mark.skip(
 from fastapi.testclient import TestClient
 
 # Import AFTER env is set so the server wires the Director runtime.
-from core.server import app
+from backend.main import app
 
 
 def main() -> None:
@@ -42,8 +42,8 @@ def main() -> None:
     print(f"[health]    director_enabled={h['director_enabled']} backend={h['render_backend']}")
     assert h["director_enabled"], "DIRECTOR_ENABLED must wire the runtime"
 
-    sid = c.post("/api/v1/lite/start", json={"is_sandbox": True}).json()["session_id"]
-    print(f"[start]     session ok")
+    sid = c.post("/api/v1/sessions", json={"is_sandbox": True}).json()["session_id"]
+    print("[start]     session ok")
 
     products = [
         {
@@ -66,14 +66,13 @@ def main() -> None:
             "material": "cotton 100%",
         },
     ]
-    a = c.post("/api/v1/lite/attach", json={"session_id": sid, "products": products}).json()
+    a = c.post(f"/api/v1/sessions/{sid}/attach", json={"products": products}).json()
     print(f"[attach]    {a['products']} embedder={a['embedder']}")
 
     # Price question -> should resolve to O(1) structured field (answer_fact)
     r1 = c.post(
-        "/api/v1/lite/ingest",
+        f"/api/v1/sessions/{sid}/ingest",
         json={
-            "session_id": sid,
             "viewer_count": 10,
             "msg_rate": 3.0,
             "comments": [
@@ -89,9 +88,8 @@ def main() -> None:
 
     # Open-ended -> LLM prompt path (answer_cluster)
     r2 = c.post(
-        "/api/v1/lite/ingest",
+        f"/api/v1/sessions/{sid}/ingest",
         json={
-            "session_id": sid,
             "viewer_count": 10,
             "msg_rate": 3.0,
             "comments": [{"text": "Áo thun mặc có nóng không shop, chất có thoáng không"}],
@@ -101,7 +99,7 @@ def main() -> None:
         f"[ingest#2]  action={r2['action']} product={r2.get('product_id')} interrupt={r2.get('may_interrupt')}"
     )
 
-    c.post("/api/v1/lite/stop", json={"session_id": sid})
+    c.post(f"/api/v1/sessions/{sid}/stop")
     print("[stop]      [OK]")
 
     assert r1["action"] in ("answer_fact", "answer_cluster")

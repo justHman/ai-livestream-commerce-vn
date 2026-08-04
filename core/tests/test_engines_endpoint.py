@@ -27,7 +27,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.config import AppConfig
-from core.engine_manager import AVAILABLE_TTS_PRESETS
 
 
 EXPECTED_PRESET_IDS = {

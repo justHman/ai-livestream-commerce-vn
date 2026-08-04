@@ -35,7 +35,7 @@ def _deps() -> v1.V1Deps:
 
 
 def _client(cfg: AppConfig | None = None) -> TestClient:
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = cfg or AppConfig(render_backend="mock", app_env="dev", debug_enabled=False)
     d = _deps()
@@ -49,8 +49,8 @@ def test_sessions_start_and_stop_alias(mock_env: None) -> None:
         r = client.post("/api/v1/sessions", json={})
         assert r.status_code == 200, r.text
         sid = r.json()["session_id"]
-        # lite path still works
-        r2 = client.post("/api/v1/lite/say", json={"session_id": sid, "text": "xin chào"})
+        # canonical say path
+        r2 = client.post(f"/api/v1/sessions/{sid}/say", json={"text": "xin chào"})
         assert r2.status_code == 200, r2.text
         r3 = client.post(f"/api/v1/sessions/{sid}/say", json={"text": "deal hot"})
         assert r3.status_code == 200, r3.text

@@ -34,11 +34,10 @@ from core.director.coordinator import CoordinatorConfig, DirectorCoordinator
 from core.director.runtime import DirectorRuntime
 from core.render.locks import SessionLockRegistry
 from core.render.mock import MockRenderBackend, _MockSession
-from core.render.orchestrator import StreamOrchestrator
 from core.render.queue import BoundedVideoQueue
-from core.llm.base import LLMEngine, LLMRequest, LLMResponse, _NoopEngine
+from core.llm.base import LLMEngine, LLMRequest, LLMResponse
 from core.tts.base import ToneEngine
-from core.render.windows import AudioWindow, TextChunk
+from core.render.windows import TextChunk
 
 pytestmark = pytest.mark.asyncio
 

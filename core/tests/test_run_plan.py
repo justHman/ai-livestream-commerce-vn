@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 
-import pytest
 
 from core.api.v1 import ProductIn, build_run_plan
 from core.director.coverage import coverage_ratio, mark_coverage

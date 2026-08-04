@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-import time
 
 from fastapi.testclient import TestClient
 
@@ -62,73 +60,24 @@ def _client(backend: FullPipelineBackend) -> TestClient:
     return TestClient(create_app(config=config, deps=dependencies))
 
 
-def test_sandbox_verification_passes_all_layers_and_cleans_up() -> None:
-    backend = _VerificationBackend()
-    with _client(backend) as client:
+def test_sandbox_verify_route_absent_from_production_app() -> None:
+    """Sandbox verification is not a production backend route (1.25)."""
+    with _client(_VerificationBackend()) as client:
         response = client.post(
             "/api/v1/admin/sandbox/verify",
             json={"avatar_id": "avatar-1", "speech_text": "Xin chào"},
         )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ready"] is True
-    assert [layer["status"] for layer in body["layers"]] == ["pass", "pass", "pass"]
-    assert all(layer["latency_ms"] >= 0 for layer in body["layers"])
-    assert backend.calls == ["credentials", "connectivity", "speech"]
-    assert backend.stopped == ["verify-session"]
-    assert "client-token" not in str(body)
+    assert response.status_code == 404
 
 
-def test_connectivity_failure_skips_speech_and_preserves_prior_result() -> None:
-    backend = _VerificationBackend(fail_at="connectivity")
-    with _client(backend) as client:
-        response = client.post("/api/v1/admin/sandbox/verify", json={})
-
-    body = response.json()
-    assert body["ready"] is False
-    assert [layer["status"] for layer in body["layers"]] == ["pass", "fail", "skipped"]
-    assert backend.calls == ["credentials", "connectivity"]
-    assert "internal-provider-payload" not in str(body)
-
-
-def test_speech_failure_still_cleans_up_and_sanitizes_error() -> None:
-    backend = _VerificationBackend(fail_at="speech")
-    with _client(backend) as client:
-        response = client.post("/api/v1/admin/sandbox/verify", json={})
-
-    body = response.json()
-    assert body["ready"] is False
-    assert body["layers"][2]["error"] == "speech verification failed"
-    assert "raw-provider-timeout" not in str(body)
-    assert backend.stopped == ["verify-session"]
-
-
-class _LateStartBackend(_VerificationBackend):
-    def __init__(self) -> None:
-        super().__init__()
-        self.release = threading.Event()
-
-    def start(self, opts: StartOptions) -> StartResult:
-        self.calls.append("connectivity")
-        self.release.wait(timeout=2)
-        return StartResult("late-session", "wss://livekit.example", "client-token")
-
-
-def test_connectivity_timeout_cleans_session_that_finishes_late(monkeypatch) -> None:
-    backend = _LateStartBackend()
-    monkeypatch.setattr(v1, "SANDBOX_LAYER_TIMEOUT_SEC", 0.05)
-    with _client(backend) as client:
-        timer = threading.Timer(0.1, backend.release.set)
-        timer.start()
-        response = client.post("/api/v1/admin/sandbox/verify", json={})
-        timer.join()
-        deadline = time.monotonic() + 1
-        while "late-session" not in backend.stopped and time.monotonic() < deadline:
-            time.sleep(0.01)
-
-    assert response.json()["ready"] is False
-    assert "late-session" in backend.stopped
+def test_sandbox_verify_route_absent_even_with_valid_token() -> None:
+    with _client(_VerificationBackend()) as client:
+        response = client.post(
+            "/api/v1/admin/sandbox/verify",
+            json={},
+            headers={"authorization": "Bearer whatever"},
+        )
+    assert response.status_code == 404
 
 
 def test_verification_cleanup_is_idempotent() -> None:

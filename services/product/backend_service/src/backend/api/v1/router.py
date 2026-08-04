@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
-import uuid
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 if TYPE_CHECKING:
@@ -36,13 +34,10 @@ from fastapi import (
     Depends,
     HTTPException,
     Request,
-    Response,
     WebSocket,
 )
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from backend.config import AppConfig
 from backend.application.schemas.run_plan import (
     ClosingPhase,
     OpeningPhase,
@@ -298,6 +293,18 @@ class PathAttachReq(BaseModel):
     shop_profile: Optional[ShopProfileIn | str] = None
     runtime_config: Optional[RuntimeConfigReq] = None
 
+    @model_validator(mode="after")
+    def validate_product_ids(self) -> "PathAttachReq":
+        ids = [product.id for product in self.products]
+        if len(ids) != len(set(ids)):
+            raise ValueError("product ids must be unique")
+        return self
+
+    def shop_profile_text(self) -> Optional[str]:
+        if isinstance(self.shop_profile, ShopProfileIn):
+            return self.shop_profile.to_persona_text() or None
+        return self.shop_profile
+
 
 # ── Wiring (container-scoped, set by backend.bootstrap.app_factory) ──
 
@@ -350,7 +357,7 @@ async def _allow_ws_message(ws: WebSocket, scope: str, session_id: str, connecti
 
 
 async def _persist_viewer_msgs(
-    d: "V1Deps", session_id: str, comments, *, author: str = "viewer"
+    d: Any, session_id: str, comments, *, author: str = "viewer"
 ) -> None:
     """Persist ingested viewer comments to the runtime DB (fire-and-forget).
 

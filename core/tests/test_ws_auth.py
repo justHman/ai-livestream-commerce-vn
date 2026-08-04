@@ -22,7 +22,7 @@ from core.store import InMemorySessionStore
 
 
 # NOTE: ``create_app`` is imported lazily inside ``_client`` so that
-# ``core.server`` (and its module-level ``CONFIG = AppConfig.from_env()``)
+# ``backend.main`` (and its module-level ``CONFIG = AppConfig.from_env()``)
 # is first imported while the ``mock_env`` fixture has already set
 # ``RENDER_BACKEND=mock``. A module-level import here would cache ``CONFIG``
 # with ``render_backend="cloud"`` during collection, before any fixture runs.

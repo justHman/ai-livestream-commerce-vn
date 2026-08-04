@@ -23,6 +23,7 @@ MAP_PATTERN = re.compile(
     re.DOTALL,
 )
 KNOWN_MOVED_SOURCES = {
+    "core/server.py",  # removed in 1.26; entrypoint moved to backend/main.py
     "services/livekit/",
     "services/lmcache/",
 }

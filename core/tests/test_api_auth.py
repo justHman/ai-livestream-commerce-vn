@@ -28,7 +28,7 @@ from core.store import InMemorySessionStore
 
 
 # NOTE: ``create_app`` is imported lazily inside ``_client`` so that
-# ``core.server`` (and its module-level ``CONFIG = AppConfig.from_env()``)
+# ``backend.main`` (and its module-level ``CONFIG = AppConfig.from_env()``)
 # is first imported while the ``mock_env`` fixture has already set
 # ``RENDER_BACKEND=mock``. A module-level import here would cache ``CONFIG``
 # with ``render_backend="cloud"`` during collection, before any fixture runs,
@@ -75,7 +75,7 @@ def _prod_cfg(
 
 
 def _client(cfg: AppConfig) -> TestClient:
-    from core.server import create_app
+    from backend.main import create_app
 
     app = create_app(config=cfg, deps=_deps())
     return TestClient(app)
@@ -91,22 +91,22 @@ WRONG = {"Authorization": "Bearer nope"}
 
 def test_prod_missing_viewer_token_returns_401(mock_env: None) -> None:
     with _client(_prod_cfg()) as client:
-        r = client.post("/api/v1/lite/start", json={})
+        r = client.post("/api/v1/sessions", json={})
     assert r.status_code == 401, r.text
 
 
 def test_prod_wrong_viewer_token_returns_401(mock_env: None) -> None:
     with _client(_prod_cfg()) as client:
-        r = client.post("/api/v1/lite/start", json={}, headers=WRONG)
+        r = client.post("/api/v1/sessions", json={}, headers=WRONG)
     assert r.status_code == 401, r.text
 
 
 def test_prod_valid_viewer_token_reaches_handler(mock_env: None) -> None:
     with _client(_prod_cfg()) as client:
-        r = client.post("/api/v1/lite/start", json={}, headers=VIEWER)
-    # Auth passed; handler runs. With mock backend, /lite/start returns 200.
+        r = client.post("/api/v1/sessions", json={}, headers=VIEWER)
+    # Auth passed; handler runs. With mock backend, /sessions returns 200.
     assert r.status_code != 401, "auth should pass"
-    assert r.status_code != 403, "viewer token is valid for /lite/*"
+    assert r.status_code != 403, "viewer token is valid for /sessions"
     # Mock backend start() returns 200 with session_id.
     assert r.status_code == 200, r.text
 
@@ -165,7 +165,8 @@ def test_debug_disabled_404_before_auth_leak(mock_env: None) -> None:
     assert r.status_code == 404, r.text
 
 
-def test_debug_enabled_admin_token_reaches_handler(mock_env: None) -> None:
+def test_debug_routes_absent_regardless_of_token(mock_env: None) -> None:
+    """Debug routes are not part of the production application (1.25)."""
     cfg = _prod_cfg(debug_enabled=True)
     with _client(cfg) as client:
         r = client.post(
@@ -173,9 +174,7 @@ def test_debug_enabled_admin_token_reaches_handler(mock_env: None) -> None:
             json={"session_id": "x"},
             headers=ADMIN,
         )
-    # Auth passed + debug enabled. Handler runs; Director is None -> 501.
-    assert r.status_code not in (401, 403, 404), r.text
-    assert r.status_code == 501, r.text  # Director not enabled
+    assert r.status_code == 404, r.text
 
 
 # ---------- dev mode: auth disabled with empty tokens ----------
@@ -190,7 +189,7 @@ def test_dev_no_tokens_disables_viewer_auth(mock_env: None) -> None:
         debug_enabled=True,
     )
     with _client(cfg) as client:
-        r = client.post("/api/v1/lite/start", json={})
+        r = client.post("/api/v1/sessions", json={})
     assert r.status_code != 401, "dev+no tokens -> auth disabled"
     assert r.status_code == 200, r.text
 
@@ -209,7 +208,8 @@ def test_dev_no_tokens_disables_admin_auth(mock_env: None) -> None:
     assert r.status_code == 200, r.text
 
 
-def test_dev_no_tokens_disables_debug_auth(mock_env: None) -> None:
+def test_dev_debug_routes_still_absent(mock_env: None) -> None:
+    """Debug routes are absent from the canonical app even in dev (1.25)."""
     cfg = AppConfig(
         render_backend="mock",
         app_env="dev",
@@ -219,9 +219,7 @@ def test_dev_no_tokens_disables_debug_auth(mock_env: None) -> None:
     )
     with _client(cfg) as client:
         r = client.post("/api/v1/debug/start", json={"session_id": "x"})
-    assert r.status_code not in (401, 403, 404), r.text
-    # Director not enabled -> 501 from handler.
-    assert r.status_code == 501, r.text
+    assert r.status_code == 404, r.text
 
 
 # ---------- prod admin token empty -> admin always 401 ----------
@@ -246,7 +244,7 @@ def test_prod_cors_star_raises_runtime_error(mock_env: None) -> None:
         backend_api_token="x",
         admin_api_token="y",
     )
-    from core.server import create_app
+    from backend.main import create_app
 
     with pytest.raises(RuntimeError, match=r"CORS_ORIGINS.*forbidden.*dev"):
         create_app(config=cfg, deps=_deps())
@@ -256,7 +254,7 @@ def test_nonprod_nondev_cors_star_raises_runtime_error(mock_env: None) -> None:
     """Finding 3: APP_ENV=production (or 'staging', 'prd', anything not 'dev')
     with CORS_ORIGINS='*' must raise. The old check only rejected 'prod';
     'production'/'staging' bypassed it and ran with wildcard CORS."""
-    from core.server import create_app
+    from backend.main import create_app
 
     for bad_env in ("production", "staging", "prd", "PROD", "Production"):
         cfg = AppConfig(
@@ -272,7 +270,7 @@ def test_nonprod_nondev_cors_star_raises_runtime_error(mock_env: None) -> None:
 
 def test_dev_cors_star_allowed(mock_env: None) -> None:
     """dev + CORS='*' is allowed (default)."""
-    from core.server import create_app
+    from backend.main import create_app
 
     cfg = AppConfig(
         render_backend="mock",

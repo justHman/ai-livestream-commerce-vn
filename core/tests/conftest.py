@@ -1,6 +1,6 @@
-"""Offline-safe defaults for collecting/importing core.server in tests.
+"""Offline-safe defaults for collecting/importing backend.main in tests.
 
-The default RENDER_BACKEND=cloud makes core.server's module-level
+The default RENDER_BACKEND=cloud makes backend.main's module-level
 ``app = create_app()`` construct CloudRenderBackend, which raises
 LiveAvatarError at import time when LIVEAVATAR_API_KEY is absent. These
 defaults make collection safe in a clean env. Tests that actually need the

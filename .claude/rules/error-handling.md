@@ -1,7 +1,6 @@
 ---
 paths:
   - "core/api/**"
-  - "core/server.py"
   - "core/render/**"
   - "core/director/**"
 ---

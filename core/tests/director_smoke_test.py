@@ -38,8 +38,7 @@ from core.director import (
     build_embedder,
     cluster_comments,
 )
-from core.director.embedder import average
-from core.director.scorer import rank_clusters, retrieve_product
+from core.director.scorer import rank_clusters
 
 
 def _embed(emb, texts):

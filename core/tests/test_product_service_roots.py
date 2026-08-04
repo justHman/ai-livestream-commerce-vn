@@ -92,14 +92,13 @@ def _isolated_root_import(code: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_isolated_root_imports_legacy_server_and_actual_canonical_app() -> None:
+def test_isolated_root_imports_canonical_app() -> None:
+    srcs = [str(_service_root(s) / "src") for s in SERVICES]
     result = _isolated_root_import(
         "import sys; "
         f"sys.path.insert(0, {str(ROOT)!r}); "
-        "from core.server import app as legacy_app; "
-        "from services.product.backend_service.src.backend.main import app as canonical_app; "
-        "assert type(canonical_app) is type(legacy_app); "
-        "assert canonical_app.title == legacy_app.title; "
+        f"sys.path[:0] = {srcs!r}; "
+        "from backend.main import app as canonical_app; "
         "print(canonical_app.title)"
     )
 

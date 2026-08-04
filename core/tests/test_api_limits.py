@@ -253,8 +253,8 @@ def test_validation_413_does_not_echo_submitted_marker() -> None:
     marker = "sensitive-marker-should-not-echo"
     with _client(config) as client:
         response = client.post(
-            "/api/v1/lite/chat",
-            json={"session_id": "session", "text": marker * 20, "author": "viewer"},
+            f"/api/v1/sessions/{'session'}/chat",
+            json={"text": marker * 20, "author": "viewer"},
         )
 
     assert (response.status_code, marker not in response.text) == (413, True)

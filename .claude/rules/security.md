@@ -1,7 +1,6 @@
 ---
 paths:
   - "core/api/**"
-  - "core/server.py"
   - "core/store.py"
   - "core/livekit_tokens.py"
 ---

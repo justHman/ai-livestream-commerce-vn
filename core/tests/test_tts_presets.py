@@ -20,7 +20,6 @@ All tests are offline; no model downloads, no GPU.
 
 from __future__ import annotations
 
-import os
 
 import pytest
 

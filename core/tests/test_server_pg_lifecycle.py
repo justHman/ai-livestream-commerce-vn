@@ -15,8 +15,23 @@ from fastapi.testclient import TestClient
 from core.api import v1
 from core.config import AppConfig
 from core.db.postgres_store import PostgresRuntimeStore
-import core.server as server
-from core.server import create_app
+from backend.bootstrap import create_app, create_container
+from backend.bootstrap import lifespan as server
+
+def _container_for(*, backend=None, store=None, hub=None, orchestrators=None, coordinator=None, pg_store=None, config=None):
+    """Build a BootstrapContainer mirroring the legacy V1Deps fields."""
+    from core.render.mock import MockRenderBackend
+    from core.store import InMemorySessionStore
+    container = create_container(
+        backend=backend if backend is not None else MockRenderBackend(),
+        store=store if store is not None else InMemorySessionStore(),
+        config=config or AppConfig(render_backend="mock", app_env="dev"),
+        coordinator=coordinator,
+        pg_store=pg_store,
+    )
+    if orchestrators is not None:
+        container.orchestrators = orchestrators
+    return container
 
 
 class _FakePgStore:
@@ -200,7 +215,7 @@ async def test_schema_failure_retries_with_exact_backoff_and_closes_store(monkey
 
     monkeypatch.setattr(server.asyncio, "sleep", sleep)
 
-    await server._connect_postgres(pg)
+    await server._connect_postgres(_container_for(pg_store=pg))
 
     assert pg.connect_calls == 3
     assert pg.close_calls == 3
@@ -219,7 +234,7 @@ async def test_startup_cancellation_propagates_without_retry(monkeypatch):
     monkeypatch.setattr(server.asyncio, "sleep", cancelled_sleep)
 
     with pytest.raises(asyncio.CancelledError):
-        await server._connect_postgres(pg)
+        await server._connect_postgres(_container_for(pg_store=pg))
 
     assert pg.connect_calls == 1
 
@@ -298,9 +313,10 @@ async def test_shutdown_backend_failure_still_closes_postgres(caplog):
         hub=v1.ControlHub(),
     )
     pg = _OrderedPgStore(events)
+    container = _container_for(backend=deps.backend, hub=deps.hub, pg_store=pg)
 
-    with caplog.at_level(logging.ERROR, logger="core.server"):
-        await server._shutdown(deps, pg)
+    with caplog.at_level(logging.ERROR, logger="backend.bootstrap.lifespan"):
+        await server._shutdown(container)
 
     assert events == ["backend", "postgres"]
     assert "stage=render.stop_all error_type=RuntimeError" in caplog.text
@@ -317,9 +333,12 @@ async def test_shutdown_orchestrator_failure_continues_all_stages(caplog):
         coordinator=_RecordingCoordinator(events),
     )
     pg = _OrderedPgStore(events)
+    container = _container_for(
+        backend=deps.backend, hub=deps.hub, orchestrators=deps.orchestrators, coordinator=deps.coordinator, pg_store=pg
+    )
 
-    with caplog.at_level(logging.ERROR, logger="core.server"):
-        await server._shutdown(deps, pg)
+    with caplog.at_level(logging.ERROR, logger="backend.bootstrap.lifespan"):
+        await server._shutdown(container)
 
     assert events == ["orchestrator:session-1", "coordinator", "backend", "postgres"]
     assert "stage=orchestrators error_type=RuntimeError" in caplog.text
@@ -336,11 +355,12 @@ async def test_shutdown_timeout_logs_unfinished_stage_and_cleans_task(monkeypatc
     )
     monkeypatch.setattr(server, "_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
     before = set(asyncio.all_tasks())
+    container = _container_for(hub=deps.hub, orchestrators=deps.orchestrators)
 
-    with caplog.at_level(logging.ERROR, logger="core.server"):
-        await server._shutdown(deps, None)
+    with caplog.at_level(logging.ERROR, logger="backend.bootstrap.lifespan"):
+        await server._shutdown(container)
 
-    assert "unfinished=orchestrators" in caplog.text
+    assert "stage timed out stage=orchestrators" in caplog.text
     assert set(asyncio.all_tasks()) == before
 
 
@@ -361,7 +381,8 @@ async def test_shutdown_cancellation_awaits_cleanup_task():
         orchestrators={"session-1": {"orchestrator": _BlockingOrchestrator()}},
     )
     before = set(asyncio.all_tasks())
-    shutdown = asyncio.create_task(server._shutdown(deps, None))
+    container = _container_for(backend=deps.backend, hub=deps.hub, orchestrators=deps.orchestrators)
+    shutdown = asyncio.create_task(server._shutdown(container))
     await started.wait()
     shutdown.cancel()
 
@@ -379,8 +400,9 @@ async def test_shutdown_awaits_async_backend_close():
         store=None,
         hub=v1.ControlHub(),
     )
+    container = _container_for(backend=deps.backend, hub=deps.hub)
 
-    await server._shutdown(deps, None)
+    await server._shutdown(container)
 
     assert events == ["backend", "close"]
 

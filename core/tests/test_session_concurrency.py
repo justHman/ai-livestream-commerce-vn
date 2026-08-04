@@ -195,7 +195,7 @@ def _prod_cfg(tokens: bool = False) -> AppConfig:
 async def test_concurrent_say_one_200_one_409(mock_env: None):
     """Two simultaneous /lite/say on the same session: one wins (200), the other
     is rejected as already_speaking (409)."""
-    from core.server import create_app
+    from backend.main import create_app
 
     backend = MockRenderBackend()
     deps = _deps_with_stubs(
@@ -207,30 +207,27 @@ async def test_concurrent_say_one_200_one_409(mock_env: None):
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         start = await client.post(
-            "/api/v1/lite/start", json={"avatar_id": None, "is_sandbox": True}
+            "/api/v1/sessions", json={"avatar_id": None, "is_sandbox": True}
         )
         assert start.status_code == 200
         sid = start.json()["session_id"]
 
         # Fire two says concurrently on that session.
         r1, r2 = await asyncio.gather(
-            client.post("/api/v1/lite/say", json={"session_id": sid, "text": "first"}),
-            client.post("/api/v1/lite/say", json={"session_id": sid, "text": "second"}),
+            client.post(f"/api/v1/sessions/{sid}/say", json={"text": "first"}),
+            client.post(f"/api/v1/sessions/{sid}/say", json={"text": "second"}),
         )
         codes = sorted([r1.status_code, r2.status_code])
         assert codes == [200, 409], f"expected [200, 409], got {codes}"
-        # The 409 body must carry already_speaking detail.
+        # The 409 body must carry already_speaking in the canonical envelope.
         err = r1 if r1.status_code == 409 else r2
-        assert (
-            "already_speaking" in err.json().get("detail", "")
-            or err.json().get("detail") == "already_speaking"
-        )
+        assert "already_speaking" in err.json()["error"]["message"]
 
 
 async def test_lock_released_after_say_completes(mock_env: None):
     """After a /lite/say completes (200), a subsequent say on the same session
     succeeds (lock was released in finally)."""
-    from core.server import create_app
+    from backend.main import create_app
 
     backend = MockRenderBackend()
     deps = _deps_with_stubs(llm=_FastStubLLM(), tts=_StubTTS(), backend=backend)
@@ -238,13 +235,13 @@ async def test_lock_released_after_say_completes(mock_env: None):
 
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        start = await client.post("/api/v1/lite/start", json={})
+        start = await client.post("/api/v1/sessions", json={})
         sid = start.json()["session_id"]
 
-        first = await client.post("/api/v1/lite/say", json={"session_id": sid, "text": "one"})
+        first = await client.post(f"/api/v1/sessions/{sid}/say", json={"text": "one"})
         assert first.status_code == 200
 
-        second = await client.post("/api/v1/lite/say", json={"session_id": sid, "text": "two"})
+        second = await client.post(f"/api/v1/sessions/{sid}/say", json={"text": "two"})
         assert second.status_code == 200, (
             f"second say after first completed must succeed, got {second.status_code}: {second.text}"
         )
@@ -256,7 +253,7 @@ async def test_lock_released_after_say_completes(mock_env: None):
 async def test_interrupt_during_long_say_returns_200(mock_env: None):
     """A slow LLM stream is running; /lite/interrupt arrives mid-stream and
     returns 200. The original say completes (cancelled)."""
-    from core.server import create_app
+    from backend.main import create_app
 
     backend = MockRenderBackend()
     deps = _deps_with_stubs(
@@ -268,18 +265,18 @@ async def test_interrupt_during_long_say_returns_200(mock_env: None):
 
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        start = await client.post("/api/v1/lite/start", json={})
+        start = await client.post("/api/v1/sessions", json={})
         sid = start.json()["session_id"]
 
         # Start a long say in a task.
         say_task = asyncio.create_task(
-            client.post("/api/v1/lite/say", json={"session_id": sid, "text": "long"})
+            client.post(f"/api/v1/sessions/{sid}/say", json={"text": "long"})
         )
         # Let it start producing.
         await asyncio.sleep(0.10)
 
         # Interrupt mid-stream.
-        intr = await client.post("/api/v1/lite/interrupt", json={"session_id": sid})
+        intr = await client.post(f"/api/v1/sessions/{sid}/interrupt")
         assert intr.status_code == 200, f"interrupt must return 200, got {intr.status_code}"
 
         # Wait for the say to complete (it should not hang).
@@ -322,7 +319,7 @@ class _FakeCloudBackend(FullPipelineBackend):
 async def test_cloud_backend_say_path_unchanged(mock_env: None):
     """For a non-mock backend, /lite/say must call backend.say() (NOT the
     streaming coordinator path)."""
-    from core.server import create_app
+    from backend.main import create_app
 
     cloud = _FakeCloudBackend()
     deps = _deps_with_stubs(llm=_FastStubLLM(), tts=_StubTTS(), backend=cloud)
@@ -330,10 +327,10 @@ async def test_cloud_backend_say_path_unchanged(mock_env: None):
 
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        start = await client.post("/api/v1/lite/start", json={})
+        start = await client.post("/api/v1/sessions", json={})
         sid = start.json()["session_id"]
 
-        r = await client.post("/api/v1/lite/say", json={"session_id": sid, "text": "hello"})
+        r = await client.post(f"/api/v1/sessions/{sid}/say", json={"text": "hello"})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["ok"] is True
@@ -343,7 +340,7 @@ async def test_cloud_backend_say_path_unchanged(mock_env: None):
 
 
 async def test_cloud_manual_say_forwards_verbatim_mode(mock_env: None):
-    from core.server import create_app
+    from backend.main import create_app
 
     cloud = _FakeCloudBackend()
     deps = _deps_with_stubs(llm=_FastStubLLM(), tts=_StubTTS(), backend=cloud)
@@ -351,10 +348,10 @@ async def test_cloud_manual_say_forwards_verbatim_mode(mock_env: None):
 
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        start = await client.post("/api/v1/lite/start", json={})
+        start = await client.post("/api/v1/sessions", json={})
         sid = start.json()["session_id"]
         response = await client.post(
-            "/api/v1/lite/say",
+            f"/api/v1/sessions/{sid}/say",
             json={"session_id": sid, "text": "Nói nguyên văn câu này.", "generate": False},
         )
 
@@ -363,7 +360,7 @@ async def test_cloud_manual_say_forwards_verbatim_mode(mock_env: None):
 
 
 async def test_streaming_manual_say_bypasses_llm(mock_env: None):
-    from core.server import create_app
+    from backend.main import create_app
 
     class FailingLLM(_FastStubLLM):
         def stream_chunks(self, req, *, session_id="", utterance_id=""):
@@ -375,9 +372,9 @@ async def test_streaming_manual_say_bypasses_llm(mock_env: None):
     app = create_app(config=_prod_cfg(), deps=deps)
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        sid = (await client.post("/api/v1/lite/start", json={})).json()["session_id"]
+        sid = (await client.post("/api/v1/sessions", json={})).json()["session_id"]
         response = await client.post(
-            "/api/v1/lite/say",
+            f"/api/v1/sessions/{sid}/say",
             json={"session_id": sid, "text": "Ba trăm năm mươi nghìn đồng.", "generate": False},
         )
 

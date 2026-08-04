@@ -114,8 +114,6 @@ async def sessions_say(
 async def _say(request: Request, req: router.SayReq) -> dict[str, Any]:
     d = _container(request)
     from avatar.engines.base import FullPipelineBackend, StreamingAvatarBackend
-    from llm.engines.base import LLMEngine, _NoopEngine
-    from tts.engines.base import TTSEngine, ToneEngine
 
     # Phase E: streaming coordinator path for StreamingAvatarBackend (mock +
     # future self-host). FullPipelineBackend (cloud) keeps backend.say().

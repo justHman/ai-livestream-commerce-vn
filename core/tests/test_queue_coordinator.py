@@ -18,7 +18,6 @@ no model downloads.
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from typing import Iterator, List
 
