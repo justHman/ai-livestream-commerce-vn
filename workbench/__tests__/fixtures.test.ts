@@ -48,6 +48,28 @@ describe("fixtures valid full-session load", () => {
       expect(profile.selling_style).toBeTruthy();
     }
   });
+
+  it("shop profile presets support preset and custom values", () => {
+    const { shop_profiles } = loadFixtures();
+    const byId = new Map(shop_profiles.map((p) => [p.id, p]));
+    expect(byId.has("beauty")).toBe(true);
+    expect(byId.has("fashion")).toBe(true);
+    expect(byId.has("gadget")).toBe(true);
+    for (const id of ["beauty", "fashion", "gadget"]) {
+      const profile = byId.get(id)!;
+      expect(profile.shop_name).toBeTruthy();
+      expect(profile.host_name).toBeTruthy();
+      expect(profile.address).toBeTruthy();
+      expect(profile.phone).toBeTruthy();
+      expect(profile.selling_style).toBeTruthy();
+      // Each preset maps to all five shop-draft fields consumed by attach.
+      for (const field of ["shop_name", "host_name", "address", "phone", "selling_style"]) {
+        expect(typeof (profile as Record<string, unknown>)[field]).toBe("string");
+      }
+    }
+    // Custom values remain expressible: a draft shop is not restricted to preset ids.
+    expect(byId.has("custom")).toBe(false);
+  });
 });
 
 describe("fixtures deterministic ordering", () => {

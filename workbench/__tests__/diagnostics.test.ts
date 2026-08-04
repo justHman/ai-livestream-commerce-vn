@@ -71,6 +71,13 @@ describe("diagnostics rendering", () => {
     expect(text.embedderStatus).toBe("Embedder: chưa có snapshot.");
   });
 
+  it("clear resets all diagnostic regions including metrics html", () => {
+    const { sink, html } = makeSink();
+    renderDiagnostics(sampleData, sink);
+    clearDiagnostics(sink);
+    expect(html.metrics).toBe("");
+  });
+
   it("handles empty clusters", () => {
     const { sink, text } = makeSink();
     renderDiagnostics({ ...sampleData, clusters: [] }, sink);

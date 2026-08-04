@@ -38,6 +38,41 @@ describe("reducer", () => {
     expect(state.draft.selectedProductIds).toEqual(["P1"]);
   });
 
+  it("PRODUCT_ID_CHANGE remaps product, order and selection references", () => {
+    let state = initialState();
+    state = reducer(state, {
+      type: "PRODUCTS_SET",
+      value: {
+        products: [{ id: "P1", name: "x", price: 1 }, { id: "P2", name: "y", price: 2 }] as never[],
+        selectedProductIds: ["P2", "P1"],
+        productOrder: ["P1", "P2"],
+      },
+    });
+    state = reducer(state, { type: "PRODUCT_ID_CHANGE", productId: "P1", nextId: "P9", jsonText: "[]" });
+    expect(state.draft.products.map((p) => p.id)).toEqual(["P9", "P2"]);
+    expect(state.draft.productOrder).toEqual(["P9", "P2"]);
+    expect(state.draft.selectedProductIds).toEqual(["P2", "P9"]);
+    expect(state.draft.jsonDirty).toBe(false);
+  });
+
+  it("PRODUCT_ID_CHANGE rejects duplicate id without mutating draft", () => {
+    let state = initialState();
+    state = reducer(state, {
+      type: "PRODUCTS_SET",
+      value: {
+        products: [{ id: "P1", name: "x", price: 1 }, { id: "P2", name: "y", price: 2 }] as never[],
+        selectedProductIds: ["P1"],
+        productOrder: ["P1", "P2"],
+      },
+    });
+    const before = JSON.stringify(state.draft.products);
+    state = reducer(state, { type: "PRODUCT_ID_CHANGE", productId: "P1", nextId: "P2", jsonText: "[]" });
+    expect(state.draft.products.map((p) => p.id)).toEqual(["P1", "P2"]);
+    expect(state.draft.productOrder).toEqual(["P1", "P2"]);
+    expect(state.draft.errors).toEqual(["products.id: trùng ID P2."]);
+    expect(JSON.stringify(state.draft.products)).toBe(before);
+  });
+
   it("EVENT_ADD prepends and caps at 200", () => {
     let state = initialState();
     for (let i = 0; i < 205; i++) {
