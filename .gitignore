@@ -10,9 +10,12 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+.ruff_cache/
 .ipynb_checkpoints/
 .venv/
 venv/
+.coverage
+htmlcov/
 
 # ── Model weights / heavy artifacts (download on Colab, don't commit) ──
 weights/
@@ -23,6 +26,7 @@ weights/
 *.pth
 *.onnx
 model/
+models/
 data/
 sources/
 
@@ -33,6 +37,8 @@ results/
 *.mp4
 tmp/
 .runtime/
+services/product/*.log
+services/platform/*.log
 
 # ── OS / editor / tooling ────────────────────────────────────
 .DS_Store
@@ -48,9 +54,10 @@ codegraph/
 # ── Node / Workbench ─────────────────────────────────────────
 node_modules/
 workbench/node_modules/
+dist/
 workbench/dist/
-workbench/test-results/
-workbench/playwright-report/
+test-results/
+playwright-report/
 *.tsbuildinfo
 
 # ── Claude Code local override (per-developer, never commit) ──
@@ -80,5 +87,3 @@ terraform.rc
 !*.tfvars.example
 *.tfvars.local
 *.tfplan
-infra/modules/*/.terraform.lock.hcl
-infra/modules/**/.terraform.lock.hcl
