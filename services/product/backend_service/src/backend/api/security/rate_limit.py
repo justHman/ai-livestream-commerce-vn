@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request, WebSocket
 
-from core.api.limits import SlidingWindowLimiter, WebSocketLimiters
+from backend.application.render.limiters import SlidingWindowLimiter, WebSocketLimiters
 
 _WS_RATE_LIMIT_CLOSE_CODE = 1008
 

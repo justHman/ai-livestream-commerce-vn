@@ -14,7 +14,7 @@ import hmac
 
 from fastapi import HTTPException, Request, WebSocket
 
-from core.config import AppConfig
+from backend.config import AppConfig
 
 _WS_AUTH_CLOSE_CODE = 4401
 

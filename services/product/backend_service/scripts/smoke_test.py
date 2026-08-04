@@ -5,7 +5,15 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-sys.path[:0] = [str(ROOT / "services/product/backend_service/src"), str(ROOT)]
+# Canonical sibling service packages (llm/tts/avatar) — same PYTHONPATH
+# layout the backend Dockerfile uses for the self-contained seam.
+sys.path[:0] = [
+    str(ROOT / "services/product/backend_service/src"),
+    str(ROOT / "services/product/llm_service/src"),
+    str(ROOT / "services/product/tts_service/src"),
+    str(ROOT / "services/product/avatar_service/src"),
+    str(ROOT),
+]
 os.environ.update(
     APP_ENV="dev",
     DIRECTOR_ENABLED="0",

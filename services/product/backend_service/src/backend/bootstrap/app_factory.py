@@ -19,8 +19,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.api import health, v1
-from core.config import AppConfig
+from backend.config import AppConfig
 
 from .container import BootstrapContainer, create_container
 from .lifespan import build_lifespan
@@ -48,7 +47,7 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
 
 def v1_engine_manager(config) -> Any:
     """Build an EngineManager and load configured engines (parity helper)."""
-    from core.engine_manager import EngineManager
+    from backend.engine_manager import EngineManager
 
     manager = EngineManager()
     try:
@@ -71,8 +70,6 @@ def v1_engine_manager(config) -> Any:
             f"({type(exc).__name__}: {exc}); using tone stub."
         )
     if config.render_backend == "cloud_liveavatar":
-        from core.render import cloud  # noqa: F401  (side-effect wiring)
-
         manager.reconfigure_cloud()
     return manager
 
@@ -80,13 +77,13 @@ def v1_engine_manager(config) -> Any:
 def _build_pg_store(config) -> Any:
     if not config.database_url:
         return None
-    from core.db.postgres_store import PostgresRuntimeStore
+    from backend.application.db.postgres_store import PostgresRuntimeStore
 
     return PostgresRuntimeStore(config.database_url)
 
 
 def _build_api_limiter(config) -> Any:
-    from core.api.limits import SlidingWindowLimiter
+    from backend.application.render.limiters import SlidingWindowLimiter
 
     return SlidingWindowLimiter(
         limit=config.api_rate_limit_requests,
@@ -96,13 +93,24 @@ def _build_api_limiter(config) -> Any:
 
 
 def _build_ws_limiter(config) -> Any:
-    from core.api.limits import WebSocketLimiters
+    from backend.application.render.limiters import WebSocketLimiters
 
     return WebSocketLimiters(
         limit=config.ws_rate_limit_messages,
         window_seconds=config.ws_rate_limit_window_seconds,
         max_keys=config.api_rate_limit_max_keys,
     )
+
+
+def _include_router(app: FastAPI) -> None:
+    """Mount the health router (canonical local copy, self-contained).
+
+    The legacy v1 route set (``core.api.v1``) is the pre-1.26 surface; the
+    canonical service exposes health only until the v1 routes migrate.
+    """
+    from backend.api.health import router as health_router
+
+    app.include_router(health_router)
 
 
 def _register_middleware(app: FastAPI, config) -> None:
@@ -131,7 +139,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 def create_app(
     config=None,
-    deps: v1.V1Deps | None = None,
+    deps=None,
     container: BootstrapContainer | None = None,
     *,
     lifespan=None,
@@ -143,12 +151,12 @@ def create_app(
     config:
         Optional ``AppConfig``; defaults to ``AppConfig.from_env()``.
     deps:
-        Legacy injected ``V1Deps`` for existing tests.  When provided, the
-        app mirrors them into the legacy seam and builds no engines.
+        Legacy injected deps object for existing tests (attributes mirror
+        ``BootstrapContainer`` fields).  When provided, the app mirrors them
+        into the typed container and builds no engines.
     container:
         Optional typed ``BootstrapContainer``.  When provided, it is attached
-        to ``app.state`` and mirrored into the seam (if the seam is unset).
-        No engines/network are touched.
+        to ``app.state``.  No engines/network are touched.
     lifespan:
         Optional explicit asyncio lifespan for the app.
     """
@@ -192,8 +200,7 @@ def create_app(
 
     _register_middleware(app, config)
     _register_exception_handlers(app)
-    app.include_router(v1.router)
-    app.include_router(health.router)
+    _include_router(app)
 
     @app.get("/")
     async def root() -> dict:

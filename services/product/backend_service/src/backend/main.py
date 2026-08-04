@@ -13,7 +13,7 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
-    from core.config import AppConfig
+    from backend.config import AppConfig
 
     cfg = AppConfig.from_env()
     uvicorn.run(app, host="0.0.0.0", port=cfg.port)

@@ -1,9 +1,8 @@
 """Canonical Director package (backend application logic).
 
-Task 1.11 moved Director ownership here. Module-level decomposition is
-Task 1.21; only the prompt bundle and its fixed-file loader/composer exist at
-this stage. Legacy ``core.director`` remains a compatibility seam until
-callers migrate.
+Task 1.21 moved the full Director implementation here. Legacy ``core.director``
+remains a thin compatibility seam re-exporting these modules until callers
+migrate (Task 1.26 removes the seam).
 """
 
 from __future__ import annotations
