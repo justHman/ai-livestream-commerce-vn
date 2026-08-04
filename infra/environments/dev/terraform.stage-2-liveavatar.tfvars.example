@@ -5,9 +5,11 @@
 # LLM gpu_memory_utilization=0.55 / TTS=0.35 / 0.10 buffer.
 #
 # MONEY-SAFE BOOT: copy this to terraform.tfvars, then Phase 0 apply with
-# desired_llm_tts=0 (edit the value below), verify stack healthy at zero cost,
+# desired_llm     = 0
+desired_tts     = 0 (edit the value below), verify stack healthy at zero cost,
 # complete offline setup (GitHub Actions SHA images, S3 weights seed, SSM
-# secrets), then Phase 1 apply with desired_llm_tts=1. See
+# secrets), then Phase 1 apply with desired_llm     = 0
+desired_tts     = 0. See
 # docs/runbook-live-smoke-and-teardown.md.
 #
 # LiveAvatar sandbox-first: LIVEAVATAR_SANDBOX_AVATAR_ID
@@ -34,9 +36,11 @@ db_allocated_storage_gb = 100
 redis_node_type         = "cache.t4g.small"
 lmcache_enabled         = false
 
-# Money-safe boot Phase 1 values. Phase 0: set desired_llm_tts=0 first.
+# Money-safe boot Phase 1 values. Phase 0: set desired_llm     = 0
+desired_tts     = 0 first.
 desired_backend     = 1
-desired_llm_tts     = 1
+desired_llm     = 0
+desired_tts     = 0
 desired_avatar      = 0
 desired_livekit     = 0
 desired_lmcache     = 0

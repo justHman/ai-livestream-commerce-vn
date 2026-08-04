@@ -30,7 +30,8 @@ redis_node_type         = "cache.t4g.small"
 
 lmcache_enabled     = false
 desired_backend     = 1
-desired_llm_tts     = 0
+desired_llm     = 0
+desired_tts     = 0
 desired_avatar      = 0
 desired_livekit     = 0
 desired_lmcache     = 0

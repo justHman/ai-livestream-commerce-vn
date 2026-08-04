@@ -35,7 +35,8 @@ lmcache_enabled         = false
 
 # Money-safe boot Phase 1 values. Phase 0: set all desired_llm_tts/avatar/livekit=0.
 desired_backend     = 1
-desired_llm_tts     = 1
+desired_llm     = 0
+desired_tts     = 0
 desired_avatar      = 1
 desired_livekit     = 1
 desired_lmcache     = 0

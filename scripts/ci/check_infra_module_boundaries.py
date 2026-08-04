@@ -58,6 +58,15 @@ def main() -> int:
     if len(keys) != len(set(keys)):
         errors.append(f"duplicate state keys: {keys}")
 
+    # 5. LLM/TTS independence: no combined llm_tts task/service/capacity refs.
+    for f in (INFRA / "modules" / "compute").glob("*.tf"):
+        text = f.read_text(encoding="utf-8")
+        for m in re.finditer(r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group)"\s+"([a-z0-9_]+)"', text):
+            if "llm_tts" in m.group(2):
+                errors.append(f"{f}: combined llm_tts block {m.group(2)!r}")
+        if re.search(r'container_name\s*=\s*"tts"', text) and re.search(r'container_name\s*=\s*"llm"', text):
+            errors.append(f"{f}: combined llm+tts containers in one service/task")
+
     if errors:
         print("\n".join(errors))
         return 1

@@ -102,7 +102,8 @@ module "compute" {
   image_livekit   = var.image_livekit
   lmcache_enabled = var.lmcache_enabled
   desired_backend = var.desired_backend
-  desired_llm_tts = var.desired_llm_tts
+  desired_llm     = var.desired_llm
+  desired_tts     = var.desired_tts
   desired_avatar  = var.desired_avatar
   desired_livekit = var.desired_livekit
   desired_lmcache = var.desired_lmcache

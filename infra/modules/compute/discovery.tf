@@ -1,4 +1,8 @@
-# Cloud Map service discovery (internal DNS backend -> LLM/TTS).
+# Cloud Map service discovery (internal DNS backend → LLM/TTS).
+# 1 namespace + 1 SD service per model service: llm.<env>.ai-live.local:8001,
+# tts.<env>.ai-live.local:8002. Backend reaches each engine over its own
+# environment-specific private DNS name.
+
 resource "aws_service_discovery_private_dns_namespace" "this" {
   count = var.create_ec2_capacity ? 1 : 0
 
@@ -8,10 +12,10 @@ resource "aws_service_discovery_private_dns_namespace" "this" {
   tags        = local.common_tags
 }
 
-resource "aws_service_discovery_service" "llm_tts" {
+resource "aws_service_discovery_service" "llm" {
   count = var.create_ec2_capacity ? 1 : 0
 
-  name = "llm-tts"
+  name = "llm"
 
   dns_config {
     namespace_id = aws_service_discovery_private_dns_namespace.this[0].id
@@ -22,11 +26,22 @@ resource "aws_service_discovery_service" "llm_tts" {
     routing_policy = "MULTIVALUE"
   }
 
-  tags = local.common_tags
+  tags = merge(local.common_tags, { Role = "llm" })
 }
 
-# ---------------------------------------------------------------------------
-# EC2 Spot capacity — g6 (LLM+TTS), g4dn (Avatar), c7g (LMCache)
-# Placeholders: min=0 so create does not launch expensive Spot until desired>0
-# ---------------------------------------------------------------------------
+resource "aws_service_discovery_service" "tts" {
+  count = var.create_ec2_capacity ? 1 : 0
 
+  name = "tts"
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.this[0].id
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+    routing_policy = "MULTIVALUE"
+  }
+
+  tags = merge(local.common_tags, { Role = "tts" })
+}

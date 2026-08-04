@@ -32,6 +32,7 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
     ["FARGATE", "FARGATE_SPOT"],
     var.create_ec2_capacity ? [
       aws_ecs_capacity_provider.llm[0].name,
+      aws_ecs_capacity_provider.tts[0].name,
       aws_ecs_capacity_provider.avatar[0].name,
       aws_ecs_capacity_provider.lmcache[0].name,
     ] : [],

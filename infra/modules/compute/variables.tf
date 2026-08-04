@@ -71,8 +71,14 @@ variable "desired_backend" {
   default     = 1
 }
 
-variable "desired_llm_tts" {
-  description = "LLM+TTS EC2 GPU service desired count"
+variable "desired_llm" {
+  description = "LLM EC2 GPU service desired count"
+  type        = number
+  default     = 0
+}
+
+variable "desired_tts" {
+  description = "TTS EC2 GPU service desired count"
   type        = number
   default     = 0
 }
@@ -104,7 +110,7 @@ variable "lmcache_enabled" {
 # --- capacity / instance types ---
 
 variable "instance_type_llm" {
-  description = "EC2 Spot type for LLM+TTS (g6 L4)"
+  description = "EC2 Spot type for LLM and TTS (g6 L4)"
   type        = string
   default     = "g6.xlarge"
 }

@@ -16,6 +16,7 @@ locals {
 
   # Capacity provider names (created when create_ec2_capacity=true)
   cp_llm     = "${local.name_prefix}-cp-llm"
+  cp_tts     = "${local.name_prefix}-cp-tts"
   cp_avatar  = "${local.name_prefix}-cp-avatar"
   cp_lmcache = "${local.name_prefix}-cp-lmcache"
 }

@@ -196,13 +196,23 @@ variable "desired_backend" {
   }
 }
 
-variable "desired_llm_tts" {
+variable "desired_llm" {
   type    = number
   default = 0
 
   validation {
-    condition     = var.desired_llm_tts >= 0 && floor(var.desired_llm_tts) == var.desired_llm_tts
-    error_message = "desired_llm_tts must be a nonnegative integer."
+    condition     = var.desired_llm >= 0 && floor(var.desired_llm) == var.desired_llm
+    error_message = "desired_llm must be a nonnegative integer."
+  }
+}
+
+variable "desired_tts" {
+  type    = number
+  default = 0
+
+  validation {
+    condition     = var.desired_tts >= 0 && floor(var.desired_tts) == var.desired_tts
+    error_message = "desired_tts must be a nonnegative integer."
   }
 }
 
