@@ -216,7 +216,7 @@ class TTSEngine(ABC):
                 duration_ms=w.duration_ms,
                 pcm=w.pcm,
                 audio_path=w.audio_path,
-                text_span=text,
+                text_span=str(text),
                 is_final=(i == n - 1),
                 id=w.id,
             )
@@ -301,7 +301,8 @@ class ToneEngine(TTSEngine):
         return e
 
     def synthesize(self, req: TTSRequest) -> AudioChunk:
-        seconds = max(0.6, min(len(req.text) / 15.0, 6.0))
+        text = req.text if isinstance(req.text, str) else str(req.text)
+        seconds = max(0.6, min(len(text) / 15.0, 6.0))
         n = int(self.sample_rate * seconds)
         t = np.arange(n) / self.sample_rate
         pcm = (0.4 * np.sin(2 * math.pi * 330 * t)).astype(np.float32)

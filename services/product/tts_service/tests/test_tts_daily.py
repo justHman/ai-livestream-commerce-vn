@@ -185,10 +185,15 @@ def test_daily_handler_validates_service_and_group(service: str, group: str, mat
 
 def test_daily_handler_accepts_platform_group() -> None:
     with removable_temp_dir() as root:
-        handler = DailyHandler(service="livekit", group="platform", daily_root=root)
+        handler = DailyHandler(
+            service="livekit",
+            group="platform",
+            daily_root=root,
+            clock=fixed_clock(FIXED_DAY),
+        )
         try:
             handler.handle(make_record("ready"))
-            assert (root / "platform" / "livekit" / "2026-08-03.log").read_text(
+            assert (root / "platform" / "livekit" / f"{FIXED_DAY.isoformat()}.log").read_text(
                 encoding="utf-8"
             ) == "ready\n"
         finally:

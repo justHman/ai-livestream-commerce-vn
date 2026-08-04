@@ -90,14 +90,25 @@ class PlatformCollector:
         """
         _validate_service(service)
         with self._lock:
-            handler = self._handler_for(service)
+            handler = self._handlers.get(service)
+            if handler is None:
+                handler = ActiveSessionHandler(
+                    service=service, group="platform", active_root=self._active_root
+                )
+                handler.setFormatter(ContextFormatter(service=service, colorize=False))
+                handler.addFilter(LevelFilter())
+                handler.addFilter(StructuredFieldsFilter())
+                self._handlers[service] = handler
             handler.start_session()
 
     def emit_event(self, service: str, message: str, *, level: int = logging.INFO) -> None:
         """Classify one event without leaking handler-controlled field values."""
         normalized = normalize_event_line(message)
         if normalized is not None:
-            self._write(service, normalized, level=level)
+            record = make_platform_record(normalized, level=level)
+            handler = self._handler_for(service)
+            handler.handle(record)
+            self._daily_handler_for(service).handle(record)
 
     def run_stream(self, lines: Iterable[str], *, service: str = "livekit") -> None:
         """Consume event lines without copying unapproved fields or raw content."""
@@ -149,6 +160,7 @@ class PlatformCollector:
                 handler.setFormatter(ContextFormatter(service=service, colorize=False))
                 handler.addFilter(LevelFilter())
                 handler.addFilter(StructuredFieldsFilter())
+                handler.start_session()
                 self._handlers[service] = handler
             return handler
 
@@ -171,7 +183,12 @@ class PlatformCollector:
 
     def _write(self, service: str, normalized: str, *, level: int) -> None:
         record = make_platform_record(normalized, level=level)
-        self._handler_for(service).handle(record)
+        handler = self._handler_for(service)
+        handler.start_session()
+        try:
+            handler.handle(record)
+        finally:
+            handler.end_session()
         self._daily_handler_for(service).handle(record)
 
 

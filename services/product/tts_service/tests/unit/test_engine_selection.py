@@ -12,8 +12,10 @@ def test_self_host_engines_registered() -> None:
     assert {"vieneu", "cosyvoice"} <= set(ENGINES)
 
 
-def test_transformers_not_registered() -> None:
-    assert "transformers" not in ENGINES
+def test_transformers_registered_for_legacy_fallback() -> None:
+    # d6d2880 restored transformers (registered as 'transformers' + 'hf') for
+    # the legacy offline fallback path; parity requires it to be loadable.
+    assert "transformers" in ENGINES
 
 
 def test_remote_http_not_registered() -> None:

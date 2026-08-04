@@ -103,13 +103,15 @@ def _build_ws_limiter(config) -> Any:
 
 
 def _include_router(app: FastAPI) -> None:
-    """Mount the health router (canonical local copy, self-contained).
+    """Mount the canonical v1 router (self-contained copy) + health router.
 
-    The legacy v1 route set (``core.api.v1``) is the pre-1.26 surface; the
-    canonical service exposes health only until the v1 routes migrate.
+    ``backend.api.v1`` is the COPY-DON'T-IMPORT route set migrated from
+    ``core.api.v1`` (Task 1.25). Health stays outside the versioned contract.
     """
     from backend.api.health import router as health_router
+    from backend.api.v1 import router as v1_router
 
+    app.include_router(v1_router)
     app.include_router(health_router)
 
 
