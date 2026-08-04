@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-COMPUTE = ROOT / "infra/modules/compute/main.tf"
+COMPUTE = ROOT / "infra/modules/compute/backend.tf"
 DEV_MAIN = ROOT / "infra/environments/dev/main.tf"
 DEV_VARS = ROOT / "infra/environments/dev/variables.tf"
 PROD_MAIN = ROOT / "infra/environments/prod/main.tf"
