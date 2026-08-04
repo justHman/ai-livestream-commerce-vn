@@ -1,0 +1,167 @@
+﻿<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Livento — Stage 2 Operator Console</title>
+  <link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Livento — Stage 2 Operator Console</h1>
+    <p>Một nguồn sự thật cho session, tài nguyên, cấu hình bán hàng, Auto Demo và Director diagnostics.</p>
+  </header>
+  <main>
+    <div class="column">
+      <section class="panel" id="sessionPanel" aria-labelledby="sessionHeading">
+        <h2 id="sessionHeading">1. Session</h2>
+        <div class="field"><label for="backend">Backend API</label><input id="backend" value="http://127.0.0.1:8800"></div>
+        <div class="field"><label for="apiToken">Viewer token</label><input id="apiToken" type="password" autocomplete="off"></div>
+        <div class="field"><label for="adminToken">Admin token</label><input id="adminToken" type="password" autocomplete="off"></div>
+        <label class="toggle" for="sandboxToggle"><input id="sandboxToggle" type="checkbox" checked> Dùng LiveAvatar sandbox</label>
+        <div class="actions">
+          <button id="healthBtn" type="button" class="secondary">Kiểm tra health</button>
+          <button id="startBtn" type="button">Start session</button>
+          <button id="stopBtn" type="button" class="danger" disabled>Stop session</button>
+        </div>
+        <div id="status-session" class="status" aria-live="polite">Trạng thái: chưa có session.</div>
+      </section>
+
+      <section class="panel" id="resourcePanel" aria-labelledby="resourceHeading">
+        <h2 id="resourceHeading">2. Avatar, LLM, TTS và voice</h2>
+        <div class="actions"><button id="discoverBtn" type="button" class="secondary">Nạp tài nguyên backend</button><button id="verifyBtn" type="button" class="warning">Kiểm tra sandbox 3 lớp</button></div>
+        <div class="field"><label for="avatarSelect">Avatar</label><select id="avatarSelect"><option value="">Avatar mặc định của backend</option></select></div>
+        <div class="field"><label for="llmSelect">LLM</label><select id="llmSelect"><option value="">Chưa discovery</option></select></div>
+        <div class="actions"><button id="applyLlmBtn" type="button" class="secondary">Nạp LLM đã chọn</button></div>
+        <div class="grid-2">
+          <div class="field"><label for="ttsSelect">TTS</label><select id="ttsSelect"><option value="">Chưa discovery</option></select></div>
+          <div class="field"><label for="voiceSelect">Voice</label><select id="voiceSelect"><option value="default">Default</option></select></div>
+        </div>
+        <div class="actions"><button id="applyTtsBtn" type="button" class="secondary">Nạp TTS đã chọn</button></div>
+        <div class="field"><label for="previewText">Câu preview</label><input id="previewText" maxlength="300" value="Xin chào cả nhà, đây là giọng đọc thử của Livento."></div>
+        <div class="actions"><button id="previewBtn" type="button">Nghe thử voice</button></div>
+        <audio id="previewAudio" controls aria-label="Audio preview TTS"></audio>
+        <div id="status-resource" class="status" aria-live="polite">Trạng thái: chưa discovery.</div>
+      </section>
+
+      <section class="panel" id="shopPanel" aria-labelledby="shopHeading">
+        <h2 id="shopHeading">3. Shop profile</h2>
+        <div class="field"><label for="shopProfileSelect">Profile có sẵn hoặc tự thêm</label><select id="shopProfileSelect"><option value="beauty">Nam Beauty</option><option value="fashion">Livento Fashion</option><option value="gadget">Livento Gadget</option><option value="custom">Tự thêm</option></select></div>
+        <div class="grid-2">
+          <div class="field"><label for="shopName">Tên shop</label><input id="shopName" maxlength="256"></div>
+          <div class="field"><label for="hostName">Tên MC</label><input id="hostName" maxlength="128"></div>
+          <div class="field"><label for="shopAddress">Địa chỉ</label><input id="shopAddress" maxlength="500"></div>
+          <div class="field"><label for="shopPhone">Điện thoại</label><input id="shopPhone" maxlength="64"></div>
+        </div>
+        <div class="field"><label for="sellingStyle">Phong cách bán hàng</label><textarea id="sellingStyle" maxlength="1000"></textarea></div>
+      </section>
+
+      <section class="panel" id="productsPanel" aria-labelledby="productsHeading">
+        <h2 id="productsHeading">4. Sản phẩm đã chọn và thứ tự nói</h2>
+        <p class="hint">Bỏ chọn để loại sản phẩm khỏi phiên. Dùng nút Lên/Xuống để đổi thứ tự Director.</p>
+        <div class="actions"><button id="addProductBtn" type="button" class="secondary">Thêm sản phẩm</button></div>
+        <div id="productList"></div>
+        <details class="json-editor">
+          <summary>Advanced JSON editor</summary>
+          <label for="productsJson">Product catalog JSON</label>
+          <textarea id="productsJson" rows="14" spellcheck="false"></textarea>
+          <div class="actions"><button id="applyJsonBtn" type="button" class="secondary">Validate và áp dụng JSON</button></div>
+        </details>
+        <div id="configErrors" role="alert" aria-live="polite"></div>
+        <div class="actions"><button id="attachBtn" type="button" disabled>Attach cấu hình vào session</button></div>
+      </section>
+    </div>
+
+    <div class="column">
+      <section class="panel" id="videoPanel" aria-labelledby="videoHeading">
+        <h2 id="videoHeading">5. Avatar video</h2>
+        <video id="avatarVideo" autoplay playsinline></video>
+        <div class="actions"><button id="livekitConnectBtn" type="button" class="secondary" disabled>Connect LiveKit</button></div>
+        <div id="status-livekit" class="status" aria-live="polite">Trạng thái: chưa có LiveKit credentials.</div>
+        <h3>Manual speech</h3>
+        <label for="speakText">Nội dung nói nguyên văn</label>
+        <textarea id="speakText" maxlength="2000" placeholder="Nhập yêu cầu nói..."></textarea>
+        <div class="actions"><button id="speakBtn" type="button" disabled>Nói</button></div>
+      </section>
+
+      <section class="panel" id="autoDemoPanel" aria-labelledby="demoHeading">
+        <h2 id="demoHeading">6. Auto Demo</h2>
+        <div id="demoStateText" class="status" aria-live="polite">status: idle — đang chờ.</div>
+        <div id="demoStates" class="demo-states" aria-label="Các trạng thái Auto Demo"></div>
+        <div class="grid-2">
+          <div class="field"><label for="autoDemoRate">Tốc độ comment/giây</label><input id="autoDemoRate" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
+          <div class="field"><label for="autoDemoMode">Initial ingest mode</label><select id="autoDemoMode"><option value="batch">Batch 20 comments</option><option value="single">Gửi từng comment</option></select></div>
+          <div class="field"><label for="qaMaxClusters">Max Q&A clusters/window</label><input id="qaMaxClusters" type="number" min="1" max="20" value="2"></div>
+          <div class="field"><label for="qaTimeout">Q&A timeout (giây)</label><input id="qaTimeout" type="number" min="1" max="600" value="45"></div>
+          <div class="field"><label for="qaCooldown">Topic cooldown (giây)</label><input id="qaCooldown" type="number" min="0" max="3600" value="120"></div>
+          <div class="field"><label for="answerVariants">Answer variants</label><input id="answerVariants" type="number" min="1" max="20" value="3"></div>
+          <div class="field"><label for="preparedDepth">Prepared-turn depth</label><input id="preparedDepth" type="number" min="1" max="20" value="3"></div>
+          <div class="field"><label for="retryCount">Transient retries</label><input id="retryCount" type="number" min="0" max="3" value="1"></div>
+          <div class="field"><label for="pivotEnter">Pivot enter share</label><input id="pivotEnter" type="number" min="0.01" max="1" step="0.01" value="0.60"></div>
+          <div class="field"><label for="pivotExit">Pivot exit share</label><input id="pivotExit" type="number" min="0.01" max="1" step="0.01" value="0.45"></div>
+        </div>
+        <div class="actions"><button id="applyRuntimeConfigBtn" type="button" class="secondary">Áp dụng runtime config</button><button id="autoDemoBtn" type="button">Chạy Auto Demo</button><button id="stopAutoBtn" type="button" class="danger" disabled>Dừng Auto Demo</button></div>
+        <h3>Viewer comments</h3>
+        <div id="msgFeed" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" id="diagnosticsPanel" aria-labelledby="diagnosticsHeading">
+        <h2 id="diagnosticsHeading">7. Director diagnostics</h2>
+        <div id="embedderStatus" class="status" aria-live="polite">Embedder: chưa có snapshot.</div>
+        <div id="metrics" class="metrics"></div>
+        <div class="diagnostic-grid">
+          <article class="diagnostic-card"><h3>Current product / decision</h3><div id="currentDecision" class="diagnostic-content">Chưa có quyết định.</div></article>
+          <article class="diagnostic-card"><h3>Playback state</h3><div id="playbackState" class="diagnostic-content">idle</div></article>
+          <article class="diagnostic-card"><h3>Selected cluster — đầy đủ</h3><div id="selectedCluster" class="diagnostic-content">Chưa chọn cụm.</div></article>
+          <article class="diagnostic-card"><h3>Current prompt — đầy đủ</h3><div id="currentPrompt" class="diagnostic-content">Chưa có prompt đang xử lý.</div></article>
+          <article class="diagnostic-card"><h3>Generated script gần nhất — đầy đủ</h3><div id="generatedScript" class="diagnostic-content">Chưa có script hoàn tất.</div></article>
+          <article class="diagnostic-card"><h3>Upcoming work — đầy đủ</h3><div id="upcomingWork" class="diagnostic-content">Không có turn đang chờ.</div></article>
+          <article class="diagnostic-card wide"><h3>Completed history — đầy đủ</h3><div id="completedHistory" class="diagnostic-content">Chưa có speech hoàn tất.</div></article>
+          <article class="diagnostic-card wide"><h3>Active clusters</h3><div id="clusterList"></div></article>
+        </div>
+      </section>
+
+      <section class="panel" id="eventLogPanel" aria-labelledby="eventHeading">
+        <h2 id="eventHeading">8. Event log</h2>
+        <div id="eventLog" aria-live="polite"></div>
+      </section>
+    </div>
+  </main>
+
+  <template id="productTemplate">
+    <article class="product-card">
+      <div class="product-card-header">
+        <label class="selection"><input type="checkbox" data-field="selected" aria-label="Dùng sản phẩm này trong phiên"></label>
+        <details class="product-details">
+          <summary class="product-summary">Sản phẩm</summary>
+          <div class="product-card-body">
+            <div class="grid-2">
+              <div class="field"><label>ID<input data-field="id" maxlength="128"></label></div>
+              <div class="field"><label>Tên<input data-field="name" maxlength="256"></label></div>
+              <div class="field wide"><label>Mô tả<textarea data-field="description" maxlength="2000"></textarea></label></div>
+              <div class="field"><label>Giá bán<input data-field="price" data-type="integer" type="number" min="0"></label></div>
+              <div class="field"><label>Giá gốc<input data-field="original_price" data-type="integer" type="number" min="0"></label></div>
+              <div class="field"><label>Tồn kho<input data-field="stock_total" data-type="integer" type="number" min="0"></label></div>
+              <div class="field"><label class="toggle"><input data-field="in_stock" data-type="boolean" type="checkbox"> Còn hàng</label></div>
+              <div class="field wide"><label>Khuyến mãi<input data-field="promotion" maxlength="500"></label></div>
+              <div class="field"><label>Màu, phân cách bằng dấu phẩy<input data-field="colors" data-type="array"></label></div>
+              <div class="field"><label>Size, phân cách bằng dấu phẩy<input data-field="sizes" data-type="array"></label></div>
+              <div class="field"><label>Chất liệu<input data-field="material" maxlength="256"></label></div>
+              <div class="field"><label>Vận chuyển<input data-field="shipping" maxlength="500"></label></div>
+              <div class="field"><label>Bảo hành<input data-field="warranty" maxlength="500"></label></div>
+              <div class="field"><label>Ảnh tham chiếu<input data-field="ref_image" maxlength="2048"></label></div>
+              <div class="field wide"><label>Đặc điểm, phân cách bằng dấu phẩy<input data-field="features" data-type="array"></label></div>
+            </div>
+          </div>
+        </details>
+        <div class="actions">
+          <button type="button" class="secondary" data-action="move-up" aria-label="Di chuyển sản phẩm lên">↑</button>
+          <button type="button" class="secondary" data-action="move-down" aria-label="Di chuyển sản phẩm xuống">↓</button>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -218,6 +218,13 @@ class RuntimeConfigUpdateReq(RuntimeConfigReq):
     session_id: str = Field(max_length=128)
 
 
+class PathRuntimeConfigUpdateReq(RuntimeConfigReq):
+    """Runtime config for the canonical path-style /sessions/{id}/config route.
+    session_id comes from the URL, not the body."""
+
+    pass
+
+
 class ChatIn(BaseModel):
     """Wave 2: single chat comment from a viewer (Phase B coordinator path)."""
 

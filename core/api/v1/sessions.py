@@ -344,6 +344,21 @@ async def lite_config_update(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@_router.patch("/sessions/{session_id}/config")
+async def sessions_config(
+    session_id: str,
+    req: router.PathRuntimeConfigUpdateReq,
+    _: None = Depends(router.viewer_auth),
+) -> dict[str, Any]:
+    """Canonical path-style runtime config update (Task 1.44)."""
+    return await lite_config_update(
+        router.RuntimeConfigUpdateReq(
+            session_id=session_id, **req.model_dump(exclude_none=True)
+        ),
+        _,
+    )
+
+
 @_router.post("/lite/ingest")
 async def lite_ingest(
     req: router.IngestReq,
