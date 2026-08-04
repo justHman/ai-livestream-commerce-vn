@@ -41,6 +41,23 @@ def main() -> int:
         if root.name in FORBIDDEN:
             errors.append(f"service-named module dir: {root.name}")
 
+    # 4. Environment roots: distinct state keys, no workspaces, no cross-state refs.
+    keys = []
+    for env in INFRA.joinpath("environments").iterdir():
+        backend = env / "backend.tf"
+        if not backend.exists():
+            continue
+        text = backend.read_text(encoding="utf-8")
+        m = re.search(r'key\s*=\s*"([^"]+)"', text)
+        keys.append(m.group(1) if m else None)
+        if '"workspace' in text:
+            errors.append(f"{backend}: uses Terraform workspaces")
+        for tf in env.glob("*.tf"):
+            if re.search(r'terraform_remote_state|data\s+"terraform_remote_state"', tf.read_text(encoding="utf-8")):
+                errors.append(f"{tf}: cross-state reference")
+    if len(keys) != len(set(keys)):
+        errors.append(f"duplicate state keys: {keys}")
+
     if errors:
         print("\n".join(errors))
         return 1
