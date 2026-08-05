@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "description": "Approved test matrix (OpenSpec refactor-microservices-monorepo 1.59). Consumed by 3.x CI workflows.",
+  "paths": {
+    "detect": "scripts/ci/detect_changes.py",
+    "e2e": "tests/e2e",
+    "sandbox": "tests/sandbox",
+    "benchmarks": "benchmarks/"
+  },
+  "triggers": {
+    "feature_push": {
+      "jobs": [
+        "affected-unit"
+      ],
+      "notes": "Affected product service unit tests only (per service, via detect_changes.py). No integration, contract, E2E, sandbox, GPU, or benchmark work. Service pytest config ignores tests/integration and tests/contract by default."
+    },
+    "pull_request": {
+      "jobs": [
+        "affected-unit",
+        "affected-integration",
+        "affected-contract",
+        "coverage-branch-80",
+        "cached-container-validation"
+      ],
+      "notes": "Affected unit + integration + contract suites with branch coverage --cov-fail-under=80 (per-service [tool.coverage.report] fail_under = 80), then cached container build/validation."
+    },
+    "merge": {
+      "jobs": [
+        "affected-unit",
+        "affected-integration",
+        "affected-contract",
+        "coverage-branch-80",
+        "cached-container-validation"
+      ],
+      "notes": "Merge commits run the same gate as pull requests against the exact merge commit."
+    },
+    "release": {
+      "jobs": [
+        "affected-cross-service-e2e"
+      ],
+      "notes": "Release verification adds affected cross-service E2E from tests/e2e (live stack required; missing stack fails loudly)."
+    }
+  },
+  "explicit_only": {
+    "sandbox": {
+      "path": "tests/sandbox",
+      "reason": "Real hosted-provider checks (LiveAvatar, hosted LLM/TTS). Never in ordinary CI; authorized operators select them explicitly and missing credentials fail loudly."
+    },
+    "hosted_provider": {
+      "reason": "Live provider integration; explicit authorized jobs only."
+    },
+    "gpu": {
+      "reason": "GPU inference runs only in authorized staging smoke jobs."
+    },
+    "benchmark": {
+      "path": "benchmarks/",
+      "reason": "Performance programs never masquerade as correctness tests; explicit staging/manual work."
+    }
+  },
+  "excluded_from_ordinary_runs": {
+    "service_test_ignore": ["tests/integration", "tests/contract"],
+    "root_norecursedirs": ["tests/e2e", "tests/sandbox"]
+  }
+}

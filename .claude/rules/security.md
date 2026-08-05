@@ -1,9 +1,8 @@
 ---
 paths:
-  - "core/api/**"
-  - "core/server.py"
-  - "core/store.py"
-  - "core/livekit_tokens.py"
+  - "services/product/backend_service/src/backend/api/**"
+  - "services/product/backend_service/src/backend/application/db/session_store.py"
+  - "services/product/backend_service/src/backend/application/publishing/livekit.py"
 ---
 
 # Security

@@ -1,0 +1,79 @@
+{
+  "scenario": "session-context",
+  "inputs": {
+    "products": [
+      {
+        "id": "P004",
+        "name": "Áo hoodie HeyGen màu trắng",
+        "price": 299000,
+        "original_price": 399000,
+        "shipping": "Freeship đơn từ 200k, 2-4 ngày",
+        "sizes": [
+          "M",
+          "L",
+          "XL"
+        ],
+        "colors": [
+          "trắng",
+          "đen",
+          "xám"
+        ],
+        "stock_total": 20
+      },
+      {
+        "id": "P002",
+        "name": "Serum Vitamin C 20%",
+        "price": 250000,
+        "original_price": 320000,
+        "shipping": "Freeship đơn từ 200k, 2-4 ngày",
+        "sizes": [
+          "30ml"
+        ],
+        "colors": [
+          "trong suốt"
+        ],
+        "stock_total": 30
+      }
+    ],
+    "traffic": {
+      "viewer_count": 120,
+      "msg_rate": 3.5
+    },
+    "phase": "selling",
+    "current_product_index": 0,
+    "phase_elapsed_sec": 400.0,
+    "product_elapsed_sec": 120.0,
+    "sec_since_relevant_msg": 10.0,
+    "cursor": {
+      "talking_point_idx": 2,
+      "opening_completed": true
+    }
+  },
+  "outputs": {
+    "phase": "selling",
+    "current_product_id": "P004",
+    "current_product_index": 0,
+    "traffic_level": "high",
+    "products": [
+      {
+        "product_id": "P004",
+        "status": "active",
+        "is_introduced": true,
+        "stage": "benefit",
+        "stage_turn_index": 2,
+        "spoken_turns": 3,
+        "cluster_count": 2
+      },
+      {
+        "product_id": "P002",
+        "status": "pending",
+        "is_introduced": false,
+        "stage": "intro",
+        "stage_turn_index": 0,
+        "spoken_turns": 0,
+        "cluster_count": 0
+      }
+    ],
+    "cursor_phase": "selling"
+  }
+}

@@ -1,0 +1,55 @@
+# Root-context build exclusions for platform/lmcache/Dockerfile.
+# Build: docker build -f services/platform/lmcache/Dockerfile .
+# Allows: services/platform/lmcache/entrypoint.sh.
+
+# VCS / CI / tooling
+.git
+.github
+.claude
+.superpowers
+.codegraph
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+
+# Secrets
+.env
+*.env
+!.env.example
+
+# All product services (lmcache image never imports service code)
+services/product
+
+# Workbench, infra, docs, tests, benchmarks
+workbench/
+infra/
+docs/
+plans/
+notes/
+benchmarks/
+tests/
+scripts/
+
+# Runtime / model weights / data
+.runtime/
+models/
+model/
+data/
+sources/
+results/
+weights/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.log
+*.wav
+*.mp4
+tmp/
+archive/
+archived/

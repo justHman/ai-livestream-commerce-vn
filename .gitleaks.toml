@@ -1,0 +1,24 @@
+# Gitleaks configuration — narrow allowlist for Workbench dev fixtures.
+#
+# These two exact literals are PUBLIC local-iteration fixture values defined in
+# workbench/src/dev_tokens.ts (Task 1.46). They are not secrets: the backend
+# rejects either value outside APP_ENV=dev|test, and production never reads
+# them. Gitleaks would otherwise flag them as generic token assignments.
+#
+# Scope is intentionally exact-value + exact-path. No directory glob, no broad
+# regex, no entropy/rule disable, no global stopword.
+
+title = "Livento Workbench gitleaks config"
+
+[allowlist]
+  description = "Public Workbench dev token fixtures (dev_tokens.ts only)"
+  [[allowlist.matches]]
+    commit = ""
+    file = "workbench/src/dev_tokens.ts"
+    match = "local-test-token-123456789012345678901234567890"
+    reason = "public local viewer fixture (Task 1.46); backend rejects outside dev/test"
+  [[allowlist.matches]]
+    commit = ""
+    file = "workbench/src/dev_tokens.ts"
+    match = "local-admin-token-123456789012345678901234567890"
+    reason = "public local admin fixture (Task 1.46); backend rejects outside dev/test"

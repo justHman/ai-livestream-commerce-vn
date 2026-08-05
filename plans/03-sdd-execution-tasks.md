@@ -153,7 +153,7 @@ For each of backend, llm, tts (or llm-tts), avatar, livekit, lmcache:
 
 - `Dockerfile` multi-stage
 - `entrypoint.sh` for GPU services: `aws s3 sync` weights then exec
-- backend: python slim, `uvicorn core.server:app --host 0.0.0.0 --port 8800`
+- backend: python slim, canonical entrypoint `uvicorn backend.main:app --host 0.0.0.0 --port 8800`
 - llm/tts: placeholder CMD that documents vllm serve (may use sleep/health stub if full vllm too heavy for CI — but structure real)
 - livekit: based on livekit/livekit-server or document
 - `.dockerignore` at root or per service
@@ -266,7 +266,7 @@ Then stop for optional user check OR continue Wave B LiveKit (Tasks 12+ in follo
 ### Task 15 — Avatar service health app: idle loop MJPEG/LiveKit stub docs
 
 **Domain:** D-docker (services/avatar only)  
-**Files:** `services/avatar/health_app.py` expand to simple idle JPEG loop endpoint + README LiveKit publish steps
+**Files:** `services/product/avatar_service/health_app.py` expand to simple idle JPEG loop endpoint + README LiveKit publish steps
 
 - Keep lightweight (no real LiveKit SDK required in image if not installed)
 - `/health`, `/idle/frame.jpg` optional

@@ -5,10 +5,10 @@
 ### Code quality
 - [ ] `uv lock --check` passes.
 - [ ] Production-source Ruff gate passes.
-- [ ] `uv run pytest core/tests/ -q` passes (offline suite, including LiveKit registry lifecycle).
+- [ ] `uv run pytest tests/ci/ -q` passes (repository-tool suite).
 - [ ] Provider import checks pass without network access.
 - [ ] Terraform format and global/DEV/PROD `init -backend=false`/`validate` pass.
-- [ ] Provider imports resolve through `providers/liveavatar_cloud/`.
+- [ ] Provider imports resolve through `backend.application.clients.avatar.liveavatar_sdk`.
 
 ### Auth check
 - [ ] `APP_ENV=prod` + no tokens rejects with 401

@@ -6,37 +6,33 @@
 ## Two planes
 
 ```text
-CONTROL: browser -- HTTP /api/v1 + WS --> core FastAPI --> renderer control API
+CONTROL: browser -- HTTP /api/v1 + WS --> backend_service FastAPI --> renderer control API
 MEDIA:   renderer -- video --> LiveKit --> browser
                           ^
                     backend PCM audio when LIVEKIT_PUBLISH=1
 ```
 
-`core/` owns session lifecycle, Director decisions, API auth, persistence, and
-control events. Renderers and LiveKit carry media directly to the browser;
-frames do not transit FastAPI. Browser responses carry only a LiveKit URL and
-room-join token, never server credentials.
+`services/product/backend_service/src/backend/` is the canonical control-plane
+package for session lifecycle, Director decisions, API auth, persistence, and
+control events. Renderers and
+LiveKit carry media directly to the browser; frames do not transit FastAPI.
+Browser responses carry only a LiveKit URL and room-join token, never server credentials.
 
 ## Current modules
 
 ```text
-core/
-├── api/                auth, limits, v1 routes and WebSocket hubs
-├── db/                 optional Postgres runtime store and schema
-├── director/           FSM, clustering, run-plan cursor, coordinator
-├── llm/                local and openai_compat engine adapters
-├── render/             cloud, mock, remote avatar, self-host seam, orchestrator
-├── stream/             text chunker
-├── tts/                tone, local, and remote_http adapters
-├── livekit_publish.py  per-session backend PCM publisher registry
-├── livekit_tokens.py   room-join token minting
-├── server.py           app factory, readiness, lifespan cleanup
-└── store.py            memory/Redis session metadata store
+services/product/backend_service/src/backend/  canonical FastAPI entrypoint
+services/product/llm_service/src/llm/          self-host LLM engines
+services/product/tts_service/src/tts/          self-host TTS engines
+services/product/avatar_service/src/avatar/    self-host avatar engines
+services/platform/                             LiveKit, LMCache, Postgres, Redis runtime assets
+workbench/                                     developer console (Vite/TS) for canonical /api/v1
 ```
 
-`providers/liveavatar_cloud/` is an independent provider SDK. Its standalone
-Colab service keeps a smaller `/api` contract; `frontend/lite.html` targets
-`core.server` and appends `/api/v1` to the origin.
+The LiveAvatar cloud SDK is backend-owned under
+`services/product/backend_service/src/backend/application/clients/avatar/liveavatar_sdk/`;
+the canonical `backend.main` application serves `/api/v1` to the workbench
+developer console.
 
 ## Lifecycle
 

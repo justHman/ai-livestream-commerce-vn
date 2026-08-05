@@ -3,10 +3,10 @@
 
 terraform {
   backend "s3" {
-    bucket         = "ai-livestream-tfstate-191918535424"
-    key            = "prod/terraform.tfstate"
-    region         = "ap-northeast-2"
-    dynamodb_table = "ai-livestream-tf-lock"
-    encrypt        = true
+    bucket       = "ai-livestream-tfstate-191918535424"
+    key          = "prod/terraform.tfstate"
+    region       = "ap-northeast-2"
+    encrypt      = true
+    use_lockfile = true
   }
 }

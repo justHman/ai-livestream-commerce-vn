@@ -1,0 +1,8 @@
+# Repository-wide shared Ruff policy. Services and root tooling all resolve
+# this file (no per-service ruff config), keeping style consistent without a
+# shared uv workspace lock.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

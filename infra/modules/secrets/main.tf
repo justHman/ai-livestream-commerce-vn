@@ -17,10 +17,10 @@ resource "aws_ssm_parameter" "this" {
   name        = "${local.prefix}/${each.key}"
   description = "SecureString placeholder for ${each.key} (${var.env})"
   type        = "SecureString"
-  # Initial token values are passed by environment; legacy placeholders retain stable addresses.
-  value = each.key == "backend/api_token" ? var.backend_api_token : (
-    each.key == "admin/api_token" ? var.admin_api_token : each.value
-  )
+  # Values provisioned out-of-band from protected GitHub Environment secrets
+  # (aws ssm put-parameter --overwrite). Terraform only creates/keeps the
+  # parameter name and never holds plaintext values.
+  value     = each.value
   overwrite = true
   tier      = "Standard"
 

@@ -1,0 +1,77 @@
+{
+  "report_version": "1.0.0",
+  "commit": "fb1e5b5",
+  "hardware": "Windows AMD64 Intel64 Family 6 Model 141 Stepping 1, GenuineIntel",
+  "python": "3.10.11",
+  "embedder": "hashing-fallback",
+  "corpus": {
+    "comments": 12,
+    "products": 2
+  },
+  "metrics": [
+    {
+      "name": "clustering",
+      "rounds": 200,
+      "ops_per_sec": 6103.6,
+      "p50_ms": 0.1622,
+      "p95_ms": 0.1697,
+      "total_sec": 0.0328
+    },
+    {
+      "name": "routing",
+      "rounds": 200,
+      "ops_per_sec": 7134.0,
+      "p50_ms": 0.1372,
+      "p95_ms": 0.1511,
+      "total_sec": 0.028
+    },
+    {
+      "name": "embedding",
+      "rounds": 200,
+      "ops_per_sec": 2502.4,
+      "p50_ms": 0.3732,
+      "p95_ms": 0.5954,
+      "total_sec": 0.0799
+    },
+    {
+      "name": "cosine",
+      "rounds": 200,
+      "ops_per_sec": 2672.8,
+      "p50_ms": 0.3624,
+      "p95_ms": 0.464,
+      "total_sec": 0.0748
+    },
+    {
+      "name": "field_routing",
+      "rounds": 200,
+      "ops_per_sec": 20293.4,
+      "p50_ms": 0.0412,
+      "p95_ms": 0.0832,
+      "total_sec": 0.0099
+    },
+    {
+      "name": "pivot_gate",
+      "rounds": 200,
+      "ops_per_sec": 718132.9,
+      "p50_ms": 0.0012,
+      "p95_ms": 0.0013,
+      "total_sec": 0.0003
+    },
+    {
+      "name": "queue_drain",
+      "rounds": 200,
+      "ops_per_sec": 106723.6,
+      "p50_ms": 0.0091,
+      "p95_ms": 0.0134,
+      "total_sec": 0.0019
+    },
+    {
+      "name": "decision_cycle",
+      "rounds": 100,
+      "ops_per_sec": 4172.8,
+      "p50_ms": 0.2309,
+      "p95_ms": 0.2936,
+      "total_sec": 0.024
+    }
+  ]
+}

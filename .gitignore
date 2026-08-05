@@ -1,74 +1,85 @@
-# ── Secrets (NEVER commit) ───────────────────────────────────
-.env
-*.env
+
+!*.tfvars.example
 !.env.example
-
-# ── Python ───────────────────────────────────────────────────
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.ipynb_checkpoints/
-.venv/
-venv/
-
-# ── Model weights / heavy artifacts (download on Colab, don't commit) ──
-weights/
-*.gguf
-*.safetensors
-*.bin
-*.pt
-*.pth
-*.onnx
-model/
-data/
-sources/
-
-# ── Runtime / outputs ────────────────────────────────────────
-results/
-*.log
-*.wav
-*.mp4
-tmp/
-.runtime/
-
-# ── OS / editor / tooling ────────────────────────────────────
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-codegraph/
-.codegraph/
-.codegraph-version.tmp
-.superpowers/
-.claude/worktrees/
-
-# ── Claude Code local override (per-developer, never commit) ──
-CLAUDE.local.md
-
-# ── claude-mem MCP context artifacts (auto-generated, never commit) ──
+!/CLAUDE.md
 # Keep root CLAUDE.md; ignore claude-mem's per-folder copies everywhere.
 # The root CLAUDE.md is the only one committed; every nested CLAUDE.md is
 # an auto-generated claude-mem artifact.
-**/CLAUDE.md
-!/CLAUDE.md
-
+# ── Claude Code local override (per-developer, never commit) ──
+# ── Model weights / heavy artifacts (download on Colab, don't commit) ──
+# ── Node / Workbench ─────────────────────────────────────────
+# ── OS / editor / tooling ────────────────────────────────────
+# ── Python ───────────────────────────────────────────────────
+# ── Runtime / outputs ────────────────────────────────────────
+# ── Secrets (NEVER commit) ───────────────────────────────────
 # ── Terraform ────────────────────────────────────────────────
+# ── claude-mem MCP context artifacts (auto-generated, never commit) ──
 **/.terraform/
-.tf-plugin-cache/
+**/CLAUDE.md
+*.bin
+*.egg-info/
+*.env
+*.gguf
+*.log
+*.mp4
+*.onnx
+*.pt
+*.pth
+*.py[cod]
+*.safetensors
+*.tfplan
 *.tfstate
 *.tfstate.*
-crash.log
-crash.*.log
-override.tf
-override.tf.json
+*.tfvars
+*.tfvars.local
+*.tsbuildinfo
+*.wav
 *_override.tf
 *_override.tf.json
+.DS_Store
+.claude/worktrees/
+.codegraph-version.tmp
+.codegraph/
+.coverage
+.env
+.idea/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.runtime/
+.superpowers/
 .terraformrc
-terraform.rc
-*.tfvars
-!*.tfvars.example
-*.tfvars.local
-*.tfplan
-infra/modules/*/.terraform.lock.hcl
+.tf-plugin-cache/
+.venv/
+.vscode/
+CLAUDE.local.md
+Thumbs.db
+__pycache__/
+build/
+codegraph/
+crash.*.log
+crash.log
+data/
+dist/
+htmlcov/
 infra/modules/**/.terraform.lock.hcl
+infra/modules/*/.terraform.lock.hcl
+model/
+models/
+node_modules/
+override.tf
+override.tf.json
+playwright-report/
+results/
+services/platform/*.log
+services/product/*.log
+sources/
+terraform.rc
+test-results/
+tmp/
+venv/
+weights/
+workbench/dist/
+workbench/node_modules/
+workbench/playwright-report/
+workbench/test-results/

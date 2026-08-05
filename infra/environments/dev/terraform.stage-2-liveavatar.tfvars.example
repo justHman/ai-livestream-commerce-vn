@@ -5,10 +5,10 @@
 # LLM gpu_memory_utilization=0.55 / TTS=0.35 / 0.10 buffer.
 #
 # MONEY-SAFE BOOT: copy this to terraform.tfvars, then Phase 0 apply with
-# desired_llm_tts=0 (edit the value below), verify stack healthy at zero cost,
-# complete offline setup (GitHub Actions SHA images, S3 weights seed, SSM
-# secrets), then Phase 1 apply with desired_llm_tts=1. See
-# docs/runbook-live-smoke-and-teardown.md.
+# desired_llm = 0 / desired_tts = 0 (edit the values below), verify stack
+# healthy at zero cost, complete offline setup (GitHub Actions SHA images,
+# S3 weights seed, SSM secrets), then Phase 1 apply with desired_llm = 0 /
+# desired_tts = 0. See docs/runbook-live-smoke-and-teardown.md.
 #
 # LiveAvatar sandbox-first: LIVEAVATAR_SANDBOX_AVATAR_ID
 # (dd73ea75-1218-4ef3-92ce-606d5f7fbc0a, free ~1-min, no credits) for first
@@ -32,26 +32,22 @@ certificate_arn      = ""
 db_instance_class       = "db.t4g.medium"
 db_allocated_storage_gb = 100
 redis_node_type         = "cache.t4g.small"
-lmcache_enabled         = false
 
-# Money-safe boot Phase 1 values. Phase 0: set desired_llm_tts=0 first.
+# Money-safe boot Phase 1 values. Phase 0: set desired_llm = 0 / desired_tts = 0.
 desired_backend     = 1
-desired_llm_tts     = 1
+desired_llm     = 0
+desired_tts     = 0
 desired_avatar      = 0
-desired_livekit     = 0
-desired_lmcache     = 0
-# Engine box (g6) capacity providers must exist for desired_llm_tts>0.
+# Engine box (g6) capacity providers must exist for desired_llm + desired_tts > 0.
 create_ec2_capacity = true
 spot_capacity_percentage = 100
 
 # Images: SHA-tagged from GitHub Actions (replace <sha> with the build SHA).
 # No :latest, no hand-push on billable stages. ARM ↔ arm64, GPU ↔ amd64.
-image_backend = "imjusthman/ai-live-backend:dev-<sha>"
-image_llm     = "imjusthman/ai-live-llm:dev-<sha>"
-image_tts     = "imjusthman/ai-live-tts:dev-<sha>"
-image_avatar  = "imjusthman/ai-live-avatar:dev-<sha>"
-image_lmcache = "imjusthman/ai-live-lmcache:dev-<sha>"
-image_livekit = "imjusthman/ai-live-livekit:dev-<sha>"
+image_backend = "imjusthman/ai-live-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_llm = "imjusthman/ai-live-llm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_tts = "imjusthman/ai-live-tts@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_avatar = "imjusthman/ai-live-avatar@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 # Tokens: set via TF_VAR_backend_api_token / TF_VAR_admin_api_token (min 32 chars).
 # db_password: set via TF_VAR_db_password (8-128 chars)
@@ -64,11 +60,9 @@ debug_enabled     = true
 session_store     = "redis"
 redis_url         = ""
 app_env           = "dev"
-render_backend    = "cloud_liveavatar"
-llm_engine        = "vllm"
-llm_base_url      = ""
-tts_engine        = "vieneu"
-tts_base_url      = ""
+avatar_adapter  = "liveavatar"
+llm_adapter     = "openai_compatible"
+tts_adapter     = "self_hosted"
 
 alert_email           = ""
 enable_billing_alarms = false

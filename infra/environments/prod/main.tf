@@ -46,11 +46,9 @@ module "storage" {
 module "secrets" {
   source = "../../modules/secrets"
 
-  env               = var.env
-  project           = var.project
-  tags              = var.tags
-  backend_api_token = var.backend_api_token
-  admin_api_token   = var.admin_api_token
+  env     = var.env
+  project = var.project
+  tags    = var.tags
 }
 
 module "database" {
@@ -59,6 +57,8 @@ module "database" {
   env                  = var.env
   project              = var.project
   subnet_ids           = local.public_subnet_ids
+  create_rds           = var.create_rds
+  create_redis         = var.create_redis
   rds_sg_id            = module.security.sg_rds_id
   redis_sg_id          = module.security.sg_redis_id
   db_password          = var.db_password
@@ -89,24 +89,23 @@ module "loadbalancer" {
 module "compute" {
   source = "../../modules/compute"
 
-  env             = var.env
-  project         = var.project
-  vpc_id          = module.network.vpc_id
-  subnet_ids      = module.network.public_subnet_ids
-  sg_map          = module.security.sg_map
-  image_backend   = var.image_backend
-  image_llm       = var.image_llm
-  image_tts       = var.image_tts
-  image_avatar    = var.image_avatar
-  image_lmcache   = var.image_lmcache
-  image_livekit   = var.image_livekit
-  lmcache_enabled = var.lmcache_enabled
-  desired_backend = var.desired_backend
-  desired_llm_tts = var.desired_llm_tts
-  desired_avatar  = var.desired_avatar
-  desired_livekit = var.desired_livekit
-  desired_lmcache = var.desired_lmcache
-  weights_s3_uri  = module.storage.weights_uri
+  env                       = var.env
+  project                   = var.project
+  vpc_id                    = module.network.vpc_id
+  subnet_ids                = module.network.public_subnet_ids
+  sg_map                    = module.security.sg_map
+  image_backend             = var.image_backend
+  image_llm                 = var.image_llm
+  image_tts                 = var.image_tts
+  image_avatar              = var.image_avatar
+  image_lmcache             = var.image_lmcache
+  lmcache_enabled           = var.lmcache_enabled
+  desired_backend           = var.desired_backend
+  backend_capacity_provider = var.backend_capacity_provider
+  desired_llm               = var.desired_llm
+  desired_tts               = var.desired_tts
+  desired_avatar            = var.desired_avatar
+  weights_s3_uri            = module.storage.weights_uri
   secrets_arns = merge(module.secrets.parameter_arns, var.enable_database_url ? {
     "backend/database_url" = var.database_url_parameter_arn
   } : {})
@@ -118,12 +117,13 @@ module "compute" {
   cors_origins             = var.cors_origins
   debug_enabled            = var.debug_enabled
   session_store            = var.session_store
-  redis_url                = var.redis_url != "" ? var.redis_url : "redis://${module.database.redis_connection_string}"
+  redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? "redis://${module.database.redis_connection_string}" : "")
   app_env                  = var.app_env
-  render_backend           = var.render_backend
-  llm_engine               = var.llm_engine
+  avatar_adapter           = var.avatar_adapter
+  livekit_url              = var.livekit_url
+  llm_adapter              = var.llm_adapter
   llm_base_url             = var.llm_base_url
-  tts_engine               = var.tts_engine
+  tts_adapter              = var.tts_adapter
   tts_base_url             = var.tts_base_url
   tags                     = var.tags
 }

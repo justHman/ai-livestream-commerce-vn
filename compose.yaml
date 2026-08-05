@@ -1,0 +1,62 @@
+# Root local-only compose (OpenSpec 1.76).
+# Profiles: `data` = official Postgres + Redis; `media` = pinned local LiveKit
+# wrapper. No staging/production topology, no cloud credentials, no GPU workload.
+# Secrets are injected via local env; LiveKit fails loud when creds are absent.
+
+name: ai-live-local
+
+services:
+  postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    profiles: ["data"]
+    environment:
+      POSTGRES_DB: ailive
+      POSTGRES_USER: ailive
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ailive -d ailive"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.2.4-alpine@sha256:c8bb255c3559b3e458766db810aa7b3c7af1235b204cfdb304e79ff388fe1a5a
+    profiles: ["data"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  livekit:
+    image: imjusthman/ai-live-livekit:dev
+    profiles: ["media"]
+    build:
+      context: .
+      dockerfile: services/platform/livekit/Dockerfile
+    environment:
+      # Empty values are rejected by the wrapper entrypoint (fail-loud at
+      # startup — no empty-keys container); `:-` keeps `docker compose config`
+      # working for the data profile without secrets.
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7880"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,52 +1,55 @@
+# Repository-root tool-only project. NOT built or installed as a package and
+# NOT a runtime input to any product image (tool.uv.package = false). Holds
+# only cross-service E2E, sandbox, contract-generation, and repository-tool
+# dependencies; product services resolve from their own pyproject.toml +
+# uv.lock (see services/product/*_service/).
 [project]
-name = "ai-livestream-backend"
-version = "0.1.0"
-description = "VN AI livestream commerce backend (FastAPI core package)"
-readme = "README.md"
+name = "ai-livestream-repo-tools"
+version = "0.0.0"
+description = "Repository-root tool-only project (E2E, sandbox, contract, repo tools)"
 requires-python = ">=3.11"
-dependencies = [
-  "fastapi",
-  "uvicorn[standard]",
-  "pydantic",
-  "httpx",
-  "python-multipart",
-  "python-dotenv",
-  "redis",
-  "PyJWT",
-  # Runtime deps imported by core/ (mock render + TTS base use numpy/Pillow).
-  "numpy",
-  "Pillow",
-  # providers/liveavatar_cloud SDK (cloud render backend).
-  "requests",
-  "websocket-client",
-]
+dependencies = []
 
-[project.optional-dependencies]
-test = [
-  "pytest",
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
   "pytest-asyncio",
   "pytest-timeout",
   "async_timeout",
+  # Static GitHub Actions workflow validation parses YAML.
+  "PyYAML>=6.0",
 ]
-livekit = ["livekit"]
-postgres = ["asyncpg"]
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-include = ["core*", "providers*"]
-exclude = ["core.tests*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["core/tests"]
-pythonpath = ["."]
+testpaths = ["tests/ci"]
+# Cross-service E2E and sandbox are explicit-only (see scripts/ci/test_matrix.json);
+# never collected by ordinary runs.
+norecursedirs = [
+  "tests/e2e",
+  "tests/sandbox",
+  "archived",
+  ".venv",
+  "node_modules",
+]
+pythonpath = [
+  ".",
+  "services/product/backend_service/src",
+  "services/product/llm_service/src",
+  "services/product/tts_service/src",
+  "services/product/avatar_service/src",
+]
 filterwarnings = [
   "ignore::DeprecationWarning:httpx.*",
   "ignore::DeprecationWarning:starlette.*",
 ]
+
+[tool.coverage.report]
+branch = true
+fail_under = 80
 
 [tool.ruff]
 line-length = 100

@@ -30,18 +30,6 @@ variable "parameters" {
   }
 }
 
-variable "backend_api_token" {
-  description = "Initial backend API token"
-  type        = string
-  sensitive   = true
-}
-
-variable "admin_api_token" {
-  description = "Initial admin API token"
-  type        = string
-  sensitive   = true
-}
-
 variable "ignore_value_changes" {
   description = "Ignore value drift after out-of-band put-parameter"
   type        = bool

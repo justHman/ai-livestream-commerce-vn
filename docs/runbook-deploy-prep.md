@@ -24,8 +24,8 @@ for the mandatory loop and the money-safe boot procedure.
 | Stage | Profile (committed example) | Engines | Capacity | LiveKit |
 |---|---|---|---|---|
 | 1 Mock | `terraform.tier-s.tfvars.example` | `mock` / `none` / `tone` | backend=1, GPU/optional=0 | off |
-| 2 LiveAvatar cloud | `terraform.stage-2-liveavatar.tfvars.example` (to create) | `cloud_liveavatar` + real LLM (vLLM Qwen3.5-4B-AWQ) + real TTS (vllm-omni VieNeu) | backend=1; `desired_llm_tts=1` Spot g6.xlarge (L4 24GB, LLM gpu_mem 0.55 / TTS 0.35 / buffer 0.10); avatar=0 | **off** (`desired_livekit=0`) |
-| 3 Self-host avatar | `terraform.stage-3-selfhost.tfvars.example` (to create) | `self_host_avatarforcing_half` + same LLM/TTS as Stage 2 | backend=1; `desired_llm_tts=1` Spot g6; `desired_avatar=1` Spot g4dn.xlarge; `create_ec2_capacity=true` | **on** (`desired_livekit=1`, `LIVEKIT_PUBLISH=1`) |
+| 2 LiveAvatar cloud | `terraform.stage-2-liveavatar.tfvars.example` (to create) | `cloud_liveavatar` + real LLM (vLLM Qwen3.5-4B-AWQ) + real TTS (vllm-omni VieNeu) | backend=1; `desired_llm/desired_tts=1` Spot g6.xlarge (L4 24GB, LLM gpu_mem 0.55 / TTS 0.35 / buffer 0.10); avatar=0 | **off** (`desired_livekit=0`) |
+| 3 Self-host avatar | `terraform.stage-3-selfhost.tfvars.example` (to create) | `self_host_avatarforcing_half` + same LLM/TTS as Stage 2 | backend=1; `desired_llm/desired_tts=1` Spot g6; `desired_avatar=1` Spot g4dn.xlarge; `create_ec2_capacity=true` | **on** (`desired_livekit=1`, `LIVEKIT_PUBLISH=1`) |
 
 Stage 2 avatar is LiveAvatar cloud → video flows cloud → browser directly, no
 SFU. Stage 3 is the first stage that needs LiveKit (self-host avatar publishes
@@ -86,7 +86,7 @@ real credit-charged avatar only for the formal benchmark.
 | Session metadata | `memory` | `redis` after its deployment is tested |
 | Runtime Postgres | omitted unless SSM DSN ARN configured | `DATABASE_URL` from SSM |
 | LiveKit publisher | `0` | `1` only in Stage 3 (self-host avatar through SFU) |
-| GPU/media services | desired count `0` | `desired_llm_tts=1` Stage 2/3, `desired_avatar=1` Stage 3 |
+| GPU/media services | desired count `0` | `desired_llm/desired_tts=1` Stage 2/3, `desired_avatar=1` Stage 3 |
 
 The backend image reads `BACKEND_API_TOKEN`, `ADMIN_API_TOKEN`, and optionally
 `DATABASE_URL` from SSM. The Terraform module deliberately sets
@@ -97,8 +97,8 @@ real media verification.
 
 ```powershell
 uv lock --check
-uv run pytest core/tests/ -q
-uvx ruff check core/api core/db core/debug core/director core/llm core/render core/schemas core/stream core/tts core/config.py core/engine_manager.py core/livekit_publish.py core/livekit_tokens.py core/pipecat_bridge.py core/server.py core/store.py providers scripts/bench_api.py scripts/upload_weights_s3.py
+uv run pytest tests/ci/ -q
+uvx ruff check services/product/backend_service/src services/product/llm_service/src services/product/tts_service/src services/product/avatar_service/src services/product/*_service/scripts benchmarks/api/latency.py scripts/model_assets/upload.py
 terraform fmt -check -recursive infra
 terraform -chdir=infra/environments/global init -backend=false
 terraform -chdir=infra/environments/global validate
@@ -112,12 +112,12 @@ terraform -chdir=infra/environments/prod validate
 
 | Image | Dockerfile | Platform |
 |---|---|---|
-| `imjusthman/ai-live-backend` | `services/backend/Dockerfile` | `linux/arm64` |
-| `imjusthman/ai-live-llm` | `services/llm/Dockerfile` | `linux/amd64` |
-| `imjusthman/ai-live-tts` | `services/tts/Dockerfile` | `linux/amd64` |
-| `imjusthman/ai-live-avatar` | `services/avatar/Dockerfile` | `linux/amd64` |
-| `imjusthman/ai-live-livekit` | `services/livekit/Dockerfile` | `linux/arm64` |
-| `imjusthman/ai-live-lmcache` | `services/lmcache/Dockerfile` | `linux/arm64` |
+| `imjusthman/ai-live-backend` | `services/product/backend_service/Dockerfile` | `linux/arm64` |
+| `imjusthman/ai-live-llm` | `services/product/llm_service/Dockerfile` | `linux/amd64` |
+| `imjusthman/ai-live-tts` | `services/product/tts_service/Dockerfile` | `linux/amd64` |
+| `imjusthman/ai-live-avatar` | `services/product/avatar_service/Dockerfile` | `linux/amd64` |
+| `imjusthman/ai-live-livekit` | `services/platform/livekit/Dockerfile` | `linux/arm64` |
+| `imjusthman/ai-live-lmcache` | `services/platform/lmcache/Dockerfile` | `linux/arm64` |
 
 DEV builds only backend when deployed Tier S outputs have zero effective optional
 service counts. PROD tag push builds six immutable images but does not deploy.

@@ -212,7 +212,7 @@ REST = default (no `rest/` prefix). WS + media prefixed (different protocol, dif
 6. Idle loop pre-render + push into LiveKit VideoSource.
 7. Avatar `/avatars` CRUD + idle loop generation (mock PIL â†’ AvatarForcing/EchoMimic/EchoAvatar Phase F).
 8. Backend API: rename endpoints `/lite/*`â†’`/sessions/*`, `/ws/*`â†’`/api/v1/ws/*`, `/mock/*`â†’`/api/v1/media/*`, add `/avatars/*`, `/engines/llm`, `/admin/*`.
-9. Runtime data layer: `core/store/postgres.py` (asyncpg + pgvector), `core/store/redis.py` (ChatQueue Stream, locks, LMCache backend), LISTEN/NOTIFY.
+9. Runtime data layer: canonical backend `db/` package (asyncpg + pgvector, session/Redis adapters, LMCache backend), LISTEN/NOTIFY.
 10. Service Auto Scaling: `num_requests_waiting` + `gpu_cache_usage_perc` triggers, MaxCapacity/MaxSize, Billing Alarm.
 11. GPU sharing: `NVIDIA_VISIBLE_DEVICES` + 1 container declares GPU resource.
 12. LMCache integration (task #47).

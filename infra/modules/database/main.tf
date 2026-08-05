@@ -16,6 +16,8 @@ locals {
 # ---------------------------------------------------------------------------
 
 resource "aws_db_subnet_group" "this" {
+  count = var.create_rds ? 1 : 0
+
   name       = "${local.name_prefix}-db"
   subnet_ids = var.subnet_ids
 
@@ -25,6 +27,8 @@ resource "aws_db_subnet_group" "this" {
 }
 
 resource "aws_db_parameter_group" "postgres16" {
+  count = var.create_rds ? 1 : 0
+
   name   = "${local.name_prefix}-pg16"
   family = "postgres16"
 
@@ -34,6 +38,8 @@ resource "aws_db_parameter_group" "postgres16" {
 }
 
 resource "aws_db_instance" "postgres" {
+  count = var.create_rds ? 1 : 0
+
   identifier = "${local.name_prefix}-postgres"
 
   engine         = "postgres"
@@ -49,12 +55,12 @@ resource "aws_db_instance" "postgres" {
   storage_type          = "gp3"
   storage_encrypted     = var.storage_encrypted
 
-  db_subnet_group_name   = aws_db_subnet_group.this.name
+  db_subnet_group_name   = aws_db_subnet_group.this[0].name
   vpc_security_group_ids = [var.rds_sg_id]
   publicly_accessible    = var.publicly_accessible
   multi_az               = var.multi_az
 
-  parameter_group_name = aws_db_parameter_group.postgres16.name
+  parameter_group_name = aws_db_parameter_group.postgres16[0].name
 
   backup_retention_period   = var.backup_retention_days
   deletion_protection       = var.deletion_protection
@@ -79,6 +85,8 @@ resource "aws_db_instance" "postgres" {
 # ---------------------------------------------------------------------------
 
 resource "aws_elasticache_subnet_group" "this" {
+  count = var.create_redis ? 1 : 0
+
   name       = "${local.name_prefix}-redis"
   subnet_ids = var.subnet_ids
 
@@ -88,6 +96,8 @@ resource "aws_elasticache_subnet_group" "this" {
 }
 
 resource "aws_elasticache_parameter_group" "redis7" {
+  count = var.create_redis ? 1 : 0
+
   name   = "${local.name_prefix}-redis7"
   family = "redis7"
 
@@ -97,14 +107,16 @@ resource "aws_elasticache_parameter_group" "redis7" {
 }
 
 resource "aws_elasticache_cluster" "redis" {
+  count = var.create_redis ? 1 : 0
+
   cluster_id           = "${local.name_prefix}-redis"
   engine               = "redis"
   engine_version       = var.redis_engine_version
   node_type            = var.redis_node_type
   num_cache_nodes      = 1
   port                 = var.redis_port
-  parameter_group_name = aws_elasticache_parameter_group.redis7.name
-  subnet_group_name    = aws_elasticache_subnet_group.this.name
+  parameter_group_name = aws_elasticache_parameter_group.redis7[0].name
+  subnet_group_name    = aws_elasticache_subnet_group.this[0].name
   security_group_ids   = [var.redis_sg_id]
 
   # AUTH/transit encryption require aws_elasticache_replication_group, not cluster.

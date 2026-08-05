@@ -1,15 +1,14 @@
 # ai-livestream-commerce-vn — `implementations/`
 
-VN AI live-commerce host backend: FastAPI control plane + LiveKit media plane. Two planes split — control (this repo, `core/`) vs media (renderer → LiveKit → browser directly; frames never transit this backend).
+VN AI live-commerce host backend: FastAPI control plane + LiveKit media plane. Two planes split — control (this repo, `services/product/backend_service/`) vs media (renderer → LiveKit → browser directly; frames never transit this backend).
 
 ## Commands
 
 ```bash
 uv sync                                    # install backend deps from uv.lock
-uv run pytest core/tests/ -q               # offline test suite (mock/none/tone)
-uv run pytest core/tests/test_app_factory.py -q   # single file
-uv run python -m core.tests.v1_smoke_test  # end-to-end smoke vs LiveAvatar sandbox
-uv run uvicorn core.server:app --port 8800 # run backend (python -m core.server also works)
+uv run pytest tests/ci/ -q               # repository-tool tests
+uv run --project services/product/backend_service pytest tests/unit/ -q   # backend unit tests
+uv run --project services/product/backend_service uvicorn backend.main:app --port 8800 # canonical backend entrypoint
 uvx ruff check . && uvx ruff format .      # lint + format
 ```
 
@@ -17,7 +16,7 @@ CI offline env: `RENDER_BACKEND=mock LLM_ENGINE=none TTS_ENGINE=tone DIRECTOR_EN
 
 ## Architecture
 
-- **Control plane** = `core/` FastAPI: `/api/v1/*` (REST + WS), session lifecycle, Director (cluster viewer comments → decide → speak). JSON + WS only.
+- **Control plane** = `services/product/backend_service/` FastAPI: `/api/v1/*` (REST + WS), session lifecycle, Director (cluster viewer comments → decide → speak). JSON + WS only.
 - **Media plane** = avatar video flows renderer → LiveKit → browser directly. Browser gets only `livekit_url` + `livekit_client_token`; **secrets stay server-side**, never sent to browser.
 - **Engine seams** (env-swappable, same code Colab → AWS): `RENDER_BACKEND` (mock/cloud_liveavatar/self_host_*), `LLM_ENGINE`, `TTS_ENGINE`, `SESSION_STORE` (memory|redis). Director FSM + run-plan cursor + BiEncoder coverage, reactive > proactive per 300ms tick.
 

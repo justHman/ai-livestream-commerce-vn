@@ -1,22 +1,28 @@
-# deploy-prod — build release images on tag push; deploy only from manual confirmation on main.
-# Tag push builds and publishes immutable release images. Manual dispatch from main deploys
-# those pre-built images after verifying all 6 manifests exist. No rebuild on manual dispatch.
+# deploy-prod — SUPERSEDED by release-service.yml (6.4). Triggers DISABLED.
+#
+# This workflow previously built release images on `v*` tag push and deployed
+# them from a manual `workflow_dispatch` confirmation on main. That release
+# path is replaced by release-service.yml (OpenSpec 5.x): service-scoped tags
+# (`<service>-vMAJOR.MINOR.PATCH`), main ancestry + staging evidence gates,
+# protected `production` environment approval, exact-digest promotion, and
+# service-scoped rollback.
+#
+# 6.4 disable record (deliberate, documented, revertible):
+# - `on.push.tags: ["v*"]` removed — a plain v-prefixed tag is no longer a
+#   release trigger (release-service.yml owns tag-triggered releases).
+# - `on.workflow_dispatch` removed — the manual confirmation deploy path is
+#   superseded by the protected production environment + approval in
+#   release-service.yml; a stale mutable-tag manual deploy would bypass the
+#   staging-evidence and exact-digest gates.
+# - The file is retained (not deleted) so the old behavior is one
+#   `git revert` away; it has zero live triggers and cannot start.
+#
+# Verified before disabling (6.4 precondition): release-service.yml dry-runs
+# pass (5.1-5.5, simulated in scripts/ci/simulate_release_path.py), deploy-prod
+# has ZERO runs in remote history, and no repo path references it as active.
 name: deploy-prod
 
-on:
-  push:
-    tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      confirm_deploy:
-        description: "Deploy this validated release tag"
-        required: true
-        type: boolean
-        default: false
-      release_tag:
-        description: "Existing v-prefixed tag to deploy (vMAJOR.MINOR.PATCH)"
-        required: true
-        type: string
+on: {}
 
 permissions:
   id-token: write
@@ -25,7 +31,6 @@ permissions:
 env:
   AWS_REGION: ap-northeast-2
   STATE_BUCKET: ai-livestream-tfstate-191918535424
-  STATE_LOCK_TABLE: ai-livestream-tf-lock
 
 concurrency:
   group: deploy-prod
@@ -70,29 +75,25 @@ jobs:
       matrix:
         include:
           - svc: backend
+            dockerfile: services/product/backend_service/Dockerfile
             image: imjusthman/ai-live-backend
             platform: linux/arm64
             needs_qemu: true
           - svc: llm
+            dockerfile: services/product/llm_service/Dockerfile
             image: imjusthman/ai-live-llm
             platform: linux/amd64
             needs_qemu: false
           - svc: tts
+            dockerfile: services/product/tts_service/Dockerfile
             image: imjusthman/ai-live-tts
             platform: linux/amd64
             needs_qemu: false
           - svc: avatar
+            dockerfile: services/product/avatar_service/Dockerfile
             image: imjusthman/ai-live-avatar
             platform: linux/amd64
             needs_qemu: false
-          - svc: lmcache
-            image: imjusthman/ai-live-lmcache
-            platform: linux/arm64
-            needs_qemu: true
-          - svc: livekit
-            image: imjusthman/ai-live-livekit
-            platform: linux/arm64
-            needs_qemu: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,7 +133,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/${{ matrix.svc }}/Dockerfile
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ matrix.image }}:${{ needs.resolve-tag.outputs.tag }}
@@ -176,7 +177,7 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Verify all 6 release image manifests exist
+      - name: Verify all 4 release image manifests exist
         env:
           RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
         run: |
@@ -185,9 +186,7 @@ jobs:
             imjusthman/ai-live-backend \
             imjusthman/ai-live-llm \
             imjusthman/ai-live-tts \
-            imjusthman/ai-live-avatar \
-            imjusthman/ai-live-lmcache \
-            imjusthman/ai-live-livekit; do
+            imjusthman/ai-live-avatar; do
             docker buildx imagetools inspect "$image:$RELEASE_TAG" >/dev/null || {
               echo "Image $image:$RELEASE_TAG manifest not found." >&2
               exit 1
@@ -205,16 +204,14 @@ jobs:
         run: |
           set -euo pipefail
           aws s3api head-bucket --bucket "$STATE_BUCKET"
-          aws dynamodb describe-table --table-name "$STATE_LOCK_TABLE" >/dev/null
           terraform -chdir=infra/environments/prod init -input=false
           output=$(terraform -chdir=infra/environments/prod output -json)
           cluster=$(jq -r '.ecs_cluster_name.value // empty' <<<"$output")
           backend_svc=$(jq -r '.ecs_service_names.value.backend // empty' <<<"$output")
           backend_tg=$(jq -r '.backend_target_group_arn.value // empty' <<<"$output")
-          llm_tts_svc=$(jq -r '.ecs_service_names.value.llm_tts // empty' <<<"$output")
+          llm_svc=$(jq -r '.ecs_service_names.value.llm // empty' <<<"$output")
+          tts_svc=$(jq -r '.ecs_service_names.value.tts // empty' <<<"$output")
           avatar_svc=$(jq -r '.ecs_service_names.value.avatar // empty' <<<"$output")
-          livekit_svc=$(jq -r '.ecs_service_names.value.livekit // empty' <<<"$output")
-          lmcache_svc=$(jq -r '.ecs_service_names.value.lmcache // empty' <<<"$output")
           [[ -n "$cluster" && -n "$backend_svc" && -n "$backend_tg" ]] || {
             echo "Terraform outputs incomplete (cluster/backend/target group required)." >&2
             exit 1
@@ -222,19 +219,17 @@ jobs:
           echo "ecs_cluster=$cluster" >> "$GITHUB_OUTPUT"
           echo "backend_service=$backend_svc" >> "$GITHUB_OUTPUT"
           echo "backend_target_group_arn=$backend_tg" >> "$GITHUB_OUTPUT"
-          echo "llm_tts_service=$llm_tts_svc" >> "$GITHUB_OUTPUT"
+          echo "llm_service=$llm_svc" >> "$GITHUB_OUTPUT"
+          echo "tts_service=$tts_svc" >> "$GITHUB_OUTPUT"
           echo "avatar_service=$avatar_svc" >> "$GITHUB_OUTPUT"
-          echo "livekit_service=$livekit_svc" >> "$GITHUB_OUTPUT"
-          echo "lmcache_service=$lmcache_svc" >> "$GITHUB_OUTPUT"
       - name: Deploy services with rollback and smoke
         env:
           RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
           ECS_CLUSTER: ${{ steps.tf.outputs.ecs_cluster }}
           BACKEND_SERVICE: ${{ steps.tf.outputs.backend_service }}
-          LLM_TTS_SERVICE: ${{ steps.tf.outputs.llm_tts_service }}
+          LLM_SERVICE: ${{ steps.tf.outputs.llm_service }}
+          TTS_SERVICE: ${{ steps.tf.outputs.tts_service }}
           AVATAR_SERVICE: ${{ steps.tf.outputs.avatar_service }}
-          LIVEKIT_SERVICE: ${{ steps.tf.outputs.livekit_service }}
-          LMCACHE_SERVICE: ${{ steps.tf.outputs.lmcache_service }}
           BACKEND_TARGET_GROUP: ${{ steps.tf.outputs.backend_target_group_arn }}
         run: |
           set -euo pipefail
@@ -286,17 +281,14 @@ jobs:
               backend)
                 task=$(jq --arg img "imjusthman/ai-live-backend:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="backend" then .image=$img else . end)' <<<"$task")
                 ;;
-              llm-tts)
-                task=$(jq --arg llm "imjusthman/ai-live-llm:$RELEASE_TAG" --arg tts "imjusthman/ai-live-tts:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="llm" then .image=$llm elif .name=="tts" then .image=$tts else . end)' <<<"$task")
+              llm)
+                task=$(jq --arg img "imjusthman/ai-live-llm:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="llm" then .image=$img else . end)' <<<"$task")
+                ;;
+              tts)
+                task=$(jq --arg img "imjusthman/ai-live-tts:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="tts" then .image=$img else . end)' <<<"$task")
                 ;;
               avatar)
                 task=$(jq --arg img "imjusthman/ai-live-avatar:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="avatar" then .image=$img else . end)' <<<"$task")
-                ;;
-              livekit)
-                task=$(jq --arg img "imjusthman/ai-live-livekit:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="livekit" then .image=$img else . end)' <<<"$task")
-                ;;
-              lmcache)
-                task=$(jq --arg img "imjusthman/ai-live-lmcache:$RELEASE_TAG" '.containerDefinitions |= map(if .name=="lmcache" then .image=$img else . end)' <<<"$task")
                 ;;
               *)
                 echo "Unsupported ECS role: $role" >&2
@@ -313,10 +305,9 @@ jobs:
             aws elbv2 describe-target-health --target-group-arn "$BACKEND_TARGET_GROUP" | jq -e '[.TargetHealthDescriptions[].TargetHealth.State] | length > 0 and all(.[]; . == "healthy")' >/dev/null
           }
           deploy_service backend "$BACKEND_SERVICE" mandatory
-          deploy_service llm-tts "$LLM_TTS_SERVICE" optional
+          deploy_service llm "$LLM_SERVICE" optional
+          deploy_service tts "$TTS_SERVICE" optional
           deploy_service avatar "$AVATAR_SERVICE" optional
-          deploy_service livekit "$LIVEKIT_SERVICE" optional
-          deploy_service lmcache "$LMCACHE_SERVICE" optional
           if [[ ${#updated_services[@]} -gt 0 ]]; then
             aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${updated_services[@]}"
           fi

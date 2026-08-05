@@ -1,0 +1,1941 @@
+{
+  "components": {
+    "schemas": {
+      "AvatarCreateReq": {
+        "properties": {
+          "ref_photo_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Photo Url"
+          },
+          "scope": {
+            "default": "half",
+            "enum": [
+              "half",
+              "full"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice"
+          }
+        },
+        "title": "AvatarCreateReq",
+        "type": "object"
+      },
+      "AvatarUpdateReq": {
+        "properties": {
+          "ref_photo_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Photo Url"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "half",
+                  "full"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice"
+          }
+        },
+        "title": "AvatarUpdateReq",
+        "type": "object"
+      },
+      "CommentIn": {
+        "properties": {
+          "t": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "T"
+          },
+          "text": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "CommentIn",
+        "type": "object"
+      },
+      "EngineSwapReq": {
+        "properties": {
+          "device": {
+            "default": "auto",
+            "title": "Device",
+            "type": "string"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "extra": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Extra",
+            "type": "object"
+          },
+          "max_model_len": {
+            "default": 4096,
+            "title": "Max Model Len",
+            "type": "integer"
+          },
+          "max_tokens": {
+            "default": 128,
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "model_path": {
+            "default": "",
+            "title": "Model Path",
+            "type": "string"
+          },
+          "n_ctx": {
+            "default": 4096,
+            "title": "N Ctx",
+            "type": "integer"
+          },
+          "n_gpu_layers": {
+            "default": -1,
+            "title": "N Gpu Layers",
+            "type": "integer"
+          },
+          "quantization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantization"
+          },
+          "ref_audio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Audio"
+          },
+          "sample_rate": {
+            "default": 24000,
+            "title": "Sample Rate",
+            "type": "integer"
+          },
+          "temperature": {
+            "default": 0.7,
+            "title": "Temperature",
+            "type": "number"
+          }
+        },
+        "required": [
+          "engine"
+        ],
+        "title": "EngineSwapReq",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "PathAttachReq": {
+        "properties": {
+          "products": {
+            "items": {
+              "$ref": "#/components/schemas/ProductIn"
+            },
+            "maxItems": 100,
+            "title": "Products",
+            "type": "array"
+          },
+          "runtime_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeConfigReq"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shop_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopProfileIn"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Profile"
+          }
+        },
+        "required": [
+          "products"
+        ],
+        "title": "PathAttachReq",
+        "type": "object"
+      },
+      "PathChatIn": {
+        "properties": {
+          "author": {
+            "default": "viewer",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Author",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "ts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ts"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "PathChatIn",
+        "type": "object"
+      },
+      "PathIngestReq": {
+        "properties": {
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/CommentIn"
+            },
+            "maxItems": 100,
+            "title": "Comments",
+            "type": "array"
+          },
+          "msg_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Msg Rate"
+          },
+          "viewer_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Viewer Count"
+          }
+        },
+        "required": [
+          "comments"
+        ],
+        "title": "PathIngestReq",
+        "type": "object"
+      },
+      "PathRuntimeConfigUpdateReq": {
+        "description": "Runtime config for the canonical path-style /sessions/{id}/config route.\nsession_id comes from the URL, not the body.",
+        "properties": {
+          "answer_cache_variants": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Cache Variants"
+          },
+          "comment_rate": {
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 0.2,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment Rate"
+          },
+          "demand_pivot_enter_share": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Enter Share"
+          },
+          "demand_pivot_exit_share": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Exit Share"
+          },
+          "demand_pivot_min_comments": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Min Comments"
+          },
+          "demand_pivot_score_margin": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Score Margin"
+          },
+          "initial_ingest_mode": {
+            "anyOf": [
+              {
+                "pattern": "^(batch|single)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial Ingest Mode"
+          },
+          "max_qa_clusters_per_window": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Qa Clusters Per Window"
+          },
+          "prepared_turn_depth": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prepared Turn Depth"
+          },
+          "qa_topic_cooldown_sec": {
+            "anyOf": [
+              {
+                "maximum": 3600.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qa Topic Cooldown Sec"
+          },
+          "qa_window_hard_timeout_sec": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 600.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qa Window Hard Timeout Sec"
+          },
+          "transient_retry_count": {
+            "anyOf": [
+              {
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transient Retry Count"
+          }
+        },
+        "title": "PathRuntimeConfigUpdateReq",
+        "type": "object"
+      },
+      "PathSayReq": {
+        "properties": {
+          "generate": {
+            "default": true,
+            "title": "Generate",
+            "type": "boolean"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "PathSayReq",
+        "type": "object"
+      },
+      "PlanCreateReq": {
+        "description": "Optional products/persona for deterministic offline run-plan generation.",
+        "properties": {
+          "persona": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Persona"
+          },
+          "products": {
+            "items": {
+              "$ref": "#/components/schemas/ProductIn"
+            },
+            "maxItems": 100,
+            "title": "Products",
+            "type": "array"
+          }
+        },
+        "title": "PlanCreateReq",
+        "type": "object"
+      },
+      "ProductIn": {
+        "properties": {
+          "colors": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Colors",
+            "type": "array"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Description",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Features",
+            "type": "array"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "in_stock": {
+            "default": true,
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "material": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "original_price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Price"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "promotion": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion"
+          },
+          "ref_image": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Image"
+          },
+          "shipping": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipping"
+          },
+          "sizes": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Sizes",
+            "type": "array"
+          },
+          "stock_total": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Total"
+          },
+          "warranty": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ProductIn",
+        "type": "object"
+      },
+      "RuntimeConfigReq": {
+        "properties": {
+          "answer_cache_variants": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Cache Variants"
+          },
+          "comment_rate": {
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 0.2,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment Rate"
+          },
+          "demand_pivot_enter_share": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Enter Share"
+          },
+          "demand_pivot_exit_share": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Exit Share"
+          },
+          "demand_pivot_min_comments": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Min Comments"
+          },
+          "demand_pivot_score_margin": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demand Pivot Score Margin"
+          },
+          "initial_ingest_mode": {
+            "anyOf": [
+              {
+                "pattern": "^(batch|single)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial Ingest Mode"
+          },
+          "max_qa_clusters_per_window": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Qa Clusters Per Window"
+          },
+          "prepared_turn_depth": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prepared Turn Depth"
+          },
+          "qa_topic_cooldown_sec": {
+            "anyOf": [
+              {
+                "maximum": 3600.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qa Topic Cooldown Sec"
+          },
+          "qa_window_hard_timeout_sec": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 600.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qa Window Hard Timeout Sec"
+          },
+          "transient_retry_count": {
+            "anyOf": [
+              {
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transient Retry Count"
+          }
+        },
+        "title": "RuntimeConfigReq",
+        "type": "object"
+      },
+      "ShopProfileIn": {
+        "properties": {
+          "address": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Address",
+            "type": "string"
+          },
+          "host_name": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Host Name",
+            "type": "string"
+          },
+          "phone": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Phone",
+            "type": "string"
+          },
+          "selling_style": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Selling Style",
+            "type": "string"
+          },
+          "shop_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Shop Name",
+            "type": "string"
+          }
+        },
+        "title": "ShopProfileIn",
+        "type": "object"
+      },
+      "StartReq": {
+        "properties": {
+          "avatar_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Id"
+          },
+          "is_sandbox": {
+            "default": true,
+            "title": "Is Sandbox",
+            "type": "boolean"
+          }
+        },
+        "title": "StartReq",
+        "type": "object"
+      },
+      "TTSPresetIn": {
+        "description": "Wave 2: select a TTS preset by id (Phase A dropdown).",
+        "properties": {
+          "preset_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Preset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset_id"
+        ],
+        "title": "TTSPresetIn",
+        "type": "object"
+      },
+      "TTSPreviewReq": {
+        "properties": {
+          "text": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "tts_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Tts Id",
+            "type": "string"
+          },
+          "voice_id": {
+            "default": "default",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Voice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "tts_id"
+        ],
+        "title": "TTSPreviewReq",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "VN Live-Commerce Host \u2014 core API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/admin/config": {
+      "get": {
+        "description": "Sanitized config dump: present/missing for secrets, no secret values.",
+        "operationId": "admin_config_api_v1_admin_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Config Api V1 Admin Config Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Config"
+      }
+    },
+    "/api/v1/admin/health": {
+      "get": {
+        "description": "Deep health \u2014 same payload as /health/ready.",
+        "operationId": "admin_health_api_v1_admin_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Health Api V1 Admin Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Health"
+      }
+    },
+    "/api/v1/avatars": {
+      "get": {
+        "operationId": "avatars_list_api_v1_avatars_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Avatars List Api V1 Avatars Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Avatars List"
+      },
+      "post": {
+        "operationId": "avatars_create_api_v1_avatars_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvatarCreateReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Avatars Create Api V1 Avatars Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Avatars Create"
+      }
+    },
+    "/api/v1/avatars/{avatar_id}": {
+      "delete": {
+        "operationId": "avatars_delete_api_v1_avatars__avatar_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "avatar_id",
+            "required": true,
+            "schema": {
+              "title": "Avatar Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Avatars Delete Api V1 Avatars  Avatar Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Avatars Delete"
+      },
+      "get": {
+        "operationId": "avatars_get_api_v1_avatars__avatar_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "avatar_id",
+            "required": true,
+            "schema": {
+              "title": "Avatar Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Avatars Get Api V1 Avatars  Avatar Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Avatars Get"
+      },
+      "put": {
+        "operationId": "avatars_put_api_v1_avatars__avatar_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "avatar_id",
+            "required": true,
+            "schema": {
+              "title": "Avatar Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AvatarUpdateReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Avatars Put Api V1 Avatars  Avatar Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Avatars Put"
+      }
+    },
+    "/api/v1/avatars/{avatar_id}/idle/regenerate": {
+      "post": {
+        "operationId": "avatars_idle_regenerate_api_v1_avatars__avatar_id__idle_regenerate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "avatar_id",
+            "required": true,
+            "schema": {
+              "title": "Avatar Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Avatars Idle Regenerate Api V1 Avatars  Avatar Id  Idle Regenerate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Avatars Idle Regenerate"
+      }
+    },
+    "/api/v1/engines": {
+      "get": {
+        "description": "List available LLM/TTS presets + currently loaded engines.",
+        "operationId": "engines_status_api_v1_engines_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Engines Status Api V1 Engines Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Engines Status"
+      }
+    },
+    "/api/v1/engines/llm": {
+      "post": {
+        "description": "Swap the LLM engine at runtime. Unloads the old model (frees VRAM),\nloads the new one, re-configures the cloud RenderBackend.",
+        "operationId": "swap_llm_api_v1_engines_llm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineSwapReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Swap Llm Api V1 Engines Llm Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Swap Llm"
+      }
+    },
+    "/api/v1/engines/tts": {
+      "post": {
+        "description": "Swap the TTS engine at runtime. Unloads the old model (frees VRAM),\nloads the new one, re-configures the cloud RenderBackend.",
+        "operationId": "swap_tts_api_v1_engines_tts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngineSwapReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Swap Tts Api V1 Engines Tts Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Swap Tts"
+      }
+    },
+    "/api/v1/engines/tts/preset": {
+      "post": {
+        "description": "Select a TTS preset by id (Phase A dropdown). Updates the EngineManager's\nin-memory TTS config without loading the model. The next ``POST /engines/tts``\nor full reload will apply it.",
+        "operationId": "set_tts_preset_api_v1_engines_tts_preset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TTSPresetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Tts Preset Api V1 Engines Tts Preset Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Tts Preset"
+      }
+    },
+    "/api/v1/engines/tts/preview": {
+      "post": {
+        "description": "Synthesize bounded browser-playable WAV without creating an avatar session.",
+        "operationId": "preview_tts_api_v1_engines_tts_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TTSPreviewReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Tts"
+      }
+    },
+    "/api/v1/media/livekit/room/{session_id}": {
+      "post": {
+        "description": "Mint a LiveKit room-join token for ``session_id`` (room name = session_id).\n\nRequires LIVEKIT_URL + LIVEKIT_API_KEY + LIVEKIT_API_SECRET. Returns 503 when\nany credential is missing so FE can show a clear \"media not configured\" state.",
+        "operationId": "media_livekit_room_api_v1_media_livekit_room__session_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Media Livekit Room Api V1 Media Livekit Room  Session Id  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Media Livekit Room"
+      }
+    },
+    "/api/v1/sessions": {
+      "post": {
+        "operationId": "sessions_start_api_v1_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Start Api V1 Sessions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Start"
+      }
+    },
+    "/api/v1/sessions/{session_id}/attach": {
+      "post": {
+        "description": "Attach a Director to a started session: build the FSM + embed the catalog.",
+        "operationId": "sessions_attach_api_v1_sessions__session_id__attach_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathAttachReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Attach Api V1 Sessions  Session Id  Attach Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Attach"
+      }
+    },
+    "/api/v1/sessions/{session_id}/chat": {
+      "post": {
+        "description": "Accept a single viewer chat comment via the DirectorCoordinator.\n\nReturns 202 Accepted immediately; the coordinator's tick loop processes\ncomments asynchronously. Returns 404 if the coordinator is not active or\nthe session is not attached.",
+        "operationId": "sessions_chat_api_v1_sessions__session_id__chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathChatIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Chat Api V1 Sessions  Session Id  Chat Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Chat"
+      }
+    },
+    "/api/v1/sessions/{session_id}/config": {
+      "patch": {
+        "description": "Canonical path-style runtime config update.",
+        "operationId": "sessions_config_api_v1_sessions__session_id__config_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathRuntimeConfigUpdateReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Config Api V1 Sessions  Session Id  Config Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Config"
+      }
+    },
+    "/api/v1/sessions/{session_id}/ingest": {
+      "post": {
+        "description": "Feed viewer comments to the Director; it decides + the avatar speaks.\n\nThis is the closed loop: comments -> cluster/score -> Decision ->\nbackground streaming pipeline. Frontend just POSTs raw comments; the\navatar reacts.\n\nWave 2: when a DirectorCoordinator is active for this session, route\ncomments through it (async ChatQueue path) instead of the sync Director\ningest. Falls back to the existing sync Director path when coordinator\nis None.",
+        "operationId": "sessions_ingest_api_v1_sessions__session_id__ingest_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathIngestReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Ingest Api V1 Sessions  Session Id  Ingest Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Ingest"
+      }
+    },
+    "/api/v1/sessions/{session_id}/interrupt": {
+      "post": {
+        "operationId": "sessions_interrupt_api_v1_sessions__session_id__interrupt_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Interrupt Api V1 Sessions  Session Id  Interrupt Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Interrupt"
+      }
+    },
+    "/api/v1/sessions/{session_id}/plan/create": {
+      "post": {
+        "description": "Generate a minimal deterministic RunPlan and store on the session.",
+        "operationId": "sessions_plan_create_api_v1_sessions__session_id__plan_create_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PlanCreateReq"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Req"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Plan Create Api V1 Sessions  Session Id  Plan Create Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Plan Create"
+      }
+    },
+    "/api/v1/sessions/{session_id}/say": {
+      "post": {
+        "operationId": "sessions_say_api_v1_sessions__session_id__say_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathSayReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Say Api V1 Sessions  Session Id  Say Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Say"
+      }
+    },
+    "/api/v1/sessions/{session_id}/stop": {
+      "post": {
+        "operationId": "sessions_stop_api_v1_sessions__session_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Stop Api V1 Sessions  Session Id  Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Stop"
+      }
+    }
+  }
+}

@@ -23,7 +23,13 @@ variable "github_oidc_thumbprint" {
 variable "github_org_repo" {
   description = "repo filter for deploy role trust, e.g. org/repo"
   type        = string
-  default     = ""
+  default     = "justHman/ai-livestream-commerce-vn"
+}
+
+variable "github_environment" {
+  description = "Protected GitHub Environment this role trusts (dev|staging|prod)"
+  type        = string
+  default     = "dev"
 }
 
 variable "create_tfstate_bucket" {

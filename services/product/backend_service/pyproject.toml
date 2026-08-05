@@ -1,0 +1,78 @@
+[project]
+name = "ai-livestream-backend"
+version = "0.1.0"
+description = "VN AI livestream commerce control plane"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic",
+  "httpx",
+  "python-multipart",
+  "python-dotenv",
+  "redis",
+  "PyJWT",
+  "numpy",
+  "Pillow",
+  "requests",
+  "websocket-client",
+  # Canonical sibling service packages (COPY-DON'T-IMPORT). The backend imports
+  # llm.* / tts.* / avatar.* at runtime; these path deps make `uv sync` in this
+  # service resolve the siblings from their own independent projects.
+  "ai-livestream-llm",
+  "ai-livestream-tts",
+  "ai-livestream-avatar",
+]
+
+[tool.uv.sources]
+ai-livestream-llm = { path = "../llm_service" }
+ai-livestream-tts = { path = "../tts_service" }
+ai-livestream-avatar = { path = "../avatar_service" }
+
+[project.optional-dependencies]
+director = ["sentence-transformers>=5,<6"]
+livekit = ["livekit"]
+postgres = ["asyncpg"]
+test = ["pytest", "pytest-asyncio", "pytest-timeout", "async_timeout"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "pytest-timeout", "async_timeout", "pytest-cov"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["backend*"]
+
+[tool.setuptools.package-data]
+"backend.application.director.prompts" = ["*.md"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = [
+  "src",
+  "../llm_service/src",
+  "../tts_service/src",
+  "../avatar_service/src",
+]
+filterwarnings = [
+  "ignore::DeprecationWarning:httpx.*",
+  "ignore::DeprecationWarning:starlette.*",
+]
+# Integration/contract suites and live-stack behavior never run in ordinary CI;
+# select them explicitly (see scripts/ci/test_matrix.json).
+addopts = "--ignore=tests/integration --ignore=tests/contract"
+
+[tool.coverage.run]
+branch = true
+source = ["backend"]
+
+[tool.coverage.report]
+fail_under = 80

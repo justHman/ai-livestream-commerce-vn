@@ -1,0 +1,60 @@
+# Root-context build exclusions for backend_service/Dockerfile.
+# Build: docker build -f services/product/backend_service/Dockerfile .
+# Allows: this service, sibling llm/tts/avatar srcs (imported).
+
+# VCS / CI / tooling
+.git
+.github
+.claude
+.superpowers
+.codegraph
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+
+# Secrets
+.env
+*.env
+!.env.example
+
+# Unrelated product services (only src/ of this + imported siblings is used)
+services/product/llm_service/tests
+services/product/tts_service/tests
+services/product/avatar_service/tests
+
+# Other services (legacy dirs not in any build)
+services/platform
+
+# Workbench, infra, docs, tests, benchmarks
+workbench/
+infra/
+docs/
+plans/
+notes/
+benchmarks/
+tests/
+scripts/ci
+
+# Runtime / model weights / data
+.runtime/
+models/
+model/
+data/
+sources/
+results/
+weights/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.log
+*.wav
+*.mp4
+tmp/
+archive/
+archived/

@@ -1,3 +1,15 @@
+variable "create_rds" {
+  description = "Create RDS Postgres instance (false = memory sessions, no DB cost)"
+  type        = bool
+  default     = true
+}
+
+variable "create_redis" {
+  description = "Create ElastiCache Redis cluster (false = no cache cost)"
+  type        = bool
+  default     = true
+}
+
 variable "env" {
   description = "Environment name (dev|prod)"
   type        = string

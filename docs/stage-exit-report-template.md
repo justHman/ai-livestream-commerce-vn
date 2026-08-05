@@ -26,7 +26,7 @@
 | `SESSION_STORE` | {memory | redis} |
 | `APP_ENV` | {dev} |
 | `desired_backend` | {1} |
-| `desired_llm_tts` | {0|1} |
+| `desired_llm/desired_tts` | {0|1} |
 | `desired_avatar` | {0|1} |
 | `desired_livekit` | {0|1} |
 | `desired_lmcache` | {0} |

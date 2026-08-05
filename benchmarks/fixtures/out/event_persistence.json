@@ -1,0 +1,44 @@
+{
+  "scenario": "event/persistence",
+  "inputs": {
+    "decision": {
+      "action": "answer_fact",
+      "product_id": "P004",
+      "field": "price",
+      "stage": "qa",
+      "task_id": "P004:qa:c-001",
+      "turn_id": "turn-0001",
+      "may_interrupt": false,
+      "reason": "top cluster score=2.10",
+      "score": 2.1,
+      "cluster_members": [
+        "Áo hoodie giá bao nhiêu vậy shop?"
+      ],
+      "cluster_member_ids": [
+        "c-001"
+      ],
+      "topic": "price"
+    }
+  },
+  "outputs": {
+    "event": {
+      "turn_id": "turn-0001",
+      "action": "answer_fact",
+      "product": "P004",
+      "field": "price",
+      "stage": "qa",
+      "task_id": "P004:qa:c-001",
+      "may_interrupt": false,
+      "reason": "top cluster score=2.10"
+    },
+    "persistence_row": {
+      "session_id": "sess-001",
+      "action": "answer_fact",
+      "product_id": "P004",
+      "score": 2.1,
+      "phase": "selling",
+      "utterance": "Giá Áo hoodie HeyGen màu trắng: 299.000đ (giá gốc 399.000đ).",
+      "reason": "top cluster score=2.10"
+    }
+  }
+}
