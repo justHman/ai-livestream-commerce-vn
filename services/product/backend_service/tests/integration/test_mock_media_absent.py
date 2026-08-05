@@ -18,10 +18,6 @@ response, so it stays on the normal httpx client.
 
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
-
 import httpx
 import pytest
 

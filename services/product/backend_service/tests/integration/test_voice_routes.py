@@ -19,10 +19,6 @@ the schema conflict. The frontend dropdown calls the preset endpoint.
 
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
-
 import pytest
 from fastapi.testclient import TestClient
 

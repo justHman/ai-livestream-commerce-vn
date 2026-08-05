@@ -88,7 +88,11 @@ def runtime() -> DirectorRuntime:
 
 
 @pytest.fixture
-def coordinator(runtime: DirectorRuntime) -> DirectorCoordinator:
+def coordinator(runtime: DirectorRuntime, monkeypatch: pytest.MonkeyPatch) -> DirectorCoordinator:
+    # Force hashing embedder for offline tests: sessions start() via runtime.attach
+    # embed the catalog with build_embedder() (default semantic), which hard-imports
+    # sentence_transformers — not installed in the service dev deps.
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     coordinator = DirectorCoordinator(
         runtime=runtime,
         llm=object(),
