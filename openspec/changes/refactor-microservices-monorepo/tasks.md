@@ -76,9 +76,9 @@
 - [x] 1.74 Remove plaintext application/provider/API token inputs from Terraform; provision those SSM SecureString values from protected GitHub Environment secrets and pass only parameter ARNs to ECS while documenting the protected-state exception for the no-Secrets-Manager RDS bootstrap password.
 - [x] 1.75 Add Terraform native tests for module invariants and the dev/staging/prod runtime matrix, including zero-cost hosted-adapter topology, no production Spot backend, no LiveKit Fargate/standalone LMCache/internal model NLB, and environment-state isolation.
 - [x] 1.76 Add one root `compose.yaml` with local-only `data` and `media` profiles for official Postgres/Redis and the pinned local LiveKit wrapper; verify it contains no staging/production topology, cloud credentials, or default GPU workload.
-- [ ] 1.77 Record Director characterization fixtures and baseline benchmarks before extraction; perform session-context, event/persistence, decision-preparation, playback, queue/chunking, and stream-analysis moves as separate test-gated batches without algorithm changes.
-- [ ] 1.78 Move generated runtime data, logs, model artifacts, and benchmark output under `.runtime/`; preserve committed benchmark baselines under `benchmarks/baselines/`; classify research notes and active plans before moving or removing any material file.
-- [ ] 1.79 Perform a final reference and route audit before deleting `core/`, `frontend/`, `providers/`, legacy service directories, old workflows, mutable image references, or superseded infrastructure; require target-path tests plus non-production rollback evidence for each cleanup batch.
+- [x] 1.77 Record Director characterization fixtures and baseline benchmarks before extraction; perform session-context, event/persistence, decision-preparation, playback, queue/chunking, and stream-analysis moves as separate test-gated batches without algorithm changes.
+- [x] 1.78 Move generated runtime data, logs, model artifacts, and benchmark output under `.runtime/`; preserve committed benchmark baselines under `benchmarks/baselines/`; classify research notes and active plans before moving or removing any material file.
+- [x] 1.79 Perform a final reference and route audit before deleting `core/`, `frontend/`, `providers/`, legacy service directories, old workflows, mutable image references, or superseded infrastructure; require target-path tests plus non-production rollback evidence for each cleanup batch.
 
 ## 2. Establish Workflow Contracts
 
