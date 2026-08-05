@@ -97,7 +97,7 @@ real media verification.
 
 ```powershell
 uv lock --check
-uv run pytest core/tests/ -q
+uv run pytest tests/ci/ -q
 uvx ruff check services/product/backend_service/src services/product/llm_service/src services/product/tts_service/src services/product/avatar_service/src services/product/*_service/scripts benchmarks/api/latency.py scripts/model_assets/upload.py
 terraform fmt -check -recursive infra
 terraform -chdir=infra/environments/global init -backend=false

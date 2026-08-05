@@ -1,13 +1,13 @@
 ---
 paths:
-  - "core/db/**"
-  - "core/sql/**"
+  - "services/product/backend_service/src/backend/application/db/**"
+  - "services/product/backend_service/src/backend/db/**"
   - "infra/modules/database/**"
 ---
 
 # Database — runtime DB (Postgres, raw SQL + asyncpg, no ORM/migration framework)
 
-- This project uses raw SQL (`core/sql/*.sql`) + asyncpg, NOT an ORM/migration tool. Treat `core/sql/runtime_schema.sql` as the schema source of truth.
+- This project uses raw SQL (`services/product/backend_service/src/backend/db/sql/runtime_schema.sql`) + asyncpg, NOT an ORM/migration tool. Treat that file as the schema source of truth.
 - Schema changes are additive and reviewed — no migration framework tracks versions, so coordinate schema edits explicitly and re-`apply_schema` on dev.
 - Never concatenate user input into SQL. Use asyncpg parameterized queries (`$1`, `$2`).
 - Runtime DB (`/sessions/*`, `/admin/*`) is separate from business DB (`/user/*`, `/shop/*` — team SE owns those; we never touch business DB).

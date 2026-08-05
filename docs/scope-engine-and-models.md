@@ -401,7 +401,7 @@ No MJPEG. LiveKit from day 1. Idle loop = pre-rendered frames pushed into LiveKi
 
 ## 12. Files affected
 
-- `services/product/backend_service/src/backend/` is the canonical backend package; staged `core/` compatibility supplies current runtime behavior until later extraction tasks.
+- `services/product/backend_service/src/backend/` is the canonical backend package.
 - `services/product/llm_service/src/llm/` owns self-host LLM engines.
 - `services/product/tts_service/src/tts/` owns self-host TTS engines.
 - `services/product/avatar_service/src/avatar/` owns self-host avatar engines.

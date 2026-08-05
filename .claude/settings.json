@@ -10,7 +10,6 @@
       "Bash(uvx ruff *)",
       "Bash(python -m pytest *)",
       "Bash(pytest *)",
-      "Bash(python -m core.tests.*)",
       "Bash(uv run --project services/product/backend_service *)",
       "Bash(uvicorn backend.main:app*)",
       "Bash(git status)",

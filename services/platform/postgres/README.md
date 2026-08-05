@@ -46,5 +46,5 @@ PY
 
 ## SQL ownership
 
-Backend owns `core/sql/runtime_schema.sql` and applies it through its existing
+Backend owns `services/product/backend_service/src/backend/db/sql/runtime_schema.sql` and applies it through its existing
 lifecycle. Do not copy it into this platform directory.

@@ -15,7 +15,7 @@
 ## CI
 
 `.github/workflows/ci.yml` runs production-source Ruff, `uv sync --frozen
---extra test`, the offline `core/tests/` suite, Terraform formatting plus
+--extra test`, the offline `tests/ci/` suite, Terraform formatting plus
 `init -backend=false`/`validate` for global, DEV, and PROD, then backend image
 build validation. CI never deploys or publishes an image.
 

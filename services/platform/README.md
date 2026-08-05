@@ -28,7 +28,7 @@ upstream images/packages only.
 python services/platform/livekit/validate_config.py
 ```
 
-`core/tests/test_platform_service_roots.py` and the canonical-path tests
+`infra/tests/test_platform_roots.py` and the canonical-path tests
 assert structural ownership, root-context Docker references, adjacent ignores,
 and SQL ownership.
 
@@ -38,5 +38,5 @@ Terraform remains the source of managed RDS and ElastiCache configuration
 under `infra/modules/database/`. Managed data resources default **off** in dev
 (`create_rds=false` / `create_redis=false`); staging/prod provision
 non-public, SG-isolated, authenticated, encrypted RDS/ElastiCache. Backend
-SQL lives in `core/sql/runtime_schema.sql` (backend-owned); platform
+SQL lives in `services/product/backend_service/src/backend/db/sql/runtime_schema.sql` (backend-owned); platform
 directories contain no application SQL.

@@ -7,7 +7,7 @@
 
 ## All stages
 
-- [ ] Offline gate green (`uv lock --check`, `uv run pytest core/tests/ -q`, ruff scope, `terraform fmt -check` + validate global/dev/prod) — live apply forbidden while red.
+- [ ] Offline gate green (`uv lock --check`, `uv run pytest tests/ci/ -q`, ruff scope, `terraform fmt -check` + validate global/dev/prod) — live apply forbidden while red.
 - [ ] No `-auto-approve` on apply or destroy.
 - [ ] Images are SHA-tagged from GitHub Actions (no `:latest`, no hand-pushed tags) on billable stages.
 - [ ] ARM tasks ↔ `linux/arm64` images; GPU tasks ↔ `linux/amd64` images.

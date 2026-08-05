@@ -14,7 +14,7 @@ MEDIA:   renderer -- video --> LiveKit --> browser
 
 `services/product/backend_service/src/backend/` is the canonical control-plane
 package for session lifecycle, Director decisions, API auth, persistence, and
-control events. `core/` is an explicit staged compatibility seam. Renderers and
+control events. Renderers and
 LiveKit carry media directly to the browser; frames do not transit FastAPI.
 Browser responses carry only a LiveKit URL and room-join token, never server credentials.
 

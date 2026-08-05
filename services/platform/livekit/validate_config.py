@@ -3,7 +3,7 @@
 
 Runs without Docker. Checks the pinned base image digest, the config YAML, and
 the entrypoint's fail-loud credential guard. Structural ownership checks are
-covered by ``core/tests``; this script is the platform-side validation surface
+covered by ``infra/tests``; this script is the platform-side validation surface
 referenced from ``services/platform/livekit/README.md``.
 """
 

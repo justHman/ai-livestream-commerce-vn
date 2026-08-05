@@ -22,12 +22,6 @@ The machine-readable definition lives in `scripts/ci/test_matrix.json`
   (`norecursedirs` in root `pyproject.toml`). Select explicitly.
 - `tests/sandbox/` — real hosted-provider checks; NOT collected by ordinary
   runs. Missing credentials fail loudly, never skip.
-- `core/tests/` — legacy compatibility suite (core/ is frozen pending removal).
-  `core/tests/test_benchmark_stage2.py` is EXCLUDED from the root offline-tests
-  run (`--ignore=` in `ci.yml`): the frozen copy imports
-  `scripts.benchmark_stage2`, removed by OpenSpec 1.58 (canonical module now
-  `benchmarks/backend/stage2_pipeline.py`, covered by `tests/e2e/test_benchmark_contracts.py`).
-  The frozen file is deleted with the core cleanup in 1.79.
 
 ## Per-service suites
 

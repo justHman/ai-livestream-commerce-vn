@@ -12,7 +12,7 @@ FastAPI control plane for Fargate Spot **ARM64**.
 
 ## Build
 
-From the repository root. Dependencies resolve from this service's `pyproject.toml` and `uv.lock`; staged compatibility still copies `core/` and `providers/`:
+From the repository root. Dependencies resolve from this service's `pyproject.toml` and `uv.lock`; sibling llm/tts/avatar srcs are copied by the Dockerfile:
 
 ```bash
 docker build -f services/product/backend_service/Dockerfile -t imjusthman/ai-live-backend:dev .
