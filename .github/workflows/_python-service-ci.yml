@@ -39,6 +39,10 @@ jobs:
   checks:
     name: ${{ matrix.service }}
     runs-on: ubuntu-latest
+    env:
+      # setup-uv exports VIRTUAL_ENV pointing at the repo-root .venv; every
+      # step below must use the service-local venv (root lock lacks dev deps).
+      VIRTUAL_ENV: ${{ github.workspace }}/services/product/${{ matrix.service }}/.venv
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +54,7 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - name: Sync service environment
-        run: unset VIRTUAL_ENV && uv sync --frozen --group dev
+        run: uv sync --frozen --group dev
         working-directory: services/product/${{ matrix.service }}
       - name: Format check
         run: uvx ruff format --check --no-cache services/product/${{ matrix.service }}/src services/product/${{ matrix.service }}/tests
