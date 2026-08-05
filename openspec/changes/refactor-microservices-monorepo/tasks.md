@@ -89,20 +89,20 @@
 
 ## 3. Implement Branch-Governed CI
 
-- [ ] 3.1 Refactor `ci.yml` into the always-started event entry point for `feature/*`, `develop`, and `main` pushes and pull requests into `develop` and `main`, and derive fast, integration, or release mode from the trusted event context.
-- [ ] 3.2 Add underscore-prefixed `workflow_call` building blocks needed by `ci.yml` without adding deployment triggers to them.
-- [ ] 3.3 Ensure the integration gate reports one stable required-check result for branch protection even when unchanged services are skipped.
-- [ ] 3.4 Configure and verify `develop` and `main` rulesets requiring pull requests, the stable `CI / gate`, at least one approval, resolved conversations, a current conflict-free head, and denial of direct feature-to-`main` or protected-branch pushes outside audited emergency bypass.
-- [ ] 3.5 Add a mandatory Gitleaks `secret-scan` job to `ci.yml` for every push and pull request, with redacted output and a failing exit status on findings.
-- [ ] 3.6 Run an initial redacted repository scan, remediate real findings, and add only narrowly scoped reviewed allowlist entries for confirmed false positives.
-- [ ] 3.7 Enable and verify GitHub Secret Scanning and Push Protection when supported without weakening the Gitleaks required check.
-- [ ] 3.8 Configure `_container-build.yml` to use Docker Buildx with `type=gha` cache import and `mode=max` export under a stable per-service scope.
-- [ ] 3.9 Build pull-request images with `push: false`, allow cache export only from trusted runs, and push images only during development or staging deployment builds.
-- [ ] 3.10 Verify cold and warm builds for multiple services, cache isolation, and production promotion without rebuilding the staging digest.
-- [ ] 3.11 Implement and verify feature-push fast mode: secret scan, affected-area detection, format, lint, typecheck, and unit tests for changed product services, with no integration, contract, coverage, full-container, or deployment job.
-- [ ] 3.12 Implement and verify feature-PR integration mode: affected format, lint, typecheck, unit, integration, contract, coverage, cached container build with `push: false`, and conditional workbench, platform, and Terraform checks.
-- [ ] 3.13 Implement and verify `develop` merge mode reruns full affected-area integration CI and cached affected-image validation with `push: false` against the exact merge commit.
-- [ ] 3.14 Implement and verify `develop`-to-`main` release PR mode and `main` merge verification, including conditional affected service, container, workbench, platform, and Terraform checks without image push or deployment.
+- [x] 3.1 Refactor `ci.yml` into the always-started event entry point for `feature/*`, `develop`, and `main` pushes and pull requests into `develop` and `main`, and derive fast, integration, or release mode from the trusted event context.
+- [x] 3.2 Add underscore-prefixed `workflow_call` building blocks needed by `ci.yml` without adding deployment triggers to them.
+- [x] 3.3 Ensure the integration gate reports one stable required-check result for branch protection even when unchanged services are skipped.
+- [x] 3.4 Configure and verify `develop` and `main` rulesets requiring pull requests, the stable `CI / gate`, at least one approval, resolved conversations, a current conflict-free head, and denial of direct feature-to-`main` or protected-branch pushes outside audited emergency bypass.
+- [x] 3.5 Add a mandatory Gitleaks `secret-scan` job to `ci.yml` for every push and pull request, with redacted output and a failing exit status on findings.
+- [x] 3.6 Run an initial redacted repository scan, remediate real findings, and add only narrowly scoped reviewed allowlist entries for confirmed false positives.
+- [x] 3.7 Enable and verify GitHub Secret Scanning and Push Protection when supported without weakening the Gitleaks required check.
+- [x] 3.8 Configure `_container-build.yml` to use Docker Buildx with `type=gha` cache import and `mode=max` export under a stable per-service scope.
+- [x] 3.9 Build pull-request images with `push: false`, allow cache export only from trusted runs, and push images only during development or staging deployment builds.
+- [x] 3.10 Verify cold and warm builds for multiple services, cache isolation, and production promotion without rebuilding the staging digest.
+- [x] 3.11 Implement and verify feature-push fast mode: secret scan, affected-area detection, format, lint, typecheck, and unit tests for changed product services, with no integration, contract, coverage, full-container, or deployment job.
+- [x] 3.12 Implement and verify feature-PR integration mode: affected format, lint, typecheck, unit, integration, contract, coverage, cached container build with `push: false`, and conditional workbench, platform, and Terraform checks.
+- [x] 3.13 Implement and verify `develop` merge mode reruns full affected-area integration CI and cached affected-image validation with `push: false` against the exact merge commit.
+- [x] 3.14 Implement and verify `develop`-to-`main` release PR mode and `main` merge verification, including conditional affected service, container, workbench, platform, and Terraform checks without image push or deployment.
 
 ## 4. Implement Explicit Development and Staging Deployment
 
