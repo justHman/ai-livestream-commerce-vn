@@ -37,19 +37,12 @@ services/.dockerignore
 # Workbench, infra, docs, tests, benchmarks
 workbench/
 infra/
-frontend/
 docs/
 plans/
 notes/
 benchmarks/
 tests/
 scripts/ci
-scripts/bench_api.py
-scripts/benchmark_commerce_clustering.py
-scripts/benchmark_stage2.py
-scripts/stage_smoke.ps1
-scripts/swap_task_image.py
-scripts/teardown_verify.ps1
 
 # Runtime / model weights / data
 .runtime/

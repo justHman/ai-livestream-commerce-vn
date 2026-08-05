@@ -7,10 +7,7 @@ on:
     branches: [develop]
     paths:
       - "services/**"
-      - "core/**"
       - "infra/**"
-      - "providers/**"
-      - "frontend/**"
       - "pyproject.toml"
       - "uv.lock"
 

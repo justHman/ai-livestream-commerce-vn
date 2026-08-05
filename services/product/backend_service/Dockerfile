@@ -53,14 +53,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Copy the isolated venv built by uv (smaller than site-packages sprawl).
 COPY --from=deps --chown=appuser:appuser /opt/venv /opt/venv
 
-# Canonical package plus staged legacy sources required by its compatibility seam.
+# Canonical package plus sibling self-host sources imported by the seams.
 COPY --chown=appuser:appuser services/product/backend_service/src/backend/ ./services/product/backend_service/src/backend/
 COPY --chown=appuser:appuser services/product/llm_service/src/llm/ ./services/product/llm_service/src/llm/
 COPY --chown=appuser:appuser services/product/tts_service/src/tts/ ./services/product/tts_service/src/tts/
 COPY --chown=appuser:appuser services/product/avatar_service/src/avatar/ ./services/product/avatar_service/src/avatar/
-# ponytail: remove legacy sources once Tasks 1.11–1.24 complete their extraction.
-COPY --chown=appuser:appuser core/ ./core/
-COPY --chown=appuser:appuser providers/ ./providers/
 COPY --chown=appuser:appuser services/product/backend_service/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh
