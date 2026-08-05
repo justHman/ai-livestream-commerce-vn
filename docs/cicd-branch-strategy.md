@@ -8,8 +8,8 @@
 | Branch | Purpose | Automation |
 |---|---|---|
 | `feature/*` | Isolated change | CI only |
-| `develop` | Integration branch | CI, then conditional DEV deployment |
-| `main` | Release source | CI only until a release tag and manual PROD dispatch |
+| `develop` | Integration branch | CI only; explicit `deploy-dev` dispatch deploys DEV |
+| `main` | Release source | CI only; explicit `deploy-staging` dispatch deploys staging; `*-v*` tag triggers `release-service` |
 | `hotfix/*` | Production fix | PR to `main`, then back-merge to `develop` |
 
 ## CI
@@ -21,7 +21,7 @@ build validation. CI never deploys or publishes an image.
 
 ## DEV deployment
 
-`deploy-dev.yml` runs on qualifying pushes to `develop`.
+`deploy-dev.yml` is dispatch-only (`gh workflow run deploy-dev.yml --ref develop -f commit_sha=<sha> -f services=...`); it validates the commit and CI gate before deploying to the `development` environment (OpenSpec 4.1).
 
 1. Uses GitHub OIDC and checks the state bucket and lock table.
 2. Reads deployed DEV Terraform outputs instead of a fixed DNS name.
@@ -36,16 +36,13 @@ DEV deployment requires already-applied Terraform state; it cannot bootstrap it.
 
 ## PROD deployment
 
-`deploy-prod.yml` separates build from deployment:
-
-- A `vMAJOR.MINOR.PATCH` tag reachable from `main` builds six immutable images.
-- Tag push does not deploy.
-- Deployment requires `workflow_dispatch` from `main`, `confirm_deploy=true`,
-  the pre-existing tag, all image manifests, and the `production` Environment.
-- The job reads Terraform outputs, deploys with rollback, and checks backend
-  target health.
-
-This is a manual live-operation gate, not active release automation.
+`deploy-prod.yml` is superseded by `release-service.yml` (OpenSpec 5.x) and
+its triggers are disabled (task 6.4): a `v*` tag no longer builds release
+images, and the manual `confirm_deploy` dispatch path no longer deploys.
+Production releases now flow through service-scoped tags
+(`<service>-vMAJOR.MINOR.PATCH`), staging-evidence validation, the protected
+`production` environment approval, exact-digest promotion, and service-scoped
+rollback. See `docs/production-release.md`.
 
 ## Image contract
 

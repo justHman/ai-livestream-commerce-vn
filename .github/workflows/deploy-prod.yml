@@ -1,22 +1,28 @@
-# deploy-prod — build release images on tag push; deploy only from manual confirmation on main.
-# Tag push builds and publishes immutable release images. Manual dispatch from main deploys
-# those pre-built images after verifying all 6 manifests exist. No rebuild on manual dispatch.
+# deploy-prod — SUPERSEDED by release-service.yml (6.4). Triggers DISABLED.
+#
+# This workflow previously built release images on `v*` tag push and deployed
+# them from a manual `workflow_dispatch` confirmation on main. That release
+# path is replaced by release-service.yml (OpenSpec 5.x): service-scoped tags
+# (`<service>-vMAJOR.MINOR.PATCH`), main ancestry + staging evidence gates,
+# protected `production` environment approval, exact-digest promotion, and
+# service-scoped rollback.
+#
+# 6.4 disable record (deliberate, documented, revertible):
+# - `on.push.tags: ["v*"]` removed — a plain v-prefixed tag is no longer a
+#   release trigger (release-service.yml owns tag-triggered releases).
+# - `on.workflow_dispatch` removed — the manual confirmation deploy path is
+#   superseded by the protected production environment + approval in
+#   release-service.yml; a stale mutable-tag manual deploy would bypass the
+#   staging-evidence and exact-digest gates.
+# - The file is retained (not deleted) so the old behavior is one
+#   `git revert` away; it has zero live triggers and cannot start.
+#
+# Verified before disabling (6.4 precondition): release-service.yml dry-runs
+# pass (5.1-5.5, simulated in scripts/ci/simulate_release_path.py), deploy-prod
+# has ZERO runs in remote history, and no repo path references it as active.
 name: deploy-prod
 
-on:
-  push:
-    tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      confirm_deploy:
-        description: "Deploy this validated release tag"
-        required: true
-        type: boolean
-        default: false
-      release_tag:
-        description: "Existing v-prefixed tag to deploy (vMAJOR.MINOR.PATCH)"
-        required: true
-        type: string
+on: {}
 
 permissions:
   id-token: write

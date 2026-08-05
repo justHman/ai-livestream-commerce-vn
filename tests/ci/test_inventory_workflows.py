@@ -65,8 +65,6 @@ def test_every_workflow_has_mutation_classification():
         ("ci.yml", "pull_request"),
         ("deploy-dev.yml", "workflow_dispatch"),
         ("deploy-staging.yml", "workflow_dispatch"),
-        ("deploy-prod.yml", "push"),
-        ("deploy-prod.yml", "workflow_dispatch"),
         ("release-service.yml", "push"),
         ("build-images.yml", "workflow_dispatch"),
         ("seed-weights.yml", "workflow_dispatch"),
@@ -75,6 +73,14 @@ def test_every_workflow_has_mutation_classification():
 def test_expected_triggers_present(name, event):
     events = [t["event"] for t in _inv(name)["triggers"]]
     assert event in events
+
+
+def test_deploy_prod_triggers_disabled():
+    """6.4: deploy-prod.yml is superseded by release-service.yml and has no
+    live triggers (push tags v* and workflow_dispatch both removed)."""
+    wf = _inv("deploy-prod.yml")
+    events = [t["event"] for t in wf["triggers"]]
+    assert events == []
 
 
 def test_ci_has_no_manual_deploy_trigger():
@@ -121,7 +127,8 @@ def test_mutation_classification_correct():
 
 
 def test_service_tags_captured():
-    assert _inv("deploy-prod.yml")["service_tags"] == ["v*"]
+    # deploy-prod triggers are disabled (6.4); release-service owns tag releases.
+    assert _inv("deploy-prod.yml")["service_tags"] == []
 
 
 def test_dispatch_only_has_no_path_filters():

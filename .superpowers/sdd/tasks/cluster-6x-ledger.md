@@ -34,7 +34,11 @@ Constraints: no touch services/*/src/, contracts/v1/, benchmarks/, uv.lock, .run
 - Verified: pytest 43 pass in file; bash -n not needed (python harness).
 
 ### Batch 4 — 6.4
-- PENDING
+- DONE (next commit): deploy-prod.yml triggers DISABLED (on: {} + disable record comment). build-images.yml KEPT ACTIVE (verified: 20 runs, test_platform_roots exercises it, artifact_push only, no deploy).
+- Precondition verified before disable: release-path simulation (6.3) all gates PASS; deploy-prod has ZERO runs in remote history; no repo path references it as active.
+- Docs updated: cicd-branch-strategy.md (branch table + deploy-dev/prod sections), workflow-graph-audit.md finding 7.
+- Tests updated: test_expected_triggers_present drops deploy-prod entries; new test_deploy_prod_triggers_disabled; test_service_tags_captured expects [].
+- Verified: static validator 12/12 PASS, YAML parse on:{} OK, tests 164 pass (2 pre-existing).
 
 ### Batch 5 — 6.6
 - PENDING

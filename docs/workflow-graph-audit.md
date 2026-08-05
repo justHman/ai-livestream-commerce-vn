@@ -41,7 +41,7 @@ entry: build-images.yml (dispatch — offline image prep, dev-<sha> tags)
 entry: seed-weights.yml (dispatch — HF → S3)
 entry: infra-apply.yml (dispatch — plan/apply, env infra-<env>)
 entry: infra-teardown-nonprod.yml (dispatch — destroy, hard dev|staging allowlist)
-entry: deploy-prod.yml (SUPERSEDED — triggers disabled by 6.4, see report)
+entry: deploy-prod.yml (SUPERSEDED — triggers disabled by 6.4: `on: {}`, zero live triggers)
 ```
 
 Ruleset enforcement (3.4): `CI / gate` is the single stable required check on
@@ -68,7 +68,13 @@ conversations, conflict-free current head. Verified in `docs/branch-rulesets.md`
    workflow_dispatch or a service tag; no push/PR path deploys.
 6. **Production path is digest-exact:** release-service promotes the staging
    evidence digest only; deploy-prod (mutable tag build+deploy) is superseded
-   and its triggers disabled (6.4).
+   and its triggers disabled (6.4) — file retained with `on: {}` for a
+   one-commit revert.
+7. **build-images.yml kept active** (6.4 check): it has 20 historical
+   dispatch runs (offline image prep for the three-stage boot), is exercised
+   by `infra/tests/test_platform_roots.py`, pushes only `dev-<sha>` tags
+   (artifact_push, never deploy), and is the documented offline build path.
+   No disable applied.
 
 ## Residual admin-side items (not code — see cluster report)
 
