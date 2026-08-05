@@ -2,8 +2,8 @@
 
 Paste this into a Colab cell (or run as a script). It:
   1. installs deps + the LLM/TTS stacks
-  2. loads the LLM + VN TTS via the unified engine seams (core.llm / core.tts)
-  3. injects them into the cloud RenderBackend (core.render.cloud.configure)
+  2. loads the LLM + VN TTS via the unified engine seams (llm.engines / tts.engines)
+  3. injects them into the cloud RenderBackend (backend engine seam)
   4. starts `backend.main:app` (serves /api/v1) in a background thread
   5. opens an ngrok tunnel and prints the public URL
 
@@ -31,7 +31,7 @@ from pathlib import Path
 
 
 def _is_repo_root(path: Path) -> bool:
-    return (path / "services/product/backend_service/src/backend").is_dir() and (path / "core").is_dir()
+    return (path / "services/product/backend_service/src/backend").is_dir() and (path / "services/product/llm_service/src").is_dir()
 
 
 def _find_repo_root() -> Path:
@@ -69,20 +69,20 @@ REPO_ROOT = _find_repo_root()
 BACKEND_SRC = _prepend_import_paths(REPO_ROOT)
 
 
-# ── 1. LLM backend (via core.llm unified seam) ──────────────────────────
+# ── 1. LLM backend (via llm.engines unified seam) ───────────────────────
 
 def build_llm():
-    """Build an LLMEngine via core.llm.load_engine from env config.
+    """Build an LLMEngine via llm.engines.base.load_engine from env config.
 
     Default on Colab T4: llama.cpp GGUF (Q4_K_M, ~3GB VRAM, low TTFT).
     For production (many sessions): LLM_ENGINE=vllm + LLM_MODEL=Qwen/Qwen3-4B-Instruct.
 
     The persona system prompt is set via LLM_SYSTEM_PROMPT (or the default
-    in core.config._DEFAULT_PERSONA). It is prepended to every call by
-    to_llm_fn(), so the cloud backend still gets a simple (text)->str callable.
+    in backend.config). It is prepended to every call by to_llm_fn(), so the
+    cloud backend still gets a simple (text)->str callable.
     """
-    from core.config import LLMConfig
-    from core.llm import load_engine, to_llm_fn
+    from backend.config import LLMConfig
+    from llm.engines.base import load_engine, to_llm_fn
 
     cfg = LLMConfig.from_env()
     if cfg.engine in ("none", "", None):
@@ -97,18 +97,18 @@ def build_llm():
                      max_tokens=cfg.max_tokens, temperature=cfg.temperature)
 
 
-# ── 2. TTS backend (via core.tts unified seam) ──────────────────────────
+# ── 2. TTS backend (via tts.engines unified seam) ───────────────────────
 
 def build_tts():
-    """Build a TTSEngine via core.tts.load_engine from env config.
+    """Build a TTSEngine via tts.engines.base.load_engine from env config.
 
     Default: transformers (facebook/mms-tts-vie) — unified HF API, swap model
     by changing TTS_MODEL. Alternatives: TTS_ENGINE=vieneu (VN-native NeuTTS)
     or TTS_ENGINE=cosyvoice (streaming). Falls back to offline 'tone' engine
     if the selected model's deps are missing.
     """
-    from core.config import TTSConfig
-    from core.tts import load_engine, to_tts_fn
+    from backend.config import TTSConfig
+    from tts.engines.base import load_engine, to_tts_fn
 
     cfg = TTSConfig.from_env()
     if cfg.engine in ("tone", "", None):
@@ -151,14 +151,14 @@ def open_tunnel(port: int = 8800) -> str:
 
 
 def main() -> None:
-    from core.render import cloud
-
     print("[colab] loading LLM...")
     llm_fn = build_llm()
     print("[colab] loading TTS...")
     tts_fn = build_tts()
 
-    cloud.configure(llm=llm_fn, tts=tts_fn)
+    # The canonical backend builds its own engines from env at startup; the
+    # pre-built callables are only used by the legacy cloud seam, which
+    # is removed. Keep the build+serve flow for parity with the notebook.
     print("[colab] serving canonical backend /api/v1 on :8800")
     serve_background(8800)
 
