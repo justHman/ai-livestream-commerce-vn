@@ -123,9 +123,9 @@
 
 ## 6. Verify and Migrate
 
-- [ ] 6.1 Test the feature push, feature-to-develop pull request, develop merge, develop-to-main pull request, and main merge paths and verify that none deploy an environment.
-- [ ] 6.2 Test development and staging dispatch through GitHub CLI and verify equivalent input handling through the GitHub web interface or API.
-- [ ] 6.3 Test eligible and ineligible production tags, required approval and rejection/unavailability paths, exact-digest promotion, evidence recording, and service-scoped rollback.
-- [ ] 6.4 Disable superseded workflow triggers only after the replacement paths pass dry-run and non-production verification.
-- [ ] 6.5 Audit the final workflow graph and rulesets against the event-to-job matrix, affected-area fan-out, stable gate behavior, review/conversation/conflict requirements, and absence of implicit deployment.
-- [ ] 6.6 Validate `global`, `dev`, `staging`, and `prod` with recursive format, backend-free initialization, validation, native tests, trusted plans, non-production apply/teardown drills, immutable-digest rollout, circuit-breaker rollback, Cloud Map discovery, and secret/state inspection before production infrastructure authorization.
+- [x] 6.1 Test the feature push, feature-to-develop pull request, develop merge, develop-to-main pull request, and main merge paths and verify that none deploy an environment.
+- [x] 6.2 Test development and staging dispatch through GitHub CLI and verify equivalent input handling through the GitHub web interface or API.
+- [x] 6.3 Test eligible and ineligible production tags, required approval and rejection/unavailability paths, exact-digest promotion, evidence recording, and service-scoped rollback.
+- [x] 6.4 Disable superseded workflow triggers only after the replacement paths pass dry-run and non-production verification.
+- [x] 6.5 Audit the final workflow graph and rulesets against the event-to-job matrix, affected-area fan-out, stable gate behavior, review/conversation/conflict requirements, and absence of implicit deployment.
+- [x] 6.6 Validate `global`, `dev`, `staging`, and `prod` with recursive format, backend-free initialization, validation, native tests, trusted plans, non-production apply/teardown drills, immutable-digest rollout, circuit-breaker rollback, Cloud Map discovery, and secret/state inspection before production infrastructure authorization.
