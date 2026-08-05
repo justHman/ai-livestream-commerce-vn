@@ -57,28 +57,35 @@ jobs:
         run: uv sync --frozen --group dev
         working-directory: services/product/${{ matrix.service }}
       - name: Format check
-        run: uvx ruff format --check --no-cache services/product/${{ matrix.service }}/src services/product/${{ matrix.service }}/tests
+        run: uvx ruff format --check --no-cache src tests
+        working-directory: services/product/${{ matrix.service }}
       - name: Lint
-        run: uvx ruff check --no-cache services/product/${{ matrix.service }}/src services/product/${{ matrix.service }}/tests
+        run: uvx ruff check --no-cache src tests
+        working-directory: services/product/${{ matrix.service }}
       # Typecheck: known type debt (111+ errors/service, pre-existing from
       # legacy code migration). Reported but not merge-blocking; fix in follow-up.
       - name: Typecheck (non-blocking)
         continue-on-error: true
-        run: uvx pyright --pythonpath .venv/bin/python services/product/${{ matrix.service }}/src services/product/${{ matrix.service }}/tests
+        run: uvx pyright --pythonpath .venv/bin/python src tests
+        working-directory: services/product/${{ matrix.service }}
       - name: Unit tests
         run: >
-          uv run python -m pytest services/product/${{ matrix.service }}/tests -q
-          --ignore=services/product/${{ matrix.service }}/tests/integration
-          --ignore=services/product/${{ matrix.service }}/tests/contract
+          ./.venv/bin/python -m pytest tests -q
+          --ignore=tests/integration
+          --ignore=tests/contract
+        working-directory: services/product/${{ matrix.service }}
       - name: Integration tests
         if: ${{ inputs.integration }}
-        run: uv run python -m pytest services/product/${{ matrix.service }}/tests/integration -q
+        run: ./.venv/bin/python -m pytest tests/integration -q
+        working-directory: services/product/${{ matrix.service }}
       - name: Contract tests
         if: ${{ inputs.contract }}
-        run: uv run python -m pytest services/product/${{ matrix.service }}/tests/contract -q
+        run: ./.venv/bin/python -m pytest tests/contract -q
+        working-directory: services/product/${{ matrix.service }}
       - name: Coverage gate
         if: ${{ inputs.coverage }}
-        run: uv run python -m pytest services/product/${{ matrix.service }}/tests -q --cov-fail-under=80
+        run: ./.venv/bin/python -m pytest tests -q --cov-fail-under=80
+        working-directory: services/product/${{ matrix.service }}
 
   neutral-skip:
     if: ${{ inputs.services == '' }}
