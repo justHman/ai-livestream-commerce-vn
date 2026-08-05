@@ -30,7 +30,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 # Integration/contract suites and live-stack behavior never run in ordinary CI;
 # select them explicitly (see scripts/ci/test_matrix.json).
-addopts = "--ignore=tests/integration --ignore=tests/contract --cov=avatar --cov-branch --cov-report=term-missing"
+addopts = "--ignore=tests/integration --ignore=tests/contract"
 
 [tool.coverage.run]
 branch = true
