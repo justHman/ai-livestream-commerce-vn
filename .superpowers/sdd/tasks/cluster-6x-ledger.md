@@ -24,7 +24,9 @@ Constraints: no touch services/*/src/, contracts/v1/, benchmarks/, uv.lock, .run
 - Verified: tests 164 pass (2 pre-existing base failures), static validator 12/12 PASS.
 
 ### Batch 2 — 6.2
-- PENDING
+- DONE (next commit): wrappers verified against workflow inputs; deploy-commands.md documents input equivalence (gh CLI / web UI / REST).
+- Real dispatch attempt vs remote OLD deploy-dev: HTTP 422 (no workflow_dispatch trigger) — proves refactor branch not yet merged; wrappers target NEW inputs.
+- Verified: validate_workflow_inputs profile binding + rejection paths simulated locally; bash -n OK; tests 164 pass (2 pre-existing).
 
 ### Batch 3 — 6.3
 - PENDING

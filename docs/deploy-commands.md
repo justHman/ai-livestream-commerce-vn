@@ -44,6 +44,27 @@ The GitHub web UI **Run workflow** button and the REST API
 same workflow with identical behavior and validation — the workflow, not the
 console, is the source of truth.
 
+### Input equivalence (6.2)
+
+All three entry points (gh CLI, web UI, REST API) resolve to the same
+`workflow_dispatch` payload; the workflow performs identical validation
+regardless of caller:
+
+- `commit_sha` — full 40-hex SHA resolving to a commit, reachable from the
+  dispatch ref's branch (develop for dev, main for staging), with a completed
+  successful `ci.yml` run for that SHA (fail closed).
+- `services` — comma-separated canonical identifiers from
+  `backend_service,llm_service,tts_service,avatar_service`; unknown, mixed
+  case, empty, or shell-metacharacter entries are rejected by
+  `scripts/ci/validate_workflow_inputs.py`.
+
+Verified locally: wrapper argument validation (`deploy.sh`/`deploy.ps1`),
+profile binding (`deploy-dev`→dev, `deploy-staging`→staging), and the shared
+validator's rejection paths (bad SHA, unknown service, injection-shaped
+input). The wrappers are thin: they pass the exact `-f` key/value pairs the
+workflow declares, so a dispatch from any interface hits the same validation
+and the same jobs.
+
 ## Wrapper scripts
 
 Thin wrappers around the commands above (same validation, no extra logic):
