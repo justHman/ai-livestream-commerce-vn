@@ -1,0 +1,197 @@
+{
+  "scenario": "decision-preparation",
+  "inputs": {
+    "run_plan": {
+      "phases": [
+        "opening",
+        "selling",
+        "closing"
+      ],
+      "opening": {
+        "intro_shop": "Chào mừng cả nhà đến livestream!",
+        "persona": "MC bán hàng nhiệt tình",
+        "pull_view": "Ai mới vào thì like + follow ủng hộ shop nhé!",
+        "call_to_share": "Share live cho bạn bè cùng săn deal!"
+      },
+      "selling": [
+        {
+          "product_id": "P004",
+          "product_name": "Áo hoodie HeyGen màu trắng",
+          "key_selling_points": [
+            "cotton dày",
+            "form rộng",
+            "giá 299k"
+          ],
+          "tasks": [
+            {
+              "stage": "intro",
+              "task_id": "P004:intro",
+              "instruction": "Mở sản phẩm bằng 1-2 câu hoàn chỉnh."
+            },
+            {
+              "stage": "benefit",
+              "task_id": "P004:benefit",
+              "instruction": "Nêu lợi ích nổi bật của áo hoodie."
+            },
+            {
+              "stage": "offer",
+              "task_id": "P004:offer",
+              "instruction": "Nêu giá và ưu đãi rõ ràng."
+            }
+          ],
+          "min_duration_sec": 120,
+          "max_duration_sec": 480,
+          "transition_cue": "Chuyển sang sản phẩm tiếp theo nhé!"
+        },
+        {
+          "product_id": "P002",
+          "product_name": "Serum Vitamin C 20%",
+          "key_selling_points": [
+            "sáng da",
+            "vitamin C 20%"
+          ],
+          "tasks": [
+            {
+              "stage": "intro",
+              "task_id": "P002:intro",
+              "instruction": "Mở sản phẩm serum."
+            }
+          ],
+          "min_duration_sec": 120,
+          "max_duration_sec": 480,
+          "transition_cue": "Chuyển sang sản phẩm tiếp theo nhé!"
+        }
+      ],
+      "closing": {
+        "thanks": "Cảm ơn cả nhà đã xem live!",
+        "follow_cta": "Follow shop để không bỏ lỡ deal tiếp theo.",
+        "teaser_next": "Live sau còn deal sốc hơn — hẹn gặp lại!"
+      },
+      "persona": null
+    },
+    "comment_batch": [
+      {
+        "id": "c-001",
+        "text": "Áo hoodie giá bao nhiêu vậy shop?",
+        "t": 101.0,
+        "category": "commerce",
+        "intent": "price",
+        "product_id": "P004",
+        "actionable": true
+      },
+      {
+        "id": "c-002",
+        "text": "Mẫu hoodie có size XL không?",
+        "t": 101.5,
+        "category": "commerce",
+        "intent": "size_color",
+        "product_id": "P004",
+        "actionable": true
+      },
+      {
+        "id": "c-003",
+        "text": "Hoodie này chất liệu gì vậy?",
+        "t": 102.0,
+        "category": "commerce",
+        "intent": "unknown",
+        "product_id": "P004",
+        "actionable": true
+      },
+      {
+        "id": "c-004",
+        "text": "Serum Vitamin C còn hàng không?",
+        "t": 102.5,
+        "category": "commerce",
+        "intent": "stock",
+        "product_id": "P002",
+        "actionable": true
+      },
+      {
+        "id": "c-005",
+        "text": "Chai vitamin C này nhiêu tiền vậy chị?",
+        "t": 103.0,
+        "category": "commerce",
+        "intent": "price",
+        "product_id": "P002",
+        "actionable": true
+      },
+      {
+        "id": "c-006",
+        "text": "Serum này hết chưa ạ?",
+        "t": 103.5,
+        "category": "commerce",
+        "intent": "stock",
+        "product_id": "P002",
+        "actionable": true
+      },
+      {
+        "id": "c-007",
+        "text": "Chào chị Lan ơi",
+        "t": 104.0,
+        "category": "social",
+        "intent": "social",
+        "product_id": null,
+        "actionable": false
+      },
+      {
+        "id": "c-008",
+        "text": "Click bit.ly/xxx mua bên em",
+        "t": 104.5,
+        "category": "spam",
+        "intent": "spam",
+        "product_id": null,
+        "actionable": false
+      },
+      {
+        "id": "c-009",
+        "text": "Bóng đá tối nay ai đá vậy?",
+        "t": 105.0,
+        "category": "off_topic",
+        "intent": "off_topic",
+        "product_id": null,
+        "actionable": false
+      },
+      {
+        "id": "c-010",
+        "text": "Áo hoodie còn size XL không ạ?",
+        "t": 106.0,
+        "category": "commerce",
+        "intent": "size_color",
+        "product_id": "P004",
+        "actionable": true
+      },
+      {
+        "id": "c-011",
+        "text": "Freeship không chị?",
+        "t": 107.0,
+        "category": "commerce",
+        "intent": "shipping",
+        "product_id": "P004",
+        "actionable": true
+      },
+      {
+        "id": "c-012",
+        "text": "Màu trắng có hết không?",
+        "t": 108.0,
+        "category": "commerce",
+        "intent": "size_color",
+        "product_id": "P004",
+        "actionable": true
+      }
+    ],
+    "now": 108.0
+  },
+  "outputs": {
+    "action": "introduce_product",
+    "product_id": "P004",
+    "field": null,
+    "stage": "intro",
+    "task_id": "P004:intro",
+    "may_interrupt": false,
+    "reason": "introduce current product before viewer Q&A",
+    "score": 0.0,
+    "cluster_members": [],
+    "topic": null,
+    "text": null
+  }
+}

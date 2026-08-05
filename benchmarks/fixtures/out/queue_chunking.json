@@ -1,0 +1,85 @@
+{
+  "scenario": "queue/chunking",
+  "inputs": {
+    "queue_session": "sess-queue-1",
+    "max_size": 500,
+    "put_ts": [
+      0.0,
+      5.0,
+      10.0,
+      15.0,
+      20.0,
+      25.0,
+      30.0,
+      35.0,
+      40.0,
+      45.0,
+      50.0,
+      55.0,
+      60.0,
+      65.0,
+      70.0,
+      75.0,
+      80.0,
+      85.0,
+      90.0,
+      95.0
+    ],
+    "window_sec": 75.0,
+    "now": 100.0,
+    "text": "Áo hoodie này chất cotton 100% dày dặn form rộng rất thoải mái giá chỉ 299 ngàn đồng thôi nha mọi người nhanh tay chốt đơn nhé",
+    "chunk_target_chars": 40,
+    "chunk_max_chars": 60
+  },
+  "outputs": {
+    "window_comment_ids": [
+      "queue-005",
+      "queue-006",
+      "queue-007",
+      "queue-008",
+      "queue-009",
+      "queue-010",
+      "queue-011",
+      "queue-012",
+      "queue-013",
+      "queue-014",
+      "queue-015",
+      "queue-016",
+      "queue-017",
+      "queue-018",
+      "queue-019"
+    ],
+    "window_texts": [
+      "comment 5",
+      "comment 6",
+      "comment 7",
+      "comment 8",
+      "comment 9",
+      "comment 10",
+      "comment 11",
+      "comment 12",
+      "comment 13",
+      "comment 14",
+      "comment 15",
+      "comment 16",
+      "comment 17",
+      "comment 18",
+      "comment 19"
+    ],
+    "window_count": 15,
+    "stats": {
+      "received_total": 20,
+      "buffered_comments": 20,
+      "active_comments": 15,
+      "oldest_ms_ago": 100000.0,
+      "pending": 20,
+      "total_put": 20
+    },
+    "chunks": [
+      "Áo hoodie này chất cotton 100% dày dặn form rộng rất thoải",
+      "mái giá chỉ 299 ngàn đồng thôi nha mọi người nhanh tay chốt",
+      "đơn nhé"
+    ],
+    "chunk_count": 3
+  }
+}
