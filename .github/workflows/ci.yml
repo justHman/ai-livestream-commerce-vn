@@ -57,15 +57,16 @@ jobs:
         with:
           fetch-depth: 0
       - name: Gitleaks scan (redacted)
-        uses: gitleaks/gitleaks-action@v2
+        # v2.3.6 pinned: v3 requires a GITLEAKS_LICENSE secret unconditionally;
+        # v2.3.6 only enforces it for Organization-owned repos (this repo is
+        # user-owned, so the scan runs license-free). GITLEAKS_VERSION pins the
+        # gitleaks binary; the action scans the event range with --redact and
+        # fails the job (exit 1) when findings exist (3.5).
+        uses: gitleaks/gitleaks-action@v2.3.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-        with:
-          config-path: .gitleaks.toml
-          redact: true
-          fail: true
-          version: v8.24.3
+          GITLEAKS_VERSION: "8.24.3"
 
   affected-area:
     runs-on: ubuntu-latest
