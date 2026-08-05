@@ -70,21 +70,21 @@ jobs:
         working-directory: services/product/${{ matrix.service }}
       - name: Unit tests
         run: >
-          ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short
+          ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=no
           --ignore=tests/integration
           --ignore=tests/contract
         working-directory: services/product/${{ matrix.service }}
       - name: Integration tests
         if: ${{ inputs.integration }}
-        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short
+        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=no
         working-directory: services/product/${{ matrix.service }}
       - name: Contract tests
         if: ${{ inputs.contract }}
-        run: ./.venv/bin/python -m pytest tests/contract -q -p no:cacheprovider --tb=short
+        run: ./.venv/bin/python -m pytest tests/contract -q -p no:cacheprovider --tb=no
         working-directory: services/product/${{ matrix.service }}
       - name: Coverage gate
         if: ${{ inputs.coverage }}
-        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --cov-fail-under=80
+        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=no --cov-fail-under=80
         working-directory: services/product/${{ matrix.service }}
 
   neutral-skip:
