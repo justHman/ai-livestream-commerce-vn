@@ -20,6 +20,14 @@ moved {
   to   = aws_ecs_service.llm
 }
 
+# NOTE: a Terraform resource can move to only ONE destination, and the
+# combined llm_tts task carried both containers, so the tts task def /
+# service / SD service are NEW resources in this module (created fresh;
+# there was no tts address in the old state). The old llm_tts resources
+# move to llm; a real pre-split deployment migrates with the tts
+# container re-created by the new tts resources (state migration is
+# intentionally lossy here — see OpenSpec 1.63).
+
 # ---------------------------------------------------------------------------
 # EC2 Spot capacity — g6 (LLM), g6 (TTS), g4dn (Avatar), c7g (LMCache)
 # Placeholders: min=0 so create does not launch expensive Spot until desired>0

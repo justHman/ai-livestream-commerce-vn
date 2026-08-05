@@ -162,7 +162,7 @@ data "aws_iam_policy_document" "github_deploy_dev" {
       "ssm:GetParameter",
       "ssm:GetParameters",
     ]
-    resources = ["arn:aws:ssm:*:*:parameter/dev/*"]
+    resources = ["arn:aws:ssm:*:*:parameter/${var.github_environment}/*"]
   }
   statement {
     effect    = "Allow"
