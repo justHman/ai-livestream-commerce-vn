@@ -62,7 +62,7 @@ COPY services/product/tts_service/pyproject.toml services/product/tts_service/uv
 COPY services/product/tts_service/src/tts/ /app/src/tts/
 COPY scripts/model_assets/fetch_weights.sh /usr/local/bin/fetch_weights.sh
 COPY services/product/tts_service/entrypoint.sh /entrypoint.sh
-RUN python -m venv /opt/venv \
+RUN python3 -m venv /opt/venv \
     && UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --frozen --no-dev --inexact \
     && chmod +x /usr/local/bin/fetch_weights.sh /entrypoint.sh \
     && chown -R appuser:appuser /app

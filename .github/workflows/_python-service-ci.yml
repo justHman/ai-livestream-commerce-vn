@@ -50,7 +50,7 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - name: Sync service environment
-        run: uv sync --frozen --group dev
+        run: unset VIRTUAL_ENV && uv sync --frozen --group dev
         working-directory: services/product/${{ matrix.service }}
       - name: Format check
         run: uvx ruff format --check --no-cache services/product/${{ matrix.service }}/src services/product/${{ matrix.service }}/tests
