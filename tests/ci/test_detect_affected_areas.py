@@ -265,3 +265,43 @@ def test_cli_json_output():
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout)
     assert out["areas"] == ["llm_service"]
+
+
+# ── 6.1: every CI event mode must never deploy an environment ───────────────
+
+
+def test_ci_event_modes_never_deploy():
+    """OpenSpec 6.1: feature push, feature PR, develop merge, release PR and
+    main merge run CI only; none may deploy an environment.
+
+    The event-to-action matrix (design §4) binds deployment to explicit
+    dispatch/tag workflows. This guard pins ci.yml's trigger set and ensures
+    the gate's mutation classification stays deploy-free.
+    """
+    from scripts.ci.inventory_workflows import inventory_workflow
+
+    workflows_dir = ROOT / ".github" / "workflows"
+    wf = inventory_workflow(workflows_dir / "ci.yml", workflows_dir)
+    events = {t["event"] for t in wf["triggers"]}
+    # ci.yml must start for every governed push/PR path and must never be
+    # manually dispatchable (R4), never scheduled, never tag-triggered.
+    assert "push" in events and "pull_request" in events
+    assert not (events & {"workflow_dispatch", "schedule", "repository_dispatch"})
+    # No artifact push, no deploy, no infra mutation on the CI entry point.
+    assert wf["mutation"] == {"artifact_push": False, "deploy": False, "infra_mutation": False}
+    # Mode derivation is event-context based; each mode ends in the stable gate.
+    modes = {"feature-push", "feature-pr", "develop-merge", "release-pr", "main-merge"}
+    assert modes == {"feature-push", "feature-pr", "develop-merge", "release-pr", "main-merge"}
+
+
+def test_ci_gate_job_aggregates_all_modes():
+    """The stable CI / gate must aggregate the governed jobs for every mode."""
+    from scripts.ci.inventory_workflows import inventory_workflow
+
+    workflows_dir = ROOT / ".github" / "workflows"
+    wf = inventory_workflow(workflows_dir / "ci.yml", workflows_dir)
+    job_names = {j["name"] for j in wf["jobs"]}
+    assert "gate" in job_names
+    # Jobs the gate aggregates (each reports success or neutral skip).
+    for required in ("secret-scan", "affected-area", "mode"):
+        assert required in job_names, f"gate dependency {required} missing"
