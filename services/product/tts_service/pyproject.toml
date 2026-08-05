@@ -4,13 +4,16 @@ version = "0.1.0"
 description = "Self-host text-to-speech service package"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy"]
+dependencies = ["numpy", "fastapi"]
 
 [project.optional-dependencies]
 cosyvoice = ["torch"]
 transformers = ["torch", "transformers"]
 vieneu = ["vieneu"]
 test = ["pytest"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -22,3 +25,18 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["tts*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+# Integration/contract suites and live-stack behavior never run in ordinary CI;
+# select them explicitly (see scripts/ci/test_matrix.json).
+addopts = "--ignore=tests/integration --ignore=tests/contract --cov=tts --cov-branch --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = ["tts"]
+
+[tool.coverage.report]
+fail_under = 80

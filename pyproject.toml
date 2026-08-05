@@ -1,40 +1,27 @@
+# Repository-root tool-only project. NOT built or installed as a package and
+# NOT a runtime input to any product image (tool.uv.package = false). Holds
+# only cross-service E2E, sandbox, contract-generation, and repository-tool
+# dependencies; product services resolve from their own pyproject.toml +
+# uv.lock (see services/product/*_service/).
 [project]
-name = "ai-livestream-backend"
-version = "0.1.0"
-description = "VN AI livestream commerce repository tools and compatibility tests"
-readme = "README.md"
+name = "ai-livestream-repo-tools"
+version = "0.0.0"
+description = "Repository-root tool-only project (E2E, sandbox, contract, repo tools)"
 requires-python = ">=3.11"
-dependencies = [
-  "fastapi",
-  "uvicorn[standard]",
-  "pydantic",
-  "httpx",
-  "python-multipart",
-  "python-dotenv",
-  "redis",
-  "PyJWT",
-  # Compatibility-test dependencies for staged legacy imports.
-  "numpy",
-  "Pillow",
-  "requests",
-  "websocket-client",
-]
-
-[project.optional-dependencies]
-test = [
-  "pytest",
-  "pytest-asyncio",
-  "pytest-timeout",
-  "async_timeout",
-  # Static GitHub Actions workflow validation (OpenSpec 2.3) parses YAML.
-  "PyYAML>=6.0",
-]
-livekit = ["livekit"]
-postgres = ["asyncpg"]
-director = ["sentence-transformers>=5,<6"]
+dependencies = []
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio",
+  "pytest-timeout",
+  "async_timeout",
+  # Static GitHub Actions workflow validation parses YAML.
+  "PyYAML>=6.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -50,6 +37,10 @@ filterwarnings = [
   "ignore::DeprecationWarning:httpx.*",
   "ignore::DeprecationWarning:starlette.*",
 ]
+
+[tool.coverage.report]
+branch = true
+fail_under = 80
 
 [tool.ruff]
 line-length = 100
