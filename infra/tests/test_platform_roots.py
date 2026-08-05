@@ -64,4 +64,6 @@ def test_platform_roots_and_legacy_references() -> None:
         assert "services/livekit/" not in text
         assert "services/lmcache/" not in text
 
-    assert (ROOT / "core" / "sql" / "runtime_schema.sql").is_file()
+    assert (
+        ROOT / "services" / "product" / "backend_service" / "src" / "backend" / "db" / "sql" / "runtime_schema.sql"
+    ).is_file()
