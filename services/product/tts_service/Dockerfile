@@ -60,7 +60,7 @@ RUN apt-get update \
 
 COPY services/product/tts_service/pyproject.toml services/product/tts_service/uv.lock services/product/tts_service/README.md /app/
 COPY services/product/tts_service/src/tts/ /app/src/tts/
-COPY services/scripts/fetch_weights.sh /usr/local/bin/fetch_weights.sh
+COPY scripts/model_assets/fetch_weights.sh /usr/local/bin/fetch_weights.sh
 COPY services/product/tts_service/entrypoint.sh /entrypoint.sh
 RUN UV_PROJECT_ENVIRONMENT=/usr/local uv sync --frozen --no-dev --inexact \
     && chmod +x /usr/local/bin/fetch_weights.sh /entrypoint.sh \

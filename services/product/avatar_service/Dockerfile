@@ -43,7 +43,7 @@ COPY --from=deps /opt/venv /opt/venv
 # Minimal health app until LiveKit publish + model runtime lands.
 COPY services/product/avatar_service/src/avatar/ ./src/avatar/
 COPY services/product/avatar_service/health_app.py ./health_app.py
-COPY services/scripts/fetch_weights.sh /usr/local/bin/fetch_weights.sh
+COPY scripts/model_assets/fetch_weights.sh /usr/local/bin/fetch_weights.sh
 COPY services/product/avatar_service/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /usr/local/bin/fetch_weights.sh /entrypoint.sh \

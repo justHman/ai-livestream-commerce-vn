@@ -153,7 +153,7 @@ resources are gone.
 ### Teardown verification — mandatory evidence
 
 A destroy command without verification does NOT count as teardown complete.
-Run `scripts/teardown_verify.ps1` (or the checklist below) and write
+Run `infra/scripts/teardown_verify.ps1` (or the checklist below) and write
 `teardown-verify.md` into the stage log dir. Verification MUST also confirm
 no backup/snapshot leftovers (iron rule: no backup pile-up).
 

@@ -11,7 +11,7 @@ Hub namespace: `imjusthman/ai-live-{svc}`. Weights on S3, never in layers.
 | `platform/livekit/` | `imjusthman/ai-live-livekit` | 7880 + UDP 50000-60000 | arm64 |
 | `platform/lmcache/` | `imjusthman/ai-live-lmcache` | 5555 + 8080 | arm64 |
 | `llm-tts/` | (Task family docs only) | — | — |
-| `scripts/` | `fetch_weights.sh` shared helper | — | — |
+| `model_assets/` | `fetch_weights.sh` shared helper | — | — |
 
 ## Build (from repo root)
 
@@ -26,7 +26,7 @@ docker build -f services/platform/lmcache/Dockerfile -t imjusthman/ai-live-lmcac
 
 ## Weight entrypoint contract
 
-GPU services (`llm`, `tts`, `avatar`) call `services/scripts/fetch_weights.sh` when:
+GPU services (`llm`, `tts`, `avatar`) call `scripts/model_assets/fetch_weights.sh` when:
 
 ```
 WEIGHTS_S3_URI=s3://ai-livestream-{env}/weights/{svc}/

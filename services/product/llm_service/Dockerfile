@@ -39,9 +39,9 @@ RUN apt-get update \
 
 COPY services/product/llm_service/pyproject.toml services/product/llm_service/uv.lock services/product/llm_service/README.md /app/
 COPY services/product/llm_service/src/llm/ /app/src/llm/
-COPY services/scripts/fetch_weights.sh /usr/local/bin/fetch_weights.sh
+COPY scripts/model_assets/fetch_weights.sh /usr/local/bin/fetch_weights.sh
 COPY services/product/llm_service/entrypoint.sh /entrypoint.sh
-COPY scripts/gen_vllm_modelinfo_cache.py /tmp/gen_vllm_modelinfo_cache.py
+COPY services/product/llm_service/scripts/gen_vllm_modelinfo_cache.py /tmp/gen_vllm_modelinfo_cache.py
 
 # Pre-generate _ModelInfo cache (PR #23558, already merged in vLLM 0.22.0).
 # vLLM reads $VLLM_CACHE_ROOT/modelinfos/{module}-{class}.json and skips
