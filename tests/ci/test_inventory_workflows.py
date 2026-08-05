@@ -63,7 +63,7 @@ def test_every_workflow_has_mutation_classification():
     [
         ("ci.yml", "push"),
         ("ci.yml", "pull_request"),
-        ("deploy-dev.yml", "push"),
+        ("deploy-dev.yml", "workflow_dispatch"),
         ("deploy-prod.yml", "push"),
         ("deploy-prod.yml", "workflow_dispatch"),
         ("build-images.yml", "workflow_dispatch"),
@@ -122,10 +122,14 @@ def test_service_tags_captured():
     assert _inv("deploy-prod.yml")["service_tags"] == ["v*"]
 
 
-def test_path_filters_captured():
-    pf = _inv("deploy-dev.yml").get("path_filters")
-    assert pf is not None
-    assert "services/**" in pf
+def test_dispatch_only_has_no_path_filters():
+    # deploy-dev is dispatch-only (OpenSpec 4.1): the push trigger and path
+    # filters are removed; deployment is driven by explicit commit/service
+    # inputs instead of a push event.
+    wf = _inv("deploy-dev.yml")
+    assert wf.get("path_filters") in (None, [])
+    events = [t["event"] for t in wf["triggers"]]
+    assert events == ["workflow_dispatch"]
 
 
 def test_referenced_actions_have_valid_form():
@@ -257,10 +261,16 @@ def test_secret_refs_captured_from_step_with():
     all_secrets = set()
     for job in wf["jobs"]:
         all_secrets.update(job.get("secrets", []))
-    # deploy-dev uses DOCKERHUB_USER and DOCKERHUB_TOKEN in login steps
-    assert "DOCKERHUB_USER" in all_secrets, f"got {sorted(all_secrets)}"
-    assert "DOCKERHUB_TOKEN" in all_secrets, f"got {sorted(all_secrets)}"
+    # deploy-dev uses AWS_ROLE_ARN_DEV in configure-aws-credentials steps.
     assert "AWS_ROLE_ARN_DEV" in all_secrets
+    # Docker Hub credentials moved into the reusable deploy/build workflows
+    # (4.1): they must be inventoried there, not duplicated in the caller.
+    reusable = inventory_workflow(WORKFLOWS / "_deploy-service.yml", WORKFLOWS)
+    reusable_secrets = set()
+    for job in reusable["jobs"]:
+        reusable_secrets.update(job.get("secrets", []))
+    assert "DOCKERHUB_USER" in reusable_secrets
+    assert "DOCKERHUB_TOKEN" in reusable_secrets
 
 
 def test_secret_refs_captured_from_step_env():

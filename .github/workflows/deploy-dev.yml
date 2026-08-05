@@ -1,15 +1,35 @@
-# deploy-dev — auto deploy to DEV on push to develop.
-# Global Terraform bootstrap must exist before this runs.
+# deploy-dev — explicit development deployment (OpenSpec 4.1).
+#
+# Manual deployment = explicit trigger (design §3): the workflow is dispatched
+# via `gh workflow run deploy-dev.yml --ref develop -f commit_sha=<sha>
+# -f services=backend_service,tts_service` (web UI / REST equivalent). It
+# validates the commit belongs to `develop` and passed the CI gate, builds the
+# selected services with the shared cached build, deploys them via the shared
+# _deploy-service reusable (service-scoped rollback), and records deployment
+# evidence (4.4).
+#
+# Deployment targets the protected `development` GitHub Environment. Secrets
+# AWS_ROLE_ARN_DEV / DOCKERHUB_USER / DOCKERHUB_TOKEN must exist. Runtime
+# secrets are provisioned out-of-band in SSM under /dev/* (the deploy role has
+# ssm:GetParameter(s), not PutParameter) — preflight verifies they exist and
+# fails closed with operator instructions when missing.
+#
+# NOTE: the deploy role (ai-livestream-github-deploy-dev) has NO
+# elbv2:DescribeTargetHealth permission, so smoke is an HTTP check against
+# the ALB health endpoint instead of target-health polling.
 name: deploy-dev
 
 on:
-  push:
-    branches: [develop]
-    paths:
-      - "services/**"
-      - "infra/**"
-      - "pyproject.toml"
-      - "uv.lock"
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Full 40-hex commit SHA to deploy (must be on develop)"
+        required: true
+        type: string
+      services:
+        description: "Comma-separated services: backend_service,llm_service,tts_service,avatar_service"
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -24,24 +44,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      validated_sha: ${{ steps.v.outputs.validated_sha }}
+      services_matrix: ${{ steps.v.outputs.services_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - name: Validate inputs and branch membership
+        id: v
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          SERVICES: ${{ inputs.services }}
+        run: |
+          set -euo pipefail
+          python scripts/ci/validate_workflow_inputs.py \
+            --sha "$COMMIT_SHA" \
+            --profile deploy-dev \
+            --services "$SERVICES" \
+            --repo-root . \
+            --github-output
+          git fetch --no-tags origin develop:refs/remotes/origin/develop
+          git merge-base --is-ancestor "$COMMIT_SHA" origin/develop || {
+            echo "Commit $COMMIT_SHA is not an ancestor of origin/develop." >&2
+            echo "deploy-dev dispatches must target a commit reachable from develop." >&2
+            exit 1
+          }
+      - name: Verify CI gate passed for commit
+        env:
+          COMMIT_SHA: ${{ steps.v.outputs.validated_sha }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${COMMIT_SHA}&event=push&per_page=10" \
+            --jq '[.workflow_runs[] | select(.name == "ci" or .path == ".github/workflows/ci.yml")] | sort_by(.created_at) | reverse | .[0] | {conclusion, status} // empty' 2>/dev/null || true)
+          status=$(jq -r '.status // "missing"' <<<"$conclusion")
+          result=$(jq -r '.conclusion // "missing"' <<<"$conclusion")
+          if [[ "$status" != "completed" || "$result" != "success" ]]; then
+            echo "CI gate for $COMMIT_SHA is not a completed success (status=$status conclusion=$result)." >&2
+            echo "Deployment blocked by design: the commit must have passed the CI gate." >&2
+            exit 1
+          fi
+          echo "CI gate passed for $COMMIT_SHA."
+
   preflight:
+    needs: validate
     runs-on: ubuntu-latest
     environment: development
     outputs:
       ecs_cluster: ${{ steps.tf.outputs.ecs_cluster }}
       backend_service: ${{ steps.tf.outputs.backend_service }}
-      backend_target_group_arn: ${{ steps.tf.outputs.backend_target_group_arn }}
-      migrate_task_arn: ${{ steps.tf.outputs.migrate_task_arn }}
-      public_subnet_ids: ${{ steps.tf.outputs.public_subnet_ids }}
-      backend_sg_id: ${{ steps.tf.outputs.backend_sg_id }}
       llm_service: ${{ steps.tf.outputs.llm_service }}
       tts_service: ${{ steps.tf.outputs.tts_service }}
       avatar_service: ${{ steps.tf.outputs.avatar_service }}
       has_llm: ${{ steps.tf.outputs.has_llm }}
       has_tts: ${{ steps.tf.outputs.has_tts }}
       has_avatar: ${{ steps.tf.outputs.has_avatar }}
+      backend_target_group_arn: ${{ steps.tf.outputs.backend_target_group_arn }}
+      public_subnet_ids: ${{ steps.tf.outputs.public_subnet_ids }}
+      backend_sg_id: ${{ steps.tf.outputs.backend_sg_id }}
+      migrate_task_arn: ${{ steps.tf.outputs.migrate_task_arn }}
+      smoke_url: ${{ steps.tf.outputs.smoke_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.validated_sha }}
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -57,17 +126,17 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.14.8"
-      - name: Provision SSM SecureString secrets from protected environment
-        env:
-          BACKEND_API_TOKEN: ${{ secrets.BACKEND_API_TOKEN }}
-          ADMIN_API_TOKEN: ${{ secrets.ADMIN_API_TOKEN }}
+      - name: Verify runtime secrets exist (provisioned out-of-band)
         run: |
           set -euo pipefail
-          # Out-of-band provisioning: protected GitHub Environment secrets -> SSM
-          # SecureString. Terraform never receives plaintext; values are masked
-          # by GitHub and never echoed.
-          aws ssm put-parameter --name "/dev/backend/api_token" --type SecureString --value "$BACKEND_API_TOKEN" --overwrite >/dev/null
-          aws ssm put-parameter --name "/dev/admin/api_token" --type SecureString --value "$ADMIN_API_TOKEN" --overwrite >/dev/null
+          for name in /dev/backend/api_token /dev/admin/api_token; do
+            aws ssm get-parameter --name "$name" --with-decryption >/dev/null 2>&1 || {
+              echo "SSM parameter $name missing. Provision it out-of-band before deploying:" >&2
+              echo "  aws ssm put-parameter --name $name --type SecureString --overwrite" >&2
+              exit 1
+            }
+          done
+          echo "Runtime secrets present."
       - name: Read deployed Terraform contract
         id: tf
         run: |
@@ -83,13 +152,16 @@ jobs:
           llm_svc=$(jq -r '.ecs_service_names.value.llm // empty' <<<"$output")
           tts_svc=$(jq -r '.ecs_service_names.value.tts // empty' <<<"$output")
           avatar_svc=$(jq -r '.ecs_service_names.value.avatar // empty' <<<"$output")
+          scheme=$(jq -r '.alb_url_scheme.value // "http"' <<<"$output")
+          dns=$(jq -r '.alb_dns_name.value // empty' <<<"$output")
           llm_desired=$(jq -e '.desired_optional_services.value.llm // 0 | if type == "number" then . else error("llm not number") end' <<<"$output")
           tts_desired=$(jq -e '.desired_optional_services.value.tts // 0 | if type == "number" then . else error("tts not number") end' <<<"$output")
           avatar_desired=$(jq -e '.desired_optional_services.value.avatar // 0 | if type == "number" then . else error("avatar not number") end' <<<"$output")
-          [[ -n "$cluster" && -n "$backend_svc" && -n "$backend_tg" ]] || {
-            echo "Terraform outputs incomplete (cluster/backend/target group required)." >&2
+          [[ -n "$cluster" && -n "$backend_svc" ]] || {
+            echo "Terraform outputs incomplete (cluster/backend service required)." >&2
             exit 1
           }
+          [[ -n "$dns" ]] || { echo "alb_dns_name missing; cannot smoke." >&2; exit 1; }
           echo "ecs_cluster=$cluster" >> "$GITHUB_OUTPUT"
           echo "backend_service=$backend_svc" >> "$GITHUB_OUTPUT"
           echo "backend_target_group_arn=$backend_tg" >> "$GITHUB_OUTPUT"
@@ -114,205 +186,113 @@ jobs:
           check_optional "$llm_desired" "$llm_svc" llm
           check_optional "$tts_desired" "$tts_svc" tts
           check_optional "$avatar_desired" "$avatar_svc" avatar
+          echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"
 
-  build-backend:
-    needs: preflight
+  build:
+    needs: [validate, preflight]
+    if: ${{ always() && needs.validate.result == 'success' && needs.preflight.result == 'success' }}
     runs-on: ubuntu-latest
     environment: development
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.validate.outputs.services_matrix) }}
+        include:
+          - service: backend_service
+            role: backend
+            dockerfile: services/product/backend_service/Dockerfile
+            image: imjusthman/ai-live-backend
+            platforms: linux/arm64
+          - service: llm_service
+            role: llm
+            dockerfile: services/product/llm_service/Dockerfile
+            image: imjusthman/ai-live-llm
+            platforms: linux/amd64
+          - service: tts_service
+            role: tts
+            dockerfile: services/product/tts_service/Dockerfile
+            image: imjusthman/ai-live-tts
+            platforms: linux/amd64
+          - service: avatar_service
+            role: avatar
+            dockerfile: services/product/avatar_service/Dockerfile
+            image: imjusthman/ai-live-avatar
+            platforms: linux/amd64
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+          ref: ${{ needs.validate.outputs.validated_sha }}
+      - uses: ./.github/workflows/_container-build.yml
         with:
-          context: .
-          file: services/product/backend_service/Dockerfile
-          platforms: linux/arm64
+          image: ${{ matrix.image }}
+          tag: dev-${{ needs.validate.outputs.validated_sha }}
+          scope: ${{ matrix.role }}
+          dockerfile: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
           push: true
-          tags: imjusthman/ai-live-backend:dev-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-llm:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.has_llm == 'true' }}
-    runs-on: ubuntu-latest
-    environment: development
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/product/llm_service/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: imjusthman/ai-live-llm:dev-${{ github.sha }}
-
-  build-tts:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.has_tts == 'true' }}
-    runs-on: ubuntu-latest
-    environment: development
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/product/tts_service/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: imjusthman/ai-live-tts:dev-${{ github.sha }}
-
-  build-avatar:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.has_avatar == 'true' }}
-    runs-on: ubuntu-latest
-    environment: development
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/product/avatar_service/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: imjusthman/ai-live-avatar:dev-${{ github.sha }}
 
   deploy:
-    needs: [preflight, build-backend, build-llm, build-tts, build-avatar]
-    # Skip auto-deploy when repo variable SKIP_AUTO_DEPLOY=true (build-only run:
-    # push SHA images to Docker Hub, let operator deploy manually). This
-    # supports the three-stage money-safe boot: build images offline, then
-    # manual Phase 1 scale-up after verifying the stack at zero cost.
-    if: ${{ always() && vars.SKIP_AUTO_DEPLOY != 'true' && needs.preflight.result == 'success' && needs.build-backend.result == 'success' && (needs.build-llm.result == 'success' || needs.build-llm.result == 'skipped') && (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') && (needs.build-avatar.result == 'success' || needs.build-avatar.result == 'skipped') }}
+    needs: [validate, preflight, build]
+    if: ${{ always() && needs.validate.result == 'success' && needs.preflight.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     environment: development
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.validate.outputs.services_matrix) }}
+        include:
+          - service: backend_service
+            role: backend
+            image: imjusthman/ai-live-backend
+            container: backend
+          - service: llm_service
+            role: llm
+            image: imjusthman/ai-live-llm
+            container: llm
+          - service: tts_service
+            role: tts
+            image: imjusthman/ai-live-tts
+            container: tts
+          - service: avatar_service
+            role: avatar
+            image: imjusthman/ai-live-avatar
+            container: avatar
     env:
-      IMAGE_TAG: dev-${{ github.sha }}
       ECS_CLUSTER: ${{ needs.preflight.outputs.ecs_cluster }}
-      BACKEND_SERVICE: ${{ needs.preflight.outputs.backend_service }}
-      BACKEND_TARGET_GROUP: ${{ needs.preflight.outputs.backend_target_group_arn }}
-      LLM_SERVICE: ${{ needs.preflight.outputs.llm_service }}
-      TTS_SERVICE: ${{ needs.preflight.outputs.tts_service }}
-      AVATAR_SERVICE: ${{ needs.preflight.outputs.avatar_service }}
-      HAS_LLM: ${{ needs.preflight.outputs.has_llm }}
-      HAS_TTS: ${{ needs.preflight.outputs.has_tts }}
-      HAS_AVATAR: ${{ needs.preflight.outputs.has_avatar }}
       MIGRATE_TASK_ARN: ${{ needs.preflight.outputs.migrate_task_arn }}
       BACKEND_SUBNETS: ${{ needs.preflight.outputs.public_subnet_ids }}
       BACKEND_SG: ${{ needs.preflight.outputs.backend_sg_id }}
+      VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.validated_sha }}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy services with rollback and target health gate
+      - name: Run pre-deploy migration
+        if: ${{ env.MIGRATE_TASK_ARN != '' && matrix.role == 'backend' }}
         run: |
           set -euo pipefail
-          updated_services=()
-          rollback_stack=()
-          rollback() {
-            trap - ERR
-            local i service old_task entry
-            for ((i=${#rollback_stack[@]}-1; i>=0; i--)); do
-              entry="${rollback_stack[$i]}"
-              IFS='|' read -r service old_task <<<"$entry"
-              aws ecs update-service --cluster "$ECS_CLUSTER" --service "$service" --task-definition "$old_task" >/dev/null || echo "Rollback failed for $service" >&2
-            done
-            if [[ ${#rollback_stack[@]} -gt 0 ]]; then
-              local services=()
-              for ((i=${#rollback_stack[@]}-1; i>=0; i--)); do
-                IFS='|' read -r service _ <<<"${rollback_stack[$i]}"
-                services+=("$service")
-              done
-              aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${services[@]}" || echo "Rollback stability wait failed" >&2
-            fi
-            exit 1
-          }
-          trap rollback ERR
-          deploy_service() {
-            local role="$1" service="$2" mandatory="$3" details status failures old_task task new_task
-            if [[ -z "$service" ]]; then
-              [[ "$mandatory" != mandatory ]] && return 0
-              echo "$role service name is empty." >&2
-              return 1
-            fi
-            details=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$service")
-            status=$(jq -r '.services[0].status // empty' <<<"$details")
-            failures=$(jq '.failures | length' <<<"$details")
-            if [[ "$status" != ACTIVE || "$failures" -gt 0 ]]; then
-              echo "$role ($service) not ACTIVE (status=$status, failures=$failures)." >&2
-              return 1
-            fi
-            old_task=$(jq -r '.services[0].taskDefinition' <<<"$details")
-            task=$(aws ecs describe-task-definition --task-definition "$old_task" --query taskDefinition)
-            case "$role" in
-              backend)
-                task=$(jq --arg image "imjusthman/ai-live-backend:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "backend" then .image = $image else . end)' <<<"$task")
-                ;;
-              llm)
-                task=$(jq --arg image "imjusthman/ai-live-llm:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "llm" then .image = $image else . end)' <<<"$task")
-                ;;
-              tts)
-                task=$(jq --arg image "imjusthman/ai-live-tts:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "tts" then .image = $image else . end)' <<<"$task")
-                ;;
-              avatar)
-                task=$(jq --arg image "imjusthman/ai-live-avatar:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "avatar" then .image = $image else . end)' <<<"$task")
-                ;;
-              *)
-                echo "Unsupported ECS role: $role" >&2
-                return 1
-                ;;
-            esac
-            task=$(jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)' <<<"$task")
-            new_task=$(aws ecs register-task-definition --cli-input-json "$task" --query taskDefinition.taskDefinitionArn --output text)
-            aws ecs update-service --cluster "$ECS_CLUSTER" --service "$service" --task-definition "$new_task" >/dev/null
-            rollback_stack+=("$service|$old_task")
-            updated_services+=("$service")
-          }
-          target_group_healthy() {
-            aws elbv2 describe-target-health --target-group-arn "$BACKEND_TARGET_GROUP" | jq -e '[.TargetHealthDescriptions[].TargetHealth.State] | length > 0 and all(.[]; . == "healthy")' >/dev/null
-          }
-          # Pre-deploy migration: run once before backend rollout, abort on failure.
-          # Additive/idempotent raw-SQL migrations only; never from task startup.
-          if [[ -n "${MIGRATE_TASK_ARN:-}" ]]; then
-            run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
-              --query 'tasks[0].taskArn' --output text)
-            [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
-            aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$run_id"
-            exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$run_id" --query 'tasks[0].containers[0].exitCode' --output text)
-            [[ "$exit_code" == "0" ]] || { echo "Migration failed (exit $exit_code). Deployment aborted." >&2; exit 1; }
-            echo "Migration completed."
-          fi
-          deploy_service backend "$BACKEND_SERVICE" mandatory
-          [[ "$HAS_LLM" == true ]] && deploy_service llm "$LLM_SERVICE" optional
-          [[ "$HAS_TTS" == true ]] && deploy_service tts "$TTS_SERVICE" optional
-          [[ "$HAS_AVATAR" == true ]] && deploy_service avatar "$AVATAR_SERVICE" optional
-          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${updated_services[@]}"
-          for _ in {1..12}; do
-            target_group_healthy && break
-            sleep 10
-          done
-          target_group_healthy
-          trap - ERR
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$run_id"
+          exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$run_id" --query 'tasks[0].containers[0].exitCode' --output text)
+          [[ "$exit_code" == "0" ]] || { echo "Migration failed (exit $exit_code). Deployment aborted." >&2; exit 1; }
+          echo "Migration completed."
+      - name: Deploy service
+        uses: ./.github/workflows/_deploy-service.yml
+        with:
+          env: development
+          commit_sha: ${{ env.VALIDATED_SHA }}
+          initiator: ${{ github.actor }}
+          cluster: ${{ needs.preflight.outputs.ecs_cluster }}
+          service: ${{ needs.preflight.outputs[format('{0}_service', matrix.role)] }}
+          container: ${{ matrix.container }}
+          image: ${{ format('{0}:dev-{1}', matrix.image, env.VALIDATED_SHA) }}
+          role_arn: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws_region: ${{ env.AWS_REGION }}
+          smoke_url: ${{ matrix.role == 'backend' && needs.preflight.outputs.smoke_url || '' }}
