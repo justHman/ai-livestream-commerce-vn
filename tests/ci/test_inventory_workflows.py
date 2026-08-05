@@ -67,6 +67,7 @@ def test_every_workflow_has_mutation_classification():
         ("deploy-staging.yml", "workflow_dispatch"),
         ("deploy-prod.yml", "push"),
         ("deploy-prod.yml", "workflow_dispatch"),
+        ("release-service.yml", "push"),
         ("build-images.yml", "workflow_dispatch"),
         ("seed-weights.yml", "workflow_dispatch"),
     ],
