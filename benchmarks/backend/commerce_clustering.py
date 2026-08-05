@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from core.director.catalog import Product
-from core.director.cluster import Comment, cluster_comments
-from core.director.embedder import BiEncoderEmbedder, DEFAULT_MODEL_ID, HashingEmbedder
-from core.director.routing import route_comment
+from backend.application.director.catalog import Product
+from backend.application.director.clustering import Comment, cluster_comments
+from backend.application.director.embeddings import BiEncoderEmbedder, DEFAULT_MODEL_ID, HashingEmbedder
+from backend.application.director.routing import route_comment
 
 
 FIXTURE = [

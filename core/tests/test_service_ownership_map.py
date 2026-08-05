@@ -26,6 +26,16 @@ KNOWN_MOVED_SOURCES = {
     "core/server.py",  # removed in 1.26; entrypoint moved to backend/main.py
     "services/livekit/",
     "services/lmcache/",
+    # Removed in 1.58; moved to canonical owners (manifest rows annotated).
+    "scripts/bench_api.py (removed 1.58; moved to benchmarks/api/latency.py)",
+    "scripts/benchmark_commerce_clustering.py (removed 1.58; moved to benchmarks/backend/commerce_clustering.py)",
+    "scripts/benchmark_stage2.py (removed 1.58; moved to benchmarks/backend/stage2_pipeline.py)",
+    "scripts/stage_smoke.ps1 (removed 1.58; moved to infra/scripts/staging_smoke.ps1)",
+    "scripts/teardown_verify.ps1 (removed 1.58; moved to infra/scripts/teardown_verify.ps1)",
+    "scripts/swap_task_image.py (removed 1.58; moved to infra/scripts/swap_task_image.py)",
+    "scripts/gen_vllm_modelinfo_cache.py (removed 1.58; moved to services/product/llm_service/scripts/)",
+    "scripts/upload_weights_s3.py (removed 1.58; moved to scripts/model_assets/upload.py)",
+    "services/scripts/fetch_weights.sh (removed 1.58; moved to scripts/model_assets/fetch_weights.sh)",
 }
 EXACT_TARGETS = {
     ".env.example": ".env.example",

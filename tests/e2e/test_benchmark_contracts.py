@@ -13,8 +13,8 @@ _BENCH_ROOT = Path(__file__).resolve().parents[2]
 if str(_BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(_BENCH_ROOT))
 
-from core.director.director import Director
-from core.render.orchestrator import StreamOrchestrator
+from backend.application.director.decision import Director
+from backend.application.render.orchestrator import StreamOrchestrator
 from benchmarks.backend.stage2_pipeline import (
     compare_p95,
     run_lanes,
@@ -144,7 +144,7 @@ def test_sandbox_lane_confirms_bounded_playback_and_cleans_up() -> None:
             return {"credits_available": True}
 
         def start(self, opts):
-            from core.render.base import StartResult
+            from avatar.engines.base import StartResult
 
             return StartResult("sandbox-session", "wss://example", "secret-client-token")
 

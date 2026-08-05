@@ -15,13 +15,13 @@ import copy
 from dataclasses import asdict
 from typing import Any
 
-from core.director.catalog import Product
-from core.director.cluster import Comment
-from core.director.config import StreamConfig
-from core.director.embedder import HashingEmbedder
-from core.director.hooks import HookPool
-from core.director.routing import route_comment
-from core.director.state import Phase, ProductState, StreamState
+from backend.application.director.catalog import Product
+from backend.application.director.clustering import Comment
+from backend.application.director.config import StreamConfig
+from backend.application.director.embeddings import HashingEmbedder
+from backend.application.director.hooks import HookPool
+from backend.application.director.routing import route_comment
+from backend.application.director.state import Phase, ProductState, StreamState
 
 from .products import CORPUS_PRODUCTS
 

@@ -8,7 +8,7 @@ fixture-generation time from the hashing embedder.
 
 from __future__ import annotations
 
-from core.director.catalog import Product, ProductVariant
+from backend.application.director.catalog import Product, ProductVariant
 
 
 def _make_products() -> list[Product]:

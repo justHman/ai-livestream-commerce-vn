@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.director.cluster import cluster_comments
-from core.director.director import Director
-from core.director.embedder import HashingEmbedder
-from core.director.scorer import rank_clusters
+from backend.application.director.clustering import cluster_comments
+from backend.application.director.decision import Director
+from backend.application.director.embeddings import HashingEmbedder
+from backend.application.director.scoring import rank_clusters
 
 from ..corpus import (
     T0,

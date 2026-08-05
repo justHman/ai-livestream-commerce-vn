@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.director.state import Phase, ProductStatus
+from backend.application.director.state import Phase, ProductStatus
 
 from ..corpus import build_state, jsonable
 from ..products import CORPUS_PRODUCTS

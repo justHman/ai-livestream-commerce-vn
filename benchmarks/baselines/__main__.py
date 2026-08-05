@@ -63,12 +63,12 @@ def _bench(name: str, fn: Callable[[], None], rounds: int = 200) -> dict:
 
 def run_baselines() -> dict:
     """Run every baseline; returns the full report dict."""
-    from core.director.catalog import route_intent_to_field
-    from core.director.chat_queue import ChatQueue
-    from core.director.cluster import cluster_comments
-    from core.director.embedder import HashingEmbedder, cosine
-    from core.director.pivot import should_enter_pivot
-    from core.director.routing import route_comment
+    from backend.application.director.catalog import route_intent_to_field
+    from backend.application.director.comment_buffer import ChatQueue
+    from backend.application.director.clustering import cluster_comments
+    from backend.application.director.embeddings import HashingEmbedder, cosine
+    from backend.application.director.pivot import should_enter_pivot
+    from backend.application.director.routing import route_comment
 
     from benchmarks.fixtures.corpus import (
         build_state,
@@ -119,7 +119,7 @@ def run_baselines() -> dict:
 
     director = None
     if True:  # build the decision-cycle baseline
-        from core.director.director import Director
+        from backend.application.director.decision import Director
 
         state2 = build_state()
         state2.cursor.opening_completed = True

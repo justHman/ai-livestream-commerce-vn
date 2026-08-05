@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.director.director import Director
-from core.schemas.run_plan import RunPlan, SellingTask
+from backend.application.director.decision import Director
+from backend.application.schemas.run_plan import RunPlan, SellingTask
 
 from ..corpus import (
     build_state,

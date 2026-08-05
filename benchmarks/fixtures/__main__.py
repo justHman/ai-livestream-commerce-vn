@@ -1,9 +1,9 @@
 """Fixture generator entrypoint (task 1.77).
 
-Runs every scenario against the legacy ``core.director`` and writes
+Runs every scenario against the canonical director (aliased as core.director by verify_parity) and writes
 deterministic input/output JSON under ``benchmarks/fixtures/out/`` plus a
 manifest. Re-running must produce byte-identical files (same Python version,
-same core tree).
+same canonical director tree).
 
 Usage:
     python -m benchmarks.fixtures [--out DIR]
@@ -42,20 +42,20 @@ SCENARIOS = {
 MANIFEST_VERSION = "1.0.0"
 
 
-# The fixtures characterize the LEGACY Director tree (core/ before extraction).
+# The fixtures characterize the LEGACY Director tree (pre-extraction, task 1.77).
 # This is the supervisor base for task 1.77; do not follow repo HEAD, which
 # moves as benchmark commits land.
 PRODUCER_COMMIT = "fb1e5b5"
 
 
 def _producer_commit() -> str:
-    """Short SHA of the core/ tree the fixtures were produced from."""
+    """Short SHA of the director tree the fixtures were produced from."""
     return PRODUCER_COMMIT
 
 
 def _producer_note() -> str:
     return (
-        "Legacy Director under core/ at producer commit; hash embedder; "
+        "Legacy Director at producer commit; hash embedder; "
         "fixed corpus/clock; no randomness in outputs."
     )
 

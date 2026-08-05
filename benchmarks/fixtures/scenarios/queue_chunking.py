@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.director.chat_queue import ChatQueue, IncomingComment
+from backend.application.director.comment_buffer import ChatQueue, IncomingComment
 
 from ..corpus import jsonable
 

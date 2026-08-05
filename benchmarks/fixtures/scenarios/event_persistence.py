@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.director.director import Decision
+from backend.application.director.decision import Decision
 
 from ..corpus import jsonable
 

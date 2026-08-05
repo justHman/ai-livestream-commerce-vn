@@ -21,22 +21,22 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.api.v1 import build_run_plan
-from core.config import AppConfig
-from core.debug.mock_data import MOCK_PRODUCTS, MOCK_VIEWER_MSGS
-from core.director.catalog import Product
-from core.director.cluster import Comment
-from core.director.config import StreamConfig
-from core.director.director import Decision, Director
-from core.director.embedder import HashingEmbedder, build_embedder, embedder_status
-from core.director.routing import route_comment
-from core.director.state import Phase, ProductState, StreamState
-from core.llm.base import LLMEngine, LLMRequest, LLMResponse
-from core.render.base import FullPipelineBackend, StartOptions
-from core.render.mock import MockRenderBackend
-from core.render.orchestrator import StreamOrchestrator
-from core.render.queue import BoundedVideoQueue, CoordinatorMetrics
-from core.tts.base import AudioChunk, TTSEngine, TTSRequest
+from backend.api.v1 import build_run_plan
+from backend.config import AppConfig
+from benchmarks.backend.fixture_data import MOCK_PRODUCTS, MOCK_VIEWER_MSGS
+from backend.application.director.catalog import Product
+from backend.application.director.clustering import Comment
+from backend.application.director.config import StreamConfig
+from backend.application.director.decision import Decision, Director
+from backend.application.director.embeddings import HashingEmbedder, build_embedder, embedder_status
+from backend.application.director.routing import route_comment
+from backend.application.director.state import Phase, ProductState, StreamState
+from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
+from avatar.engines.base import FullPipelineBackend, StartOptions
+from avatar.engines.mock import MockRenderBackend
+from backend.application.render.orchestrator import StreamOrchestrator
+from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
+from tts.engines.base import AudioChunk, TTSEngine, TTSRequest
 
 _DEFAULT_TIMEOUT_SEC = 600.0
 _REQUIRED_LIFECYCLE_STAGES = {"intro", "benefit", "offer", "trust", "cta", "transition"}
