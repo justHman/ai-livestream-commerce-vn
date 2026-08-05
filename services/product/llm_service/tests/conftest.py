@@ -1,14 +1,23 @@
-"""Test configuration: ensure the service package is importable."""
+"""Test configuration: ensure the service package is importable.
+
+Per-test env defaults are applied by the ``offline_env`` fixture (OpenSpec
+1.51) — no collection-time os.environ mutation.
+"""
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
+
+import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-os.environ.setdefault("LLM_ENGINE", "none")
-os.environ.setdefault("LLM_AUTH_ENABLED", "0")
+
+@pytest.fixture(autouse=True)
+def offline_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default self-host service env: no model loads, auth off (per test)."""
+    monkeypatch.setenv("LLM_ENGINE", "none")
+    monkeypatch.setenv("LLM_AUTH_ENABLED", "0")
