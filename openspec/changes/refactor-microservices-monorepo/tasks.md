@@ -106,20 +106,20 @@
 
 ## 4. Implement Explicit Development and Staging Deployment
 
-- [ ] 4.1 Implement `deploy-dev.yml` with `workflow_dispatch`, commit/service validation, selected-service cached build/push, digest recording, deployment, smoke verification, and service-scoped rollback.
-- [ ] 4.2 Implement `deploy-staging.yml` with `workflow_dispatch`, `main` ancestry and CI validation, selected-service cached build/push, deployment, smoke and E2E verification, and production-eligible digest recording.
-- [ ] 4.3 Add terminal wrappers or documented `gh workflow run` commands so development and staging deployment require no GitHub web-console interaction.
-- [ ] 4.4 Record deployment evidence including environment, commit, service, initiator, previous digest, new digest, and result.
-- [ ] 4.5 Implement protected `infra-apply.yml` as a manual exact-commit workflow that creates, reviews, and applies one saved plan independently of every service deployment workflow.
-- [ ] 4.6 Implement protected `infra-teardown-nonprod.yml` with a hard `dev|staging` allowlist, typed confirmation, approval, destroy-plan review, and an impossible production path.
+- [x] 4.1 Implement `deploy-dev.yml` with `workflow_dispatch`, commit/service validation, selected-service cached build/push, digest recording, deployment, smoke verification, and service-scoped rollback.
+- [x] 4.2 Implement `deploy-staging.yml` with `workflow_dispatch`, `main` ancestry and CI validation, selected-service cached build/push, deployment, smoke and E2E verification, and production-eligible digest recording.
+- [x] 4.3 Add terminal wrappers or documented `gh workflow run` commands so development and staging deployment require no GitHub web-console interaction.
+- [x] 4.4 Record deployment evidence including environment, commit, service, initiator, previous digest, new digest, and result.
+- [x] 4.5 Implement protected `infra-apply.yml` as a manual exact-commit workflow that creates, reviews, and applies one saved plan independently of every service deployment workflow.
+- [x] 4.6 Implement protected `infra-teardown-nonprod.yml` with a hard `dev|staging` allowlist, typed confirmation, approval, destroy-plan review, and an impossible production path.
 
 ## 5. Implement Service-Scoped Production Release
 
-- [ ] 5.1 Implement `release-service.yml` tag parsing for supported service-specific semantic-version tags.
-- [ ] 5.2 Reject release tags whose commit is not contained in `main` or whose service and commit lack successful staging evidence.
-- [ ] 5.3 Configure the protected `production` environment to require an authorized approval before secrets or deployment, prevent self-approval and bypass where supported, and fail readiness when approval enforcement is unavailable.
-- [ ] 5.4 Promote the exact staging-verified image digest to production without rebuilding the image after approval.
-- [ ] 5.5 Run production smoke verification and restore only the affected service's previous digest on failure.
+- [x] 5.1 Implement `release-service.yml` tag parsing for supported service-specific semantic-version tags.
+- [x] 5.2 Reject release tags whose commit is not contained in `main` or whose service and commit lack successful staging evidence.
+- [x] 5.3 Configure the protected `production` environment to require an authorized approval before secrets or deployment, prevent self-approval and bypass where supported, and fail readiness when approval enforcement is unavailable.
+- [x] 5.4 Promote the exact staging-verified image digest to production without rebuilding the image after approval.
+- [x] 5.5 Run production smoke verification and restore only the affected service's previous digest on failure.
 
 ## 6. Verify and Migrate
 
