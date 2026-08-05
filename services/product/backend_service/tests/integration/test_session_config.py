@@ -339,5 +339,5 @@ def test_attach_validation_identifies_affected_product_field() -> None:
     assert location == ["body", "products", 0]
 
 
-from avatar.engines.mock import MockRenderBackend
-from conftest import make_deps as _Deps  # noqa: F401
+from avatar.engines.mock import MockRenderBackend  # noqa: E402
+from conftest import make_deps as _Deps  # noqa: E402, F401

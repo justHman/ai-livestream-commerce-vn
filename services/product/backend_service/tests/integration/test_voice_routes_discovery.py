@@ -145,8 +145,8 @@ def test_tts_preview_rejects_unknown_resource_without_mutating_runtime() -> None
     assert manager.tts_cfg == before
 
 
-from backend.engine_manager import EngineManager
-from backend.api.v1.hub import AvatarStore
+from backend.engine_manager import EngineManager  # noqa: E402
+from backend.api.v1.hub import AvatarStore  # noqa: E402
 
-from llm.engines.base import _NoopEngine
-from conftest import make_deps as _Deps  # noqa: F401
+from llm.engines.base import _NoopEngine  # noqa: E402
+from conftest import make_deps as _Deps  # noqa: E402, F401

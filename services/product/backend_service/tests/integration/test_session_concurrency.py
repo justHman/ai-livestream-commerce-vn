@@ -379,6 +379,6 @@ async def test_streaming_manual_say_bypasses_llm(mock_env: None):
     assert response.json()["reply"] == "Ba trăm năm mươi nghìn đồng."
 
 
-from avatar.engines.mock import MockRenderBackend
-from backend.engine_manager import EngineManager
-from conftest import make_deps as _Deps  # noqa: F401
+from avatar.engines.mock import MockRenderBackend  # noqa: E402
+from backend.engine_manager import EngineManager  # noqa: E402
+from conftest import make_deps as _Deps  # noqa: E402, F401

@@ -131,6 +131,6 @@ def test_lite_ingest_no_pg_behaves_unchanged(monkeypatch):
         assert r.status_code in (501, 409)
 
 
-from backend.api.v1.sessions import _persist_viewer_msgs
-from backend.api.v1.router import CommentIn
-from conftest import make_deps as _Deps  # noqa: F401
+from backend.api.v1.sessions import _persist_viewer_msgs  # noqa: E402
+from backend.api.v1.router import CommentIn  # noqa: E402
+from conftest import make_deps as _Deps  # noqa: E402, F401

@@ -398,5 +398,5 @@ def test_stop_removes_session_publisher_only_after_backend_stop_succeeds() -> No
     client.close()
 
 
-from avatar.engines.mock import MockRenderBackend
-from conftest import make_deps as _Deps  # noqa: F401
+from avatar.engines.mock import MockRenderBackend  # noqa: E402
+from conftest import make_deps as _Deps  # noqa: E402, F401

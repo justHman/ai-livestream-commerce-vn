@@ -221,6 +221,6 @@ def test_lite_stop_drops_coordinator_session(mock_env: None) -> None:
         assert not coordinator.has(sid)
 
 
-from backend.application.director.session_context import DirectorRuntime
-from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
-from conftest import make_deps as _Deps  # noqa: F401
+from backend.application.director.session_context import DirectorRuntime  # noqa: E402
+from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator  # noqa: E402
+from conftest import make_deps as _Deps  # noqa: E402, F401

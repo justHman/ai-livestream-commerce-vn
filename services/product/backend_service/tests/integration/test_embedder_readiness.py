@@ -58,5 +58,5 @@ def test_health_ready_reports_director_embedder_status(monkeypatch) -> None:
     assert body["ok"] is True
 
 
-from avatar.engines.mock import MockRenderBackend
-from conftest import make_deps as _Deps  # noqa: F401
+from avatar.engines.mock import MockRenderBackend  # noqa: E402
+from conftest import make_deps as _Deps  # noqa: E402, F401
