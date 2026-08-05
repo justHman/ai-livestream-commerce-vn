@@ -260,7 +260,7 @@ ECS technique (spec-03 §2.2):
 
 **2 prefix-cache layers (independent):**
 - **Layer 1 — `--enable-prefix-caching`** (vLLM built-in, 0 cost, 1 replica): ALWAYS ON. System prompt + persona + product catalog prefix cached, repeated across every viewer message.
-- **Layer 2 — LMCache MP mode** (cross-replica, env-togglable via `LMCACHE_ENABLED`): ON for scale test, OFF after to save cost. Only valuable when `llm-tts` Service `desired_count > 1` (2+ replicas share cache).
+- **Layer 2 — LMCache MP mode** (cross-replica, env-togglable via `LMCACHE_ENABLED`): ON for scale test, OFF after to save cost. Only valuable when `llm/tts Service `desired_count > 1` (2+ replicas share cache).
 
 **LMCache MP mode architecture** (official recommendation, NOT in-process):
 ```text
@@ -271,7 +271,7 @@ Service: lmcache-server (4th Service, **EC2 c7g.2xlarge Spot** test / c7g.4xlarg
        port 5555 (ZMQ, vLLM connect) + port 8080 (HTTP metrics)
        desired_count=1 (single, NO scale — shared by all LLM replicas)
 
-Service: llm-tts (N replicas when autoscale)
+Service: llm/tts (N replicas when autoscale)
   └─ each vLLM container:
        PYTHONHASHSEED=0  # MANDATORY — else hash key mismatch → always miss
        LMCACHE_CONFIG_FILE=/app/lmcache_config.yaml

@@ -57,7 +57,7 @@ def _variable_block(source: str, name: str) -> str:
 def _backend_task_definition() -> str:
     source = _read(COMPUTE)
     return source.split('resource "aws_ecs_task_definition" "backend"', 1)[1].split(
-        'resource "aws_ecs_task_definition" "llm_tts"', 1
+        'resource "aws_ecs_task_definition" "llm"', 1
     )[0]
 
 

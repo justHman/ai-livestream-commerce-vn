@@ -22,12 +22,6 @@ __pycache__
 
 # All product services (lmcache image never imports service code)
 services/product
-services/backend
-services/llm
-services/tts
-services/avatar
-services/scripts
-services/.dockerignore
 
 # Workbench, infra, docs, tests, benchmarks
 workbench/

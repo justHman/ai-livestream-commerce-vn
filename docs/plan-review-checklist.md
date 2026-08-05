@@ -29,8 +29,8 @@
 ## Stage 2 — LiveAvatar cloud + real engines (no LiveKit)
 
 - [ ] `render_backend=cloud_liveavatar`, `llm_engine=vllm`, `tts_engine=vieneu`.
-- [ ] `desired_llm_tts=1` (Spot g6.xlarge); `desired_avatar=0`; `desired_livekit=0`; `desired_lmcache=0`/`LMCACHE_ENABLED=false`.
-- [ ] Money-safe boot: first-apply plan shows `desired_llm_tts=0` (Phase 0). REJECT a first-apply plan with cost-driving desired>0.
+- [ ] `desired_llm/desired_tts=1` (Spot g6.xlarge); `desired_avatar=0`; `desired_livekit=0`; `desired_lmcache=0`/`LMCACHE_ENABLED=false`.
+- [ ] Money-safe boot: first-apply plan shows `desired_llm/desired_tts=0` (Phase 0). REJECT a first-apply plan with cost-driving desired>0.
 - [ ] REJECT if `desired_livekit>0` (LiveKit is Stage 3 only).
 - [ ] `LIVEAVATAR_API_KEY` present in SSM (`liveavatar/api_key`) before Phase 1 scale-up.
 - [ ] Sandbox-first: first smoke uses `LIVEAVATAR_SANDBOX_AVATAR_ID` (`dd73ea75-1218-4ef3-92ce-606d5f7fbc0a`); real avatar only for formal bench.
@@ -40,7 +40,7 @@
 ## Stage 3 — self-host avatar + LiveKit full media
 
 - [ ] `render_backend=self_host_avatarforcing_half`, same LLM/TTS as Stage 2 (`llm_engine=vllm`, `tts_engine=vieneu`).
-- [ ] `desired_avatar=1`, `desired_llm_tts=1`, `desired_livekit=1`, `LIVEKIT_PUBLISH=1`, `desired_lmcache=0`, `create_ec2_capacity=true`.
+- [ ] `desired_avatar=1`, `desired_llm/desired_tts=1`, `desired_livekit=1`, `LIVEKIT_PUBLISH=1`, `desired_lmcache=0`, `create_ec2_capacity=true`.
 - [ ] Money-safe boot: first-apply plan shows all cost-driving desired=0 (Phase 0). REJECT a first-apply plan with cost-driving desired>0.
 - [ ] Avatar GPU Spot `g4dn.xlarge` default (escalate to `g6.xlarge` only if the model needs L4 — document why).
 - [ ] Spot quota check: g6 engine 4 vCPU + g4dn avatar 4 vCPU = 8 vCPU G/VT Spot = quota ceiling. Single-avatar smoke only. REJECT 2 engine replicas + avatar simultaneously without a quota re-check.

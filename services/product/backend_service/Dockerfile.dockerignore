@@ -26,12 +26,7 @@ services/product/tts_service/tests
 services/product/avatar_service/tests
 
 # Other services (legacy dirs not in any build)
-services/backend
-services/llm
-services/tts
-services/avatar
 services/platform
-services/.dockerignore
 
 # Workbench, infra, docs, tests, benchmarks
 workbench/

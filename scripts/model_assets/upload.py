@@ -14,7 +14,7 @@ Usage:
 
 Run OFFLINE (before any billable stage apply). NEVER run HF cold pulls or S3
 syncs inside a billable stage window — S3 is the runtime source via
-services/scripts/fetch_weights.sh.
+scripts/model_assets/fetch_weights.sh.
 """
 from __future__ import annotations
 

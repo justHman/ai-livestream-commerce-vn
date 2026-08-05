@@ -32,7 +32,7 @@ db_instance_class       = "db.t4g.medium"
 db_allocated_storage_gb = 100
 redis_node_type         = "cache.t4g.small"
 
-# Money-safe boot Phase 1 values. Phase 0: set all desired_llm_tts/avatar/livekit=0.
+# Money-safe boot Phase 1 values. Phase 0: set all desired_llm/desired_tts/avatar/livekit=0.
 desired_backend     = 1
 desired_llm     = 0
 desired_tts     = 0

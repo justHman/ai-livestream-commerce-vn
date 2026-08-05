@@ -5,10 +5,10 @@ Usage:
   python scripts/swap_task_image.py <cluster> <service> <container>=<new_image> [<container>=<new_image> ...]
   python scripts/swap_task_image.py <cluster> <service> --base-task <task-def-arn-or-name> <container>=<new_image> ...
 
-Prints the new task-definition ARN. Handles multi-container task defs (e.g.
-llm_tts has llm + tts containers). By default the base is the service's current
-task-def; use --base-task to start from a specific revision (e.g. the Terraform-
-managed revision with the right env, not a prior swap-task rev with stale env).
+Prints the new task-definition ARN. Handles multi-container task defs. By
+default the base is the service's current task-def; use --base-task to start
+from a specific revision (e.g. the Terraform-managed revision with the right
+env, not a prior swap-task rev with stale env).
 """
 from __future__ import annotations
 

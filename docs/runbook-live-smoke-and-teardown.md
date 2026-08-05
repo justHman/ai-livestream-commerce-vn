@@ -34,7 +34,7 @@ Phase 1 = scale-up apply (cost-driving desired on). The gap between Phase 0
 and Phase 1 MUST NOT pay for an idle box waiting on setup.
 
 ```text
-Phase 0: apply with desired_llm_tts/avatar/livekit/lmcache=0, create_ec2_capacity per stage, engines off/mock
+Phase 0: apply with desired_llm/desired_tts/avatar/livekit/lmcache=0, create_ec2_capacity per stage, engines off/mock
   → verify healthy at zero compute cost
   → offline: build+push SHA images (GitHub Actions), seed weights to S3, put SSM secrets, validate config
 Phase 1: apply again with the stage's cost-driving desired counts ON
@@ -197,11 +197,11 @@ verification after destroy.
 
 Profile: `infra/environments/dev/terraform.stage-2-liveavatar.tfvars.example`
 (`render_backend=cloud_liveavatar`, `llm_engine=vllm`, `tts_engine=vllm-omni`,
-`desired_llm_tts=1` Spot g6, `desired_livekit=0`, `desired_avatar=0`,
+`desired_llm/desired_tts=1` Spot g6, `desired_livekit=0`, `desired_avatar=0`,
 `desired_lmcache=0`/`LMCACHE_ENABLED=false`). Money-safe boot: Phase 0 with
-`desired_llm_tts=0`, then build+push SHA images, seed Qwen3.5-4B-AWQ +
+`desired_llm/desired_tts=0`, then build+push SHA images, seed Qwen3.5-4B-AWQ +
 VieNeu-TTS weights to S3 (local `.git` source for VieNeu — NOT public on HF),
-put `LIVEAVATAR_API_KEY` in SSM, then Phase 1 with `desired_llm_tts=1`.
+put `LIVEAVATAR_API_KEY` in SSM, then Phase 1 with `desired_llm/desired_tts=1`.
 
 Smoke (sandbox-first): use `LIVEAVATAR_SANDBOX_AVATAR_ID`
 (`dd73ea75-1218-4ef3-92ce-606d5f7fbc0a`, free ~1-min, no credits) for the
@@ -223,7 +223,7 @@ Profile: `infra/environments/dev/terraform.stage-3-selfhost.tfvars.example`
 `desired_avatar=1`, `create_ec2_capacity=true`, Spot `g4dn.xlarge` avatar,
 `desired_livekit=1`/`LIVEKIT_PUBLISH=1`, `desired_lmcache=0`). Money-safe boot:
 Phase 0 with all cost-driving desired=0, then Phase 1 with
-`desired_llm_tts=1`, `desired_avatar=1`, `desired_livekit=1`.
+`desired_llm/desired_tts=1`, `desired_avatar=1`, `desired_livekit=1`.
 
 Smoke: `self_host_avatarforcing_half` start/speak/avatar-video-publish-through-
 LiveKit/stop or explicit fail-loud (no silent mock fallback). After bench

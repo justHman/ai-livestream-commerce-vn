@@ -41,7 +41,6 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
 
 # ---------------------------------------------------------------------------
 # Cloud Map service discovery (internal DNS for backend → LLM/TTS)
-# 1 namespace + 1 SD service registering the llm_tts task ENI.
-# Both LLM (8001) and TTS (8002) resolve via the same A record;
-# backend calls llm-tts.<env>.ai-live.local:8001 and :8002 respectively.
+# 1 namespace + 1 SD service per model service: llm and tts resolve via
+# llm.<env>.ai-live.local:8001 and tts.<env>.ai-live.local:8002 respectively.
 # ---------------------------------------------------------------------------

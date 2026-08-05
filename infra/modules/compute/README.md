@@ -9,7 +9,7 @@ ECS cluster, capacity providers, task definitions, and services for ai-livestrea
   - `g6.xlarge` — LLM+TTS
   - `g4dn.xlarge` — Avatar
   - `c7g.2xlarge` — LMCache (ARM)
-- Task definitions: `backend` (Fargate ARM), `llm_tts` (EC2 GPU, 2 containers), `avatar` (EC2 GPU), `lmcache` (EC2 ARM), `livekit` (Fargate ARM)
+- Task definitions: `backend` (Fargate ARM), `llm` (EC2 GPU), `tts` (EC2 GPU), `avatar` (EC2 GPU), `lmcache` (EC2 ARM), `livekit` (Fargate ARM)
 - Services with `desired_*` vars; `lmcache` default 0 / gated by `lmcache_enabled`
 - Minimal IAM execution + task + instance roles (security module owns SGs only)
 

@@ -10,7 +10,6 @@ Hub namespace: `imjusthman/ai-live-{svc}`. Weights on S3, never in layers.
 | `product/avatar_service/` | `imjusthman/ai-live-avatar` | 8080 | amd64+GPU |
 | `platform/livekit/` | `imjusthman/ai-live-livekit` | 7880 + UDP 50000-60000 | arm64 |
 | `platform/lmcache/` | `imjusthman/ai-live-lmcache` | 5555 + 8080 | arm64 |
-| `llm-tts/` | (Task family docs only) | — | — |
 | `model_assets/` | `fetch_weights.sh` shared helper | — | — |
 
 ## Build (from repo root)
