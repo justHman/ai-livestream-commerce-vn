@@ -1,7 +1,7 @@
 """Benchmark api.livento.me throughput + latency. Saves JSON log.
 
 Usage:
-  python scripts/bench_api.py --base https://api.livento.me --token $BK --out .runtime/bench-<ts>.json
+  python benchmarks/api/latency.py --base https://api.livento.me --token $BK --out .runtime/bench-<ts>.json
 """
 from __future__ import annotations
 

@@ -1,6 +1,7 @@
 # Root-context build exclusions for llm_service/Dockerfile.
 # Build: docker build -f services/product/llm_service/Dockerfile .
-# Allows: this service, services/scripts/fetch_weights.sh, scripts/gen_vllm_modelinfo_cache.py.
+# Allows: this service, scripts/model_assets/fetch_weights.sh (moved from
+# services/scripts/ by OpenSpec 1.58), services/product/llm_service/scripts/gen_vllm_modelinfo_cache.py.
 
 # VCS / CI / tooling
 .git

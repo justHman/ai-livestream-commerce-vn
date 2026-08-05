@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
-# The benchmark script is a root tool bound to the legacy core seam until
-# OpenSpec 1.58 moves it under benchmarks/; patch the classes it imports.
+# The benchmark script is a root tool (OpenSpec 1.58 moved it under
+# benchmarks/); add the root to sys.path so the canonical module resolves.
+_BENCH_ROOT = Path(__file__).resolve().parents[2]
+if str(_BENCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BENCH_ROOT))
+
 from core.director.director import Director
 from core.render.orchestrator import StreamOrchestrator
-from scripts.benchmark_stage2 import (
+from benchmarks.backend.stage2_pipeline import (
     compare_p95,
     run_lanes,
     run_local_real,

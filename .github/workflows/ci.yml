@@ -48,7 +48,11 @@ jobs:
           TTS_ENGINE: tone
           DIRECTOR_ENABLED: '0'
           APP_ENV: dev
-        run: uv run python -m pytest core/tests/ -q
+        # --ignore=core/tests/test_benchmark_stage2.py: the frozen core copy
+        # imports scripts.benchmark_stage2, removed by OpenSpec 1.58 (moved to
+        # benchmarks/backend/stage2_pipeline.py). core/ cannot be edited
+        # (frozen); the file is deleted with the core cleanup in 1.79.
+        run: uv run python -m pytest core/tests/ -q --ignore=core/tests/test_benchmark_stage2.py
 
   terraform-format:
     runs-on: ubuntu-latest

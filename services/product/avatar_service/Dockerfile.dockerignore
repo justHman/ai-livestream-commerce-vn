@@ -1,6 +1,7 @@
 # Root-context build exclusions for avatar_service/Dockerfile.
 # Build: docker build -f services/product/avatar_service/Dockerfile .
-# Allows: this service, services/scripts/fetch_weights.sh.
+# Allows: this service, scripts/model_assets/fetch_weights.sh (moved from
+# services/scripts/ by OpenSpec 1.58).
 
 # VCS / CI / tooling
 .git
