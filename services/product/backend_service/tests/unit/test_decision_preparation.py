@@ -396,7 +396,7 @@ class _VariantLLM:
         self.calls = 0
 
     def stream_chunks(self, request, *, session_id: str, utterance_id: str):
-        from core.render.windows import TextChunk
+        from backend.application.render.windows import TextChunk
 
         self.calls += 1
         yield TextChunk(

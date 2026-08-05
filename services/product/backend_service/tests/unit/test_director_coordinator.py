@@ -15,14 +15,10 @@ Uses pytest.mark.asyncio and stub engines (no model downloads, no GPU).
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from typing import Iterator
 
 import pytest
-
-# Force hashing embedder for offline tests.
-os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
 
 from backend.application.director.catalog import Product
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
@@ -178,8 +174,9 @@ def _make_coordinator(
 # ---------- tests ----------
 
 
-async def test_start_ingest_and_emit_decision():
+async def test_start_ingest_and_emit_decision(monkeypatch: pytest.MonkeyPatch):
     """start(sid) -> ingest 5 comments -> wait a few ticks -> coordinator emits >= 1 decision."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     sid = "test-sess-1"
     coord, runtime, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
     products = _make_products()
@@ -203,8 +200,9 @@ async def test_start_ingest_and_emit_decision():
     assert not coord.has(sid)
 
 
-async def test_stop_cancels_task_and_drops_queue():
+async def test_stop_cancels_task_and_drops_queue(monkeypatch: pytest.MonkeyPatch):
     """stop(sid) -> task cancelled, ChatQueue dropped."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     sid = "test-sess-2"
     coord, runtime, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
     products = _make_products()
@@ -225,7 +223,8 @@ async def test_stop_cancels_task_and_drops_queue():
     await asyncio.sleep(0.1)
 
 
-async def test_stop_all_cancels_every_active_session():
+async def test_stop_all_cancels_every_active_session(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     first, runtime, locks, backend = _make_coordinator(session_id="first")
     products = _make_products()
     first.start("first", products)
@@ -238,8 +237,9 @@ async def test_stop_all_cancels_every_active_session():
     await asyncio.sleep(0)
 
 
-async def test_loop_survives_decide_exception():
+async def test_loop_survives_decide_exception(monkeypatch: pytest.MonkeyPatch):
     """If decide() raises once, the next tick continues normally."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     sid = "test-sess-3"
     coord, runtime, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
     products = _make_products()
@@ -272,15 +272,17 @@ async def test_loop_survives_decide_exception():
     await asyncio.sleep(0.05)
 
 
-async def test_ingest_raises_for_unknown_session():
+async def test_ingest_raises_for_unknown_session(monkeypatch: pytest.MonkeyPatch):
     """ingest() on a non-existent session raises KeyError."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     coord, _, _, _ = _make_coordinator()
     with pytest.raises(KeyError):
         coord.ingest("nonexistent", "hello", "user")
 
 
-async def test_stats_empty_session():
+async def test_stats_empty_session(monkeypatch: pytest.MonkeyPatch):
     """stats() for a non-started session returns zeroed dict."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     coord, _, _, _ = _make_coordinator()
     s = coord.stats("nonexistent")
     assert s["decisions_emitted"] == 0
@@ -288,8 +290,9 @@ async def test_stats_empty_session():
     assert s["interrupts"] == 0
 
 
-async def test_start_is_idempotent():
+async def test_start_is_idempotent(monkeypatch: pytest.MonkeyPatch):
     """Calling start() twice for the same session does not crash or duplicate tasks."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     sid = "test-sess-idempotent"
     coord, runtime, locks, backend = _make_coordinator(tick_ms=50, session_id=sid)
     products = _make_products()
@@ -323,7 +326,9 @@ class _RecordingHub:
         return [e["type"] for _, e in self.events]
 
 
-async def test_coordinator_emits_ws_events_and_registers_orchestrator():
+async def test_coordinator_emits_ws_events_and_registers_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """When hub + orchestrator_registry are wired, the coordinator emits
     coordinator.speak_started/finished and director.decision, and registers the
     active orchestrator+queue so MJPEG can drain utterance frames.
@@ -333,7 +338,8 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
     too racy to assert "registry empty at snapshot X" — a later tick may have
     started a new in-flight speak).
     """
-    from core.director.coordinator import _decision_to_event  # internal helper
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+    from backend.application.director.coordinator import _decision_to_event  # internal helper
 
     sid = "test-sess-ws"
     coord, runtime, locks, backend = _make_coordinator(tick_ms=40, session_id=sid)
@@ -347,8 +353,8 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
     # coordinator now builds a fresh orchestrator+queue per _maybe_speak()
     # call, so _register_speaking takes both the orchestrator and queue as
     # arguments.
-    from core.render.orchestrator import StreamOrchestrator
-    from core.render.queue import BoundedVideoQueue, CoordinatorMetrics
+    from backend.application.render.orchestrator import StreamOrchestrator
+    from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
     assert sid not in registry
     orch = StreamOrchestrator(
@@ -407,8 +413,9 @@ async def test_coordinator_emits_ws_events_and_registers_orchestrator():
     await asyncio.sleep(0.05)
 
 
-async def test_coordinator_without_hub_is_noop():
+async def test_coordinator_without_hub_is_noop(monkeypatch: pytest.MonkeyPatch):
     """No hub and no registry wired -> coordinator still runs, no errors."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     sid = "test-sess-nohub"
     coord, runtime, locks, backend = _make_coordinator(tick_ms=30, session_id=sid)
     assert coord._hub is None
@@ -440,13 +447,14 @@ _SENSITIVE_SENTINELS = [
 ]
 
 
-async def test_ws_events_never_contain_sensitive_data() -> None:
+async def test_ws_events_never_contain_sensitive_data(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every WS event emitted by the coordinator must be free of rendered
     prompt text, shop/product data, comment text, and credentials.
 
     Tests the real captured event sink (``_RecordingHub``) and asserts
     sentinel strings are absent from every event and failure path.
     """
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     sid = "test-sess-secrecy"
     coord, runtime, locks, backend = _make_coordinator(tick_ms=40, session_id=sid)
     products = _make_products()
@@ -459,7 +467,7 @@ async def test_ws_events_never_contain_sensitive_data() -> None:
     runtime.attach(sid, products, shop_profile="SHOP_SECRET_123")
 
     # ── director.decision event ──
-    from core.director.coordinator import _decision_to_event
+    from backend.application.director.coordinator import _decision_to_event
 
     dec = Decision(
         action="answer_cluster",

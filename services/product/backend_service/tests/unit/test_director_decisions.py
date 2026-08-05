@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from backend.engine_manager import EngineManager
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 
@@ -68,7 +70,8 @@ class _Agent:
         self.wait_values.append(wait)
 
 
-def test_engine_manager_forwards_cloud_generation_defaults() -> None:
+def test_engine_manager_forwards_cloud_generation_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     manager = EngineManager()
     manager._llm = _RecordingLLM()
     manager._llm_cfg = {"max_tokens": 8192, "temperature": 0.3}
@@ -79,7 +82,10 @@ def test_engine_manager_forwards_cloud_generation_defaults() -> None:
     assert (request.max_tokens, request.temperature) == (8192, 0.3)
 
 
-def test_global_opening_has_three_grounded_turns_before_product_lifecycle() -> None:
+def test_global_opening_has_three_grounded_turns_before_product_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     state = StreamState(
         phase=Phase.OPENING, products=[ProductState(product_id="P004", name="Áo hoodie")]
     )
@@ -97,7 +103,8 @@ def test_global_opening_has_three_grounded_turns_before_product_lifecycle() -> N
     assert state.phase is Phase.SELLING
 
 
-def test_product_sales_are_split_into_short_stage_turns() -> None:
+def test_product_sales_are_split_into_short_stage_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     product = Product(**MOCK_PRODUCTS[0])
     state = StreamState(
         phase=Phase.SELLING,
@@ -116,8 +123,9 @@ def test_product_sales_are_split_into_short_stage_turns() -> None:
     assert "5 đến 7 câu hoàn chỉnh" not in intro.prompt
 
 
-def test_demand_pivot_has_hysteresis_and_minimum_comment_gate() -> None:
-    from core.director.pivot import should_enter_pivot, should_exit_pivot
+def test_demand_pivot_has_hysteresis_and_minimum_comment_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+    from backend.application.director.pivot import should_enter_pivot, should_exit_pivot
 
     assert should_enter_pivot("P002", ["P002"] * 6 + ["P004"] * 4, top_score=0.9, current_score=0.7)
     assert not should_enter_pivot(
@@ -171,7 +179,10 @@ def _cross_product_director() -> Director:
     )
 
 
-def test_cross_product_question_is_one_turn_excursion_without_losing_checkpoint() -> None:
+def test_cross_product_question_is_one_turn_excursion_without_losing_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     decision = director.decide(_routed_comments("P002", 2), now=11.0)
 
@@ -186,7 +197,10 @@ def test_cross_product_question_is_one_turn_excursion_without_losing_checkpoint(
     assert director.state.current_product().stage_turn_index == 2
 
 
-def test_strong_cross_product_demand_pivots_then_resumes_exact_checkpoint() -> None:
+def test_strong_cross_product_demand_pivots_then_resumes_exact_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     hot = _routed_comments("P002", 8) + _routed_comments("P004", 4)
 
@@ -219,7 +233,10 @@ def test_strong_cross_product_demand_pivots_then_resumes_exact_checkpoint() -> N
     assert director.state.cursor.pivot_active is False
 
 
-def test_committing_next_product_intro_moves_real_checkpoint() -> None:
+def test_committing_next_product_intro_moves_real_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     first = director.state.products[0]
     first.stage_turn_index = len(director._sales_tasks("P004"))
@@ -237,7 +254,8 @@ def test_committing_next_product_intro_moves_real_checkpoint() -> None:
     assert director.state.products[1].status is ProductStatus.ACTIVE
 
 
-def test_third_product_demand_is_queued_during_active_pivot() -> None:
+def test_third_product_demand_is_queued_during_active_pivot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     director.state.cursor.pivot_active = True
     director.state.cursor.pivot_product_id = "P002"
@@ -263,13 +281,17 @@ def test_third_product_demand_is_queued_during_active_pivot() -> None:
     assert director.state.cursor.pivot_queue == ["P003"]
 
 
-def test_decision_carries_generation_and_cache_metadata_fields() -> None:
+def test_decision_carries_generation_and_cache_metadata_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     decision = director_decision("answer_cluster", "P004", "Trả lời câu hỏi")
     assert decision.generation_token == 0
     assert decision.cache_variant_index is None
 
 
-def test_singleton_cluster_does_not_enter_qna_ranking() -> None:
+def test_singleton_cluster_does_not_enter_qna_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     state = StreamState(
         phase=Phase.SELLING,
         products=[ProductState(product_id="P004", name="Áo hoodie", is_introduced=True)],
@@ -279,7 +301,10 @@ def test_singleton_cluster_does_not_enter_qna_ranking() -> None:
     assert decision.action == "sell_product"
 
 
-def test_qna_cluster_count_advances_only_after_playback_success() -> None:
+def test_qna_cluster_count_advances_only_after_playback_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     product = director.state.current_product()
 
@@ -290,7 +315,10 @@ def test_qna_cluster_count_advances_only_after_playback_success() -> None:
     assert product.cluster_count == 1
 
 
-def test_topic_cooldown_uses_session_clock_after_long_running_session() -> None:
+def test_topic_cooldown_uses_session_clock_after_long_running_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     director.state.qa_window_open = True
     director.state.qa_window_started_at = 500.0
@@ -310,7 +338,8 @@ def test_topic_cooldown_uses_session_clock_after_long_running_session() -> None:
     assert second.action == "sell_product"
 
 
-def test_answer_variant_cache_rotates_without_regeneration() -> None:
+def test_answer_variant_cache_rotates_without_regeneration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     state = StreamState(
         phase=Phase.SELLING,
         products=[
@@ -337,7 +366,10 @@ def test_answer_variant_cache_rotates_without_regeneration() -> None:
     assert second.prompt is None
 
 
-def test_cached_answer_round_robin_commits_only_after_playback() -> None:
+def test_cached_answer_round_robin_commits_only_after_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     key = ("P004", "price", 0, 0)
     director.state.answer_variants[key] = ["Câu một.", "Câu hai.", "Câu ba."]
@@ -361,7 +393,10 @@ def test_cached_answer_round_robin_commits_only_after_playback() -> None:
     assert second.prepared_script == "Câu hai."
 
 
-def test_qna_window_closes_early_when_no_eligible_cluster_remains() -> None:
+def test_qna_window_closes_early_when_no_eligible_cluster_remains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     director.state.qa_window_open = True
     decision = director.decide([], now=11.0)
@@ -370,9 +405,12 @@ def test_qna_window_closes_early_when_no_eligible_cluster_remains() -> None:
     assert director.state.qa_window_open is False
 
 
-def test_cluster_answer_prompt_requests_one_clause_paraphrase_and_short_grounded_answer() -> None:
-    from core.director.scorer import ScoredCluster
-    from core.director.cluster import Cluster
+def test_cluster_answer_prompt_requests_one_clause_paraphrase_and_short_grounded_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+    from backend.application.director.scoring import ScoredCluster
+    from backend.application.director.clustering import Cluster
 
     cluster = Cluster(
         centroid=[1.0],
@@ -387,11 +425,16 @@ def test_cluster_answer_prompt_requests_one_clause_paraphrase_and_short_grounded
     assert "không đọc lại từng comment" in prompt
 
 
-def test_mock_catalog_starts_with_heygen_hoodie() -> None:
+def test_mock_catalog_starts_with_heygen_hoodie(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     assert MOCK_PRODUCTS[0]["id"] == "P004"
 
 
-def test_sync_runtime_commits_opening_only_after_backend_success() -> None:
+def test_sync_runtime_commits_opening_only_after_backend_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+
     class Backend(_CloudBackend):
         def __init__(self) -> None:
             self.fail = True
@@ -416,7 +459,9 @@ def test_sync_runtime_commits_opening_only_after_backend_success() -> None:
     assert session.director.state.cursor.opening_turn_index == 1
 
 
-def test_attach_ticks_remain_silent_until_first_ingest() -> None:
+def test_attach_ticks_remain_silent_until_first_ingest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+
     async def run() -> None:
         session_id = "stage2-silent-attach"
 
@@ -452,7 +497,10 @@ def test_attach_ticks_remain_silent_until_first_ingest() -> None:
     asyncio.run(run())
 
 
-def test_each_product_interleaves_sales_turns_with_viewer_answers() -> None:
+def test_each_product_interleaves_sales_turns_with_viewer_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     products = [
         ProductState(product_id="P004", name="Áo hoodie HeyGen màu trắng"),
         ProductState(product_id="P001", name="Kem chống nắng"),
@@ -477,7 +525,10 @@ def test_each_product_interleaves_sales_turns_with_viewer_answers() -> None:
     assert answer.action in {"answer_fact", "answer_cluster"}
 
 
-def test_unanswered_clusters_do_not_skip_all_product_sales_stages() -> None:
+def test_unanswered_clusters_do_not_skip_all_product_sales_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     product = Product(**MOCK_PRODUCTS[0])
     from backend.api.v1.router import build_run_plan
 
@@ -511,7 +562,8 @@ def test_unanswered_clusters_do_not_skip_all_product_sales_stages() -> None:
     assert actions.count("sell_product") >= 3
 
 
-def test_answered_cluster_is_not_selected_again() -> None:
+def test_answered_cluster_is_not_selected_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     state = StreamState(
         phase=Phase.SELLING,
         products=[ProductState(product_id="P004", name="Áo hoodie HeyGen màu trắng")],
@@ -537,7 +589,11 @@ def test_answered_cluster_is_not_selected_again() -> None:
     assert second.action in {"sell_product", "close"}
 
 
-def test_coordinator_keeps_generated_script_and_selected_cluster() -> None:
+def test_coordinator_keeps_generated_script_and_selected_cluster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+
     async def run() -> None:
         session_id = "stage2-spoken-script"
 
@@ -566,7 +622,11 @@ def test_coordinator_keeps_generated_script_and_selected_cluster() -> None:
     asyncio.run(run())
 
 
-def test_coordinator_speech_status_tracks_current_utterance() -> None:
+def test_coordinator_speech_status_tracks_current_utterance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+
     async def run() -> None:
         session_id = "stage2-current"
         backend = _CloudBackend()
@@ -584,12 +644,13 @@ def test_coordinator_speech_status_tracks_current_utterance() -> None:
 
 
 def coordinator_stats():
-    from core.director.coordinator import _SessionStats
+    from backend.application.director.coordinator import _SessionStats
 
     return _SessionStats()
 
 
-def test_speech_plan_shows_current_product_and_next_product() -> None:
+def test_speech_plan_shows_current_product_and_next_product(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     session_id = "stage2-plan"
     backend = MockRenderBackend()
     runtime = DirectorRuntime(backend=backend)
@@ -607,7 +668,10 @@ def test_speech_plan_shows_current_product_and_next_product() -> None:
     assert plan["next_product"]["product_id"] == "P001"
 
 
-def test_coordinator_stats_exposes_current_and_upcoming_speech() -> None:
+def test_coordinator_stats_exposes_current_and_upcoming_speech(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     session_id = "stage2-queue"
     backend = MockRenderBackend()
     runtime = DirectorRuntime(backend=backend)
@@ -626,12 +690,15 @@ def test_coordinator_stats_exposes_current_and_upcoming_speech() -> None:
 
 
 def director_decision(action: str, product_id: str, prompt: str):
-    from core.director.director import Decision
+    from backend.application.director.decision import Decision
 
     return Decision(action=action, product_id=product_id, prompt=prompt)
 
 
-def test_coordinator_updates_live_traffic_before_first_decision() -> None:
+def test_coordinator_updates_live_traffic_before_first_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     session_id = "stage2-traffic"
     backend = MockRenderBackend()
     runtime = DirectorRuntime(backend=backend)
@@ -644,7 +711,9 @@ def test_coordinator_updates_live_traffic_before_first_decision() -> None:
     assert (traffic.viewer_count, traffic.msg_rate) == (1010, 2.0)
 
 
-def test_locked_intro_prevents_director_from_consuming_comments() -> None:
+def test_locked_intro_prevents_director_from_consuming_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+
     async def run() -> None:
         session_id = "stage2-sequence"
         backend = MockRenderBackend()

@@ -13,8 +13,7 @@ named uniquely to avoid basename collisions across service suites.
 | test_config.py | EngineConfig/SecurityConfig validation, hosted-adapter rejection | new (pre-existing) | unit |
 | test_engine_selection.py | Self-host ENGINES registry, tone fallback, unknown rejection | new (pre-existing) | unit |
 | test_tts_streaming.py | ToneEngine stream_audio windows, TextChunk metadata, warmup, sample-rate preservation | core/tests/test_tts_streaming.py | unit |
-| test_tts_remote_engine.py | remote_http registration, synthesize PCM/WAV via MockTransport, HTTP error | core/tests/test_tts_remote_client.py | unit |
-| test_tts_presets.py | 6-preset registry, engine mappings, apply_tts_preset, TTSConfig preset-wins | core/tests/test_tts_presets.py | unit |
+| test_tts_presets.py (moved 1.50-fix1) | 6-preset registry, engine mappings, apply_tts_preset, TTSConfig preset-wins | core/tests/test_tts_presets.py | moved to backend_service (preset owner = backend engine_manager) |
 
 ## integration/
 
@@ -31,7 +30,9 @@ named uniquely to avoid basename collisions across service suites.
 
 ## Dropped deliberately
 
-None. All `core/tests/test_tts_*` behaviors migrated.
+| Legacy source | Behavior | Why |
+|---|---|---|
+| core/tests/test_tts_remote_client.py (test_tts_remote_engine.py) | remote_http registration, synthesize PCM/WAV, HTTP error | the tts_service rejects hosted adapters (test_engine_selection.py asserts `remote_http` NOT in ENGINES); the canonical remote transport moved to the backend control plane — see backend_service/tests/unit/test_tts_self_hosted_client.py (backend.application.clients.tts.SelfHostedTTSClient) |
 
 ## Gap list
 

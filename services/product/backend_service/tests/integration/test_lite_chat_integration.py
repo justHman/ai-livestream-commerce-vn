@@ -12,10 +12,6 @@ Uses mock backend, stub LLM/TTS, hash embedder (all offline).
 
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -155,7 +151,7 @@ def test_debug_clusters_returns_canonical_cached_snapshot(mock_env: None) -> Non
         assert first["received_total"] == 2
         assert first["buffered_comments"] == 2
         assert first["embedder_name"] == "hashing-fallback"
-        from core.director.config import StreamConfig
+        from backend.application.director.config import StreamConfig
 
         assert first["cluster_merge_threshold"] == StreamConfig().cluster_merge_threshold
         assert first["clusters"] == second["clusters"]

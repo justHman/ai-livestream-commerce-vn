@@ -12,8 +12,7 @@ named uniquely to avoid basename collisions across service suites.
 | test_config.py | EngineConfig/SecurityConfig validation, hosted-adapter rejection | new (pre-existing) | unit |
 | test_engine_selection.py | Self-host ENGINES registry, noop load, unknown rejection | new (pre-existing) | unit |
 | test_streaming.py | stream_chunks deltas/final markers, noop single chunk | new (pre-existing) | unit |
-| test_llm_streaming.py | stream_chunks default/incremental, LLMConfig.stream env, Qwen3.5 preset, llamacpp errors | core/tests/test_llm_streaming.py | unit |
-| test_llm_remote_engine.py | openai_compat registration, generate/stream via httpx MockTransport, guided_json body | core/tests/test_llm_remote_client.py | unit |
+| test_llm_streaming.py | stream_chunks default/incremental, llamacpp errors | core/tests/test_llm_streaming.py | unit |
 
 ## integration/
 
@@ -30,7 +29,10 @@ named uniquely to avoid basename collisions across service suites.
 
 ## Dropped deliberately
 
-None. All `core/tests/test_llm_*` behaviors migrated.
+| Legacy source | Behavior | Why |
+|---|---|---|
+| core/tests/test_llm_remote_client.py (test_llm_remote_engine.py) | openai_compat/remote registration, generate/stream, guided_json | the llm_service rejects hosted adapters (test_engine_selection.py asserts `openai_compat` NOT in ENGINES); the canonical remote transport moved to the backend control plane — see backend_service/tests/unit/test_llm_openai_client.py (backend.application.clients.llm.OpenAICompatibleClient) |
+| test_llm_streaming.py LLMConfig.stream env + Qwen3.5 preset sections | LLMConfig.from_env/to_engine_cfg stream flag; AVAILABLE_LLM_PRESETS Qwen3.5 entry | those symbols live in the backend control plane (backend.config.LLMConfig, backend.engine_manager.AVAILABLE_LLM_PRESETS) — the llm_service has no LLMConfig and cannot import backend (dependency is backend→llm); moved to backend_service/tests/unit/test_llm_config_and_presets.py |
 
 ## Gap list
 

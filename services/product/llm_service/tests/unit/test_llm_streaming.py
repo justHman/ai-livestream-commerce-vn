@@ -6,8 +6,6 @@ Covers:
   - TextChunk fields populated (id non-empty, session_id/utterance_id passed through).
   - LlamaCppEngine.stream_chunks() incremental override using a fake Llama (no
     real GGUF / no network) — exercises the one-ahead buffer path.
-  - LLMConfig.stream parsed from LLM_STREAM env ("1"/"true"/"on" → True, default False).
-  - engine_manager.AVAILABLE_LLM_PRESETS contains the Qwen3.5 preset (label + gguf_file).
   - Missing GGUF path raises a clear error (FileNotFoundError if llama_cpp importable,
     or the import error if llama_cpp is not installed). Deterministic, offline.
 
@@ -155,9 +153,9 @@ def test_stream_chunks_empty_stream_yields_nothing():
 def test_llamacpp_stream_chunks_incremental_with_fake_llama(monkeypatch):
     """Exercise LlamaCppEngine.stream_chunks() without a real GGUF: inject a fake
     Llama instance and verify incremental TextChunks (one per delta, last is_final)."""
-    import core.llm.adapters.llamacpp as mod
+    from llm.engines.llamacpp import LlamaCppEngine as mod
 
-    e = mod.LlamaCppEngine()
+    e = mod()
     e._llm = _FakeLlama(["Xin ", "chào ", "bạn."])
     e._system_prompt = None
     e.name = "llamacpp"
@@ -177,9 +175,9 @@ def test_llamacpp_stream_chunks_incremental_with_fake_llama(monkeypatch):
 def test_llamacpp_stream_chunks_skips_empty_deltas(monkeypatch):
     """The llamacpp stream() skips empty/None content; stream_chunks must too —
     no TextChunk with empty text should be emitted."""
-    import core.llm.adapters.llamacpp as mod
+    from llm.engines.llamacpp import LlamaCppEngine as mod
 
-    e = mod.LlamaCppEngine()
+    e = mod()
     # _FakeLlama with an empty delta in the middle: stream() yields only non-empty ones.
     e._llm = _FakeLlama(["a", "", "b"])
     e._system_prompt = None
@@ -191,65 +189,6 @@ def test_llamacpp_stream_chunks_skips_empty_deltas(monkeypatch):
     assert len(chunks) == 2
     assert "".join(c.text for c in chunks) == "ab"
     assert chunks[-1].is_final is True
-
-
-# ---------- LLMConfig.stream env parsing ----------
-
-
-def test_llm_config_stream_default_false_when_unset(monkeypatch):
-    monkeypatch.delenv("LLM_STREAM", raising=False)
-    from core.config import LLMConfig
-
-    cfg = LLMConfig.from_env()
-    assert cfg.stream is False
-
-
-@pytest.mark.parametrize("val", ["1", "true", "on", "TRUE", "On", "YES"])
-def test_llm_config_stream_truthy_values(monkeypatch, val):
-    monkeypatch.setenv("LLM_STREAM", val)
-    from core.config import LLMConfig
-
-    cfg = LLMConfig.from_env()
-    assert cfg.stream is True
-
-
-@pytest.mark.parametrize("val", ["0", "false", "off", "no", "", "random"])
-def test_llm_config_stream_non_truthy_values(monkeypatch, val):
-    monkeypatch.setenv("LLM_STREAM", val)
-    from core.config import LLMConfig
-
-    cfg = LLMConfig.from_env()
-    assert cfg.stream is False
-
-
-def test_llm_config_stream_propagated_to_engine_cfg(monkeypatch):
-    monkeypatch.setenv("LLM_STREAM", "1")
-    from core.config import LLMConfig
-
-    cfg = LLMConfig.from_env()
-    out = cfg.to_engine_cfg()
-    assert out.get("stream") is True
-
-
-# ---------- engine_manager Qwen3.5 preset ----------
-
-
-def test_qwen35_preset_present_by_label():
-    from core.engine_manager import AVAILABLE_LLM_PRESETS
-
-    labels = [p.get("label", "") for p in AVAILABLE_LLM_PRESETS]
-    assert any("Qwen3.5" in lab for lab in labels), labels
-
-
-def test_qwen35_preset_exact_fields():
-    from core.engine_manager import AVAILABLE_LLM_PRESETS
-
-    qwen35 = next(p for p in AVAILABLE_LLM_PRESETS if p.get("label", "").startswith("Qwen3.5"))
-    assert qwen35["engine"] == "llamacpp"
-    assert qwen35["model"] == "unsloth/Qwen3.5-4B-GGUF"
-    assert qwen35["gguf_file"] == "Qwen3.5-4B-Q4_K_M.gguf"
-    assert qwen35["device"] == "cuda"
-    assert qwen35["n_gpu_layers"] == -1
 
 
 # ---------- missing GGUF path deterministic error ----------
@@ -269,7 +208,7 @@ def test_llamacpp_missing_gguf_raises_clear_error(tmp_path):
     except ImportError:
         llama_available = False
 
-    from core.llm.adapters.llamacpp import LlamaCppEngine
+    from llm.engines.llamacpp import LlamaCppEngine
 
     bogus = str(tmp_path / "does_not_exist.gguf")
     if llama_available:
@@ -310,7 +249,7 @@ def test_llamacpp_bogus_file_path_raises_filenotfounderror(tmp_path):
     if not llama_available:
         pytest.skip("llama_cpp not installed; from_config raises ImportError before validation")
 
-    from core.llm.adapters.llamacpp import LlamaCppEngine
+    from llm.engines.llamacpp import LlamaCppEngine
 
     bogus = str(tmp_path / "does_not_exist.gguf")
     with pytest.raises(FileNotFoundError) as excinfo:

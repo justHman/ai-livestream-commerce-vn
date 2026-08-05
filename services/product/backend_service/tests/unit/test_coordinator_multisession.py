@@ -20,14 +20,10 @@ Uses stub LLM + ToneEngine + MockRenderBackend so it runs fully offline
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from typing import Iterator
 
 import pytest
-
-# Force hashing embedder for offline tests.
-os.environ.setdefault("DIRECTOR_EMBEDDER", "hash")
 
 from backend.application.director.catalog import Product
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
@@ -141,10 +137,11 @@ def _make_coordinator(
 # ---------- tests ----------
 
 
-async def test_two_concurrent_sessions_both_progress():
+async def test_two_concurrent_sessions_both_progress(monkeypatch: pytest.MonkeyPatch):
     """Two sessions tick concurrently: both must produce decisions or skips
     (i.e. the tick loop advances for BOTH), and the coordinator does not
     crash or deadlock."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     coord, registry = _make_coordinator(tick_ms=30)
     sid_a, sid_b = "sess-a", "sess-b"
     products = _make_products()
@@ -181,10 +178,11 @@ async def test_two_concurrent_sessions_both_progress():
     await asyncio.sleep(0.05)
 
 
-async def test_registry_holds_correct_per_session_queue():
+async def test_registry_holds_correct_per_session_queue(monkeypatch: pytest.MonkeyPatch):
     """While session A is speaking, orchestrator_registry['sess-a']['queue']
     is the per-call queue for A — NOT a shared queue, and NOT the same object
     as session B's queue if B is also speaking."""
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     coord, registry = _make_coordinator(tick_ms=20)
     sid_a, sid_b = "sess-a", "sess-b"
     products = _make_products()
@@ -234,7 +232,7 @@ async def test_registry_holds_correct_per_session_queue():
     await asyncio.sleep(0.05)
 
 
-async def test_cancel_one_session_does_not_cancel_the_other():
+async def test_cancel_one_session_does_not_cancel_the_other(monkeypatch: pytest.MonkeyPatch):
     """Cancelling session A's in-flight orchestrator must NOT stop session
     B's pipeline. Under the old shared-orchestrator design, calling
     cancel(sid_a) on the shared orchestrator also stopped sid_b because the
@@ -249,6 +247,7 @@ async def test_cancel_one_session_does_not_cancel_the_other():
       4. Assert B's orchestrator is still running (its cancel_event is NOT
          set) and B's queue is NOT cleared.
     """
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     coord, registry = _make_coordinator(tick_ms=20)
     sid_a, sid_b = "sess-a", "sess-b"
     products = _make_products()
@@ -313,12 +312,13 @@ async def test_cancel_one_session_does_not_cancel_the_other():
     await asyncio.sleep(0.05)
 
 
-async def test_decision_score_field_used_no_regex():
+async def test_decision_score_field_used_no_regex(monkeypatch: pytest.MonkeyPatch):
     """Sanity: the coordinator's interrupt arbitration reads decision.score
     directly (a float field on the Decision dataclass) rather than parsing
     the reason string. We assert the field exists and is a float for a
     real decision produced by the director."""
-    from core.director.director import Decision
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+    from backend.application.director.decision import Decision
 
     # The dataclass must expose a `score` field with a float default.
     dec = Decision(action="idle")

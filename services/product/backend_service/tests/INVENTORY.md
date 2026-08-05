@@ -3,7 +3,9 @@
 Migrated from `core/tests/` — every legacy core test file is accounted for
 below (moved, consolidated, or explicitly dropped). Tests target the
 canonical `backend.*` / `llm.*` / `tts.*` / `avatar.*` packages; no `core`
-imports remain.
+imports remain. The only guarded `core.*` fallbacks left in service src are
+the pre-existing COPY-DON'T-IMPORT try/except seams at
+llm/engines/base.py:34 and tts/engines/base.py:20 (service-local fallbacks).
 
 ## unit/
 
@@ -17,6 +19,10 @@ imports remain.
 | test_decision_preparation.py | Prepared-turn pipeline, retries, interrupt invalidation, Q&A variants, closing commit, cluster snapshot | core/tests/test_stage2_diagnostics.py | unit |
 | test_director_decisions.py | Director FSM: opening/selling/closing, pivot hysteresis, excursion, answer-variant cache, traffic updates | core/tests/test_stage2_auto_demo_sequence.py | unit |
 | test_pipecat_config.py | PIPECAT_ENABLED config gate (bridge stub behavior dropped — pipecat is config-only until wired) | core/tests/test_pipecat_bridge.py | unit |
+| test_tts_presets.py | 6-preset registry, engine mappings, apply_tts_preset, TTSConfig preset-wins | core/tests/test_tts_presets.py | unit |
+| test_llm_openai_client.py | canonical OpenAICompatibleClient chat/stream/retry via MockTransport | core/tests/test_llm_remote_client.py | unit |
+| test_llm_config_and_presets.py | LLMConfig.stream env parsing + Qwen3.5 preset fields | core/tests/test_llm_streaming.py (moved from llm_service; LLMConfig/presets owned by backend) | unit |
+| test_tts_self_hosted_client.py | canonical SelfHostedTTSClient synthesize PCM/WAV, HTTP error | core/tests/test_tts_remote_client.py | unit |
 | test_playback_queue.py | BoundedVideoQueue drop-oldest, CoordinatorMetrics, StreamOrchestrator end-to-end, cancel, callback | core/tests/test_queue_coordinator.py | unit |
 | test_queue_metrics.py | get_or_idle idle/underflow/emergency fallback, last_frame_age | core/tests/test_queue_metrics.py | unit |
 | test_render_backend_enum.py | AppConfig.build_render_backend selector contract (mock local; cloud/self-host remote placeholder) | core/tests/test_render_backend_enum.py | unit |
@@ -63,7 +69,7 @@ imports remain.
 | core/tests/test_infra_database_url_secret.py | infra/tests/test_database_url_secret.py | Terraform check |
 | core/tests/test_platform_service_roots.py | infra/tests/test_platform_roots.py | Terraform/platform check |
 | terraform module-source test (in test_canonical_path_references.py) | infra/tests/test_module_sources_resolve.py | Terraform check |
-| core/tests/test_llm_* / test_tts_* | llm_service/tests/ / tts_service/tests/ | engine owner |
+| core/tests/test_llm_* / test_tts_* | llm_service/tests/ / tts_service/tests/ (except test_tts_presets.py — preset registry owner is the backend engine_manager; now backend_service/tests/unit/) | engine owner |
 | core/tests/test_audio_windowing.py + mock render tests | avatar_service/tests/ | media-plane owner |
 | core/tests/test_gitleaks_allowlist.py, test_workbench_token_gate.py, test_stage2_console_static.py, test_product_service_roots.py, test_service_ownership_map.py, test_canonical_path_references.py (retained remainder) | retained in core/tests/ | repo-structural checks; removed with core/ in cleanup 1.79 |
 
@@ -72,6 +78,7 @@ imports remain.
 | Legacy source | Behavior | Why |
 |---|---|---|
 | core/tests/test_pipecat_bridge.py (is_enabled/build_pipeline/run_turn) | pipecat bridge stub | pipecat is a config-only toggle in the canonical backend (no bridge module exists until the feature is wired); the config gate test survives in test_pipecat_config.py |
+| core/tests/test_llm_remote_client.py / core/tests/test_tts_remote_client.py | openai_compat/remote_http engine registration + MockTransport behavior | hosted adapters are rejected by llm_service/tts_service (their test_engine_selection.py asserts absence); the canonical remote transports live in the backend control plane — covered by test_llm_openai_client.py + test_tts_self_hosted_client.py |
 
 ## Gap list
 
