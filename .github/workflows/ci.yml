@@ -143,6 +143,7 @@ jobs:
       - workbench-check
       - platform-check
       - terraform-plan
+      - repo-tools
     if: ${{ always() }}
     steps:
       - name: Aggregate required-check results
@@ -256,3 +257,15 @@ jobs:
             terraform -chdir=infra/environments/$ws init -backend=false
             terraform -chdir=infra/environments/$ws validate
           done
+
+  repo-tools:
+    runs-on: ubuntu-latest
+    needs: [affected-area, mode]
+    if: ${{ always() && needs.mode.result == 'success' && contains(fromJson(needs.affected-area.outputs.ci), 'ci') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Ruff check (root tools + CI scripts)
+        run: uvx ruff check scripts/ci scripts/contracts benchmarks/infra_scripts 2>/dev/null || uvx ruff check scripts/ci scripts/contracts
+      - name: Repo-tools + CI tests
+        run: uv run python -m pytest tests/ci -q

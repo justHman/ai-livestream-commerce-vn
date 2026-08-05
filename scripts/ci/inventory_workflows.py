@@ -52,8 +52,15 @@ DEPLOY_KEYWORDS = (
     "deploy",
     "ecs update-service",
     "terraform apply",
+    "terraform -chdir=... apply",
+    "terraform plan -destroy",
     "kubectl apply",
 )
+
+# Infra-mutation keywords: terraform apply/destroy in any invocation form
+# (with or without -chdir/plan -destroy prefixes). Plan/validate/init are
+# read-only and must NOT classify as mutation.
+INFRA_MUTATION_KEYWORDS = ("terraform apply", "terraform destroy", "-apply", "-destroy")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -271,6 +278,8 @@ def inventory_workflow(
         mutation["infra_mutation"] = True
     if any(kw in all_runs.lower() for kw in DEPLOY_KEYWORDS):
         mutation["deploy"] = True
+    if any(kw in all_runs.lower() for kw in INFRA_MUTATION_KEYWORDS):
+        mutation["infra_mutation"] = True
     for u in all_uses:
         if any(u.startswith(p) for p in DEPLOY_ACTIONS):
             deploy_actions.append(u)
@@ -288,6 +297,11 @@ def inventory_workflow(
         canonical_target = "CI gate"
     elif is_deploy_wf:
         canonical_target = "explicit deploy/release"
+    elif filename.startswith("_"):
+        # Reusable workflow_call building blocks feed their callers' gates.
+        canonical_target = "reusable (feeds caller gate)"
+    elif filename.startswith("infra-"):
+        canonical_target = "protected infra apply/teardown"
     elif "build" in filename:
         canonical_target = "offline image build"
     elif "seed" in filename:

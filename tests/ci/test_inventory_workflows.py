@@ -116,7 +116,11 @@ def test_step_uses_captured():
     wf = _inv("ci.yml")
     uses = {u for job in wf["jobs"] for u in job.get("uses", [])}
     assert "actions/checkout@v4" in uses
-    assert "astral-sh/setup-uv@v5" in uses
+    # setup-uv moved into the reusable _python-service-ci.yml (3.x rewrite); the
+    # entry workflow references the reusable instead of inlining the action.
+    reusable = _inv("_python-service-ci.yml")
+    reusable_uses = {u for job in reusable["jobs"] for u in job.get("uses", [])}
+    assert "astral-sh/setup-uv@v5" in uses or "astral-sh/setup-uv@v5" in reusable_uses
 
 
 def test_mutation_classification_correct():
