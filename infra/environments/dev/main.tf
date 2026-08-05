@@ -118,9 +118,8 @@ module "compute" {
     # in SSM /dev/liveavatar/api_key). Injected into backend task as
     # LIVEAVATAR_API_KEY when present.
     { "liveavatar/api_key" = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/dev/liveavatar/api_key" },
-    # Remote OpenAI-compat LLM API key (optional, when llm_engine=openai_compat
-    # and base_url is a remote endpoint needing auth). Put in SSM
-    # /dev/llm/api_key out-of-band.
+    # Remote OpenAI-compatible LLM API key (optional, when llm_adapter is a
+    # remote endpoint needing auth). Put in SSM /dev/llm/api_key out-of-band.
     { "llm/api_key" = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/dev/llm/api_key" },
     # Stage 2 ship-fast: ElevenLabs remote TTS API key (backend-only secret).
     { "tts/api_key" = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter/dev/tts/api_key" },

@@ -41,7 +41,9 @@ Constraints: no touch services/*/src/, contracts/v1/, benchmarks/, uv.lock, .run
 - Verified: static validator 12/12 PASS, YAML parse on:{} OK, tests 164 pass (2 pre-existing).
 
 ### Batch 5 — 6.6
-- PENDING
+- DONE (next commit): 4 envs fmt/init/validate PASS; terraform native tests 4/4 PASS; pytest infra/tests 16 PASS; boundary check OK; docs/infra-validation-6x.md evidence.
+- Stale legacy-selector comments removed from infra/environments/dev/main.tf + infra/modules/compute/backend.tf (reword only, re-validated).
+- NOT runnable locally (admin-apply): live apply/teardown drills, digest rollout, Cloud Map resolution.
 
 ## Key decisions (supervisor)
 - 6.4 disabled triggers: deploy-prod.yml `on.push.tags v*` (superseded by release-service.yml `*-v*`) + `on.workflow_dispatch` (manual prod deploy path superseded); build-images.yml → kept but restricted (workflow_dispatch retained, see report).

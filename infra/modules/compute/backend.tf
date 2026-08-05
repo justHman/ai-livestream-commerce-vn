@@ -81,8 +81,8 @@ resource "aws_ecs_task_definition" "backend" {
             valueFrom = var.secrets_arns["liveavatar/api_key"]
           },
         ] : [],
-        # Remote OpenAI-compat LLM API key (optional, when llm_engine=openai_compat
-        # and base_url points to a remote endpoint needing auth).
+        # Remote OpenAI-compatible LLM API key (optional, when llm_adapter is
+        # a remote endpoint needing auth).
         lookup(var.secrets_arns, "llm/api_key", "") != "" ? [
           {
             name      = "LLM_API_KEY"
