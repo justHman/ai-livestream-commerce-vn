@@ -15,10 +15,13 @@ Constraints: no touch services/*/src/, contracts/v1/, benchmarks/, uv.lock, .run
 ## Execution
 
 ### Batch 0 — ledger + audit baseline
-- COMMIT PENDING: chore(sdd): 6x cluster ledger (audit baseline, batch 0)
+- DONE ec2dbc1 chore(sdd): 6x cluster ledger (audit baseline, batch 0)
 
 ### Batch 1 — 6.1 + 6.5
-- PENDING
+- DONE cd51c25 test(ci): 6.1 no-deploy mode guards + 6.5 workflow graph audit doc
+- 6.1: tests/ci/test_detect_affected_areas.py + test_ci_event_modes_never_deploy + test_ci_gate_job_aggregates_all_modes (ci.yml trigger set, mutation all-false, gate deps).
+- 6.5: docs/workflow-graph-audit.md — 12-workflow graph vs event-to-action matrix, audit findings, admin-side residual items.
+- Verified: tests 164 pass (2 pre-existing base failures), static validator 12/12 PASS.
 
 ### Batch 2 — 6.2
 - PENDING
