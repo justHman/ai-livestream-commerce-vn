@@ -14,5 +14,11 @@ test matrix (`scripts/ci/test_matrix.json`), never part of ordinary CI.
 `stage2_pipeline.py --baseline` for p95 regression gating (fail when any
 comparable stage p95 is more than 20% slower).
 
+Committed baselines:
+
+| Baseline | What it records |
+|---|---|
+| `bench-20260713/SUMMARY.md` | 2026-07-13 hardening-stack benchmark (ALB + Fargate Spot mock): health/live ~51 rps @ c20, lite/say e2e p50 1.7s, auth via SSM, TLS RTT ~0.28s Seoul (moved from `.runtime/` in 1.78) |
+
 Programs that need live services or model weights fail loudly when the
 dependency is unavailable; they never silently pass.
