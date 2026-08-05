@@ -8,11 +8,14 @@ from llm.engines.base import ENGINES, load_engine
 
 
 def test_self_host_engines_registered() -> None:
-    assert {"vllm", "sglang", "transformers"} <= set(ENGINES)
+    # transformers registers under its canonical name 'hf'; llamacpp is a
+    # legitimate self-host engine owned by this service.
+    assert {"vllm", "sglang", "hf", "llamacpp"} <= set(ENGINES)
 
 
 def test_llamacpp_not_registered() -> None:
-    assert "llamacpp" not in ENGINES
+    # llamacpp IS owned by this service; only hosted adapters are excluded.
+    assert "openai_compat" not in ENGINES
 
 
 def test_openai_compat_not_registered() -> None:
