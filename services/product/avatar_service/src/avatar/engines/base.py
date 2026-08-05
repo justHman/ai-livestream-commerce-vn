@@ -6,7 +6,7 @@ Two coexisting interface families:
   the legacy renderer seam. ``FullPipelineBackend.say()`` owns the full
   LLM/TTS/render turn (LiveAvatar cloud); ``StreamingAvatarBackend.stream_audio()``
   consumes TTS ``AudioWindow`` chunks and yields ``VideoWindow`` (mock, remote,
-  future self-host). ``core/render/*`` re-exports these through the shim.
+  future self-host). ``backend.application.render.engines_base`` re-exports these.
 
 * ``AvatarEngine`` — the self-host engine lifecycle (start/interrupt/stop/
   session_status/stop_all/unload) with ``from_config`` construction.

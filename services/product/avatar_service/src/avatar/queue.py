@@ -1,6 +1,6 @@
 """Bounded VideoWindow queue + coordinator metrics (Task 8).
 
-The streaming coordinator (``core.render.orchestrator``) emits ``VideoWindow``
+The streaming coordinator (``backend.application.render.orchestrator``) emits ``VideoWindow``
 objects as the avatar render stage output. A bounded queue caps how many
 unconsumed windows can pile up between the coordinator and the consumer (WS
 events / media sink). When the queue is full, the drop-oldest policy evicts

@@ -31,7 +31,7 @@ class SelfHostRenderBackend(StreamingAvatarBackend):
     """Fail-loud placeholder for one explicit self-host model target.
 
     Kept for the legacy ``RENDER_BACKEND=self_host_*`` selector path
-    (``core.config`` builds it directly). The real engine is
+    (``backend.config`` builds it directly). The real engine is
     ``AvatarForcingEngine``; this placeholder raises until the avatar service
     runtime is wired end-to-end.
     """

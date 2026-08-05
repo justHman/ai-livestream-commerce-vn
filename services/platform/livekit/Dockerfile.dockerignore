@@ -26,7 +26,6 @@ services/product
 # Workbench, infra, docs, tests, benchmarks
 workbench/
 infra/
-frontend/
 docs/
 plans/
 notes/

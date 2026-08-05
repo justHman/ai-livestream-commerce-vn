@@ -5,9 +5,8 @@ the canonical backend service is self-contained without the legacy v1
 router. ``ControlHub`` fans session events to the connected WebSocket;
 ``AvatarStore`` is the MVP in-memory avatar registry.
 
-The full v1 route set (``core.api.v1``) is the legacy surface kept alive by
-core until Task 1.26 removes it; this module holds only the shared state
-objects the canonical container wires.
+The full v1 route set (``backend.api.v1``) registers on the shared router;
+this module holds only the shared state objects the canonical container wires.
 """
 
 from __future__ import annotations
