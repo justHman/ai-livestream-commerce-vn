@@ -1,6 +1,6 @@
 """Self-host LLM engines (vllm | sglang | transformers | llamacpp).
 
-llamacpp remains for the legacy offline/Colab GGUF path; the core shim's
+llamacpp remains for the legacy offline/Colab GGUF path; the
 ``ENGINES`` registry and the parity contract require it.
 """
 

@@ -12,7 +12,7 @@ vLLM is the production choice for multi-session live-commerce:
   - Quantization: awq / gptq / fp8 for 4B-7B models on a single GPU.
 
 Usage:
-    from core.llm import load_engine, to_llm_fn
+    from llm.engines.base import load_engine, to_llm_fn
     llm = load_engine({
         "engine": "vllm",
         "model": "Qwen/Qwen3-4B-Instruct",

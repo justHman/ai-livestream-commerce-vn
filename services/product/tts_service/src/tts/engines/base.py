@@ -1,7 +1,7 @@
 """TTSEngine ABC + registry + adapters-friendly base.
 
 The seam that makes TTS models swappable by config. Adapters (vieneu/kokoro/
-cosyvoice/xtts) live in core/tts/adapters/ and import each model's OFFICIAL
+cosyvoice/xtts) live in tts/engines/ and import each model's OFFICIAL
 code, exposing this one interface. The Director/RenderBackend never depends on
 a specific model.
 """
@@ -17,7 +17,7 @@ from uuid import uuid4
 import numpy as np
 
 try:
-    from core.render.windows import AudioWindow, TextChunk, split_waveform
+    from avatar.engines.windows import AudioWindow, TextChunk, split_waveform
 except ImportError:
 
     @dataclass(frozen=True)
@@ -155,7 +155,7 @@ class TTSEngine(ABC):
         kwargs). Builds a :class:`TTSRequest` from the text (unless ``req`` is
         provided), calls :meth:`synthesize` once to get the full waveform,
         converts it to int16 PCM bytes, and splits it into AudioWindows via
-        :func:`core.render.windows.split_waveform` using the window-size
+        :func:`avatar.engines.windows.split_waveform` using the window-size
         defaults from the avatar render plan (500/1000/2000 ms).
 
         The AudioWindow.sample_rate is the **native** sample rate reported by
@@ -255,7 +255,7 @@ def register_engine(name: str):
 def load_engine(cfg: dict) -> TTSEngine:
     """Build an engine from config. cfg['engine'] selects the adapter.
 
-    Importing core.tts.adapters registers the real adapters lazily; if a model's
+    Importing tts.engines registers the real adapters lazily; if a model's
     deps are missing, that adapter raises on from_config (not at import).
     """
     engine = cfg.get("engine", "tone")
@@ -276,7 +276,7 @@ def to_tts_fn(
     engine: TTSEngine, voice: Optional[str] = None, ref_text: Optional[str] = None
 ) -> Callable[[str], tuple[bytes, int]]:
     """Adapt a TTSEngine to the (pcm16_bytes, rate) callable the RenderBackend
-    expects (core.render.cloud.configure(tts_fn=...))."""
+    expects (tts_fn=...)."""
 
     def tts_fn(text: str) -> tuple[bytes, int]:
         chunk = engine.synthesize(TTSRequest(text=text, voice=voice, ref_text=ref_text))

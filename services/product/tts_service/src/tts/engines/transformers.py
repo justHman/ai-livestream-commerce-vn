@@ -13,8 +13,8 @@ Covered models (all via the same transformers API):
   - any VITS/MMS-VITS model on HF
 
 Models NOT covered (use native fallback adapters instead):
-  - VieNeu-TTS (NeuTTS)  → core/tts/adapters/vieneu.py (VN-native, RQ3 prosody)
-  - CosyVoice2          → core/tts/adapters/cosyvoice.py (true streaming)
+  - VieNeu-TTS (NeuTTS)  → tts/engines/vieneu.py (VN-native, RQ3 prosody)
+  - CosyVoice2          → tts/engines/cosyvoice.py (true streaming)
 
 Usage:
     engine = load_engine({

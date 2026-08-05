@@ -1,6 +1,6 @@
 """LLMEngine — model-agnostic LLM inference seam.
 
-The analogue of core/tts/base.py for language models. Every inference backend
+The analogue of tts/engines/base.py for language models. Every inference backend
 (vLLM production, llama.cpp Colab demo, SGLang RadixAttention, HF transformers
 fallback) implements ONE interface. The Director/RenderBackend never depends on
 a specific engine; swap by changing config, not code.
@@ -12,7 +12,7 @@ Design (mirrors the TTS seam):
   ENGINES registry       — name -> class; adapters self-register on import
   load_engine(cfg)       — build an engine from a config dict
   to_llm_fn(engine, ...) — adapt to the (text)->str callable that
-                           core.render.cloud.configure expects
+                           the avatar render seam expects
 
 Why a unified seam (not per-model native libs):
   - vLLM / SGLang / llama.cpp / transformers each have their own API surface.
@@ -31,7 +31,7 @@ from typing import Callable, Iterator, Optional
 from uuid import uuid4
 
 try:
-    from core.render.windows import TextChunk
+    from avatar.engines.windows import TextChunk
 except ImportError:
 
     @dataclass(frozen=True)
@@ -154,7 +154,7 @@ class LLMEngine(ABC):
 
         Adapters with a true incremental generate API (e.g. llama.cpp) MAY
         override this to emit ``TextChunk`` objects directly from the native
-        stream — see ``core.llm.adapters.llamacpp.LlamaCppEngine.stream_chunks``.
+        stream — see ``llm.engines.llamacpp.LlamaCppEngine.stream_chunks``.
         The default here is correct for any engine whose ``stream()`` yields
         str deltas; the override exists to avoid a double-iteration in adapters
         that already have a native incremental path.
@@ -238,7 +238,7 @@ def register_engine(name: str):
 def load_engine(cfg: dict) -> LLMEngine:
     """Build an engine from config. cfg['engine'] selects the adapter.
 
-    Importing core.llm.adapters registers the real adapters lazily; if a
+    Importing llm.engines registers the real adapters lazily; if a
     backend's deps are missing, that adapter raises on from_config (not at
     import), so the base module stays import-safe everywhere.
     """
@@ -261,7 +261,7 @@ def to_llm_fn(
     **default_kwargs,
 ) -> Callable[[str], str]:
     """Adapt an LLMEngine to the (text)->str callable that
-    core.render.cloud.configure(llm_fn=...) expects.
+    the avatar render seam expects (llm_fn=...).
 
     `system_prompt` is prepended to every call (the livestream persona).
     `default_kwargs` override LLMRequest defaults (max_tokens, temperature...).

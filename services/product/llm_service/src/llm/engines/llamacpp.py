@@ -7,7 +7,7 @@ llama.cpp (`llama-cpp-python`) is the demo / low-concurrency choice:
     multi-session; vLLM is the production path).
 
 Usage:
-    from core.llm import load_engine, to_llm_fn
+    from llm.engines.base import load_engine, to_llm_fn
     llm = load_engine({
         "engine": "llamacpp",
         "model_path": "weights/llm/qwen3-4b-q4_k_m.gguf",
