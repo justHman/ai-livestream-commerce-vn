@@ -51,27 +51,27 @@ jobs:
           python-version: "3.11"
       - name: Sync service environment
         run: uv sync --frozen --extra test --extra dev
-        working-directory: services/product/${{ matrix.service }}_service
+        working-directory: services/product/${{ matrix.service }}
       - name: Format check
-        run: uvx ruff format --check --no-cache services/product/${{ matrix.service }}_service/src services/product/${{ matrix.service }}_service/tests
+        run: uvx ruff format --check --no-cache services/product/${{ matrix.service }}/src services/product/${{ matrix.service }}/tests
       - name: Lint
-        run: uvx ruff check --no-cache services/product/${{ matrix.service }}_service/src services/product/${{ matrix.service }}_service/tests
+        run: uvx ruff check --no-cache services/product/${{ matrix.service }}/src services/product/${{ matrix.service }}/tests
       - name: Typecheck
         run: uvx pyright
       - name: Unit tests
         run: >
-          uv run python -m pytest services/product/${{ matrix.service }}_service/tests -q
-          --ignore=services/product/${{ matrix.service }}_service/tests/integration
-          --ignore=services/product/${{ matrix.service }}_service/tests/contract
+          uv run python -m pytest services/product/${{ matrix.service }}/tests -q
+          --ignore=services/product/${{ matrix.service }}/tests/integration
+          --ignore=services/product/${{ matrix.service }}/tests/contract
       - name: Integration tests
         if: ${{ inputs.integration }}
-        run: uv run python -m pytest services/product/${{ matrix.service }}_service/tests/integration -q
+        run: uv run python -m pytest services/product/${{ matrix.service }}/tests/integration -q
       - name: Contract tests
         if: ${{ inputs.contract }}
-        run: uv run python -m pytest services/product/${{ matrix.service }}_service/tests/contract -q
+        run: uv run python -m pytest services/product/${{ matrix.service }}/tests/contract -q
       - name: Coverage gate
         if: ${{ inputs.coverage }}
-        run: uv run python -m pytest services/product/${{ matrix.service }}_service/tests -q --cov-fail-under=80
+        run: uv run python -m pytest services/product/${{ matrix.service }}/tests -q --cov-fail-under=80
 
   neutral-skip:
     if: ${{ inputs.services == '' }}
