@@ -51,3 +51,41 @@ Base: 965018b (supervisor HEAD). Worktree: agent-ab41b0dce2704c8a4.
 ### Preserve (DO NOT TOUCH)
 - contracts/v1/, benchmarks/fixtures/, benchmarks/baselines/, .runtime/, uv.lock, archived/
 - services/platform/*, services/product/*_service/*, workbench/, infra/modules/* tf moved blocks
+
+## Execution (supervisor + implementer model, worktree agent-ab41b0dce2704c8a4)
+
+### Batch 0 — ledger + audit baseline
+- 7c52948 chore(sdd): 1.79 cluster ledger (audit baseline)
+
+### Batch 1 — reference fixes + core/ deletion (the big one)
+- ad59a8a refactor(benchmarks): benchmark/e2e imports → canonical services (backend.*, llm.*, tts.*, avatar.*); ownership-map manifest + test KNOWN_MOVED_SOURCES updated (pre-existing 1.79 gate failure fixed); new benchmarks/backend/fixture_data.py (workbench JSON + 4 stage2 texts)
+- 7b2d0df refactor(colab): colab_deploy.py uses backend.config + llm/tts.engines (was core.config/llm/tts/render)
+- dada2c6 chore(core): DELETE core/ (136 files) + backend Dockerfile/dockerignores + ci.yml (ruff scope, pytest tests/ci) + deploy-dev paths + pyproject testpaths
+- 47dd296 fix(tests): infra/tests/test_platform_roots.py reads canonical db/sql/runtime_schema.sql
+- Verify: core suite 551 pass/3 skip (pre-deletion), backend unit 177/1skip + integration 194 pass, llm 25/2skip, tts 26, avatar 89, tests/ci 165, e2e 8, infra 16; route gate (TestClient): /lite /debug /mock /sandbox all 404, health 200
+
+### Batch 2 — frontend/ deletion
+- 13ddd50 chore(frontend): DELETE frontend/ (index.html, lite.html) + README/docs/notebook workbench refs
+- Verify: no frontend refs remain in live docs
+
+### Batch 3 — providers/ deletion
+- 3e572d7 chore(providers): DELETE providers/ (20 files). SDK moved → backend/application/clients/avatar/liveavatar_sdk/ (client, audio, conversation, lite_agent); store → tests/sandbox/liveavatar/; sandbox tests + backend liveavatar.py re-pointed; detect_affected_areas classifier legacy branches removed (core/frontend/providers + core schema fan-out)
+- Verify: sandbox 6 pass (with fake key), backend 177/1skip + 194, tests/ci 162, e2e 8
+
+### Batch 4 — legacy service dirs + workflows + infra refs
+- ca6d3af chore(services): DELETE services/{avatar,backend,llm,tts}/ + services/.dockerignore + scripts/migrate_tests_150.py; split llm-tts deploy role → llm + tts in deploy-dev.yml + deploy-prod.yml (terraform outputs now llm/tts separate); infra test llm_tts → llm; docs desired_llm_tts → desired_llm/desired_tts; cluster.tf/compute README/swap_task_image/pricing csv/architecture html llm-tts refs
+- Verify: tests/ci 162, backend 371/1skip, llm 25/2skip, tts 26, avatar 89, e2e 8, infra 16
+
+### Batch 5 — docs/rules/settings/platform cleanup
+- d5e2a5c docs(cleanup): CLAUDE.md/README/tests-README/SHIP-CHECKLIST/runbooks/plan-review/cicd/scope-engine/architecture/checklists + services platform READMEs + validate_config + backend_service README + .claude rules paths + settings.json (core.tests.* permission removed)
+- 67cea14 fix(llm,tts): engine seams import avatar.engines.windows (was guarded core.render.windows fallback); docstring core refs removed
+- 9d8f4ee chore(cleanup): avatar src docstrings + platform dockerignores frontend/ + hub.py stale core ref
+- Verify: backend 371/1skip, avatar 89, tests/ci 162, e2e 8, infra 16
+
+## FINAL GATE
+- Live legacy imports (code-level, docstring/comment excluded): ZERO core/frontend/providers imports repo-wide
+- Only remaining "core" strings: historical docs (service-ownership-map manifest, INVENTORY.md migration tables, verify_parity sys.modules aliases — parity harness design), ScoredCluster (unrelated)
+- Route audit (backend.main:app): /api/v1/health/live 200, /health 200, /lite/start 404, /debug 404, /mock 404, /admin/sandbox/verify 404 — PASS
+- Full gate: backend 177/1skip + 194, llm 25/2skip, tts 26, avatar 89, tests/ci 162, e2e 8, infra 16, sandbox 6 (fake key) — ALL PASS
+- ruff clean on touched Python
+- Rollback: each batch = `git revert <commit>` (per-batch commits listed above)
