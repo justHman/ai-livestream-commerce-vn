@@ -6,7 +6,7 @@ Deterministic tested detector taking changed paths and emitting booleans/matrice
 Areas:
 - product services: backend_service, llm_service, tts_service, avatar_service
 - platform runtimes: platform_livekit, platform_lmcache, platform_postgres, platform_redis
-- workbench (frontend developer console, legacy path frontend/)
+- workbench (frontend developer console)
 - infra (Terraform)
 - contracts (service-owned artifacts + consumer fan-out implied by service areas)
 - shared-config, shared-locks, shared-build, shared-source (root shared files)
@@ -70,9 +70,6 @@ SERVICE_CONTRACT_CONSUMERS: Dict[str, frozenset] = {
     "tts_service": frozenset({"tts_service", "backend_service"}),
     "avatar_service": frozenset({"avatar_service", "backend_service"}),
 }
-
-# Legacy backend shared schema roots fan to backend + workbench.
-BACKEND_SCHEMA_CONSUMERS = frozenset({"backend_service", "workbench"})
 
 # Canonical source package name per product service (design §11 vocabulary).
 SERVICE_SRC_PACKAGE = {
@@ -167,10 +164,6 @@ def classify_path(path: str) -> List[str]:
         if p == contracts_dir or p.startswith(contracts_dir + "/"):
             return _fanout(SERVICE_CONTRACT_CONSUMERS[f"{service}_service"])
 
-    # 4. Legacy backend shared schema -> backend + workbench
-    if p.startswith("core/api/v1/schemas/") or p.startswith("core/schemas/"):
-        return _fanout(BACKEND_SCHEMA_CONSUMERS)
-
     # 5. Root shared files (explicit, required-area precision)
     if p in ROOT_SHARED_AREA:
         return [ROOT_SHARED_AREA[p]]
@@ -199,14 +192,8 @@ def classify_path(path: str) -> List[str]:
 
     if p == "workbench" or p.startswith("workbench/"):
         return ["workbench"]
-    if p == "frontend" or p.startswith("frontend/"):
-        return ["workbench"]  # legacy path is a workbench concern during Stage 2
     if p == "infra" or p.startswith("infra/"):
         return ["infra"]
-    if p == "core" or p.startswith("core/"):
-        return ["backend_service"]
-    if p == "providers" or p.startswith("providers/"):
-        return ["backend_service"]
 
     # 7. Unknown path -> conservative single shared-source area. It is surfaced
     # but never fans every service, and never silently dropped.

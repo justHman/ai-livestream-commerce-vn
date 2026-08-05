@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from providers.liveavatar_cloud.sdk.client import (
+from backend.application.clients.avatar.liveavatar_sdk.client import (
     LiveAvatarClient as _SDKLiveAvatarClient,
     SANDBOX_AVATAR_ID,
 )
@@ -61,8 +61,11 @@ class LiveAvatarClient:
         returns `livekit_url` + `livekit_client_token`. Provider session
         tokens and API credentials are never surfaced.
         """
-        from providers.liveavatar_cloud.service.conversation import LiteConversation
-        from providers.liveavatar_cloud.service.conversation import echo_llm, tone_tts
+        from backend.application.clients.avatar.liveavatar_sdk import (
+            LiteConversation,
+            echo_llm,
+            tone_tts,
+        )
 
         convo = LiteConversation(
             client=self._client,

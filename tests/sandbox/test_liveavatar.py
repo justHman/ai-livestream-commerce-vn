@@ -18,7 +18,7 @@ if not os.environ.get("LIVEAVATAR_API_KEY"):
         "ordinary CI and must fail loudly when credentials are missing"
     )
 
-from providers.liveavatar_cloud.service.conversation import LiteConversation
+from backend.application.clients.avatar.liveavatar_sdk import LiteConversation
 
 
 class _Agent:

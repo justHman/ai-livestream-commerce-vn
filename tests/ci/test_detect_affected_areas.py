@@ -8,7 +8,6 @@ import pytest
 
 from scripts.ci.detect_affected_areas import (
     ALL_AREAS,
-    BACKEND_SCHEMA_CONSUMERS,
     classify_path,
     detect_affected_areas,
 )
@@ -31,10 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
         ("services/platform/postgres/scripts/smoke_test.py", ["platform_postgres"]),
         ("services/platform/redis/redis.dev.conf", ["platform_redis"]),
         ("workbench/src/main.ts", ["workbench"]),
-        ("frontend/stage2.html", ["workbench"]),
         ("infra/environments/dev/main.tf", ["infra"]),
-        ("core/director/config.py", ["backend_service"]),
-        ("providers/liveavatar_cloud/service/lite_agent.py", ["backend_service"]),
+        ("services/product/backend_service/src/backend/application/clients/avatar/liveavatar_sdk/lite_agent.py", ["backend_service"]),
     ],
 )
 def test_direct_owner(path, expected):
@@ -114,10 +111,6 @@ def test_canonical_src_dto_not_recursive():
 def test_plain_service_src_not_dto():
     # A route/engine change does NOT fan out; only DTO schemas do.
     assert classify_path("services/product/llm_service/src/llm/engines/vllm.py") == ["llm_service"]
-
-
-def test_backend_schema_fans_to_workbench():
-    assert classify_path("core/api/v1/schemas/sessions.py") == sorted(BACKEND_SCHEMA_CONSUMERS)
 
 
 # ── Shared config / locks / build (finding #8) ──────────────────────────────
@@ -219,8 +212,8 @@ def test_multi_change_union():
 
 
 def test_dedup_union_deterministic():
-    a = detect_affected_areas(["core/api/v1/schemas/sessions.py", "core/director/config.py"])
-    b = detect_affected_areas(["core/director/config.py", "core/api/v1/schemas/sessions.py"])
+    a = detect_affected_areas(["workbench/src/main.ts", "infra/environments/dev/main.tf"])
+    b = detect_affected_areas(["infra/environments/dev/main.tf", "workbench/src/main.ts"])
     assert a["areas"] == b["areas"]
     assert a["matrix"] == b["matrix"]
 

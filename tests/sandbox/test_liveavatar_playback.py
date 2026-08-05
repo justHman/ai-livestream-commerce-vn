@@ -8,7 +8,7 @@ import threading
 import pytest
 import websocket
 
-from providers.liveavatar_cloud.service.lite_agent import LiteAudioAgent
+from backend.application.clients.avatar.liveavatar_sdk import LiteAudioAgent
 
 
 def test_stream_pcm_raises_when_playback_end_is_not_confirmed(monkeypatch) -> None:

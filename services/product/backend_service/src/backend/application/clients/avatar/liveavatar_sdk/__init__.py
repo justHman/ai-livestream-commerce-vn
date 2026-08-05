@@ -1,4 +1,4 @@
-"""Client SDK exports for LiveAvatar Cloud."""
+"""LiveAvatar SDK exports (backend-owned, moved from providers/ in 1.79)."""
 
 from . import audio
 from .client import (
@@ -8,14 +8,18 @@ from .client import (
     SessionToken,
     StartedSession,
 )
-from ..service.lite_agent import LiteAudioAgent
+from .conversation import LiteConversation, echo_llm, tone_tts
+from .lite_agent import LiteAudioAgent
 
 __all__ = [
-    "audio",
+    "LiteAudioAgent",
+    "LiteConversation",
     "LiveAvatarClient",
     "LiveAvatarError",
-    "LiteAudioAgent",
     "SANDBOX_AVATAR_ID",
     "SessionToken",
     "StartedSession",
+    "audio",
+    "echo_llm",
+    "tone_tts",
 ]

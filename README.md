@@ -33,7 +33,7 @@ services/product/llm_service/      self-host LLM package
 services/product/tts_service/      self-host TTS package
 services/product/avatar_service/   self-host avatar package
 services/platform/                 LiveKit, LMCache, Postgres, and Redis runtime assets
-providers/liveavatar_cloud/        LiveAvatar cloud SDK (behind the cloud RenderBackend)
+backend clients/ liveavatar_sdk  LiveAvatar cloud SDK (backend-owned client)
 workbench/                         developer console (Vite/TS) for canonical /api/v1
 notebooks/                          bootstrap_colab.ipynb (clone → weights → run → ngrok)
 docs/                               confirmed design + Seoul pricing (see docs/README.md)

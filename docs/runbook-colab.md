@@ -33,7 +33,7 @@ Any future dataset/checkpoint loader must print source, shape, dtype, and size.
 
 Paste an origin such as `https://example.ngrok.app` into the workbench console;
 the page appends `/api/v1`. The standalone
-`providers.liveavatar_cloud.service.colab_server` retains its separate `/api`
+The legacy standalone provider server is removed; the canonical backend serves `/api/v1`
 contract.
 
 ## Engine changes
@@ -65,7 +65,7 @@ curl <ngrok-url>/api/v1/engines -H "Authorization: Bearer <ADMIN_API_TOKEN>"
 - **Model access:** verify access to `cyankiwi/Qwen3.5-4B-AWQ-4bit`; use
   `HF_TOKEN` only when required.
 - **Provider import:** run from the cloned `implementations/` root and import
-  `providers.liveavatar_cloud`.
+  `backend.application.clients.avatar.liveavatar_sdk`.
 - **Mock route 404:** launch with `RENDER_BACKEND=mock`; mock endpoints are not
   the production media contract.
 - **Cloud renderer:** use `RENDER_BACKEND=cloud_liveavatar` with

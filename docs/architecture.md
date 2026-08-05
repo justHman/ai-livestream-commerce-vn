@@ -26,13 +26,13 @@ services/product/llm_service/src/llm/          self-host LLM engines
 services/product/tts_service/src/tts/          self-host TTS engines
 services/product/avatar_service/src/avatar/    self-host avatar engines
 services/platform/                             LiveKit, LMCache, Postgres, Redis runtime assets
-core/                                          staged compatibility implementation
-providers/liveavatar_cloud/                    cloud-provider SDK compatibility seam
+workbench/                                     developer console (Vite/TS) for canonical /api/v1
 ```
 
-`providers/liveavatar_cloud/` is an independent provider SDK. Its standalone
-Colab service keeps a smaller `/api` contract; the canonical `backend.main`
-application serves `/api/v1` to the workbench developer console.
+The LiveAvatar cloud SDK is backend-owned under
+`services/product/backend_service/src/backend/application/clients/avatar/liveavatar_sdk/`;
+the canonical `backend.main` application serves `/api/v1` to the workbench
+developer console.
 
 ## Lifecycle
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, Optional, Tuple, Union
 
-from ..sdk.client import LiveAvatarClient, SANDBOX_AVATAR_ID
+from .client import LiveAvatarClient, SANDBOX_AVATAR_ID
 from .lite_agent import LiteAudioAgent
 
 TtsOut = Union[Tuple[bytes, int], Iterable[Tuple[bytes, int]]]
@@ -32,7 +32,7 @@ def echo_llm(user_text: str) -> str:
 
 def tone_tts(text: str) -> Tuple[bytes, int]:
     """Fallback TTS: a tone whose length scales with text. Replace with viXTTS/Kokoro-VN."""
-    from ..sdk import audio
+    from . import audio
 
     seconds = max(0.6, min(len(text) / 15.0, 6.0))
     return audio.test_tone(seconds=seconds, freq=330), audio.TARGET_RATE
