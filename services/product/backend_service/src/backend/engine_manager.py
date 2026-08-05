@@ -122,7 +122,7 @@ AVAILABLE_LLM_PRESETS = [
 # (`engine`, `weights_path`, `sample_rate`, `device`) and human-readable
 # `label`/`notes`. The default preset (the one the frontend pre-selects) is
 # `vieneu-v3-turbo` — but the engine that the test/dev process actually loads
-# is still driven by TTS_ENGINE/TTS_WEIGHTS in core.config (defaults stay on
+# is still driven by TTS_ENGINE/TTS_WEIGHTS in backend.config (defaults stay on
 # `transformers`/`tone` so offline pytest never tries to import vieneu).
 AVAILABLE_TTS_PRESETS = [
     {

@@ -81,10 +81,10 @@ def main() -> int:
         r = bench(f"{base}/api/v1/health/live", args.token, "GET", None, 100, c)
         results.append(r)
         print(json.dumps(r))
-    # lite/say — c5 (30 req) needs session
+    # canonical session API — say (30 req) needs a session
     sid_out = urllib.request.urlopen(
         urllib.request.Request(
-            f"{base}/api/v1/lite/start",
+            f"{base}/api/v1/sessions",
             data=b"{}",
             headers={"Authorization": f"Bearer {args.token}", "Content-Type": "application/json"},
             method="POST",
@@ -93,12 +93,12 @@ def main() -> int:
     )
     sid = json.loads(sid_out.read())["session_id"]
     body = {"session_id": sid, "text": "Gioi thieu san pham giup minh"}
-    r = bench(f"{base}/api/v1/lite/say", args.token, "POST", body, 30, 5)
+    r = bench(f"{base}/api/v1/sessions/{sid}/say", args.token, "POST", body, 30, 5)
     r["session_id"] = sid
     results.append(r)
     print(json.dumps(r))
     # stop
-    _req("POST", f"{base}/api/v1/lite/stop", args.token, {"session_id": sid})
+    _req("POST", f"{base}/api/v1/sessions/{sid}/stop", args.token, {"session_id": sid})
 
     log = {"timestamp": datetime.utcnow().isoformat() + "Z", "base": base, "results": results}
     with open(args.out, "w", encoding="utf-8") as f:

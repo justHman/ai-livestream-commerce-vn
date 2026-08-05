@@ -1,9 +1,9 @@
 """Swap task-def container image(s) to new SHA tag(s) and register a new revision.
 
 Usage:
-  python scripts/swap_task_image.py <cluster> <service> <container> <new_image>
-  python scripts/swap_task_image.py <cluster> <service> <container>=<new_image> [<container>=<new_image> ...]
-  python scripts/swap_task_image.py <cluster> <service> --base-task <task-def-arn-or-name> <container>=<new_image> ...
+  python infra/scripts/swap_task_image.py <cluster> <service> <container> <new_image>
+  python infra/scripts/swap_task_image.py <cluster> <service> <container>=<new_image> [<container>=<new_image> ...]
+  python infra/scripts/swap_task_image.py <cluster> <service> --base-task <task-def-arn-or-name> <container>=<new_image> ...
 
 Prints the new task-definition ARN. Handles multi-container task defs. By
 default the base is the service's current task-def; use --base-task to start

@@ -1,8 +1,8 @@
 # Stage smoke + teardown-verify helper. Not authorization to apply.
 # Usage:
-#   scripts/stage_smoke.ps1 -Stage 1 -Base https://<alb> -Token $env:TF_VAR_backend_api_token
-#   scripts/stage_smoke.ps1 -Stage 2 -Base ... -Token ... -Sandbox
-#   scripts/stage_smoke.ps1 -Stage 3 -Base ... -Token ...
+#   infra/scripts/staging_smoke.ps1 -Stage 1 -Base https://<alb> -Token $env:TF_VAR_backend_api_token
+#   infra/scripts/staging_smoke.ps1 -Stage 2 -Base ... -Token ... -Sandbox
+#   infra/scripts/staging_smoke.ps1 -Stage 3 -Base ... -Token ...
 # Writes JSON + SUMMARY.md scaffold into .runtime/stage-{N}-<ts>/.
 # Billable: only run against a live stack the operator has explicitly approved.
 param(
