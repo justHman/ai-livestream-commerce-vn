@@ -31,7 +31,7 @@ Secrets are read through `google.colab.userdata` and never printed.
 
 Any future dataset/checkpoint loader must print source, shape, dtype, and size.
 
-Paste an origin such as `https://example.ngrok.app` into `frontend/lite.html`;
+Paste an origin such as `https://example.ngrok.app` into the workbench console;
 the page appends `/api/v1`. The standalone
 `providers.liveavatar_cloud.service.colab_server` retains its separate `/api`
 contract.

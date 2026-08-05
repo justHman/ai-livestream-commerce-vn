@@ -21,7 +21,6 @@ what the host says.
 
 - **Control plane** = `services/product/backend_service/src/backend/` FastAPI package
   (`/api/v1`, JSON + WebSocket): session lifecycle, `say`, interrupt, Director ingest, events.
-  `core/` remains its explicit staged compatibility seam until Task 1.79 cleanup.
 - **Media plane** = avatar video, streamed renderer → LiveKit → browser directly. Frames
   never transit this backend. Browser only gets `livekit_url` + `livekit_client_token`;
   secrets stay server-side.
@@ -34,9 +33,8 @@ services/product/llm_service/      self-host LLM package
 services/product/tts_service/      self-host TTS package
 services/product/avatar_service/   self-host avatar package
 services/platform/                 LiveKit, LMCache, Postgres, and Redis runtime assets
-core/                              explicit compatibility seam; current offline tests remain here
 providers/liveavatar_cloud/        LiveAvatar cloud SDK (behind the cloud RenderBackend)
-frontend/                           browser console compatibility surface pending Task 1.42
+workbench/                         developer console (Vite/TS) for canonical /api/v1
 notebooks/                          bootstrap_colab.ipynb (clone → weights → run → ngrok)
 docs/                               confirmed design + Seoul pricing (see docs/README.md)
 plans/                              active implement plans (00 AWS stack, 01 app backlog)
@@ -52,12 +50,12 @@ $env:LLM_ENGINE = "none"
 $env:TTS_ENGINE = "tone"
 $env:DIRECTOR_ENABLED = "0"
 $env:APP_ENV = "dev"
-uv run pytest core/tests/ -q
+uv run pytest tests/ci/ -q
 uv run --project services/product/backend_service uvicorn backend.main:app --port 8800
 ```
 
-Open `frontend/lite.html` through a static server and paste the backend origin;
-the page appends `/api/v1` itself. The mock path needs no LiveAvatar key.
+Open the `workbench/` developer console and paste the backend origin; it
+appends `/api/v1` itself. The mock path needs no LiveAvatar key.
 
 ## Runtime configuration
 

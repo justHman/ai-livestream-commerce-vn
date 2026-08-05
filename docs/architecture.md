@@ -31,8 +31,8 @@ providers/liveavatar_cloud/                    cloud-provider SDK compatibility 
 ```
 
 `providers/liveavatar_cloud/` is an independent provider SDK. Its standalone
-Colab service keeps a smaller `/api` contract; `frontend/lite.html` targets the
-canonical `backend.main` application and appends `/api/v1` to the origin.
+Colab service keeps a smaller `/api` contract; the canonical `backend.main`
+application serves `/api/v1` to the workbench developer console.
 
 ## Lifecycle
 

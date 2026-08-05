@@ -227,7 +227,7 @@ Phase 0 with all cost-driving desired=0, then Phase 1 with
 
 Smoke: `self_host_avatarforcing_half` start/speak/avatar-video-publish-through-
 LiveKit/stop or explicit fail-loud (no silent mock fallback). After bench
-PASS run the FE localhost WebRTC check: bring up `frontend/` pointing at the
+PASS run the FE localhost WebRTC check: bring up the workbench console pointing at the
 Terraform-derived API origin and verify avatar video is visible in the
 browser on `localhost` (API → LiveKit SFU → FE). This is a Stage 3 exit gate
 before teardown. On FAIL/PASS follow the mandatory loop.

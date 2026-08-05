@@ -49,6 +49,6 @@ Smoke failure
 
 - [ ] `GET /api/v1/health/ready` responds after launch.
 - [ ] Smoke cell starts and stops mock `/api/v1/lite` session successfully.
-- [ ] Paste the canonical backend origin into `frontend/lite.html`; it appends `/api/v1` itself.
+- [ ] Paste the canonical backend origin into the workbench console; it appends `/api/v1` itself.
       Do not paste `/api/v1`.
 - [ ] Final output tree and backend log path are captured before shutdown.
