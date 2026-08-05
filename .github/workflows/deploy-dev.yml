@@ -37,14 +37,12 @@ jobs:
       migrate_task_arn: ${{ steps.tf.outputs.migrate_task_arn }}
       public_subnet_ids: ${{ steps.tf.outputs.public_subnet_ids }}
       backend_sg_id: ${{ steps.tf.outputs.backend_sg_id }}
-      llm_tts_service: ${{ steps.tf.outputs.llm_tts_service }}
+      llm_service: ${{ steps.tf.outputs.llm_service }}
+      tts_service: ${{ steps.tf.outputs.tts_service }}
       avatar_service: ${{ steps.tf.outputs.avatar_service }}
-      livekit_service: ${{ steps.tf.outputs.livekit_service }}
-      lmcache_service: ${{ steps.tf.outputs.lmcache_service }}
-      has_llm_tts: ${{ steps.tf.outputs.has_llm_tts }}
+      has_llm: ${{ steps.tf.outputs.has_llm }}
+      has_tts: ${{ steps.tf.outputs.has_tts }}
       has_avatar: ${{ steps.tf.outputs.has_avatar }}
-      has_livekit: ${{ steps.tf.outputs.has_livekit }}
-      has_lmcache: ${{ steps.tf.outputs.has_lmcache }}
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS credentials
@@ -85,14 +83,12 @@ jobs:
           migrate_task=$(jq -r '.migrate_task_arn.value // empty' <<<"$output")
           subnets_json=$(jq -c '.public_subnet_ids.value // []' <<<"$output")
           backend_sg=$(jq -r '.backend_sg_id.value // empty' <<<"$output")
-          llm_tts_svc=$(jq -r '.ecs_service_names.value.llm_tts // empty' <<<"$output")
+          llm_svc=$(jq -r '.ecs_service_names.value.llm // empty' <<<"$output")
+          tts_svc=$(jq -r '.ecs_service_names.value.tts // empty' <<<"$output")
           avatar_svc=$(jq -r '.ecs_service_names.value.avatar // empty' <<<"$output")
-          livekit_svc=$(jq -r '.ecs_service_names.value.livekit // empty' <<<"$output")
-          lmcache_svc=$(jq -r '.ecs_service_names.value.lmcache // empty' <<<"$output")
-          llm_tts_desired=$(jq -e '.desired_optional_services.value.llm_tts // 0 | if type == "number" then . else error("llm_tts not number") end' <<<"$output")
+          llm_desired=$(jq -e '.desired_optional_services.value.llm // 0 | if type == "number" then . else error("llm not number") end' <<<"$output")
+          tts_desired=$(jq -e '.desired_optional_services.value.tts // 0 | if type == "number" then . else error("tts not number") end' <<<"$output")
           avatar_desired=$(jq -e '.desired_optional_services.value.avatar // 0 | if type == "number" then . else error("avatar not number") end' <<<"$output")
-          livekit_desired=$(jq -e '.desired_optional_services.value.livekit // 0 | if type == "number" then . else error("livekit not number") end' <<<"$output")
-          lmcache_desired=$(jq -e '.desired_optional_services.value.lmcache // 0 | if type == "number" then . else error("lmcache not number") end' <<<"$output")
           [[ -n "$cluster" && -n "$backend_svc" && -n "$backend_tg" ]] || {
             echo "Terraform outputs incomplete (cluster/backend/target group required)." >&2
             exit 1
@@ -103,10 +99,9 @@ jobs:
           echo "migrate_task_arn=$migrate_task" >> "$GITHUB_OUTPUT"
           echo "public_subnet_ids=$subnets_json" >> "$GITHUB_OUTPUT"
           echo "backend_sg_id=$backend_sg" >> "$GITHUB_OUTPUT"
-          echo "llm_tts_service=$llm_tts_svc" >> "$GITHUB_OUTPUT"
+          echo "llm_service=$llm_svc" >> "$GITHUB_OUTPUT"
+          echo "tts_service=$tts_svc" >> "$GITHUB_OUTPUT"
           echo "avatar_service=$avatar_svc" >> "$GITHUB_OUTPUT"
-          echo "livekit_service=$livekit_svc" >> "$GITHUB_OUTPUT"
-          echo "lmcache_service=$lmcache_svc" >> "$GITHUB_OUTPUT"
           check_optional() {
             local desired="$1" service="$2" role="$3"
             if [[ "$desired" -gt 0 ]]; then
@@ -119,10 +114,9 @@ jobs:
               echo "has_$role=false" >> "$GITHUB_OUTPUT"
             fi
           }
-          check_optional "$llm_tts_desired" "$llm_tts_svc" llm_tts
+          check_optional "$llm_desired" "$llm_svc" llm
+          check_optional "$tts_desired" "$tts_svc" tts
           check_optional "$avatar_desired" "$avatar_svc" avatar
-          check_optional "$livekit_desired" "$livekit_svc" livekit
-          check_optional "$lmcache_desired" "$lmcache_svc" lmcache
 
   build-backend:
     needs: preflight
@@ -146,18 +140,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  build-llm-tts:
+  build-llm:
     needs: preflight
-    if: ${{ needs.preflight.outputs.has_llm_tts == 'true' }}
+    if: ${{ needs.preflight.outputs.has_llm == 'true' }}
     runs-on: ubuntu-latest
     environment: development
-    strategy:
-      matrix:
-        include:
-          - service: llm
-            image: imjusthman/ai-live-llm
-          - service: tts
-            image: imjusthman/ai-live-tts
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -168,10 +155,30 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/product/${{ matrix.service }}_service/Dockerfile
+          file: services/product/llm_service/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ matrix.image }}:dev-${{ github.sha }}
+          tags: imjusthman/ai-live-llm:dev-${{ github.sha }}
+
+  build-tts:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.has_tts == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/product/tts_service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: imjusthman/ai-live-tts:dev-${{ github.sha }}
 
   build-avatar:
     needs: preflight
@@ -193,55 +200,13 @@ jobs:
           push: true
           tags: imjusthman/ai-live-avatar:dev-${{ github.sha }}
 
-  build-livekit:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.has_livekit == 'true' }}
-    runs-on: ubuntu-latest
-    environment: development
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/platform/livekit/Dockerfile
-          platforms: linux/arm64
-          push: true
-          tags: imjusthman/ai-live-livekit:dev-${{ github.sha }}
-
-  build-lmcache:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.has_lmcache == 'true' }}
-    runs-on: ubuntu-latest
-    environment: development
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/platform/lmcache/Dockerfile
-          platforms: linux/arm64
-          push: true
-          tags: imjusthman/ai-live-lmcache:dev-${{ github.sha }}
-
   deploy:
-    needs: [preflight, build-backend, build-llm-tts, build-avatar, build-livekit, build-lmcache]
+    needs: [preflight, build-backend, build-llm, build-tts, build-avatar]
     # Skip auto-deploy when repo variable SKIP_AUTO_DEPLOY=true (build-only run:
-    # push arm64 SHA images to Docker Hub, let operator deploy manually). This
+    # push SHA images to Docker Hub, let operator deploy manually). This
     # supports the three-stage money-safe boot: build images offline, then
     # manual Phase 1 scale-up after verifying the stack at zero cost.
-    if: ${{ always() && vars.SKIP_AUTO_DEPLOY != 'true' && needs.preflight.result == 'success' && needs.build-backend.result == 'success' && (needs.build-llm-tts.result == 'success' || needs.build-llm-tts.result == 'skipped') && (needs.build-avatar.result == 'success' || needs.build-avatar.result == 'skipped') && (needs.build-livekit.result == 'success' || needs.build-livekit.result == 'skipped') && (needs.build-lmcache.result == 'success' || needs.build-lmcache.result == 'skipped') }}
+    if: ${{ always() && vars.SKIP_AUTO_DEPLOY != 'true' && needs.preflight.result == 'success' && needs.build-backend.result == 'success' && (needs.build-llm.result == 'success' || needs.build-llm.result == 'skipped') && (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') && (needs.build-avatar.result == 'success' || needs.build-avatar.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: development
     env:
@@ -249,14 +214,12 @@ jobs:
       ECS_CLUSTER: ${{ needs.preflight.outputs.ecs_cluster }}
       BACKEND_SERVICE: ${{ needs.preflight.outputs.backend_service }}
       BACKEND_TARGET_GROUP: ${{ needs.preflight.outputs.backend_target_group_arn }}
-      LLM_TTS_SERVICE: ${{ needs.preflight.outputs.llm_tts_service }}
+      LLM_SERVICE: ${{ needs.preflight.outputs.llm_service }}
+      TTS_SERVICE: ${{ needs.preflight.outputs.tts_service }}
       AVATAR_SERVICE: ${{ needs.preflight.outputs.avatar_service }}
-      LIVEKIT_SERVICE: ${{ needs.preflight.outputs.livekit_service }}
-      LMCACHE_SERVICE: ${{ needs.preflight.outputs.lmcache_service }}
-      HAS_LLM_TTS: ${{ needs.preflight.outputs.has_llm_tts }}
+      HAS_LLM: ${{ needs.preflight.outputs.has_llm }}
+      HAS_TTS: ${{ needs.preflight.outputs.has_tts }}
       HAS_AVATAR: ${{ needs.preflight.outputs.has_avatar }}
-      HAS_LIVEKIT: ${{ needs.preflight.outputs.has_livekit }}
-      HAS_LMCACHE: ${{ needs.preflight.outputs.has_lmcache }}
       MIGRATE_TASK_ARN: ${{ needs.preflight.outputs.migrate_task_arn }}
       BACKEND_SUBNETS: ${{ needs.preflight.outputs.public_subnet_ids }}
       BACKEND_SG: ${{ needs.preflight.outputs.backend_sg_id }}
@@ -310,17 +273,14 @@ jobs:
               backend)
                 task=$(jq --arg image "imjusthman/ai-live-backend:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "backend" then .image = $image else . end)' <<<"$task")
                 ;;
-              llm-tts)
-                task=$(jq --arg llm "imjusthman/ai-live-llm:$IMAGE_TAG" --arg tts "imjusthman/ai-live-tts:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "llm" then .image = $llm elif .name == "tts" then .image = $tts else . end)' <<<"$task")
+              llm)
+                task=$(jq --arg image "imjusthman/ai-live-llm:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "llm" then .image = $image else . end)' <<<"$task")
+                ;;
+              tts)
+                task=$(jq --arg image "imjusthman/ai-live-tts:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "tts" then .image = $image else . end)' <<<"$task")
                 ;;
               avatar)
                 task=$(jq --arg image "imjusthman/ai-live-avatar:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "avatar" then .image = $image else . end)' <<<"$task")
-                ;;
-              livekit)
-                task=$(jq --arg image "imjusthman/ai-live-livekit:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "livekit" then .image = $image else . end)' <<<"$task")
-                ;;
-              lmcache)
-                task=$(jq --arg image "imjusthman/ai-live-lmcache:$IMAGE_TAG" '.containerDefinitions |= map(if .name == "lmcache" then .image = $image else . end)' <<<"$task")
                 ;;
               *)
                 echo "Unsupported ECS role: $role" >&2
@@ -349,10 +309,9 @@ jobs:
             echo "Migration completed."
           fi
           deploy_service backend "$BACKEND_SERVICE" mandatory
-          [[ "$HAS_LLM_TTS" == true ]] && deploy_service llm-tts "$LLM_TTS_SERVICE" optional
+          [[ "$HAS_LLM" == true ]] && deploy_service llm "$LLM_SERVICE" optional
+          [[ "$HAS_TTS" == true ]] && deploy_service tts "$TTS_SERVICE" optional
           [[ "$HAS_AVATAR" == true ]] && deploy_service avatar "$AVATAR_SERVICE" optional
-          [[ "$HAS_LIVEKIT" == true ]] && deploy_service livekit "$LIVEKIT_SERVICE" optional
-          [[ "$HAS_LMCACHE" == true ]] && deploy_service lmcache "$LMCACHE_SERVICE" optional
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "${updated_services[@]}"
           for _ in {1..12}; do
             target_group_healthy && break

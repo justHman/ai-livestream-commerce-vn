@@ -13,8 +13,12 @@ on:
         description: "Build backend (arm64)"
         type: boolean
         default: true
-      build-llm-tts:
-        description: "Build llm + tts (amd64)"
+      build-llm:
+        description: "Build llm (amd64)"
+        type: boolean
+        default: true
+      build-tts:
+        description: "Build tts (amd64)"
         type: boolean
         default: true
       build-avatar:
@@ -22,11 +26,11 @@ on:
         type: boolean
         default: false
       build-livekit:
-        description: "Build livekit (arm64)"
+        description: "Build local livekit wrapper image (arm64, local-only)"
         type: boolean
         default: false
       build-lmcache:
-        description: "Build lmcache (arm64)"
+        description: "Build local lmcache wrapper image (arm64, local-only)"
         type: boolean
         default: false
 
@@ -55,16 +59,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  build-llm-tts:
-    if: ${{ inputs.build-llm-tts }}
+  build-llm:
+    if: ${{ inputs.build-llm }}
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - service: llm
-            image: imjusthman/ai-live-llm
-          - service: tts
-            image: imjusthman/ai-live-tts
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -75,10 +72,30 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/product/${{ matrix.service }}_service/Dockerfile
+          file: services/product/llm_service/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ matrix.image }}:dev-${{ github.sha }}
+          tags: imjusthman/ai-live-llm:dev-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-tts:
+    if: ${{ inputs.build-tts }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/product/tts_service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: imjusthman/ai-live-tts:dev-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
