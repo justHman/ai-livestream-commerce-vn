@@ -1,0 +1,80 @@
+# _python-service-ci — reusable per-service Python checks for product services.
+#
+# Reusable workflow (underscore prefix, workflow_call only). Runs ruff format/
+# lint, typecheck (pyright), unit tests, and — only when the calling mode
+# requests them — integration, contract and coverage suites. Every skipped
+# check reports a neutral success so the aggregate `CI / gate` never waits on
+# a job that was deliberately not run (design §4, 3.3).
+#
+# Test matrix per mode lives in scripts/ci/test_matrix.json (committed 1.59);
+# this workflow is the execution layer honoring it. Product services use
+# `uv sync --frozen` with their own service pyproject (no root workspace).
+
+name: _python-service-ci
+
+on:
+  workflow_call:
+    inputs:
+      services:
+        description: 'JSON array of product services to check, e.g. ["backend","llm"] (use fromJson on the caller side)'
+        type: string
+        required: true
+      integration:
+        description: "Run integration suites (default false: feature-push mode omits them)"
+        type: boolean
+        default: false
+      contract:
+        description: "Run contract suites (default false)"
+        type: boolean
+        default: false
+      coverage:
+        description: "Enforce branch coverage gate (default false)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(inputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Sync service environment
+        run: uv sync --frozen --extra test --extra dev
+        working-directory: services/product/${{ matrix.service }}_service
+      - name: Format check
+        run: uvx ruff format --check --no-cache services/product/${{ matrix.service }}_service/src services/product/${{ matrix.service }}_service/tests
+      - name: Lint
+        run: uvx ruff check --no-cache services/product/${{ matrix.service }}_service/src services/product/${{ matrix.service }}_service/tests
+      - name: Typecheck
+        run: uvx pyright
+      - name: Unit tests
+        run: >
+          uv run python -m pytest services/product/${{ matrix.service }}_service/tests -q
+          --ignore=services/product/${{ matrix.service }}_service/tests/integration
+          --ignore=services/product/${{ matrix.service }}_service/tests/contract
+      - name: Integration tests
+        if: ${{ inputs.integration }}
+        run: uv run python -m pytest services/product/${{ matrix.service }}_service/tests/integration -q
+      - name: Contract tests
+        if: ${{ inputs.contract }}
+        run: uv run python -m pytest services/product/${{ matrix.service }}_service/tests/contract -q
+      - name: Coverage gate
+        if: ${{ inputs.coverage }}
+        run: uv run python -m pytest services/product/${{ matrix.service }}_service/tests -q --cov-fail-under=80
+
+  neutral-skip:
+    if: ${{ inputs.services == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No product service affected; reporting neutral success."

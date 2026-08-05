@@ -1,108 +1,257 @@
+# ci — branch-governed CI entry point (OpenSpec 3.1-3.14).
+#
+# Always-started entry workflow for feature/*, develop and main pushes and for
+# pull requests into develop and main. Derives fast / integration / release
+# mode from the trusted event context (github.ref + github.base_ref) — the
+# event, not the diff, decides which checks run.
+#
+# Modes (design §4):
+#   feature push            -> secret scan, affected-area detection, format,
+#                              lint, typecheck, unit tests for changed product
+#                              services. No integration/contract/coverage/
+#                              container/deploy.
+#   PR into develop         -> affected unit+integration+contract+coverage,
+#                              cached container build push:false, conditional
+#                              workbench/platform/Terraform checks.
+#   merge into develop      -> full affected-area integration CI + cached
+#                              affected-image validation push:false against the
+#                              exact merge commit.
+#   PR from develop to main -> release CI: affected service tests, container
+#                              validation, workbench/platform checks when
+#                              affected, Terraform plan when infra changes.
+#   merge into main         -> release verification against the exact merge
+#                              commit; no image push, no deployment.
+#
+# Every mode ends in ONE stable required-check result: `CI / gate`. Skipped
+# unaffected-area jobs report a successful neutral result so branch protection
+# never waits on a job that was not meant to run (3.3).
+#
+# ci.yml owns the mandatory Gitleaks `secret-scan` job for every push and PR
+# (3.5): redacted output, failing exit on findings, and it feeds the gate.
+
 name: ci
 
 on:
   push:
     branches:
-      - main
+      - "feature/**"
       - develop
-      - feature/**
+      - main
   pull_request:
+    branches:
+      - develop
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  lint:
+  secret-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: true
-      - name: Ruff check (production and canonical service sources)
-        run: >
-          uvx ruff check
-          core/api core/db core/debug core/director core/llm core/render
-          core/schemas core/stream core/tts
-          core/config.py core/engine_manager.py core/livekit_publish.py
-          core/livekit_tokens.py core/pipecat_bridge.py core/store.py
-          providers
-          services/product/backend_service/src
-          services/product/llm_service/src
-          services/product/tts_service/src
-          services/product/avatar_service/src
-          services/product/*_service/scripts
-          benchmarks/api/latency.py benchmarks/backend/commerce_clustering.py benchmarks/backend/stage2_pipeline.py scripts/model_assets/upload.py
-
-  offline-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          python-version: '3.11'
-      - name: Sync
-        run: uv sync --frozen --extra test
-      - name: Pytest
+          fetch-depth: 0
+      - name: Gitleaks scan (redacted)
+        uses: gitleaks/gitleaks-action@v2
         env:
-          RENDER_BACKEND: mock
-          LLM_ENGINE: none
-          TTS_ENGINE: tone
-          DIRECTOR_ENABLED: '0'
-          APP_ENV: dev
-        # --ignore=core/tests/test_benchmark_stage2.py: the frozen core copy
-        # imports scripts.benchmark_stage2, removed by OpenSpec 1.58 (moved to
-        # benchmarks/backend/stage2_pipeline.py). core/ cannot be edited
-        # (frozen); the file is deleted with the core cleanup in 1.79.
-        run: uv run python -m pytest core/tests/ -q --ignore=core/tests/test_benchmark_stage2.py
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        with:
+          config-path: .gitleaks.toml
+          redact: true
+          fail: true
+          version: v8.24.3
 
-  terraform-format:
+  affected-area:
     runs-on: ubuntu-latest
+    needs: [secret-scan]
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+      services_json: ${{ steps.detect.outputs.services_json }}
+      platform: ${{ steps.detect.outputs.platform }}
+      workbench: ${{ steps.detect.outputs.workbench }}
+      infra: ${{ steps.detect.outputs.infra }}
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: '1.14.8'
-      - name: Format check
-        run: terraform fmt -check -recursive infra
-
-  terraform-validate:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        workspace: [global, dev, staging, prod]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.14.8'
-      - name: Init (no backend)
-        run: terraform -chdir=infra/environments/${{ matrix.workspace }} init -backend=false
-      - name: Validate
-        run: terraform -chdir=infra/environments/${{ matrix.workspace }} validate
-      - name: Module boundary check
-        run: python scripts/ci/check_infra_module_boundaries.py
-
-  terraform-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.14.8'
-      - name: Native tests (plan-only, no credentials)
+          fetch-depth: 0
+      - name: Detect affected areas
+        id: detect
         run: |
-          terraform -chdir=infra/tests init -backend=false
-          terraform -chdir=infra/tests test
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          else
+            base="origin/${{ github.base_ref }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          fi
+          out=$(python scripts/ci/detect_changes.py "$base" "$head" --json)
+          services=$(jq -c '[.services[]]' <<<"$out")
+          services_csv=$(jq -r '[.services[]] | join(",")' <<<"$out")
+          platform=$(jq -c '[.areas[] | select(startswith("platform_"))]' <<<"$out")
+          workbench=$(jq -c '[.areas[] | select(. == "workbench")]' <<<"$out")
+          infra=$(jq -c '[.areas[] | select(. == "infra")]' <<<"$out")
+          echo "services=$services_csv" >> "$GITHUB_OUTPUT"
+          echo "services_json=$services" >> "$GITHUB_OUTPUT"
+          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+          echo "workbench=$workbench" >> "$GITHUB_OUTPUT"
+          echo "infra=$infra" >> "$GITHUB_OUTPUT"
 
-  docker-build-backend:
+  mode:
     runs-on: ubuntu-latest
-    needs: []
+    needs: [affected-area]
+    outputs:
+      name: ${{ steps.mode.outputs.name }}
+    steps:
+      - id: mode
+        run: |
+          set -euo pipefail
+          event="${{ github.event_name }}"
+          ref="${{ github.ref }}"
+          base="${{ github.base_ref }}"
+          if [[ "$event" == "pull_request" ]]; then
+            if [[ "$base" == "develop" ]]; then
+              echo "name=feature-pr" >> "$GITHUB_OUTPUT"
+            else
+              echo "name=release-pr" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            if [[ "$ref" == "refs/heads/main" ]]; then
+              echo "name=main-merge" >> "$GITHUB_OUTPUT"
+            elif [[ "$ref" == "refs/heads/develop" ]]; then
+              echo "name=develop-merge" >> "$GITHUB_OUTPUT"
+            else
+              echo "name=feature-push" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  gate:
+    runs-on: ubuntu-latest
+    needs:
+      - secret-scan
+      - affected-area
+      - mode
+      - service-ci
+      - container-build
+      - workbench-check
+      - platform-check
+      - terraform-plan
+    if: ${{ always() }}
+    steps:
+      - name: Aggregate required-check results
+        env:
+          SCAN: ${{ needs.secret-scan.result }}
+          AREA: ${{ needs.affected-area.result }}
+          MODE: ${{ needs.mode.result }}
+          SVC: ${{ needs.service-ci.result }}
+          CTN: ${{ needs.container-build.result }}
+          WB: ${{ needs.workbench-check.result }}
+          PLT: ${{ needs.platform-check.result }}
+          TF: ${{ needs.terraform-plan.result }}
+        run: |
+          set -euo pipefail
+          results=("$SCAN" "$AREA" "$MODE" "$SVC" "$CTN" "$WB" "$PLT" "$TF")
+          for r in "${results[@]}"; do
+            [[ "$r" == "success" || "$r" == "skipped" ]] || {
+              echo "CI / gate failed: job result '$r' is not success or skipped." >&2
+              exit 1
+            }
+          done
+          echo "CI / gate passed: all governed jobs succeeded or skipped neutrally."
+
+  service-ci:
+    needs: [mode, affected-area]
+    if: ${{ always() && needs.mode.result == 'success' }}
+    uses: ./.github/workflows/_python-service-ci.yml
+    with:
+      services: ${{ needs.affected-area.outputs.services_json }}
+      integration: ${{ needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' }}
+      contract: ${{ needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' }}
+      coverage: ${{ needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' }}
+
+  container-build:
+    needs: [mode, affected-area, service-ci]
+    if: ${{ always() && needs.mode.result == 'success' && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
+    uses: ./.github/workflows/_container-build.yml
+    with:
+      image: ${{ matrix.image }}
+      tag: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || format('ci-{0}', github.sha) }}
+      scope: ${{ matrix.service }}
+      dockerfile: ${{ matrix.dockerfile }}
+      platforms: ${{ matrix.platforms }}
+      push: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            dockerfile: services/product/backend_service/Dockerfile
+            image: imjusthman/ai-live-backend
+            platforms: linux/arm64
+          - service: llm
+            dockerfile: services/product/llm_service/Dockerfile
+            image: imjusthman/ai-live-llm
+            platforms: linux/amd64
+          - service: tts
+            dockerfile: services/product/tts_service/Dockerfile
+            image: imjusthman/ai-live-tts
+            platforms: linux/amd64
+          - service: avatar
+            dockerfile: services/product/avatar_service/Dockerfile
+            image: imjusthman/ai-live-avatar
+            platforms: linux/amd64
+
+  workbench-check:
+    runs-on: ubuntu-latest
+    needs: [affected-area, mode]
+    if: ${{ always() && needs.mode.result == 'success' && contains(fromJson(needs.affected-area.outputs.workbench), 'workbench') }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/setup-node@v4
         with:
-          context: .
-          file: services/product/backend_service/Dockerfile
-          push: false
-          tags: imjusthman/ai-live-backend:ci
-          load: true
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: workbench/package-lock.json
+      - name: Workbench lint
+        run: npm run lint
+        working-directory: workbench
+      - name: Workbench build
+        run: npm run build
+        working-directory: workbench
+
+  platform-check:
+    runs-on: ubuntu-latest
+    needs: [affected-area, mode]
+    if: ${{ always() && needs.mode.result == 'success' && fromJson(needs.affected-area.outputs.platform) != '[]' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate platform runtime configs (offline, no Docker)
+        run: |
+          set -euo pipefail
+          python services/platform/livekit/validate_config.py
+          bash -n services/platform/livekit/entrypoint.sh
+          bash -n services/platform/lmcache/entrypoint.sh
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    needs: [affected-area, mode]
+    if: ${{ always() && needs.mode.result == 'success' && contains(fromJson(needs.affected-area.outputs.infra), 'infra') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Terraform format check
+        run: terraform fmt -check -recursive infra
+      - name: Terraform validate (no backend)
+        run: |
+          for ws in global dev staging prod; do
+            terraform -chdir=infra/environments/$ws init -backend=false
+            terraform -chdir=infra/environments/$ws validate
+          done
