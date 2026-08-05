@@ -26,6 +26,15 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core/tests", "tests/ci"]
+# Cross-service E2E and sandbox are explicit-only (see scripts/ci/test_matrix.json);
+# never collected by ordinary runs.
+norecursedirs = [
+  "tests/e2e",
+  "tests/sandbox",
+  "archived",
+  ".venv",
+  "node_modules",
+]
 pythonpath = [
   ".",
   "services/product/backend_service/src",
