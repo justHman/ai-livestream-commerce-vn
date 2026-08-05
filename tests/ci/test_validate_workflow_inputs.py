@@ -321,3 +321,26 @@ def test_profile_deploy_dev_rejects_services_outside_allowlist():
     )
     assert proc.returncode == 1
     assert "Unknown service" in proc.stderr
+
+
+# ── 6.3: release path local simulation ──────────────────────────────────────
+
+
+def test_release_simulation_all_gates_pass(tmp_path):
+    """Eligible tag + main ancestry + staging evidence + digest promotion +
+    service-scoped rollback all pass; ineligible tags are rejected (6.3)."""
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            "python",
+            "scripts/ci/simulate_release_path.py",
+            "--fixture-dir",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ALL 6.3 GATES PASS" in proc.stdout

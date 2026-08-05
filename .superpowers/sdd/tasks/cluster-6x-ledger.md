@@ -29,7 +29,9 @@ Constraints: no touch services/*/src/, contracts/v1/, benchmarks/, uv.lock, .run
 - Verified: validate_workflow_inputs profile binding + rejection paths simulated locally; bash -n OK; tests 164 pass (2 pre-existing).
 
 ### Batch 3 — 6.3
-- PENDING
+- DONE (next commit): scripts/ci/simulate_release_path.py + tests/ci test_release_simulation_all_gates_pass.
+- Local simulation of 5.1 tag parse (eligible + ineligible), 5.2 main ancestry + staging evidence gate, 5.4 exact-digest promotion (immutable, no rebuild), 5.5 service-scoped rollback. ALL GATES PASS.
+- Verified: pytest 43 pass in file; bash -n not needed (python harness).
 
 ### Batch 4 — 6.4
 - PENDING
