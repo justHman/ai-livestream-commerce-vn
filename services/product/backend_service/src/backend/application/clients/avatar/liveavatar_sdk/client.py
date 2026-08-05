@@ -103,8 +103,7 @@ class LiveAvatarClient:
         self.api_key = api_key or os.environ.get("LIVEAVATAR_API_KEY")
         if not self.api_key:
             raise LiveAvatarError(
-                "No API key. Set LIVEAVATAR_API_KEY in implementations/.env "
-                "or pass api_key=..."
+                "No API key. Set LIVEAVATAR_API_KEY in implementations/.env or pass api_key=..."
             )
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
@@ -132,21 +131,16 @@ class LiveAvatarClient:
         json_body: Optional[dict] = None,
     ) -> dict[str, Any]:
         url = f"{self.api_base}{path}"
-        resp = requests.request(
-            method, url, headers=headers, json=json_body, timeout=self.timeout
-        )
+        resp = requests.request(method, url, headers=headers, json=json_body, timeout=self.timeout)
         try:
             payload = resp.json()
         except ValueError:
             payload = {"raw_text": resp.text}
 
         if resp.status_code >= 400 or (
-            isinstance(payload, dict)
-            and payload.get("code") not in (None, 1000)
+            isinstance(payload, dict) and payload.get("code") not in (None, 1000)
         ):
-            raise LiveAvatarError(
-                f"{method} {path} -> HTTP {resp.status_code}: {payload}"
-            )
+            raise LiveAvatarError(f"{method} {path} -> HTTP {resp.status_code}: {payload}")
         return payload
 
     # ------------------------------------------------------------------
@@ -159,9 +153,7 @@ class LiveAvatarClient:
         FULL/Embed = 2 credits/min, LITE = 1 credit/min. A session won't
         start without enough credits for at least one minute.
         """
-        payload = self._request(
-            "GET", "/v1/users/credits", headers=self._headers_key()
-        )
+        payload = self._request("GET", "/v1/users/credits", headers=self._headers_key())
         return float(payload["data"]["credits_left"])
 
     def list_avatars(self) -> list[dict[str, Any]]:
@@ -211,9 +203,7 @@ class LiveAvatarClient:
         }
         if links:
             body["links"] = links
-        payload = self._request(
-            "POST", "/v1/contexts", headers=self._headers_key(), json_body=body
-        )
+        payload = self._request("POST", "/v1/contexts", headers=self._headers_key(), json_body=body)
         return payload["data"]["id"]
 
     # ------------------------------------------------------------------

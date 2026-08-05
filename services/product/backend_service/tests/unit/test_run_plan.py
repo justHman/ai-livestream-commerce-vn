@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-
 from backend.api.v1 import ProductIn, build_run_plan
 from backend.application.director.scoring import coverage_ratio, mark_coverage
 from backend.application.director.embeddings import HashingEmbedder

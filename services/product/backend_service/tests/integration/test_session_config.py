@@ -18,10 +18,7 @@ def _client(backend: MockRenderBackend | None = None) -> TestClient:
     config = AppConfig(render_backend="mock", app_env="dev", director_enabled=True)
     dependencies = _Deps(
         backend=backend,
-        
-        
         director=runtime,
-        
         config=config,
     )
     app = create_app(config=config, deps=dependencies)
@@ -43,7 +40,9 @@ def _product(product_id: str, name: str, price: int = 100) -> dict:
 def test_attach_preserves_operator_product_order_and_structured_shop_profile() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={
                 "shop_profile": {
                     "shop_name": "Livento",
                     "host_name": "Chị Lan",
@@ -80,7 +79,9 @@ def test_attach_serializes_structured_shop_profile_to_persona() -> None:
     backend = PersonaBackend()
     with _client(backend) as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={
                 "shop_profile": {
                     "shop_name": "Livento",
                     "host_name": "Chị Lan",
@@ -121,27 +122,33 @@ def test_reattach_updates_remaining_opening_without_restarting_it() -> None:
 def test_reattach_increments_revisions_and_preserves_current_checkpoint() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        first = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [_product("P004", "Áo hoodie")]},
+        first = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [_product("P004", "Áo hoodie")]},
         ).json()
         runtime_session = _client._runtime.get_session(session_id)
         runtime_session.director.state.products[0].is_introduced = True
-        second = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [_product("P004", "Áo hoodie updated")]},
+        second = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [_product("P004", "Áo hoodie updated")]},
         ).json()
 
     assert second["profile_revision"] == first["profile_revision"]
     assert second["catalog_revision"] == first["catalog_revision"] + 1
     assert second["generation_token"] == "1:2:0"
-    assert (
-        _client._runtime.get_session(session_id).director.state.products[0].is_introduced is True
-    )
+    assert _client._runtime.get_session(session_id).director.state.products[0].is_introduced is True
 
 
 def test_reattach_replaces_catalog_without_leaving_stale_coordinator() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        first = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [_product("P004", "Áo hoodie")]},
+        first = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [_product("P004", "Áo hoodie")]},
         )
-        second = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [_product("P001", "Kem chống nắng")]},
+        second = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [_product("P001", "Kem chống nắng")]},
         )
 
     assert first.status_code == 200
@@ -153,7 +160,9 @@ def test_reattach_replaces_catalog_without_leaving_stale_coordinator() -> None:
 def test_attach_applies_runtime_config_atomically() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={
                 "products": [_product("P004", "Áo hoodie")],
                 "runtime_config": {
                     "prepared_turn_depth": 4,
@@ -175,9 +184,13 @@ def test_attach_applies_runtime_config_atomically() -> None:
 def test_attach_rejects_invalid_runtime_config_without_mutating_existing_session() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        first = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [_product("P004", "Áo hoodie")]},
+        first = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [_product("P004", "Áo hoodie")]},
         ).json()
-        invalid = client.post(f"/api/v1/sessions/{session_id}/attach", json={
+        invalid = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={
                 "products": [_product("P001", "Kem chống nắng")],
                 "runtime_config": {
                     "demand_pivot_enter_share": 0.4,
@@ -195,14 +208,14 @@ def test_attach_rejects_invalid_runtime_config_without_mutating_existing_session
 def test_runtime_config_update_applies_revision_and_rejects_invalid_rate() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [_product("P004", "Áo hoodie")]},
+        client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [_product("P004", "Áo hoodie")]},
         )
         response = client.patch(
             f"/api/v1/sessions/{session_id}/config", json={"prepared_turn_depth": 4}
         )
-        invalid = client.patch(
-            f"/api/v1/sessions/{session_id}/config", json={"comment_rate": 9}
-        )
+        invalid = client.patch(f"/api/v1/sessions/{session_id}/config", json={"comment_rate": 9})
 
     assert response.status_code == 200
     assert response.json()["config_revision"] == 1
@@ -222,7 +235,9 @@ def test_runtime_config_update_requires_attached_session() -> None:
 def test_runtime_config_update_preserves_previous_revision_after_validation_failure() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [_product("P004", "Áo hoodie")]},
+        client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [_product("P004", "Áo hoodie")]},
         )
         invalid = client.patch(
             f"/api/v1/sessions/{session_id}/config", json={"demand_pivot_exit_share": 0.8}
@@ -235,7 +250,9 @@ def test_runtime_config_update_preserves_previous_revision_after_validation_fail
 def test_attach_rejects_duplicate_product_ids() -> None:
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={
                 "products": [_product("P004", "A"), _product("P004", "B")],
             },
         )
@@ -249,7 +266,9 @@ def test_attach_rejects_invalid_price_relationship_and_stock() -> None:
     invalid["stock_total"] = -1
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [invalid]},
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [invalid]},
         )
 
     assert response.status_code == 422
@@ -260,7 +279,9 @@ def test_attach_rejects_oversized_product_arrays() -> None:
     invalid["colors"] = [f"Màu {index}" for index in range(33)]
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [invalid]},
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [invalid]},
         )
 
     assert response.status_code == 422
@@ -270,7 +291,9 @@ def test_attach_rejects_catalog_over_limit() -> None:
     products = [_product(f"P{index:03}", f"Sản phẩm {index}") for index in range(101)]
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": products},
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": products},
         )
 
     assert response.status_code == 422
@@ -281,7 +304,9 @@ def test_attach_rejects_oversized_array_item() -> None:
     invalid["features"] = ["x" * 501]
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [invalid]},
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [invalid]},
         )
 
     assert response.status_code == 413
@@ -292,7 +317,9 @@ def test_attach_rejects_oversized_image_reference() -> None:
     invalid["ref_image"] = "https://example.com/" + "x" * 2_048
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [invalid]},
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [invalid]},
         )
 
     assert response.status_code == 413
@@ -303,11 +330,14 @@ def test_attach_validation_identifies_affected_product_field() -> None:
     invalid["original_price"] = 100
     with _client() as client:
         session_id = client.post("/api/v1/sessions", json={}).json()["session_id"]
-        response = client.post(f"/api/v1/sessions/{session_id}/attach", json={ "products": [invalid]},
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/attach",
+            json={"products": [invalid]},
         )
 
     location = response.json()["detail"][0]["loc"]
     assert location == ["body", "products", 0]
+
 
 from avatar.engines.mock import MockRenderBackend
 from conftest import make_deps as _Deps  # noqa: F401

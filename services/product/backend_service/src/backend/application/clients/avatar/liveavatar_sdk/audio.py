@@ -14,11 +14,11 @@ import struct
 
 import numpy as np
 
-TARGET_RATE = 24_000          # Hz — LiveAvatar LITE requirement
+TARGET_RATE = 24_000  # Hz — LiveAvatar LITE requirement
 BYTES_PER_SEC = TARGET_RATE * 2  # 16-bit mono = 48,000 bytes/sec
 FIRST_CHUNK = int(BYTES_PER_SEC * 0.6)  # 600 ms initial buffer
-NEXT_CHUNK = BYTES_PER_SEC              # 1 s subsequent chunks
-MAX_PACKET = 1_000_000                  # ~1 MB cap per agent.speak packet
+NEXT_CHUNK = BYTES_PER_SEC  # 1 s subsequent chunks
+MAX_PACKET = 1_000_000  # ~1 MB cap per agent.speak packet
 
 
 def resample_to_24k(pcm_bytes: bytes, original_rate: int) -> bytes:

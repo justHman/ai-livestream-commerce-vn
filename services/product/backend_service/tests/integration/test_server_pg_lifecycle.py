@@ -18,7 +18,17 @@ from backend.bootstrap import create_app, create_container
 from backend.bootstrap import lifespan as server
 from conftest import make_deps as _Deps  # noqa: F401
 
-def _container_for(*, backend=None, store=None, hub=None, orchestrators=None, coordinator=None, pg_store=None, config=None):
+
+def _container_for(
+    *,
+    backend=None,
+    store=None,
+    hub=None,
+    orchestrators=None,
+    coordinator=None,
+    pg_store=None,
+    config=None,
+):
     """Build a BootstrapContainer mirroring the legacy V1Deps fields."""
     from avatar.engines.mock import MockRenderBackend
     from backend.application.db import InMemorySessionStore
@@ -168,7 +178,6 @@ def test_app_lifecycle_connects_and_closes_pg_store(monkeypatch):
     deps = _Deps(
         backend=backend,
         store=config.build_store(),
-        
         director=None,
         engine_manager=None,
         config=config,
@@ -196,7 +205,6 @@ def test_startup_retries_pg_exactly_three_times(monkeypatch):
     deps = _Deps(
         backend=config.build_render_backend(),
         store=config.build_store(),
-        
         config=config,
         pg_store=pg,
     )
@@ -247,7 +255,6 @@ def test_ready_is_false_after_configured_pg_startup_failure(monkeypatch):
     deps = _Deps(
         backend=config.build_render_backend(),
         store=config.build_store(),
-        
         config=config,
         pg_store=pg,
     )
@@ -267,7 +274,6 @@ def test_ready_handles_pg_health_exception_without_details(monkeypatch, caplog):
     deps = _Deps(
         backend=config.build_render_backend(),
         store=config.build_store(),
-        
         config=config,
         pg_store=pg,
     )
@@ -292,7 +298,6 @@ def test_shutdown_cleans_orchestrators_before_backend_and_postgres(monkeypatch):
     deps = _Deps(
         backend=_RecordingBackend(events),
         store=config.build_store(),
-        
         config=config,
         orchestrators={"session-1": {"orchestrator": orchestrator}},
         coordinator=_RecordingCoordinator(events),
@@ -311,7 +316,6 @@ async def test_shutdown_backend_failure_still_closes_postgres(caplog):
     deps = _Deps(
         backend=_BrokenBackend(events),
         store=None,
-        
     )
     pg = _OrderedPgStore(events)
     container = _container_for(backend=deps.backend, hub=deps.hub, pg_store=pg)
@@ -329,13 +333,16 @@ async def test_shutdown_orchestrator_failure_continues_all_stages(caplog):
     deps = _Deps(
         backend=_RecordingBackend(events),
         store=None,
-        
         orchestrators={"session-1": {"orchestrator": _BrokenOrchestrator(events)}},
         coordinator=_RecordingCoordinator(events),
     )
     pg = _OrderedPgStore(events)
     container = _container_for(
-        backend=deps.backend, hub=deps.hub, orchestrators=deps.orchestrators, coordinator=deps.coordinator, pg_store=pg
+        backend=deps.backend,
+        hub=deps.hub,
+        orchestrators=deps.orchestrators,
+        coordinator=deps.coordinator,
+        pg_store=pg,
     )
 
     with caplog.at_level(logging.ERROR, logger="backend.bootstrap.lifespan"):
@@ -351,7 +358,6 @@ async def test_shutdown_timeout_logs_unfinished_stage_and_cleans_task(monkeypatc
     deps = _Deps(
         backend=_RecordingBackend(events),
         store=None,
-        
         orchestrators={"session-1": {"orchestrator": _SlowOrchestrator()}},
     )
     monkeypatch.setattr(server, "_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
@@ -378,7 +384,6 @@ async def test_shutdown_cancellation_awaits_cleanup_task():
     deps = _Deps(
         backend=_RecordingBackend([]),
         store=None,
-        
         orchestrators={"session-1": {"orchestrator": _BlockingOrchestrator()}},
     )
     before = set(asyncio.all_tasks())
@@ -399,7 +404,6 @@ async def test_shutdown_awaits_async_backend_close():
     deps = _Deps(
         backend=_AsyncCloseBackend(events),
         store=None,
-        
     )
     container = _container_for(backend=deps.backend, hub=deps.hub)
 
@@ -419,4 +423,3 @@ def test_app_lifecycle_skips_pg_when_no_database_url(monkeypatch):
     config = AppConfig.from_env()
     pg = PostgresRuntimeStore(config.database_url)
     assert pg.enabled is False
-

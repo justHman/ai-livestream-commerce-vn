@@ -127,4 +127,3 @@ def test_endpoint_503_when_secret_missing(monkeypatch: pytest.MonkeyPatch):
         resp = c.post("/api/v1/media/livekit/room/s1")
         assert resp.status_code == 503
         assert "LiveKit" in resp.json()["error"]["message"]
-

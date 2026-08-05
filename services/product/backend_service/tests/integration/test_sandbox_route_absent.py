@@ -50,9 +50,6 @@ def _client(backend: FullPipelineBackend) -> TestClient:
     config = AppConfig(render_backend="cloud_liveavatar", app_env="dev")
     dependencies = _Deps(
         backend=backend,
-        
-        
-        
         config=config,
     )
     return TestClient(create_app(config=config, deps=dependencies))

@@ -622,7 +622,11 @@ async def health_ready(request: Request) -> dict[str, Any]:
             }
         if not embedder["ready"]:
             ready = False
-        if embedder["degraded"] and container.config is not None and container.config.app_env != "dev":
+        if (
+            embedder["degraded"]
+            and container.config is not None
+            and container.config.app_env != "dev"
+        ):
             ready = False
 
     resp: dict[str, Any] = {

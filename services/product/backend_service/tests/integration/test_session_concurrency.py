@@ -26,7 +26,12 @@ from httpx import ASGITransport
 
 from backend.config import AppConfig
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
-from backend.application.render.engines_base import FullPipelineBackend, RenderBackend, StartOptions, StartResult
+from backend.application.render.engines_base import (
+    FullPipelineBackend,
+    RenderBackend,
+    StartOptions,
+    StartResult,
+)
 from backend.application.render.windows import AudioWindow, TextChunk
 from tts.engines.base import AudioChunk, TTSEngine, TTSRequest
 
@@ -200,9 +205,7 @@ async def test_concurrent_say_one_200_one_409(mock_env: None):
     # Start a session.
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        start = await client.post(
-            "/api/v1/sessions", json={"avatar_id": None, "is_sandbox": True}
-        )
+        start = await client.post("/api/v1/sessions", json={"avatar_id": None, "is_sandbox": True})
         assert start.status_code == 200
         sid = start.json()["session_id"]
 
@@ -374,6 +377,7 @@ async def test_streaming_manual_say_bypasses_llm(mock_env: None):
 
     assert response.status_code == 200
     assert response.json()["reply"] == "Ba trăm năm mươi nghìn đồng."
+
 
 from avatar.engines.mock import MockRenderBackend
 from backend.engine_manager import EngineManager

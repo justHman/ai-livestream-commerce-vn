@@ -222,4 +222,3 @@ def test_schema_path_resolves():
     p = schema_path()
     assert p.is_file()
     assert p.name == "runtime_schema.sql"
-

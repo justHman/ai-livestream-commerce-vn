@@ -41,9 +41,7 @@ def make_deps(
             self.hub = hub if hub is not None else ControlHub()
             self.config = config
             self.director = director
-            self.engine_manager = (
-                engine_manager if engine_manager is not None else EngineManager()
-            )
+            self.engine_manager = engine_manager if engine_manager is not None else EngineManager()
             self.coordinator = coordinator
             self.pg_store = pg_store
             self.livekit_publishers = livekit_publishers

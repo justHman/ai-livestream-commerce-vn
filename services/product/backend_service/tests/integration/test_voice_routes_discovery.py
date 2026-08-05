@@ -36,9 +36,6 @@ def _client() -> tuple[TestClient, EngineManager, AvatarStore]:
     avatars = AvatarStore()
     avatars.create(scope="half", ref_photo_url="https://example/avatar.jpg", voice="default")
     dependencies = _Deps(
-        
-        
-        
         engine_manager=manager,
         config=config,
         avatars=avatars,
@@ -146,6 +143,7 @@ def test_tts_preview_rejects_unknown_resource_without_mutating_runtime() -> None
 
     assert response.status_code == 400
     assert manager.tts_cfg == before
+
 
 from backend.engine_manager import EngineManager
 from backend.api.v1.hub import AvatarStore

@@ -37,11 +37,7 @@ from conftest import make_deps as _Deps  # noqa: F401
 
 def _deps():
     return _Deps(
-        
-        
-        
         director=None,
-        
     )
 
 
@@ -289,4 +285,3 @@ def test_health_routes_are_public_in_prod(mock_env: None) -> None:
         for path in ("/api/v1/health", "/api/v1/health/live", "/api/v1/health/ready"):
             r = client.get(path)
             assert r.status_code == 200, f"{path}: {r.status_code} {r.text}"
-

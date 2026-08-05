@@ -211,9 +211,9 @@ async def test_transient_turn_retries_per_turn_and_advances_only_after_success()
     runtime.attach(
         session_id,
         [Product(id="P004", name="Áo hoodie")],
-        cfg=__import__("backend.application.director.config", fromlist=["StreamConfig"]).StreamConfig(
-            transient_retry_count=1
-        ),
+        cfg=__import__(
+            "backend.application.director.config", fromlist=["StreamConfig"]
+        ).StreamConfig(transient_retry_count=1),
     )
     coordinator._stats[session_id] = _SessionStats()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
@@ -237,9 +237,9 @@ async def test_transient_turn_exhaustion_does_not_advance_state() -> None:
     runtime.attach(
         session_id,
         [Product(id="P004", name="Áo hoodie")],
-        cfg=__import__("backend.application.director.config", fromlist=["StreamConfig"]).StreamConfig(
-            transient_retry_count=1
-        ),
+        cfg=__import__(
+            "backend.application.director.config", fromlist=["StreamConfig"]
+        ).StreamConfig(transient_retry_count=1),
     )
     coordinator._stats[session_id] = _SessionStats()
     coordinator._speech_queue[session_id] = __import__("collections").deque()

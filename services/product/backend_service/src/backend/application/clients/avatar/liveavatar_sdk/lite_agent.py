@@ -103,11 +103,7 @@ class LiteAudioAgent:
                     self._speak_ended.set()
             elif etype == "agent.speak_started" and task_id:
                 self._active_speak_task_id = task_id
-            elif (
-                etype == "agent.speak_ended"
-                and task_id
-                and task_id == self._active_speak_task_id
-            ):
+            elif etype == "agent.speak_ended" and task_id and task_id == self._active_speak_task_id:
                 self._speak_ended.set()
 
             if self.on_event:
@@ -164,9 +160,7 @@ class LiteAudioAgent:
         event_id = f"speak-{uuid4()}"
         self._begin_speaking(event_id)
         for chunk in audio.chunk_pcm(pcm_24k_mono):
-            self._send(
-                {"type": "agent.speak", "event_id": event_id, "audio": audio.b64(chunk)}
-            )
+            self._send({"type": "agent.speak", "event_id": event_id, "audio": audio.b64(chunk)})
         self._send({"type": "agent.speak_end", "event_id": event_id})
         if wait:
             self._wait_for_playback(60.0)
@@ -202,15 +196,11 @@ class LiteAudioAgent:
             buffer += pcm
             while len(buffer) >= target:
                 chunk, buffer = buffer[:target], buffer[target:]
-                self._send(
-                    {"type": "agent.speak", "event_id": event_id, "audio": audio.b64(chunk)}
-                )
+                self._send({"type": "agent.speak", "event_id": event_id, "audio": audio.b64(chunk)})
                 target = audio.NEXT_CHUNK
 
         if self._streaming.is_set() and buffer:
-            self._send(
-                {"type": "agent.speak", "event_id": event_id, "audio": audio.b64(buffer)}
-            )
+            self._send({"type": "agent.speak", "event_id": event_id, "audio": audio.b64(buffer)})
         self._send({"type": "agent.speak_end", "event_id": event_id})
         if wait:
             self._wait_for_playback(120.0)

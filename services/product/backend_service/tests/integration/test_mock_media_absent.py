@@ -61,5 +61,3 @@ async def test_mock_video_route_absent_from_production_app(mock_env: None) -> No
         sid = r2.json()["session_id"]
         r3 = await client.get(f"/api/v1/mock/video/{sid}.mjpeg")
         assert r3.status_code == 404
-
-

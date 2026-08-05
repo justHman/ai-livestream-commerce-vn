@@ -27,11 +27,7 @@ from conftest import make_deps as _Deps  # noqa: F401
 
 def _deps():
     return _Deps(
-        
-        
-        
         director=None,
-        
     )
 
 

@@ -123,7 +123,9 @@ def test_product_sales_are_split_into_short_stage_turns(monkeypatch: pytest.Monk
     assert "5 đến 7 câu hoàn chỉnh" not in intro.prompt
 
 
-def test_demand_pivot_has_hysteresis_and_minimum_comment_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_demand_pivot_has_hysteresis_and_minimum_comment_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     from backend.application.director.pivot import should_enter_pivot, should_exit_pivot
 
@@ -254,7 +256,9 @@ def test_committing_next_product_intro_moves_real_checkpoint(
     assert director.state.products[1].status is ProductStatus.ACTIVE
 
 
-def test_third_product_demand_is_queued_during_active_pivot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_third_product_demand_is_queued_during_active_pivot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     director = _cross_product_director()
     director.state.cursor.pivot_active = True
@@ -649,7 +653,9 @@ def coordinator_stats():
     return _SessionStats()
 
 
-def test_speech_plan_shows_current_product_and_next_product(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_speech_plan_shows_current_product_and_next_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
     session_id = "stage2-plan"
     backend = MockRenderBackend()
@@ -711,7 +717,9 @@ def test_coordinator_updates_live_traffic_before_first_decision(
     assert (traffic.viewer_count, traffic.msg_rate) == (1010, 2.0)
 
 
-def test_locked_intro_prevents_director_from_consuming_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_locked_intro_prevents_director_from_consuming_comments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
 
     async def run() -> None:

@@ -52,12 +52,9 @@ def _make_app(mock_env) -> TestClient:
         tts=ToneEngine(),
         backend=backend,
         cfg=CoordinatorConfig(tick_ms=300, window_sec=75.0),
-        
     )
     deps = _Deps(
         backend=backend,
-        
-        
         director=runtime,
         coordinator=coordinator,
         engine_manager=None,
@@ -222,6 +219,7 @@ def test_lite_stop_drops_coordinator_session(mock_env: None) -> None:
 
         # Coordinator should have dropped the session.
         assert not coordinator.has(sid)
+
 
 from backend.application.director.session_context import DirectorRuntime
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator

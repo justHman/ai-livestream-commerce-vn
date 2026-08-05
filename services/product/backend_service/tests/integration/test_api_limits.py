@@ -18,10 +18,6 @@ def _client(config: AppConfig) -> TestClient:
     from backend.main import create_app
 
     deps = _Deps(
-        
-        
-        
-        
         config=config,
     )
     return TestClient(create_app(config=config, deps=deps))
@@ -294,4 +290,3 @@ def test_control_websocket_burst_closes_with_policy_violation() -> None:
                 ws.receive_json()
 
     assert getattr(error.value, "code", None) == 1008
-

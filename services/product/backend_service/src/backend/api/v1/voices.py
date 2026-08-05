@@ -38,9 +38,7 @@ class EngineSwapReq(BaseModel):
 
 
 @router.get("/engines")
-async def engines_status(
-    request: Request, _: None = Depends(admin_auth)
-) -> dict[str, Any]:
+async def engines_status(request: Request, _: None = Depends(admin_auth)) -> dict[str, Any]:
     """List available LLM/TTS presets + currently loaded engines."""
     d = container_from_request(request)
     if d.engine_manager is None:

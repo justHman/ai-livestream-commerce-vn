@@ -44,10 +44,7 @@ def test_health_ready_reports_director_embedder_status(monkeypatch) -> None:
     runtime = DirectorRuntime(backend, embedder=HashingEmbedder())
     dependencies = _Deps(
         backend=backend,
-        
-        
         director=runtime,
-        
         config=AppConfig(app_env="dev", render_backend="mock", director_enabled=True),
     )
     from backend.main import create_app
@@ -59,6 +56,7 @@ def test_health_ready_reports_director_embedder_status(monkeypatch) -> None:
     assert body["embedder"]["name"] == "hashing-fallback"
     assert body["embedder"]["degraded"] is True
     assert body["ok"] is True
+
 
 from avatar.engines.mock import MockRenderBackend
 from conftest import make_deps as _Deps  # noqa: F401

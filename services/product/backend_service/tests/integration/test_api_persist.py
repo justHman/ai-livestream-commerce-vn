@@ -57,7 +57,6 @@ def _app_with_pg(pg, monkeypatch) -> TestClient:
     deps = _Deps(
         backend=config.build_render_backend(),
         store=config.build_store(),
-        
         director=None,
         engine_manager=None,
         config=config,
@@ -91,7 +90,6 @@ async def test_persistence_failure_log_excludes_comment_content(caplog):
     deps = _Deps(
         backend=None,
         store=None,
-        
         pg_store=_BrokenPgStore(),
     )
     with caplog.at_level(logging.WARNING, logger="backend.api.v1"):
@@ -116,7 +114,6 @@ def test_lite_ingest_no_pg_behaves_unchanged(monkeypatch):
     deps = _Deps(
         backend=config.build_render_backend(),
         store=config.build_store(),
-        
         director=None,
         engine_manager=None,
         config=config,
@@ -132,6 +129,7 @@ def test_lite_ingest_no_pg_behaves_unchanged(monkeypatch):
         )
         # Director not enabled -> 501, but no persistence crash.
         assert r.status_code in (501, 409)
+
 
 from backend.api.v1.sessions import _persist_viewer_msgs
 from backend.api.v1.router import CommentIn

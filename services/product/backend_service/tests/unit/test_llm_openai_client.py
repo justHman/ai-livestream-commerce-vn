@@ -122,7 +122,9 @@ def test_retry_after_request_error():
         return httpx.Response(
             200,
             json={
-                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                ],
                 "usage": {},
             },
         )

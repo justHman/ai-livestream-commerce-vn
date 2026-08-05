@@ -341,6 +341,7 @@ def test_stop_cancels_active_orchestrator_before_backend_and_publisher() -> None
     registry = LiveKitPublisherRegistry(lambda _: Publisher(), enabled_predicate=lambda: True)
     registry.activate("session")
     import asyncio
+
     asyncio.run(registry.publish(_window("session")))
     config = AppConfig(render_backend="mock", app_env="dev")
     deps = _Deps(
@@ -367,6 +368,7 @@ def test_stop_removes_session_publisher_only_after_backend_stop_succeeds() -> No
     registry = LiveKitPublisherRegistry(factory, enabled_predicate=lambda: True)
     registry.activate("session")
     import asyncio
+
     asyncio.run(registry.publish(_window("session")))
     config = AppConfig(render_backend="mock", app_env="dev")
     backend = MockRenderBackend()
@@ -394,6 +396,7 @@ def test_stop_removes_session_publisher_only_after_backend_stop_succeeds() -> No
     assert factory.publishers[0].stop_calls == 1
     assert registry.session_ids == ()
     client.close()
+
 
 from avatar.engines.mock import MockRenderBackend
 from conftest import make_deps as _Deps  # noqa: F401

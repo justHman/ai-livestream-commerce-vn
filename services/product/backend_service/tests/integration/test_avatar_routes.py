@@ -22,10 +22,6 @@ def _client() -> TestClient:
 
     cfg = AppConfig(render_backend="mock", app_env="dev")
     deps = _Deps(
-        
-        
-        
-        
         config=cfg,
     )
     return TestClient(create_app(config=cfg, deps=deps))

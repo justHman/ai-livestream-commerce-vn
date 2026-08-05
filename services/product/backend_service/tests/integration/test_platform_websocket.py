@@ -22,10 +22,6 @@ def _client() -> TestClient:
 
     cfg = AppConfig(render_backend="mock", app_env="dev", backend_api_token="")
     deps = _Deps(
-        
-        
-        
-        
         config=cfg,
     )
     return TestClient(create_app(config=cfg, deps=deps))
@@ -54,10 +50,6 @@ def test_platform_ws_auth_rejects_in_prod(mock_env: None) -> None:
         cors_origins="https://example.com",
     )
     deps = _Deps(
-        
-        
-        
-        
         config=cfg,
     )
     with TestClient(create_app(config=cfg, deps=deps)) as client:
@@ -78,10 +70,6 @@ def test_platform_ws_burst_closes_with_policy_violation(mock_env: None) -> None:
         ws_rate_limit_window_seconds=60,
     )
     deps = _Deps(
-        
-        
-        
-        
         config=cfg,
     )
     with TestClient(create_app(config=cfg, deps=deps)) as client:
@@ -106,10 +94,6 @@ def test_platform_ws_reconnect_keeps_session_budget(mock_env: None) -> None:
         ws_rate_limit_window_seconds=60,
     )
     deps = _Deps(
-        
-        
-        
-        
         config=cfg,
     )
     with TestClient(create_app(config=cfg, deps=deps)) as client:
@@ -138,10 +122,6 @@ def test_platform_ws_connections_have_separate_budgets(mock_env: None) -> None:
         ws_rate_limit_window_seconds=60,
     )
     deps = _Deps(
-        
-        
-        
-        
         config=cfg,
     )
     with TestClient(create_app(config=cfg, deps=deps)) as client:

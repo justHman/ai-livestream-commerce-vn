@@ -37,7 +37,6 @@ from backend.engine_manager import EngineManager  # noqa: F401
 from conftest import make_deps as _Deps  # noqa: F401
 
 
-
 # ---------- fixtures ----------
 
 
@@ -188,9 +187,7 @@ def test_injected_deps_engine_manager_used_as_is(mock_env: None, injected_deps) 
     assert isinstance(app, FastAPI)
 
 
-def test_health_ready_reports_llm_none_when_not_loaded(
-    mock_env: None, injected_deps
-) -> None:
+def test_health_ready_reports_llm_none_when_not_loaded(mock_env: None, injected_deps) -> None:
     """/health/ready on injected (no-model) deps reports llm_engine 'none'."""
     from backend.main import create_app
 
@@ -359,9 +356,7 @@ def test_health_ready_not_ready_with_hash_embedder_outside_dev(
     assert body["embedder"]["degraded"] is True
 
 
-def test_health_ready_not_ready_when_llm_load_failed(
-    mock_env: None, injected_deps
-) -> None:
+def test_health_ready_not_ready_when_llm_load_failed(mock_env: None, injected_deps) -> None:
     """Finding 2: a configured real LLM engine failed to load
     (em.llm_load_error set, em.llm is None) → /health/ready ok=False and the
     error is surfaced in the response."""
@@ -386,9 +381,7 @@ def test_health_ready_not_ready_when_llm_load_failed(
     assert "GGUF file not found" in body["llm_load_error"]
 
 
-def test_health_ready_not_ready_when_tts_load_failed(
-    mock_env: None, injected_deps
-) -> None:
+def test_health_ready_not_ready_when_tts_load_failed(mock_env: None, injected_deps) -> None:
     """Finding 2: a configured real TTS engine failed to load
     (em.tts_load_error set, em.tts is None) → /health/ready ok=False."""
     from backend.main import create_app
@@ -406,9 +399,7 @@ def test_health_ready_not_ready_when_tts_load_failed(
     assert "transformers not installed" in body["tts_load_error"]
 
 
-def test_health_ready_ready_when_no_error_and_stubs(
-    mock_env: None, injected_deps
-) -> None:
+def test_health_ready_ready_when_no_error_and_stubs(mock_env: None, injected_deps) -> None:
     """Baseline: no load error, no engines loaded (stub defaults) → ready=True.
     Verifies the Finding 2 fix didn't break the normal stub path."""
     from backend.main import create_app
@@ -520,4 +511,3 @@ def test_create_app_records_llm_load_error_on_failure(
     assert body["status"] == "not_ready"
     assert "llm_load_error" in body
     assert "GGUF file not found" in body["llm_load_error"]
-

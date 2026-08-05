@@ -16,7 +16,13 @@ from typing import Any
 from .playback_queue import PlaybackCancelled, PlaybackQueue, new_item
 from .text_chunker import TextChunker
 
-__all__ = ["PlaybackWorker", "PlaybackWorkerConfig", "PlaybackCancelled", "PlaybackQueue", "TextChunker"]
+__all__ = [
+    "PlaybackWorker",
+    "PlaybackWorkerConfig",
+    "PlaybackCancelled",
+    "PlaybackQueue",
+    "TextChunker",
+]
 
 
 @dataclass

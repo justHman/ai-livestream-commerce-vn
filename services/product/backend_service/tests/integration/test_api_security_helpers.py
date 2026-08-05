@@ -173,9 +173,7 @@ def test_integration(monkeypatch):
         assert c.get("/api/v1/health/live").headers.get("x-content-type-options") == "nosniff"
         assert c.post("/api/v1/sessions", json={}).status_code == 401
         assert (
-            c.post(
-                "/api/v1/sessions", json={}, headers={"authorization": "Bearer tkn"}
-            ).status_code
+            c.post("/api/v1/sessions", json={}, headers={"authorization": "Bearer tkn"}).status_code
             != 401
         )
 
