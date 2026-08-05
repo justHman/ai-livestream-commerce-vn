@@ -62,15 +62,6 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_backend" {
   referenced_security_group_id = aws_security_group.backend.id
 }
 
-resource "aws_vpc_security_group_egress_rule" "alb_to_livekit" {
-  security_group_id            = aws_security_group.alb.id
-  description                  = "HTTPS signaling to LiveKit"
-  ip_protocol                  = "tcp"
-  from_port                    = 443
-  to_port                      = 443
-  referenced_security_group_id = aws_security_group.livekit.id
-}
-
 # --- backend ---
 
 resource "aws_security_group" "backend" {
@@ -195,15 +186,6 @@ resource "aws_vpc_security_group_egress_rule" "llm_https" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-resource "aws_vpc_security_group_egress_rule" "llm_to_lmcache" {
-  security_group_id            = aws_security_group.llm.id
-  description                  = "LMCache ZMQ"
-  ip_protocol                  = "tcp"
-  from_port                    = 5555
-  to_port                      = 5555
-  referenced_security_group_id = aws_security_group.lmcache.id
-}
-
 # --- tts ---
 
 resource "aws_security_group" "tts" {
@@ -274,24 +256,6 @@ resource "aws_vpc_security_group_egress_rule" "avatar_https" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
-resource "aws_vpc_security_group_egress_rule" "avatar_livekit_tcp" {
-  security_group_id            = aws_security_group.avatar.id
-  description                  = "LiveKit signaling/media TCP"
-  ip_protocol                  = "tcp"
-  from_port                    = 443
-  to_port                      = 443
-  referenced_security_group_id = aws_security_group.livekit.id
-}
-
-resource "aws_vpc_security_group_egress_rule" "avatar_livekit_udp" {
-  security_group_id            = aws_security_group.avatar.id
-  description                  = "LiveKit media UDP"
-  ip_protocol                  = "udp"
-  from_port                    = 50000
-  to_port                      = 60000
-  referenced_security_group_id = aws_security_group.livekit.id
-}
-
 # --- rds ---
 
 resource "aws_security_group" "rds" {
@@ -347,83 +311,6 @@ resource "aws_vpc_security_group_ingress_rule" "redis_from_backend" {
 }
 
 # --- lmcache ---
-
-resource "aws_security_group" "lmcache" {
-  name        = "${var.project}-${var.env}-sg-lmcache"
-  description = "LMCache KV server - llm only"
-  vpc_id      = var.vpc_id
-
-  tags = merge(local.common_tags, {
-    Name = "${var.project}-${var.env}-sg-lmcache"
-    Role = "lmcache"
-  })
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "lmcache_from_llm" {
-  security_group_id            = aws_security_group.lmcache.id
-  description                  = "ZMQ from llm only"
-  ip_protocol                  = "tcp"
-  from_port                    = 5555
-  to_port                      = 5555
-  referenced_security_group_id = aws_security_group.llm.id
-}
-
-# --- livekit ---
-
-resource "aws_security_group" "livekit" {
-  name        = "${var.project}-${var.env}-sg-livekit"
-  description = "LiveKit SFU - signaling + public media UDP"
-  vpc_id      = var.vpc_id
-
-  tags = merge(local.common_tags, {
-    Name = "${var.project}-${var.env}-sg-livekit"
-    Role = "livekit"
-  })
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "livekit_https_from_alb" {
-  security_group_id            = aws_security_group.livekit.id
-  description                  = "Signaling HTTPS from ALB"
-  ip_protocol                  = "tcp"
-  from_port                    = 443
-  to_port                      = 443
-  referenced_security_group_id = aws_security_group.alb.id
-}
-
-resource "aws_vpc_security_group_ingress_rule" "livekit_media_udp" {
-  security_group_id = aws_security_group.livekit.id
-  description       = "WebRTC media UDP public"
-  ip_protocol       = "udp"
-  from_port         = 50000
-  to_port           = 60000
-  cidr_ipv4         = "0.0.0.0/0"
-}
-
-resource "aws_vpc_security_group_egress_rule" "livekit_media_udp" {
-  security_group_id = aws_security_group.livekit.id
-  description       = "WebRTC media UDP egress"
-  ip_protocol       = "udp"
-  from_port         = 50000
-  to_port           = 60000
-  cidr_ipv4         = "0.0.0.0/0"
-}
-
-resource "aws_vpc_security_group_egress_rule" "livekit_https" {
-  security_group_id = aws_security_group.livekit.id
-  description       = "HTTPS egress"
-  ip_protocol       = "tcp"
-  from_port         = 443
-  to_port           = 443
-  cidr_ipv4         = "0.0.0.0/0"
-}
 
 # ---------------------------------------------------------------------------
 # Optional GitHub Actions OIDC provider (account-wide; enable once)

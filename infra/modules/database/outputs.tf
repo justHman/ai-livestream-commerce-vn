@@ -1,60 +1,60 @@
 output "rds_instance_id" {
   description = "RDS instance identifier"
-  value       = aws_db_instance.postgres.id
+  value       = var.create_rds ? aws_db_instance.postgres[0].id : ""
 }
 
 output "rds_endpoint" {
   description = "RDS hostname:port"
-  value       = aws_db_instance.postgres.endpoint
+  value       = var.create_rds ? aws_db_instance.postgres[0].endpoint : ""
 }
 
 output "rds_address" {
   description = "RDS hostname only"
-  value       = aws_db_instance.postgres.address
+  value       = var.create_rds ? aws_db_instance.postgres[0].address : ""
 }
 
 output "rds_port" {
   description = "RDS port"
-  value       = aws_db_instance.postgres.port
+  value       = var.create_rds ? aws_db_instance.postgres[0].port : ""
 }
 
 output "rds_db_name" {
   description = "Initial database name"
-  value       = aws_db_instance.postgres.db_name
+  value       = var.create_rds ? aws_db_instance.postgres[0].db_name : ""
 }
 
 output "rds_username" {
   description = "Master username"
-  value       = aws_db_instance.postgres.username
+  value       = var.create_rds ? aws_db_instance.postgres[0].username : ""
   sensitive   = true
 }
 
 output "rds_resource_id" {
   description = "RDS resource ID (for IAM auth / monitoring)"
-  value       = aws_db_instance.postgres.resource_id
+  value       = var.create_rds ? aws_db_instance.postgres[0].resource_id : ""
 }
 
 output "db_subnet_group_name" {
   description = "DB subnet group name"
-  value       = aws_db_subnet_group.this.name
+  value       = var.create_rds ? aws_db_subnet_group.this[0].name : ""
 }
 
 output "redis_cluster_id" {
   description = "ElastiCache cluster ID"
-  value       = aws_elasticache_cluster.redis.id
+  value       = var.create_redis ? aws_elasticache_cluster.redis[0].id : ""
 }
 
 output "redis_endpoint" {
   description = "Redis primary endpoint address"
-  value       = aws_elasticache_cluster.redis.cache_nodes[0].address
+  value       = var.create_redis ? aws_elasticache_cluster.redis[0].cache_nodes[0].address : ""
 }
 
 output "redis_port" {
   description = "Redis port"
-  value       = aws_elasticache_cluster.redis.port
+  value       = var.create_redis ? aws_elasticache_cluster.redis[0].port : ""
 }
 
 output "redis_connection_string" {
   description = "host:port for app config"
-  value       = "${aws_elasticache_cluster.redis.cache_nodes[0].address}:${aws_elasticache_cluster.redis.port}"
+  value       = var.create_redis ? "${aws_elasticache_cluster.redis[0].cache_nodes[0].address}:${aws_elasticache_cluster.redis[0].port}" : ""
 }

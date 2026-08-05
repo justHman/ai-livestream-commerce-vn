@@ -1,0 +1,40 @@
+[project]
+name = "ai-livestream-avatar"
+version = "0.1.0"
+description = "Self-host avatar rendering service package"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn[standard]", "pydantic", "numpy", "Pillow", "PyJWT"]
+
+[project.optional-dependencies]
+livekit = ["livekit"]
+test = ["pytest", "pytest-asyncio"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["avatar*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+# Integration/contract suites and live-stack behavior never run in ordinary CI;
+# select them explicitly (see scripts/ci/test_matrix.json).
+addopts = "--ignore=tests/integration --ignore=tests/contract"
+
+[tool.coverage.run]
+branch = true
+source = ["avatar"]
+
+[tool.coverage.report]
+fail_under = 80

@@ -28,39 +28,59 @@ variable "assign_public_ip" {
 # --- images (Docker Hub public) ---
 
 variable "image_backend" {
-  description = "Backend image URI"
+  description = "Backend image URI (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-backend:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_backend))
+    error_message = "image_backend must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_llm" {
-  description = "LLM image URI (vLLM + Qwen3.5-4B-AWQ)"
+  description = "LLM image URI (vLLM + Qwen3.5-4B-AWQ) (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-llm:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_llm))
+    error_message = "image_llm must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_tts" {
-  description = "TTS image URI (vllm-omni + VieNeu-TTS-v2)"
+  description = "TTS image URI (vllm-omni + VieNeu-TTS-v2) (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-tts:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_tts))
+    error_message = "image_tts must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_avatar" {
-  description = "Avatar image URI"
+  description = "Avatar image URI (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-avatar:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_avatar))
+    error_message = "image_avatar must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
 variable "image_lmcache" {
-  description = "LMCache image URI"
+  description = "LMCache sidecar image URI (immutable digest only: registry/repo@sha256:...)"
   type        = string
-  default     = "imjusthman/ai-live-lmcache:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_lmcache))
+    error_message = "image_lmcache must reference an immutable digest (repo@sha256:64hex). No mutable tags."
+  }
 }
 
-variable "image_livekit" {
-  description = "LiveKit server image URI"
+variable "livekit_url" {
+  description = "LiveKit Cloud WebSocket URL (wss://...). Empty = LiveKit disabled."
   type        = string
-  default     = "imjusthman/ai-live-livekit:latest"
+  default     = ""
 }
 
 # --- desired counts ---
@@ -71,26 +91,31 @@ variable "desired_backend" {
   default     = 1
 }
 
-variable "desired_llm_tts" {
-  description = "LLM+TTS EC2 GPU service desired count"
+variable "backend_capacity_provider" {
+  description = "Backend capacity provider: FARGATE_SPOT (dev) or FARGATE (staging/prod)"
+  type        = string
+  default     = "FARGATE_SPOT"
+
+  validation {
+    condition     = contains(["FARGATE", "FARGATE_SPOT"], var.backend_capacity_provider)
+    error_message = "backend_capacity_provider must be FARGATE or FARGATE_SPOT."
+  }
+}
+
+variable "desired_llm" {
+  description = "LLM EC2 GPU service desired count"
+  type        = number
+  default     = 0
+}
+
+variable "desired_tts" {
+  description = "TTS EC2 GPU service desired count"
   type        = number
   default     = 0
 }
 
 variable "desired_avatar" {
   description = "Avatar EC2 GPU service desired count"
-  type        = number
-  default     = 0
-}
-
-variable "desired_livekit" {
-  description = "LiveKit Fargate service desired count"
-  type        = number
-  default     = 0
-}
-
-variable "desired_lmcache" {
-  description = "LMCache EC2 service desired count (0 = off)"
   type        = number
   default     = 0
 }
@@ -104,7 +129,7 @@ variable "lmcache_enabled" {
 # --- capacity / instance types ---
 
 variable "instance_type_llm" {
-  description = "EC2 Spot type for LLM+TTS (g6 L4)"
+  description = "EC2 Spot type for LLM and TTS (g6 L4)"
   type        = string
   default     = "g6.xlarge"
 }
@@ -113,12 +138,6 @@ variable "instance_type_avatar" {
   description = "EC2 Spot type for Avatar (g4dn T4)"
   type        = string
   default     = "g4dn.xlarge"
-}
-
-variable "instance_type_lmcache" {
-  description = "EC2 Spot type for LMCache (ARM)"
-  type        = string
-  default     = "c7g.2xlarge"
 }
 
 variable "backend_cpu" {
@@ -131,18 +150,6 @@ variable "backend_memory" {
   description = "Fargate memory MiB for backend"
   type        = number
   default     = 2048
-}
-
-variable "livekit_cpu" {
-  description = "Fargate CPU units for LiveKit"
-  type        = number
-  default     = 2048
-}
-
-variable "livekit_memory" {
-  description = "Fargate memory MiB for LiveKit"
-  type        = number
-  default     = 4096
 }
 
 variable "backend_target_group_arn" {
@@ -227,20 +234,30 @@ variable "vpc_id" {
   type        = string
   default     = ""
 }
-variable "render_backend" {
-  description = "Backend render backend: mock (no GPU) or cloud/self_host (GPU)"
+variable "avatar_adapter" {
+  description = "Backend avatar adapter: self_hosted|liveavatar|baidu_xiling"
   type        = string
-  default     = "mock"
+  default     = "liveavatar"
+
+  validation {
+    condition     = contains(["self_hosted", "liveavatar", "baidu_xiling"], var.avatar_adapter)
+    error_message = "avatar_adapter must be one of: self_hosted, liveavatar, baidu_xiling."
+  }
 }
 
-variable "llm_engine" {
-  description = "Backend LLM engine: none (stub), openai_compat (remote vLLM), vllm"
+variable "llm_adapter" {
+  description = "Backend LLM adapter (always openai_compatible)"
   type        = string
-  default     = "none"
+  default     = "openai_compatible"
+
+  validation {
+    condition     = var.llm_adapter == "openai_compatible"
+    error_message = "llm_adapter must be openai_compatible."
+  }
 }
 
 variable "llm_base_url" {
-  description = "Remote LLM OpenAI-compat base URL (service discovery). Empty when llm_engine=none."
+  description = "LLM OpenAI-compat base URL. Empty = Cloud Map private DNS llm.<env>.ai-live.local for self-host adapters; override for hosted providers."
   type        = string
   default     = ""
 }
@@ -251,14 +268,52 @@ variable "llm_model" {
   default     = ""
 }
 
-variable "tts_engine" {
-  description = "Backend TTS engine: tone (stub), remote_http (remote vllm-omni), vieneu"
+variable "tts_adapter" {
+  description = "Backend TTS adapter: self_hosted|elevenlabs|openai_speech"
   type        = string
-  default     = "tone"
+  default     = "self_hosted"
+
+  validation {
+    condition     = contains(["self_hosted", "elevenlabs", "openai_speech"], var.tts_adapter)
+    error_message = "tts_adapter must be one of: self_hosted, elevenlabs, openai_speech."
+  }
+}
+
+variable "llm_engine" {
+  description = "Self-host LLM engine (service-local): vllm|sglang|transformers"
+  type        = string
+  default     = "vllm"
+
+  validation {
+    condition     = contains(["vllm", "sglang", "transformers"], var.llm_engine)
+    error_message = "llm_engine must be one of: vllm, sglang, transformers."
+  }
+}
+
+variable "tts_engine" {
+  description = "Self-host TTS engine (service-local): vieneu|cosyvoice"
+  type        = string
+  default     = "vieneu"
+
+  validation {
+    condition     = contains(["vieneu", "cosyvoice"], var.tts_engine)
+    error_message = "tts_engine must be one of: vieneu, cosyvoice."
+  }
+}
+
+variable "avatar_engine" {
+  description = "Self-host avatar engine (service-local): avatarforcing"
+  type        = string
+  default     = "avatarforcing"
+
+  validation {
+    condition     = var.avatar_engine == "avatarforcing"
+    error_message = "avatar_engine must be avatarforcing."
+  }
 }
 
 variable "tts_base_url" {
-  description = "Remote TTS base URL (service discovery). Empty when tts_engine=tone."
+  description = "TTS base URL. Empty = Cloud Map private DNS tts.<env>.ai-live.local for self-host adapters; override for hosted providers."
   type        = string
   default     = ""
 }

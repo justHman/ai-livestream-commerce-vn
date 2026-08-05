@@ -57,7 +57,7 @@ files are committed.
 GPU surface inactive:
 
 ```text
-backend=1; llm_tts=0; avatar=0; livekit=0; lmcache=0
+backend=1; llm=0; tts=0; avatar=0; livekit=0; lmcache=0
 create_ec2_capacity=false
 RENDER_BACKEND=mock; LLM_ENGINE=none; TTS_ENGINE=tone; SESSION_STORE=memory
 ```

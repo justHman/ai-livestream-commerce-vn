@@ -1,9 +1,8 @@
 ---
 paths:
-  - "core/api/**"
-  - "core/server.py"
-  - "core/render/**"
-  - "core/director/**"
+  - "services/product/backend_service/src/backend/api/**"
+  - "services/product/backend_service/src/backend/application/render/**"
+  - "services/product/backend_service/src/backend/application/director/**"
 ---
 
 # Error Handling

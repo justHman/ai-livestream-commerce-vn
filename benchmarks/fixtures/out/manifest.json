@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "producer_commit": "fb1e5b5",
+  "producer_note": "Legacy Director under core/ at producer commit; hash embedder; fixed corpus/clock; no randomness in outputs.",
+  "scenarios": {
+    "session-context": {
+      "digest": "9b09e42f08f5e6be3c3238c48cfe7241b8252daad4ad4e2af1e523196602492b",
+      "generated_by": "python -m benchmarks.fixtures"
+    },
+    "event/persistence": {
+      "digest": "4557258d427d2717b77463fa0ea0e26c6d6ffe70dd6944c77c093658ba3c18ca",
+      "generated_by": "python -m benchmarks.fixtures"
+    },
+    "decision-preparation": {
+      "digest": "7c499ef4bc8fa3b8d87b89466fec62d8f228daea72febf83587a29f9fc85328a",
+      "generated_by": "python -m benchmarks.fixtures"
+    },
+    "playback": {
+      "digest": "970c2f4188b421315dd1f9913ece76f537baa64a8c6e85055cbf52f37f29d97f",
+      "generated_by": "python -m benchmarks.fixtures"
+    },
+    "queue/chunking": {
+      "digest": "12fa6485345673992cbdf1039891b2b99bc155a990b230d329a07367ead86250",
+      "generated_by": "python -m benchmarks.fixtures"
+    },
+    "stream-analysis": {
+      "digest": "b63a665771c436b3349b89078aa07a775c1d7a3d82bcf05e9cbac82c877e4030",
+      "generated_by": "python -m benchmarks.fixtures"
+    }
+  }
+}

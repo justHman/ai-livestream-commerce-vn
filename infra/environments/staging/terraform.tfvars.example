@@ -1,0 +1,58 @@
+# Staging sample — copy to terraform.tfvars.local (secrets) / terraform.tfvars (non-secrets).
+# NEVER commit real passwords or cert private material.
+
+env        = "staging"
+project    = "ai-livestream"
+aws_region = "ap-northeast-2"
+
+vpc_cidr             = "10.40.0.0/16"
+public_subnet_cidr   = "10.40.1.0/24"
+public_subnet_cidr_b = "10.40.2.0/24"
+az                   = "ap-northeast-2a"
+az_b                 = "ap-northeast-2b"
+# Network module creates 2 public AZs (ALB/RDS). No NAT.
+
+# Restrict to Cloudflare published IPs when grey-cloud/proxy is on.
+alb_ingress_cidrs = ["0.0.0.0/0"]
+# Required secrets/config are passed via environment, never assigned in this example:
+# TF_VAR_certificate_arn=arn:aws:acm:ap-northeast-2:ACCOUNT:certificate/UUID
+# TF_VAR_db_password=...
+# TF_VAR_backend_api_token=...
+# TF_VAR_admin_api_token=...
+
+# Required only when enable_database_url is true: ARN of an existing SSM SecureString.
+enable_database_url        = false
+database_url_parameter_arn = ""
+
+db_instance_class       = "db.t4g.medium"
+create_rds          = true   # managed Postgres
+create_redis       = true   # managed Redis
+db_allocated_storage_gb = 100
+redis_node_type         = "cache.t4g.small"
+
+desired_backend     = 1
+backend_capacity_provider = "FARGATE"  # FARGATE: dev Spot, staging/prod on-demand
+desired_llm     = 0
+desired_tts     = 0
+desired_avatar      = 0
+create_ec2_capacity = false
+# Set create_ec2_capacity=true and opt in desired_* only after GPU/avatar E2E validation.
+
+# Staging backend is on-demand Fargate; no spot eviction during E2E runs.
+spot_capacity_percentage = 0
+
+image_backend = "imjusthman/ai-live-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_llm = "imjusthman/ai-live-llm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_tts = "imjusthman/ai-live-tts@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+image_avatar = "imjusthman/ai-live-avatar@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+cors_origins      = "https://staging.example.com"
+debug_enabled     = false
+session_store     = "redis"
+redis_url         = ""
+app_env           = "staging"
+avatar_adapter  = "liveavatar"
+llm_adapter     = "openai_compatible"
+tts_adapter     = "self_hosted"
+
+# Replace with the approved avatar/LMCache image tags for a real GPU release.

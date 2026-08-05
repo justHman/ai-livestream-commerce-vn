@@ -1,0 +1,116 @@
+{
+  "scenario": "playback",
+  "inputs": {
+    "run_plan": {
+      "phases": [
+        "opening",
+        "selling",
+        "closing"
+      ],
+      "opening": {
+        "intro_shop": "Chào mừng cả nhà đến livestream!",
+        "persona": "MC bán hàng nhiệt tình",
+        "pull_view": "Ai mới vào thì like + follow ủng hộ shop nhé!",
+        "call_to_share": "Share live cho bạn bè cùng săn deal!"
+      },
+      "selling": [
+        {
+          "product_id": "P004",
+          "product_name": "Áo hoodie HeyGen màu trắng",
+          "key_selling_points": [
+            "cotton dày",
+            "form rộng"
+          ],
+          "tasks": [
+            {
+              "stage": "intro",
+              "task_id": "P004:intro",
+              "instruction": "Mở sản phẩm bằng 1-2 câu hoàn chỉnh."
+            },
+            {
+              "stage": "benefit",
+              "task_id": "P004:benefit",
+              "instruction": "Nêu lợi ích nổi bật của áo hoodie."
+            },
+            {
+              "stage": "offer",
+              "task_id": "P004:offer",
+              "instruction": "Nêu giá và ưu đãi rõ ràng."
+            }
+          ],
+          "min_duration_sec": 120,
+          "max_duration_sec": 480,
+          "transition_cue": "Chuyển sang sản phẩm tiếp theo nhé!"
+        },
+        {
+          "product_id": "P002",
+          "product_name": "Serum Vitamin C 20%",
+          "key_selling_points": [
+            "sáng da",
+            "vitamin C 20%"
+          ],
+          "tasks": [
+            {
+              "stage": "intro",
+              "task_id": "P002:intro",
+              "instruction": "Mở sản phẩm serum."
+            },
+            {
+              "stage": "cta",
+              "task_id": "P002:cta",
+              "instruction": "Kêu gọi chốt đơn tự nhiên."
+            }
+          ],
+          "min_duration_sec": 120,
+          "max_duration_sec": 480,
+          "transition_cue": "Chuyển sang sản phẩm tiếp theo nhé!"
+        }
+      ],
+      "closing": {
+        "thanks": "Cảm ơn cả nhà đã xem live!",
+        "follow_cta": "Follow shop để không bỏ lỡ deal tiếp theo.",
+        "teaser_next": "Live sau còn deal sốc hơn — hẹn gặp lại!"
+      },
+      "persona": null
+    }
+  },
+  "outputs": {
+    "schedule": [
+      {
+        "product_id": "P004",
+        "stage": "intro",
+        "task_id": "P004:intro",
+        "instruction": "Mở sản phẩm bằng 1-2 câu hoàn chỉnh.",
+        "turn_index": 0
+      },
+      {
+        "product_id": "P004",
+        "stage": "benefit",
+        "task_id": "P004:benefit",
+        "instruction": "Nêu lợi ích nổi bật của áo hoodie.",
+        "turn_index": 1
+      },
+      {
+        "product_id": "P004",
+        "stage": "offer",
+        "task_id": "P004:offer",
+        "instruction": "Nêu giá và ưu đãi rõ ràng.",
+        "turn_index": 2
+      },
+      {
+        "product_id": "P002",
+        "stage": "intro",
+        "task_id": "P002:intro",
+        "instruction": "Mở sản phẩm serum.",
+        "turn_index": 0
+      },
+      {
+        "product_id": "P002",
+        "stage": "cta",
+        "task_id": "P002:cta",
+        "instruction": "Kêu gọi chốt đơn tự nhiên.",
+        "turn_index": 1
+      }
+    ]
+  }
+}

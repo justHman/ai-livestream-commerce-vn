@@ -1,0 +1,251 @@
+# release-service — production release from a service-specific tag (OpenSpec 5.x).
+#
+# Triggered by a tag of the form `<service>-vMAJOR.MINOR.PATCH` (e.g.
+# backend-v1.2.0, avatar-v0.5.0). The tag is parsed (5.1); the tag's commit
+# MUST be contained in main AND the service+commit MUST have successful
+# staging evidence (deploy-evidence/staging/<sha>.jsonl) before anything
+# happens (5.2). Production then promotes the EXACT staging-verified image
+# digest — never rebuilds (5.4) — behind the protected `production`
+# environment (approval), verifies the digest exists, runs smoke, and rolls
+# back only the affected service on failure (5.5).
+#
+# deploy-prod.yml is superseded by this workflow; disabling its triggers is
+# task 6.4 (next cluster) — do not remove it here.
+name: release-service
+
+on:
+  push:
+    tags: ["*-v*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  STATE_BUCKET: ai-livestream-tfstate-191918535424
+
+concurrency:
+  group: release-service
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      service: ${{ steps.r.outputs.service }}
+      service_short: ${{ steps.r.outputs.service_short }}
+      version: ${{ steps.r.outputs.version }}
+      tag_commit: ${{ steps.r.outputs.tag_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Parse and validate service tag
+        id: r
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$REF_NAME"
+          parsed=$(python -c "import sys,json; from scripts.ci.validate_workflow_inputs import validate_service_tag; print(json.dumps(validate_service_tag(sys.argv[1])))" "$tag")
+          service=$(jq -r '.service' <<<"$parsed")
+          service_short=$(jq -r '.service_short' <<<"$parsed")
+          version=$(jq -r '.version' <<<"$parsed")
+          tag_commit=$(git rev-parse "refs/tags/$tag^{commit}")
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$tag_commit" origin/main || {
+            echo "Tag $tag commit $tag_commit is not contained in origin/main." >&2
+            echo "Release blocked by design: tag commit must be in main (5.2)." >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "service=$service" >> "$GITHUB_OUTPUT"
+          echo "service_short=$service_short" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
+
+  validate-evidence:
+    needs: resolve
+    runs-on: ubuntu-latest
+    outputs:
+      evidence_digest: ${{ steps.e.outputs.evidence_digest }}
+      evidence_ts: ${{ steps.e.outputs.evidence_ts }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Validate staging evidence for service+commit
+        id: e
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SERVICE: ${{ needs.resolve.outputs.service }}
+          TAG_COMMIT: ${{ needs.resolve.outputs.tag_commit }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          file="deploy-evidence/staging/$TAG_COMMIT.jsonl"
+          content=""
+          if git cat-file -e "origin/main:$file" 2>/dev/null; then
+            content=$(git show "origin/main:$file")
+          elif git cat-file -e "$TAG_COMMIT:$file" 2>/dev/null; then
+            content=$(git show "$TAG_COMMIT:$file")
+          fi
+          [[ -n "$content" ]] || {
+            echo "No staging evidence found at $file (checked origin/main and the tag commit)." >&2
+            echo "Release blocked by design: service+commit must have successful staging evidence (5.2)." >&2
+            exit 1
+          }
+          line=$(jq -c --arg svc "$SERVICE" --arg sha "$TAG_COMMIT" \
+            'select(.env == "staging" and .commit_sha == $sha and .service == $svc and .result == "success")' \
+            <<<"$content")
+          [[ -n "$line" ]] || {
+            echo "No successful staging evidence line for $SERVICE @ $TAG_COMMIT." >&2
+            exit 1
+          }
+          digest=$(jq -r '.new_digest' <<<"$line")
+          ts=$(jq -r '.ts' <<<"$line")
+          [[ "$digest" == *"@sha256:"* ]] || {
+            echo "Staging evidence digest is not immutable (got '$digest')." >&2
+            echo "Release blocked: production promotes only exact digests (5.4)." >&2
+            exit 1
+          }
+          echo "evidence_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "evidence_ts=$ts" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: [resolve, validate-evidence]
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      EVIDENCE_DIGEST: ${{ needs.validate-evidence.outputs.evidence_digest }}
+      TAG_COMMIT: ${{ needs.resolve.outputs.tag_commit }}
+      SERVICE: ${{ needs.resolve.outputs.service }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag_commit }}
+      - name: Production readiness — approval enforcement must exist
+        run: |
+          set -euo pipefail
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production" --jq '.protection_rules // []' 2>/dev/null || true)
+          if ! jq -e 'map(.type == "required_reviewers") | any' <<<"$rules" >/dev/null 2>&1; then
+            echo "Production environment has no required_reviewers protection rule." >&2
+            echo "Release blocked by design (5.3): approval enforcement must be configured" >&2
+            echo "on the production environment before any promotion. See the cluster report." >&2
+            exit 1
+          fi
+          echo "Production approval enforcement verified (required_reviewers present)."
+      - name: Verify exact digest manifest exists
+        run: |
+          set -euo pipefail
+          docker login -u "${{ secrets.DOCKERHUB_USER }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" >/dev/null 2>&1
+          docker buildx imagetools inspect "$EVIDENCE_DIGEST" >/dev/null || {
+            echo "Digest $EVIDENCE_DIGEST not found in Docker Hub." >&2
+            exit 1
+          }
+          echo "Digest verified: $EVIDENCE_DIGEST"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Read production Terraform outputs
+        id: tf
+        run: |
+          set -euo pipefail
+          aws s3api head-bucket --bucket "$STATE_BUCKET"
+          terraform -chdir=infra/environments/prod init -input=false
+          output=$(terraform -chdir=infra/environments/prod output -json)
+          cluster=$(jq -r '.ecs_cluster_name.value // empty' <<<"$output")
+          backend_svc=$(jq -r '.ecs_service_names.value.backend // empty' <<<"$output")
+          migrate_task=$(jq -r '.migrate_task_arn.value // empty' <<<"$output")
+          subnets_json=$(jq -c '.public_subnet_ids.value // []' <<<"$output")
+          backend_sg=$(jq -r '.backend_sg_id.value // empty' <<<"$output")
+          llm_svc=$(jq -r '.ecs_service_names.value.llm // empty' <<<"$output")
+          tts_svc=$(jq -r '.ecs_service_names.value.tts // empty' <<<"$output")
+          avatar_svc=$(jq -r '.ecs_service_names.value.avatar // empty' <<<"$output")
+          scheme=$(jq -r '.alb_url_scheme.value // "https"' <<<"$output")
+          dns=$(jq -r '.alb_dns_name.value // empty' <<<"$output")
+          llm_desired=$(jq -e '.desired_optional_services.value.llm // 0 | if type == "number" then . else error("llm not number") end' <<<"$output")
+          tts_desired=$(jq -e '.desired_optional_services.value.tts // 0 | if type == "number" then . else error("tts not number") end' <<<"$output")
+          avatar_desired=$(jq -e '.desired_optional_services.value.avatar // 0 | if type == "number" then . else error("avatar not number") end' <<<"$output")
+          [[ -n "$cluster" && -n "$backend_svc" ]] || {
+            echo "Terraform outputs incomplete (cluster/backend service required)." >&2
+            exit 1
+          }
+          [[ -n "$dns" ]] || { echo "alb_dns_name missing; cannot smoke." >&2; exit 1; }
+          echo "ecs_cluster=$cluster" >> "$GITHUB_OUTPUT"
+          echo "backend_service=$backend_svc" >> "$GITHUB_OUTPUT"
+          echo "migrate_task_arn=$migrate_task" >> "$GITHUB_OUTPUT"
+          echo "public_subnet_ids=$subnets_json" >> "$GITHUB_OUTPUT"
+          echo "backend_sg_id=$backend_sg" >> "$GITHUB_OUTPUT"
+          echo "llm_service=$llm_svc" >> "$GITHUB_OUTPUT"
+          echo "tts_service=$tts_svc" >> "$GITHUB_OUTPUT"
+          echo "avatar_service=$avatar_svc" >> "$GITHUB_OUTPUT"
+          check_optional() {
+            local desired="$1" service="$2" role="$3"
+            if [[ "$desired" -gt 0 ]]; then
+              [[ -n "$service" ]] || {
+                echo "$role: effective desired count is positive but service name is empty." >&2
+                exit 1
+              }
+              echo "has_$role=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_$role=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          check_optional "$llm_desired" "$llm_svc" llm
+          check_optional "$tts_desired" "$tts_svc" tts
+          check_optional "$avatar_desired" "$avatar_svc" avatar
+          echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"
+      - name: Run pre-deploy migration
+        if: ${{ env.SERVICE == 'backend_service' && steps.tf.outputs.migrate_task_arn != '' }}
+        env:
+          ECS_CLUSTER: ${{ steps.tf.outputs.ecs_cluster }}
+          MIGRATE_TASK_ARN: ${{ steps.tf.outputs.migrate_task_arn }}
+          BACKEND_SUBNETS: ${{ steps.tf.outputs.public_subnet_ids }}
+          BACKEND_SG: ${{ steps.tf.outputs.backend_sg_id }}
+        run: |
+          set -euo pipefail
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$run_id"
+          exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$run_id" --query 'tasks[0].containers[0].exitCode' --output text)
+          [[ "$exit_code" == "0" ]] || { echo "Migration failed (exit $exit_code). Release aborted." >&2; exit 1; }
+          echo "Migration completed."
+      - name: Promote exact staging digest (no rebuild)
+        uses: ./.github/workflows/_deploy-service.yml
+        with:
+          env: production
+          commit_sha: ${{ env.TAG_COMMIT }}
+          initiator: ${{ github.actor }}
+          cluster: ${{ steps.tf.outputs.ecs_cluster }}
+          service: ${{ steps.tf.outputs[format('{0}_service', needs.resolve.outputs.service_short)] }}
+          container: ${{ needs.resolve.outputs.service_short }}
+          image: ${{ env.EVIDENCE_DIGEST }}
+          role_arn: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws_region: ${{ env.AWS_REGION }}
+          smoke_url: ${{ env.SERVICE == 'backend_service' && steps.tf.outputs.smoke_url || '' }}
+      - name: Record release outcome
+        if: ${{ always() }}
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          mkdir -p .runtime/deploy/evidence/prod
+          printf '%s\n' "{\"ts\":\"$ts\",\"env\":\"production\",\"commit_sha\":\"$TAG_COMMIT\",\"service\":\"$SERVICE\",\"initiator\":\"${{ github.actor }}\",\"prev_digest\":\"\",\"new_digest\":\"$EVIDENCE_DIGEST\",\"result\":\"$RESULT\"}" >> ".runtime/deploy/evidence/prod/$TAG_COMMIT.jsonl"
+          {
+            echo "## release-service ${{ needs.resolve.outputs.tag }}"
+            echo "- service: $SERVICE, commit: $TAG_COMMIT"
+            echo "- digest: $EVIDENCE_DIGEST (staging evidence ${{ needs.validate-evidence.outputs.evidence_ts }})"
+            echo "- result: $RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"

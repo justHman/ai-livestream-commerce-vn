@@ -1,0 +1,671 @@
+{
+  "$id": "backend/contracts/v1/websocket/control.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "clientMessage": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "interrupt"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "ping"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "events": {
+      "avatar.interrupted": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "avatar.interrupted"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "avatar.speak_ended": {
+        "additionalProperties": false,
+        "properties": {
+          "reply": {
+            "type": "string"
+          },
+          "type": {
+            "const": "avatar.speak_ended"
+          }
+        },
+        "required": [
+          "type",
+          "reply"
+        ],
+        "type": "object"
+      },
+      "avatar.speak_started": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "const": "avatar.speak_started"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "type": "object"
+      },
+      "avatar.video_window": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "type": "number"
+          },
+          "is_final": {
+            "type": "boolean"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "avatar.video_window"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "is_final",
+          "duration_ms"
+        ],
+        "type": "object"
+      },
+      "control.connected": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "control.connected"
+          }
+        },
+        "required": [
+          "type",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "coordinator.retry_scheduled": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "retry_count": {
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "coordinator.retry_scheduled"
+          }
+        },
+        "required": [
+          "type",
+          "turn_id",
+          "retry_count",
+          "error"
+        ],
+        "type": "object"
+      },
+      "coordinator.speak_failed": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "product_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "coordinator.speak_failed"
+          }
+        },
+        "required": [
+          "type",
+          "turn_id",
+          "state",
+          "action",
+          "stage",
+          "task_id",
+          "error"
+        ],
+        "type": "object"
+      },
+      "coordinator.speak_finished": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "product_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": "string"
+          },
+          "state": {
+            "const": "completed"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "coordinator.speak_finished"
+          }
+        },
+        "required": [
+          "type",
+          "turn_id",
+          "state",
+          "stage",
+          "task_id",
+          "action"
+        ],
+        "type": "object"
+      },
+      "coordinator.speak_started": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "product": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": "string"
+          },
+          "state": {
+            "const": "processing"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "coordinator.speak_started"
+          }
+        },
+        "required": [
+          "type",
+          "turn_id",
+          "state",
+          "stage",
+          "task_id",
+          "action"
+        ],
+        "type": "object"
+      },
+      "coordinator.terminal_failure": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "type": {
+            "const": "coordinator.terminal_failure"
+          }
+        },
+        "required": [
+          "type",
+          "state"
+        ],
+        "type": "object"
+      },
+      "director.cycle_started": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "director.cycle_started"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "director.decision": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "may_interrupt": {
+            "type": "boolean"
+          },
+          "product": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "director.decision"
+          }
+        },
+        "required": [
+          "type",
+          "turn_id",
+          "action",
+          "product",
+          "field",
+          "stage",
+          "task_id",
+          "may_interrupt",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "director.spoke": {
+        "additionalProperties": true,
+        "properties": {
+          "accepted_snapshot": {
+            "type": "object"
+          },
+          "active_comments": {
+            "type": "integer"
+          },
+          "active_decision": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "answer_cache": {
+            "type": "object"
+          },
+          "buffered_comments": {
+            "type": "integer"
+          },
+          "catalog_revision": {
+            "type": "integer"
+          },
+          "completed_speech_history": {
+            "type": "array"
+          },
+          "completed_speeches": {
+            "type": "integer"
+          },
+          "config_revision": {
+            "type": "integer"
+          },
+          "decisions_emitted": {
+            "type": "integer"
+          },
+          "director_cycles": {
+            "type": "integer"
+          },
+          "generation_token": {
+            "type": "string"
+          },
+          "interrupts": {
+            "type": "integer"
+          },
+          "last_decision_ms_ago": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pivot_state": {
+            "type": "object"
+          },
+          "profile_revision": {
+            "type": "integer"
+          },
+          "queue": {
+            "type": "object"
+          },
+          "queued_decisions": {
+            "type": "integer"
+          },
+          "queued_decisions_detail": {
+            "type": "array"
+          },
+          "received_total": {
+            "type": "integer"
+          },
+          "skips": {
+            "type": "integer"
+          },
+          "snapshot_at": {
+            "type": "number"
+          },
+          "speech_queue": {
+            "type": "object"
+          },
+          "type": {
+            "const": "director.spoke"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "engine.llm_swap_failed": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "type": {
+            "const": "engine.llm_swap_failed"
+          }
+        },
+        "required": [
+          "type",
+          "error"
+        ],
+        "type": "object"
+      },
+      "engine.llm_swap_started": {
+        "additionalProperties": false,
+        "properties": {
+          "engine": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "type": {
+            "const": "engine.llm_swap_started"
+          }
+        },
+        "required": [
+          "type",
+          "engine",
+          "model"
+        ],
+        "type": "object"
+      },
+      "engine.llm_swapped": {
+        "additionalProperties": false,
+        "properties": {
+          "engine": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "type": {
+            "const": "engine.llm_swapped"
+          }
+        },
+        "required": [
+          "type",
+          "engine",
+          "model"
+        ],
+        "type": "object"
+      },
+      "engine.tts_swap_failed": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "type": {
+            "const": "engine.tts_swap_failed"
+          }
+        },
+        "required": [
+          "type",
+          "error"
+        ],
+        "type": "object"
+      },
+      "engine.tts_swap_started": {
+        "additionalProperties": false,
+        "properties": {
+          "engine": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "type": {
+            "const": "engine.tts_swap_started"
+          }
+        },
+        "required": [
+          "type",
+          "engine",
+          "model"
+        ],
+        "type": "object"
+      },
+      "engine.tts_swapped": {
+        "additionalProperties": false,
+        "properties": {
+          "engine": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "sample_rate": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "engine.tts_swapped"
+          }
+        },
+        "required": [
+          "type",
+          "engine",
+          "model",
+          "sample_rate"
+        ],
+        "type": "object"
+      },
+      "error": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "type": {
+            "const": "error"
+          }
+        },
+        "required": [
+          "type",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "pong": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "pong"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "session.stopped": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "session.stopped"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      }
+    },
+    "serverEvent": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/events/avatar.interrupted"
+        },
+        {
+          "$ref": "#/definitions/events/avatar.speak_ended"
+        },
+        {
+          "$ref": "#/definitions/events/avatar.speak_started"
+        },
+        {
+          "$ref": "#/definitions/events/avatar.video_window"
+        },
+        {
+          "$ref": "#/definitions/events/control.connected"
+        },
+        {
+          "$ref": "#/definitions/events/coordinator.retry_scheduled"
+        },
+        {
+          "$ref": "#/definitions/events/coordinator.speak_failed"
+        },
+        {
+          "$ref": "#/definitions/events/coordinator.speak_finished"
+        },
+        {
+          "$ref": "#/definitions/events/coordinator.speak_started"
+        },
+        {
+          "$ref": "#/definitions/events/coordinator.terminal_failure"
+        },
+        {
+          "$ref": "#/definitions/events/director.cycle_started"
+        },
+        {
+          "$ref": "#/definitions/events/director.decision"
+        },
+        {
+          "$ref": "#/definitions/events/director.spoke"
+        },
+        {
+          "$ref": "#/definitions/events/engine.llm_swap_failed"
+        },
+        {
+          "$ref": "#/definitions/events/engine.llm_swap_started"
+        },
+        {
+          "$ref": "#/definitions/events/engine.llm_swapped"
+        },
+        {
+          "$ref": "#/definitions/events/engine.tts_swap_failed"
+        },
+        {
+          "$ref": "#/definitions/events/engine.tts_swap_started"
+        },
+        {
+          "$ref": "#/definitions/events/engine.tts_swapped"
+        },
+        {
+          "$ref": "#/definitions/events/error"
+        },
+        {
+          "$ref": "#/definitions/events/pong"
+        },
+        {
+          "$ref": "#/definitions/events/session.stopped"
+        }
+      ],
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Server-pushed control events and client commands on /api/v1/ws/control/{session_id}. Events are emitted by the backend application layer (session lifecycle, avatar speak, Director decisions, coordinator speech plan, engine swaps) and consumed by the workbench control client.",
+  "properties": {
+    "clientMessage": {
+      "$ref": "#/definitions/clientMessage"
+    },
+    "serverEvent": {
+      "$ref": "#/definitions/serverEvent"
+    }
+  },
+  "title": "Backend control WebSocket channel",
+  "type": "object"
+}

@@ -17,11 +17,20 @@ output "task_definition_arns" {
   description = "Map of service → task definition ARN"
   value = {
     backend = aws_ecs_task_definition.backend.arn
-    llm_tts = aws_ecs_task_definition.llm_tts.arn
+    llm     = aws_ecs_task_definition.llm.arn
+    tts     = aws_ecs_task_definition.tts.arn
     avatar  = aws_ecs_task_definition.avatar.arn
-    lmcache = aws_ecs_task_definition.lmcache.arn
-    livekit = aws_ecs_task_definition.livekit.arn
   }
+}
+
+output "backend_sg_id" {
+  description = "Backend security group ID (for migration task network config)"
+  value       = lookup(var.sg_map, "backend", "")
+}
+
+output "migrate_task_arn" {
+  description = "One-off pre-deploy migration task ARN (empty when no DATABASE_URL secret)"
+  value       = length(aws_ecs_task_definition.migrate) > 0 ? aws_ecs_task_definition.migrate[0].arn : ""
 }
 
 output "service_names" {
@@ -29,12 +38,11 @@ output "service_names" {
   value = merge(
     {
       backend = aws_ecs_service.backend.name
-      livekit = aws_ecs_service.livekit.name
     },
     var.create_ec2_capacity ? {
-      llm_tts = aws_ecs_service.llm_tts[0].name
-      avatar  = aws_ecs_service.avatar[0].name
-      lmcache = aws_ecs_service.lmcache[0].name
+      llm    = aws_ecs_service.llm[0].name
+      tts    = aws_ecs_service.tts[0].name
+      avatar = aws_ecs_service.avatar[0].name
     } : {}
   )
 }
@@ -52,17 +60,18 @@ output "task_role_arn" {
 output "capacity_provider_names" {
   description = "EC2 capacity provider names (empty if create_ec2_capacity=false)"
   value = var.create_ec2_capacity ? {
-    llm     = aws_ecs_capacity_provider.llm[0].name
-    avatar  = aws_ecs_capacity_provider.avatar[0].name
-    lmcache = aws_ecs_capacity_provider.lmcache[0].name
+    llm    = aws_ecs_capacity_provider.llm[0].name
+    tts    = aws_ecs_capacity_provider.tts[0].name
+    avatar = aws_ecs_capacity_provider.avatar[0].name
   } : {}
 }
 
 output "asg_names" {
   description = "ASG names for GPU/ARM capacity"
   value = var.create_ec2_capacity ? {
-    llm     = aws_autoscaling_group.llm[0].name
-    avatar  = aws_autoscaling_group.avatar[0].name
-    lmcache = aws_autoscaling_group.lmcache[0].name
+    llm    = aws_autoscaling_group.llm[0].name
+    tts    = aws_autoscaling_group.tts[0].name
+    avatar = aws_autoscaling_group.avatar[0].name
   } : {}
 }
+

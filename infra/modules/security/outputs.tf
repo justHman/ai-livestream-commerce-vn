@@ -33,16 +33,6 @@ output "sg_redis_id" {
   value       = aws_security_group.redis.id
 }
 
-output "sg_lmcache_id" {
-  description = "LMCache security group ID"
-  value       = aws_security_group.lmcache.id
-}
-
-output "sg_livekit_id" {
-  description = "LiveKit security group ID"
-  value       = aws_security_group.livekit.id
-}
-
 output "sg_map" {
   description = "Map of role → security group ID for compute module"
   value = {
@@ -53,8 +43,6 @@ output "sg_map" {
     avatar  = aws_security_group.avatar.id
     rds     = aws_security_group.rds.id
     redis   = aws_security_group.redis.id
-    lmcache = aws_security_group.lmcache.id
-    livekit = aws_security_group.livekit.id
   }
 }
 

@@ -1,0 +1,160 @@
+# infra-apply — protected manual infra apply from ONE reviewed plan (OpenSpec 4.5).
+#
+# Independent of every service deployment workflow. The operator dispatches
+# with an exact commit and target environment; the plan job creates ONE saved
+# plan, prints it for review, and uploads it as an artifact; the apply job
+# (behind the protected `infra-<env>` environment approval) applies EXACTLY
+# that artifact — no re-plan at apply time.
+#
+# ADMIN-APPLY prerequisites (not code, see cluster report):
+# - Protected GitHub Environments `infra-dev` and `infra-staging` with
+#   required reviewers (approval gate before any AWS mutation).
+# - Secrets `AWS_ROLE_ARN_INFRA_DEV` / `AWS_ROLE_ARN_INFRA_STAGING`: an AWS
+#   role trusted by this repo's OIDC provider for environment `infra-<env>`
+#   with the IAM permissions the environment's Terraform apply needs.
+# - Terraform variables: non-secret values as GitHub Environment variables
+#   named `TF_VAR_*` on `infra-<env>`; secrets as Environment secrets named
+#   `TF_VAR_*`. Alternatively `var_file` points at a tfvars file inside the
+#   checkout (never commit secrets to it).
+name: infra-apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment (dev|staging — hard allowlist)"
+        required: true
+        type: string
+      commit_sha:
+        description: "Full 40-hex commit SHA whose infra code is applied"
+        required: true
+        type: string
+      var_file:
+        description: "Optional tfvars path inside the checkout (default: TF_VAR_* env only)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: infra-apply-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      validated_env: ${{ steps.v.outputs.validated_env }}
+      validated_sha: ${{ steps.v.outputs.validated_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - name: Validate env allowlist and commit
+        id: v
+        env:
+          ENV: ${{ inputs.env }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          # HARD allowlist: dev|staging only. Anything else (including prod)
+          # is rejected here before any job can touch AWS.
+          if [[ "$ENV" != "dev" && "$ENV" != "staging" ]]; then
+            echo "Environment '$ENV' is not in the dev|staging allowlist." >&2
+            echo "infra-apply supports only dev and staging; production has no apply path." >&2
+            exit 1
+          fi
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "commit_sha must be a full 40-hex SHA." >&2
+            exit 1
+          }
+          git cat-file -t "$COMMIT_SHA" | grep -q "^commit$" || {
+            echo "commit_sha $COMMIT_SHA does not resolve to a commit." >&2
+            exit 1
+          }
+          echo "validated_env=$ENV" >> "$GITHUB_OUTPUT"
+          echo "validated_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+
+  plan:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: infra-${{ needs.validate.outputs.validated_env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.validated_sha }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.validate.outputs.validated_env == 'staging' && secrets.AWS_ROLE_ARN_INFRA_STAGING || secrets.AWS_ROLE_ARN_INFRA_DEV }}
+          aws-region: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-northeast-2' }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Create ONE saved plan
+        id: plan
+        env:
+          ENV: ${{ needs.validate.outputs.validated_env }}
+          VAR_FILE: ${{ inputs.var_file }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="infra/environments/$ENV" init -input=false
+          varargs=()
+          if [[ -n "$VAR_FILE" ]]; then
+            varargs=(-var-file="$VAR_FILE")
+          fi
+          terraform -chdir="infra/environments/$ENV" plan -out=/tmp/tfplan "${varargs[@]}"
+          terraform -chdir="infra/environments/$ENV" show -no-color /tmp/tfplan > /tmp/tfplan.txt
+          echo "Review the plan below (approval happens at the apply job):"
+          cat /tmp/tfplan.txt
+          echo "plan_path=/tmp/tfplan" >> "$GITHUB_OUTPUT"
+      - name: Upload saved plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ needs.validate.outputs.validated_env }}-${{ needs.validate.outputs.validated_sha }}
+          path: /tmp/tfplan
+          if-no-files-found: error
+
+  apply:
+    needs: [validate, plan]
+    runs-on: ubuntu-latest
+    environment: infra-${{ needs.validate.outputs.validated_env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.validated_sha }}
+      - name: Download saved plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.validate.outputs.validated_env }}-${{ needs.validate.outputs.validated_sha }}
+          path: /tmp
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.validate.outputs.validated_env == 'staging' && secrets.AWS_ROLE_ARN_INFRA_STAGING || secrets.AWS_ROLE_ARN_INFRA_DEV }}
+          aws-region: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-northeast-2' }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Apply the reviewed plan
+        env:
+          ENV: ${{ needs.validate.outputs.validated_env }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="infra/environments/$ENV" init -input=false
+          terraform -chdir="infra/environments/$ENV" apply -auto-approve /tmp/tfplan
+      - name: Summarize applied state
+        env:
+          ENV: ${{ needs.validate.outputs.validated_env }}
+        run: |
+          set -euo pipefail
+          output=$(terraform -chdir="infra/environments/$ENV" output -json 2>/dev/null || true)
+          {
+            echo "## infra-apply $ENV @ ${{ needs.validate.outputs.validated_sha }}"
+            echo "\`\`\`json"
+            echo "$output"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -76,28 +76,6 @@ variable "db_password" {
   }
 }
 
-variable "backend_api_token" {
-  description = "Backend API bearer token. Set via TF_VAR_backend_api_token — never commit."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.backend_api_token) >= 32 && var.backend_api_token != "CHANGE_ME"
-    error_message = "backend_api_token must be at least 32 chars and not a placeholder."
-  }
-}
-
-variable "admin_api_token" {
-  description = "Admin API bearer token. Set via TF_VAR_admin_api_token — never commit."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.admin_api_token) >= 32 && var.admin_api_token != "CHANGE_ME"
-    error_message = "admin_api_token must be at least 32 chars and not a placeholder."
-  }
-}
-
 variable "enable_database_url" {
   description = "Inject DATABASE_URL from an existing SSM SecureString parameter."
   type        = bool
@@ -116,6 +94,18 @@ variable "database_url_parameter_arn" {
     ))
     error_message = "database_url_parameter_arn must be empty or an existing SSM Parameter Store ARN."
   }
+}
+
+variable "create_rds" {
+  description = "Create RDS Postgres (false = memory sessions, no DB cost). Dev default: off."
+  type        = bool
+  default     = false
+}
+
+variable "create_redis" {
+  description = "Create ElastiCache Redis (false = no cache cost). Dev default: off."
+  type        = bool
+  default     = false
 }
 
 variable "db_instance_class" {
@@ -139,6 +129,17 @@ variable "lmcache_enabled" {
   default     = false
 }
 
+variable "backend_capacity_provider" {
+  description = "Backend capacity provider: FARGATE_SPOT (dev) or FARGATE (staging/prod)"
+  type        = string
+  default     = "FARGATE_SPOT"
+
+  validation {
+    condition     = contains(["FARGATE", "FARGATE_SPOT"], var.backend_capacity_provider)
+    error_message = "backend_capacity_provider must be FARGATE or FARGATE_SPOT."
+  }
+}
+
 variable "desired_backend" {
   type    = number
   default = 1
@@ -149,13 +150,23 @@ variable "desired_backend" {
   }
 }
 
-variable "desired_llm_tts" {
+variable "desired_llm" {
   type    = number
   default = 0
 
   validation {
-    condition     = var.desired_llm_tts >= 0 && floor(var.desired_llm_tts) == var.desired_llm_tts
-    error_message = "desired_llm_tts must be a nonnegative integer."
+    condition     = var.desired_llm >= 0 && floor(var.desired_llm) == var.desired_llm
+    error_message = "desired_llm must be a nonnegative integer."
+  }
+}
+
+variable "desired_tts" {
+  type    = number
+  default = 0
+
+  validation {
+    condition     = var.desired_tts >= 0 && floor(var.desired_tts) == var.desired_tts
+    error_message = "desired_tts must be a nonnegative integer."
   }
 }
 
@@ -166,26 +177,6 @@ variable "desired_avatar" {
   validation {
     condition     = var.desired_avatar >= 0 && floor(var.desired_avatar) == var.desired_avatar
     error_message = "desired_avatar must be a nonnegative integer."
-  }
-}
-
-variable "desired_livekit" {
-  type    = number
-  default = 0
-
-  validation {
-    condition     = var.desired_livekit >= 0 && floor(var.desired_livekit) == var.desired_livekit
-    error_message = "desired_livekit must be a nonnegative integer."
-  }
-}
-
-variable "desired_lmcache" {
-  type    = number
-  default = 0
-
-  validation {
-    condition     = var.desired_lmcache >= 0 && floor(var.desired_lmcache) == var.desired_lmcache
-    error_message = "desired_lmcache must be a nonnegative integer."
   }
 }
 
@@ -204,16 +195,32 @@ variable "image_tts" {
   default = "imjusthman/ai-live-tts:dev"
 }
 
-variable "render_backend" {
-  description = "Render backend: mock (no GPU), cloud (LiveAvatar), self_host (MuseTalk future)"
+variable "livekit_url" {
+  description = "LiveKit Cloud WebSocket URL (wss://...). Empty = LiveKit disabled."
   type        = string
-  default     = "mock"
+  default     = ""
 }
 
-variable "llm_engine" {
-  description = "LLM engine: none (stub), openai_compat (remote vLLM GPU)"
+variable "avatar_adapter" {
+  description = "Backend avatar adapter: self_hosted|liveavatar|baidu_xiling"
   type        = string
-  default     = "none"
+  default     = "liveavatar"
+
+  validation {
+    condition     = contains(["self_hosted", "liveavatar", "baidu_xiling"], var.avatar_adapter)
+    error_message = "avatar_adapter must be one of: self_hosted, liveavatar, baidu_xiling."
+  }
+}
+
+variable "llm_adapter" {
+  description = "Backend LLM adapter (always openai_compatible)"
+  type        = string
+  default     = "openai_compatible"
+
+  validation {
+    condition     = var.llm_adapter == "openai_compatible"
+    error_message = "llm_adapter must be openai_compatible."
+  }
 }
 
 variable "llm_base_url" {
@@ -228,10 +235,15 @@ variable "llm_model" {
   default     = ""
 }
 
-variable "tts_engine" {
-  description = "TTS engine: tone (stub), remote_http (remote vllm-omni GPU)"
+variable "tts_adapter" {
+  description = "Backend TTS adapter: self_hosted|elevenlabs|openai_speech"
   type        = string
-  default     = "tone"
+  default     = "self_hosted"
+
+  validation {
+    condition     = contains(["self_hosted", "elevenlabs", "openai_speech"], var.tts_adapter)
+    error_message = "tts_adapter must be one of: self_hosted, elevenlabs, openai_speech."
+  }
 }
 
 variable "tts_base_url" {
@@ -246,19 +258,15 @@ variable "tts_voice_id" {
   default     = ""
 }
 
+variable "image_lmcache" {
+  description = "LMCache sidecar image URI (colocated in LLM task; evidence-gated)"
+  type        = string
+  default     = "imjusthman/ai-live-lmcache:latest"
+}
+
 variable "image_avatar" {
   type    = string
   default = "imjusthman/ai-live-avatar:latest"
-}
-
-variable "image_lmcache" {
-  type    = string
-  default = "imjusthman/ai-live-lmcache:latest"
-}
-
-variable "image_livekit" {
-  type    = string
-  default = "imjusthman/ai-live-livekit:dev"
 }
 
 variable "alert_email" {

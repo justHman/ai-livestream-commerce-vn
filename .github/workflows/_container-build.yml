@@ -1,0 +1,69 @@
+# _container-build — reusable Docker Buildx build with GitHub Actions cache.
+#
+# Reusable workflow (underscore prefix, workflow_call only — no deployment
+# triggers). Buildx type=gha cache is scoped per service so backend, llm, tts
+# and avatar builds never overwrite each other's cache. Branch names and
+# commit SHAs are intentionally NOT part of the scope: BuildKit already
+# invalidates changed layers and those values would prevent cross-branch
+# cache reuse (OpenSpec design §2).
+#
+# Cache export (cache-to) is governed by `push`: PR verification builds use
+# push:false (import-only), trusted dev/staging deployment builds use
+# push:true (import + export). Untrusted fork runs never reach a deployment
+# build, so they cannot write the shared cache.
+#
+# Production never calls this workflow: release promotes the staging-tested
+# image digest and never rebuilds (design §5).
+name: _container-build
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Docker image repository (no tag), e.g. imjusthman/ai-live-backend"
+        type: string
+        required: true
+      tag:
+        description: "Image tag to build (e.g. pr-123, dev-<sha>, staging-<sha>)"
+        type: string
+        required: true
+      scope:
+        description: "Stable per-service cache scope, e.g. backend, llm, tts, avatar"
+        type: string
+        required: true
+      dockerfile:
+        description: "Path to the service Dockerfile"
+        type: string
+        required: true
+      platforms:
+        description: "Comma-separated target platforms"
+        type: string
+        required: true
+      push:
+        description: "true only for trusted dev/staging deployment builds; PR builds are false"
+        type: boolean
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: ${{ inputs.push }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          tags: ${{ inputs.image }}:${{ inputs.tag }}
+          cache-from: type=gha,scope=${{ inputs.scope }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.scope }}

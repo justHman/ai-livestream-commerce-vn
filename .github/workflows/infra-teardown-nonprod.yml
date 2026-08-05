@@ -1,0 +1,152 @@
+# infra-teardown-nonprod — protected non-production infra teardown (OpenSpec 4.6).
+#
+# Destroys the dev or staging Terraform stack. A production path is IMPOSSIBLE
+# by design: the env input is validated against a hard dev|staging allowlist
+# before any job runs, the typed confirmation must exactly equal
+# `teardown-<env>`, the plan-destroy is reviewed behind the protected
+# `infra-<env>` environment, and the destroy job applies ONLY the reviewed
+# destroy plan artifact (no re-plan).
+#
+# ADMIN-APPLY prerequisites (not code, see cluster report): protected GitHub
+# Environments `infra-dev` / `infra-staging` with required reviewers, and
+# secrets `AWS_ROLE_ARN_INFRA_DEV` / `AWS_ROLE_ARN_INFRA_STAGING` (role with
+# destroy permissions for the environment's Terraform).
+#
+# The `global` environment (OIDC provider, state bucket) is account-scoped and
+# intentionally NOT torn down by this workflow.
+name: infra-teardown-nonprod
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment to destroy (dev|staging — hard allowlist, production impossible)"
+        required: true
+        type: string
+      confirm_teardown:
+        description: "Typed confirmation: exactly 'teardown-<env>' (e.g. teardown-dev)"
+        required: true
+        type: string
+      commit_sha:
+        description: "Full 40-hex commit SHA whose infra code executes the destroy"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: infra-teardown-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      validated_env: ${{ steps.v.outputs.validated_env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - name: Validate hard allowlist, typed confirmation and commit
+        id: v
+        env:
+          ENV: ${{ inputs.env }}
+          CONFIRM: ${{ inputs.confirm_teardown }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          # HARD allowlist: dev|staging only. There is no production branch in
+          # this workflow and no infra-prod environment reference anywhere.
+          if [[ "$ENV" != "dev" && "$ENV" != "staging" ]]; then
+            echo "Environment '$ENV' is not in the dev|staging allowlist." >&2
+            echo "Production teardown is impossible by design." >&2
+            exit 1
+          fi
+          if [[ "$CONFIRM" != "teardown-$ENV" ]]; then
+            echo "Typed confirmation must exactly equal 'teardown-$ENV'." >&2
+            exit 1
+          fi
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "commit_sha must be a full 40-hex SHA." >&2
+            exit 1
+          }
+          git cat-file -t "$COMMIT_SHA" | grep -q "^commit$" || {
+            echo "commit_sha $COMMIT_SHA does not resolve to a commit." >&2
+            exit 1
+          }
+          echo "validated_env=$ENV" >> "$GITHUB_OUTPUT"
+
+  plan-destroy:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: infra-${{ needs.validate.outputs.validated_env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.validate.outputs.validated_env == 'staging' && secrets.AWS_ROLE_ARN_INFRA_STAGING || secrets.AWS_ROLE_ARN_INFRA_DEV }}
+          aws-region: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-northeast-2' }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Create destroy plan for review
+        id: plan
+        env:
+          ENV: ${{ needs.validate.outputs.validated_env }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="infra/environments/$ENV" init -input=false
+          terraform -chdir="infra/environments/$ENV" plan -destroy -out=/tmp/destroy-plan
+          terraform -chdir="infra/environments/$ENV" show -no-color /tmp/destroy-plan > /tmp/destroy-plan.txt
+          echo "Review the destroy plan below (approval happens at the destroy job):"
+          cat /tmp/destroy-plan.txt
+      - name: Upload destroy plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: destroy-plan-${{ needs.validate.outputs.validated_env }}
+          path: /tmp/destroy-plan
+          if-no-files-found: error
+
+  destroy:
+    needs: [validate, plan-destroy]
+    runs-on: ubuntu-latest
+    environment: infra-${{ needs.validate.outputs.validated_env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+      - name: Download destroy plan
+        uses: actions/download-artifact@v4
+        with:
+          name: destroy-plan-${{ needs.validate.outputs.validated_env }}
+          path: /tmp
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.validate.outputs.validated_env == 'staging' && secrets.AWS_ROLE_ARN_INFRA_STAGING || secrets.AWS_ROLE_ARN_INFRA_DEV }}
+          aws-region: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-northeast-2' }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - name: Apply the reviewed destroy plan
+        env:
+          ENV: ${{ needs.validate.outputs.validated_env }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="infra/environments/$ENV" init -input=false
+          terraform -chdir="infra/environments/$ENV" apply -auto-approve /tmp/destroy-plan
+      - name: Summarize teardown
+        env:
+          ENV: ${{ needs.validate.outputs.validated_env }}
+        run: |
+          {
+            echo "## infra-teardown $ENV completed"
+            echo "State key $ENV/terraform.tfstate retains a record of destroyed resources."
+            echo "Verify with infra/scripts/teardown_verify.ps1."
+          } >> "$GITHUB_STEP_SUMMARY"
