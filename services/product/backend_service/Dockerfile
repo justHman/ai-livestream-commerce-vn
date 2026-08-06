@@ -31,9 +31,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # path deps (`../llm_service`) to resolve — copy metadata into /llm_service etc.
 COPY services/product/backend_service/pyproject.toml services/product/backend_service/uv.lock services/product/backend_service/README.md ./
 COPY services/product/backend_service/src/backend/ ./src/backend/
-COPY services/product/llm_service/pyproject.toml services/product/llm_service/uv.lock /llm_service/
-COPY services/product/tts_service/pyproject.toml services/product/tts_service/uv.lock /tts_service/
-COPY services/product/avatar_service/pyproject.toml services/product/avatar_service/uv.lock /avatar_service/
+# Path deps build wheels from their project dir: README (pyproject readme field)
+# + src/ layout are required, not just lock metadata.
+COPY services/product/llm_service/pyproject.toml services/product/llm_service/uv.lock services/product/llm_service/README.md /llm_service/
+COPY services/product/llm_service/src/llm/ /llm_service/src/llm/
+COPY services/product/tts_service/pyproject.toml services/product/tts_service/uv.lock services/product/tts_service/README.md /tts_service/
+COPY services/product/tts_service/src/tts/ /tts_service/src/tts/
+COPY services/product/avatar_service/pyproject.toml services/product/avatar_service/uv.lock services/product/avatar_service/README.md /avatar_service/
+COPY services/product/avatar_service/src/avatar/ /avatar_service/src/avatar/
 RUN uv sync --frozen --no-dev --extra director --extra livekit --extra postgres
 
 # ── runtime ───────────────────────────────────────────────────
