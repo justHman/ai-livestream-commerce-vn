@@ -11,10 +11,10 @@ llamacpp = ["llama-cpp-python"]
 sglang = ["sglang"]
 transformers = ["torch", "transformers"]
 vllm = ["vllm==0.22.1"]
-test = ["pytest"]
+test = ["pytest", "pytest-asyncio"]
 
 [dependency-groups]
-dev = ["pytest", "pytest-cov", "httpx"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx"]
 
 [build-system]
 requires = ["setuptools>=68"]

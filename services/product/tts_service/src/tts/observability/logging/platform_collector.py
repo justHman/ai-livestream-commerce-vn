@@ -71,7 +71,9 @@ class PlatformCollector:
         self._retention_days = retention_days
         self._handlers: dict[str, ActiveSessionHandler] = {}
         self._daily_handlers: dict[str, DailyHandler] = {}
-        self._lock = threading.Lock()
+        # RLock: start_session/_handler_for nest under this lock while emit
+        # re-enters through handler.handle(); a plain Lock self-deadlocks.
+        self._lock = threading.RLock()
 
     @property
     def active_root(self) -> Path:

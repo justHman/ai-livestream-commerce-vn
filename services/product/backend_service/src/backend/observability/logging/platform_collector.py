@@ -69,7 +69,9 @@ class PlatformCollector:
         )
         self._handlers: dict[str, ActiveSessionHandler] = {}
         self._daily_handlers: dict[str, DailyHandler] = {}
-        self._lock = threading.Lock()
+        # RLock: start_session/_handler_for nest under this lock while emit
+        # re-enters through handler.handle(); a plain Lock self-deadlocks.
+        self._lock = threading.RLock()
 
     @property
     def active_root(self) -> Path:
@@ -93,8 +95,12 @@ class PlatformCollector:
                 handler = ActiveSessionHandler(
                     service=service, group="platform", active_root=self._active_root
                 )
+                # Auto-start so emit_event/run_stream write without a manual
+                # start_session (matches the pre-801a0a6 lazy-create behavior).
+                handler.start_session()
                 self._handlers[service] = handler
-            handler.start_session()
+            else:
+                handler.start_session()
 
     def emit_event(self, service: str, message: str, *, level: int = logging.INFO) -> None:
         """Classify one event without leaking handler-controlled field values."""
