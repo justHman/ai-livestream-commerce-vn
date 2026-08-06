@@ -154,7 +154,11 @@ jobs:
           SCAN: ${{ needs.secret-scan.result }}
           AREA: ${{ needs.affected-area.result }}
           MODE: ${{ needs.mode.result }}
-          SVC: ${{ needs.service-ci.result }}
+          # GitHub reports a reusable's result as failure when its services
+          # matrix is empty (ci-only changes) even if neutral-skip succeeds.
+          # Normalize that to skipped so the gate only fails on real service
+          # failures.
+          SVC: ${{ needs.service-ci.result == 'failure' && needs.affected-area.outputs.services_json == '[]' && 'skipped' || needs.service-ci.result }}
           CTN: ${{ needs.container-build.result }}
           WB: ${{ needs.workbench-check.result }}
           PLT: ${{ needs.platform-check.result }}
