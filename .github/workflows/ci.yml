@@ -77,6 +77,7 @@ jobs:
       platform: ${{ steps.detect.outputs.platform }}
       workbench: ${{ steps.detect.outputs.workbench }}
       infra: ${{ steps.detect.outputs.infra }}
+      ci: ${{ steps.detect.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,11 +99,13 @@ jobs:
           platform=$(jq -c '[.areas[] | select(startswith("platform_"))]' <<<"$out")
           workbench=$(jq -c '[.areas[] | select(. == "workbench")]' <<<"$out")
           infra=$(jq -c '[.areas[] | select(. == "infra")]' <<<"$out")
+          ci=$(jq -c '[.areas[] | select(. == "ci")]' <<<"$out")
           echo "services=$services_csv" >> "$GITHUB_OUTPUT"
           echo "services_json=$services" >> "$GITHUB_OUTPUT"
           echo "platform=$platform" >> "$GITHUB_OUTPUT"
           echo "workbench=$workbench" >> "$GITHUB_OUTPUT"
           echo "infra=$infra" >> "$GITHUB_OUTPUT"
+          echo "ci=$ci" >> "$GITHUB_OUTPUT"
 
   mode:
     runs-on: ubuntu-latest
