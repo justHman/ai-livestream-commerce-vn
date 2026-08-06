@@ -71,7 +71,9 @@ class PlatformCollector:
         self._retention_days = retention_days
         self._handlers: dict[str, ActiveSessionHandler] = {}
         self._daily_handlers: dict[str, DailyHandler] = {}
-        self._lock = threading.Lock()
+        # RLock: start_session/_handler_for nest under this lock while emit
+        # re-enters through handler.handle(); a plain Lock self-deadlocks.
+        self._lock = threading.RLock()
 
     @property
     def active_root(self) -> Path:
@@ -146,6 +148,9 @@ class PlatformCollector:
                 handler = ActiveSessionHandler(
                     service=service, group="platform", active_root=self._active_root
                 )
+                # Auto-start so emit_event/run_stream write without a manual
+                # start_session (matches the pre-801a0a6 lazy-create behavior).
+                handler.start_session()
                 handler.setFormatter(ContextFormatter(service=service, colorize=False))
                 handler.addFilter(LevelFilter())
                 handler.addFilter(StructuredFieldsFilter())

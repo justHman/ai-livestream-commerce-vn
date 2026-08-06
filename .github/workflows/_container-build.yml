@@ -66,4 +66,8 @@ jobs:
           push: ${{ inputs.push }}
           tags: ${{ inputs.image }}:${{ inputs.tag }}
           cache-from: type=gha,scope=${{ inputs.scope }}
-          cache-to: type=gha,mode=max,scope=${{ inputs.scope }}
+          # mode=min: export only the final image layer cache, not every
+          # intermediate layer — backend deps (torch ~2GB via --extra director)
+          # made mode=max exports take 10+ min. max is only worth it for
+          # frequently-rebuilt dev loops; PR builds want fast feedback.
+          cache-to: type=gha,mode=min,scope=${{ inputs.scope }}
