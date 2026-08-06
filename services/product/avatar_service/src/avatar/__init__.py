@@ -29,3 +29,4 @@ __all__ = [
     "StreamingAvatarBackend",
     "create_app",
 ]
+test
