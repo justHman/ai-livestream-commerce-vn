@@ -20,9 +20,18 @@
 # Verified before disabling (6.4 precondition): release-service.yml dry-runs
 # pass (5.1-5.5, simulated in scripts/ci/simulate_release_path.py), deploy-prod
 # has ZERO runs in remote history, and no repo path references it as active.
+#
+# `on.push.branches: ["**"]`: a workflow file with no matching trigger creates
+# a failed empty run when a push edits .github/workflows/ ("No event triggers
+# defined in `on`"). Matching all branch pushes makes such pushes produce a
+# green no-op run instead; job guards (below) keep every job from running on
+# branch pushes, so release behavior is unchanged.
 name: deploy-prod
 
-on: {}
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -38,6 +47,7 @@ concurrency:
 
 jobs:
   resolve-tag:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
@@ -68,7 +78,7 @@ jobs:
 
   build:
     needs: resolve-tag
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
