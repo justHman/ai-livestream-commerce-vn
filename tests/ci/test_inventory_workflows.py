@@ -76,11 +76,13 @@ def test_expected_triggers_present(name, event):
 
 
 def test_deploy_prod_triggers_disabled():
-    """6.4: deploy-prod.yml is superseded by release-service.yml and has no
-    live triggers (push tags v* and workflow_dispatch both removed)."""
+    """6.4: deploy-prod.yml is superseded by release-service.yml. It keeps
+    event triggers only so workflow edits do not produce failed empty runs
+    ('No event triggers defined in on'), but every job is guarded to skip on
+    branch pushes: no job may run on a plain branch push."""
     wf = _inv("deploy-prod.yml")
-    events = [t["event"] for t in wf["triggers"]]
-    assert events == []
+    for job in wf["jobs"]:
+        assert job.get("if"), "deploy-prod job must be guarded to skip on branch pushes"
 
 
 def test_ci_has_no_manual_deploy_trigger():
@@ -180,13 +182,24 @@ def test_structural_validation_detects_missing_ref(tmp_path):
 # ── Manifest / JSON ─────────────────────────────────────────────────────────
 
 
+def _python() -> str:
+    """Python interpreter for subprocess runs.
+
+    Use the current venv interpreter (uv test env) — the raw `python` on PATH
+    may lack project deps (e.g. PyYAML) and silently crash subprocess checks.
+    """
+    import sys
+
+    return sys.executable
+
+
 def test_json_manifest_roundtrip(tmp_path):
     manifest = tmp_path / "inventory.json"
     import subprocess
 
     proc = subprocess.run(
         [
-            "python",
+            _python(),
             "scripts/ci/inventory_workflows.py",
             "--repo-root",
             ".",
@@ -209,7 +222,7 @@ def test_manifest_drift_detected(tmp_path):
 
     proc = subprocess.run(
         [
-            "python",
+            _python(),
             "scripts/ci/inventory_workflows.py",
             "--repo-root",
             ".",
@@ -310,7 +323,7 @@ def test_canonical_manifest_write_drift_consistent(tmp_path):
     manifest = tmp_path / "canonical.json"
     proc = subprocess.run(
         [
-            "python",
+            _python(),
             "scripts/ci/inventory_workflows.py",
             "--repo-root",
             ".",
@@ -325,7 +338,7 @@ def test_canonical_manifest_write_drift_consistent(tmp_path):
     # Re-run with --check-drift against the same manifest must pass
     proc2 = subprocess.run(
         [
-            "python",
+            _python(),
             "scripts/ci/inventory_workflows.py",
             "--repo-root",
             ".",

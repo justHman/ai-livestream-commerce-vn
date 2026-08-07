@@ -153,6 +153,7 @@ def _inventory_job(
     entry: Dict[str, Any] = {
         "name": name,
         "runs_on": job.get("runs-on"),
+        "if": job.get("if"),
         "uses": [],
         "steps": [],
         "environment": job.get("environment"),
