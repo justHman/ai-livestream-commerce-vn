@@ -77,6 +77,7 @@ jobs:
       platform: ${{ steps.detect.outputs.platform }}
       workbench: ${{ steps.detect.outputs.workbench }}
       infra: ${{ steps.detect.outputs.infra }}
+      ci: ${{ steps.detect.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,11 +99,13 @@ jobs:
           platform=$(jq -c '[.areas[] | select(startswith("platform_"))]' <<<"$out")
           workbench=$(jq -c '[.areas[] | select(. == "workbench")]' <<<"$out")
           infra=$(jq -c '[.areas[] | select(. == "infra")]' <<<"$out")
+          ci=$(jq -c '[.areas[] | select(. == "ci")]' <<<"$out")
           echo "services=$services_csv" >> "$GITHUB_OUTPUT"
           echo "services_json=$services" >> "$GITHUB_OUTPUT"
           echo "platform=$platform" >> "$GITHUB_OUTPUT"
           echo "workbench=$workbench" >> "$GITHUB_OUTPUT"
           echo "infra=$infra" >> "$GITHUB_OUTPUT"
+          echo "ci=$ci" >> "$GITHUB_OUTPUT"
 
   mode:
     runs-on: ubuntu-latest
@@ -151,7 +154,11 @@ jobs:
           SCAN: ${{ needs.secret-scan.result }}
           AREA: ${{ needs.affected-area.result }}
           MODE: ${{ needs.mode.result }}
-          SVC: ${{ needs.service-ci.result }}
+          # GitHub reports a reusable's result as failure when its services
+          # matrix is empty (ci-only changes) even if neutral-skip succeeds.
+          # Normalize that to skipped so the gate only fails on real service
+          # failures.
+          SVC: ${{ needs.service-ci.result == 'failure' && needs.affected-area.outputs.services_json == '[]' && 'skipped' || needs.service-ci.result }}
           CTN: ${{ needs.container-build.result }}
           WB: ${{ needs.workbench-check.result }}
           PLT: ${{ needs.platform-check.result }}
@@ -266,7 +273,11 @@ jobs:
     needs: [affected-area, mode]
     if: ${{ always() && needs.mode.result == 'success' && contains(fromJson(needs.affected-area.outputs.ci), 'ci') }}
     steps:
+      # Full history: test_validate_workflow_inputs resolves non-HEAD SHAs
+      # (e.g. ac0ff9c) against the repo; shallow checkout would fail them.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
       - name: Ruff check (root tools + CI scripts)
         run: uvx ruff check scripts/ci scripts/contracts benchmarks/infra_scripts 2>/dev/null || uvx ruff check scripts/ci scripts/contracts
