@@ -37,6 +37,10 @@ permissions:
 
 jobs:
   checks:
+    # Skip entirely when no service is affected: an empty matrix would fail
+    # workflow evaluation ("Matrix vector 'service' does not contain any
+    # values") and mark the run failed even though neutral-skip passed.
+    if: ${{ inputs.services != '[]' }}
     name: ${{ matrix.service }}
     runs-on: ubuntu-latest
     env:
