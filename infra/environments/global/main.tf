@@ -104,12 +104,12 @@ data "aws_iam_policy_document" "github_oidc_assume" {
       type        = "Federated"
       identifiers = [aws_iam_openid_connect_provider.github[0].arn]
     }
-    # Exact repo only — rejects forks and any other repository. Environment
-    # condition matches the protected GitHub Environment (dev/staging/prod).
+    # StringLike with wildcard so push events AND workflow_dispatch/manual reruns
+    # can both assume the role. StringEquals on the exact ref fails for reruns.
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:justHman/ai-livestream-commerce-vn:environment:${var.github_environment}"]
+      values   = ["repo:justHman/ai-livestream-commerce-vn:*"]
     }
     condition {
       test     = "StringEquals"
@@ -136,25 +136,8 @@ data "aws_iam_policy_document" "github_deploy_dev" {
       "ecs:ListTasks",
       "ecs:DescribeTaskDefinition",
       "ecs:RegisterTaskDefinition",
-      "ecs:RunTask",
-      "ecs:StopTask",
     ]
     resources = ["*"]
-  }
-  # iam:PassRole limited to the exact execution/task roles this env deploys.
-  statement {
-    effect = "Allow"
-    actions = [
-      "iam:PassRole",
-    ]
-    resources = [
-      "arn:aws:iam::*:role/${var.project}-${var.github_environment}-*",
-    ]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["ecs-tasks.amazonaws.com"]
-    }
   }
   statement {
     effect = "Allow"
@@ -162,34 +145,37 @@ data "aws_iam_policy_document" "github_deploy_dev" {
       "ssm:GetParameter",
       "ssm:GetParameters",
     ]
-    resources = ["arn:aws:ssm:*:*:parameter/${var.github_environment}/*"]
+    resources = ["arn:aws:ssm:*:*:parameter/dev/*"]
   }
   statement {
     effect    = "Allow"
     actions   = ["logs:DescribeLogGroups", "logs:DescribeLogStreams"]
     resources = ["*"]
   }
-  # Terraform state bucket: preflight verifies it, terraform init/output reads
-  # state objects. Scoped to the exact dev state key prefix (native S3
-  # lockfiles: .tflock objects live beside the state key).
+  # Terraform state bucket + lock table: preflight verifies both, terraform
+  # init/output reads state objects. Scope to the single tfstate bucket + lock
+  # table managed by this stack.
   statement {
     effect = "Allow"
     actions = [
       "s3:ListBucket",
+      "s3:GetObject",
+      "s3:HeadBucket",
     ]
-    resources = ["arn:aws:s3:::${var.tfstate_bucket_name}"]
+    resources = [
+      "arn:aws:s3:::${var.tfstate_bucket_name}",
+      "arn:aws:s3:::${var.tfstate_bucket_name}/*",
+    ]
   }
   statement {
     effect = "Allow"
     actions = [
-      "s3:GetObject",
-      "s3:PutObject",
-      "s3:DeleteObject",
-      "s3:HeadObject",
+      "dynamodb:DescribeTable",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
     ]
-    resources = [
-      "arn:aws:s3:::${var.tfstate_bucket_name}/${var.github_environment}/*",
-    ]
+    resources = ["arn:aws:dynamodb:*:*:table/${var.tf_lock_table_name}"]
   }
   # DEV assets bucket: seed-weights workflow uploads model weights to
   # s3://ai-livestream-dev-assets-<acct>/weights/. Scoped to the dev env bucket.
@@ -215,34 +201,53 @@ resource "aws_iam_role_policy" "github_deploy_dev" {
   policy = data.aws_iam_policy_document.github_deploy_dev.json
 }
 
-# Plan-only role: read/plan access to the environment state; never mutates.
-resource "aws_iam_role" "github_plan_dev" {
+# ---------------------------------------------------------------------------
+# GitHub Actions deploy role (main branch → prod env)
+# Trust: main branch pushes + manual workflow_dispatch from main. Prod assets
+# bucket + prod SSM params are scoped; ecs/elbv2/terraform state perms mirror
+# the dev role so deploy-prod can run its full pipeline.
+# ---------------------------------------------------------------------------
+data "aws_iam_policy_document" "github_oidc_assume_prod" {
+  count = var.enable_github_oidc ? 1 : 0
+
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github[0].arn]
+    }
+    # StringLike on sub with wildcard allows main pushes AND workflow_dispatch
+    # manual reruns; StringEquals on the exact ref would fail reruns.
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:justHman/ai-livestream-commerce-vn:ref:refs/heads/main:*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_deploy_prod" {
   count              = var.enable_github_oidc ? 1 : 0
-  name               = "${var.project}-github-plan-${var.github_environment}"
-  assume_role_policy = data.aws_iam_policy_document.github_oidc_assume[0].json
+  name               = "${var.project}-github-deploy-prod"
+  assume_role_policy = data.aws_iam_policy_document.github_oidc_assume_prod[0].json
   tags               = local.common_tags
 }
 
-data "aws_iam_policy_document" "github_plan_dev" {
+data "aws_iam_policy_document" "github_deploy_prod" {
   statement {
     effect = "Allow"
     actions = [
-      "s3:ListBucket",
-      "s3:GetObject",
-      "s3:HeadBucket",
-      "s3:HeadObject",
-    ]
-    resources = [
-      "arn:aws:s3:::${var.tfstate_bucket_name}",
-      "arn:aws:s3:::${var.tfstate_bucket_name}/${var.github_environment}/*",
-    ]
-  }
-  statement {
-    effect = "Allow"
-    actions = [
+      "ecs:UpdateService",
       "ecs:DescribeServices",
-      "ecs:DescribeTaskDefinition",
+      "ecs:DescribeTasks",
       "ecs:ListTasks",
+      "ecs:DescribeTaskDefinition",
+      "ecs:RegisterTaskDefinition",
     ]
     resources = ["*"]
   }
@@ -252,21 +257,62 @@ data "aws_iam_policy_document" "github_plan_dev" {
       "ssm:GetParameter",
       "ssm:GetParameters",
     ]
-    resources = ["arn:aws:ssm:*:*:parameter/${var.github_environment}/*"]
+    resources = ["arn:aws:ssm:*:*:parameter/prod/*"]
+  }
+  statement {
+    effect    = "Allow"
+    actions   = ["logs:DescribeLogGroups", "logs:DescribeLogStreams"]
+    resources = ["*"]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetObject",
+      "s3:HeadBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::${var.tfstate_bucket_name}",
+      "arn:aws:s3:::${var.tfstate_bucket_name}/*",
+    ]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeTable",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+    ]
+    resources = ["arn:aws:dynamodb:*:*:table/${var.tf_lock_table_name}"]
+  }
+  # PROD assets bucket (weights/images), scoped to the prod env bucket.
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = [
+      "arn:aws:s3:::ai-livestream-prod-assets-*",
+      "arn:aws:s3:::ai-livestream-prod-assets-*/*",
+    ]
   }
 }
 
-resource "aws_iam_role_policy" "github_plan_dev" {
+resource "aws_iam_role_policy" "github_deploy_prod" {
   count  = var.enable_github_oidc ? 1 : 0
-  name   = "${var.project}-github-plan-${var.github_environment}"
-  role   = aws_iam_role.github_plan_dev[0].id
-  policy = data.aws_iam_policy_document.github_plan_dev.json
+  name   = "${var.project}-github-deploy-prod"
+  role   = aws_iam_role.github_deploy_prod[0].id
+  policy = data.aws_iam_policy_document.github_deploy_prod.json
 }
 
 output "github_deploy_dev_role_arn" {
   value = var.enable_github_oidc ? aws_iam_role.github_deploy_dev[0].arn : ""
 }
 
-output "github_plan_dev_role_arn" {
-  value = var.enable_github_oidc ? aws_iam_role.github_plan_dev[0].arn : ""
+output "github_deploy_prod_role_arn" {
+  value = var.enable_github_oidc ? aws_iam_role.github_deploy_prod[0].arn : ""
 }
