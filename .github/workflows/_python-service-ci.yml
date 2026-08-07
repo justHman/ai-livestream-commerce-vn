@@ -88,7 +88,10 @@ jobs:
         working-directory: services/product/${{ matrix.service }}
 
   neutral-skip:
-    if: ${{ inputs.services == '' }}
+    # Always run (not `if: inputs.services == ''`): a skipped job makes the
+    # reusable's needs.<job>.result = failure, which fails the CI gate on
+    # ci-only changes (empty services matrix). Running as success keeps the
+    # aggregate green while services stay empty.
     runs-on: ubuntu-latest
     steps:
       - run: echo "No product service affected; reporting neutral success."
