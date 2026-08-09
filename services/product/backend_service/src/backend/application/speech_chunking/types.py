@@ -9,7 +9,7 @@ scoring; none carries source identity.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Optional
 from uuid import uuid4
 
@@ -34,21 +34,14 @@ class TextChunk:
     decision_reason: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class ChunkPolicy:
-    """Deterministic chunking policy.
+class ChunkPolicy(StrEnum):
+    """Deterministic chunking policy (source-agnostic).
 
-    ``fixed`` reproduces the legacy character-threshold behavior; it stays
-    the rollback/baseline path while adaptive scoring is benchmarked.
-    ``adaptive_vi`` is reserved for the Vietnamese boundary/duration engine
-    (tasks 3.x) and currently behaves identically to ``fixed``.
+    Only ``FIXED`` is implemented; adaptive scoring (tasks 3.x) is not
+    advertised until the engine exists.
     """
 
-    name: str = "fixed"
-
-    @property
-    def adaptive(self) -> bool:
-        return self.name == "adaptive_vi"
+    FIXED = "fixed"
 
 
 @dataclass(frozen=True)
@@ -66,14 +59,10 @@ class RuntimeHints:
     tts_rtf_ewma: Optional[float] = None
 
 
-class ChunkDecisionReason(str, Enum):
+class ChunkDecisionReason(StrEnum):
     """Why a chunk was committed. String enum so values serialize as text."""
 
-    SENTENCE = "sentence"
-    CLAUSE = "clause"
     PUNCTUATION = "punctuation"
-    TARGET = "target"
-    LATENCY_DEADLINE = "latency_deadline"
     HARD_MAX = "hard_max"
+    LATENCY_DEADLINE = "latency_deadline"
     FINALIZE = "finalize"
-    FIXED_FALLBACK = "fixed_fallback"
