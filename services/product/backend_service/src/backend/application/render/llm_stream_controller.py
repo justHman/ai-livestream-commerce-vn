@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -87,6 +88,13 @@ class LLMStreamController:
         utterance_id: str,
         maxsize: int = DEFAULT_QUEUE_MAXSIZE,
     ) -> None:
+        """Create a controller with a strictly bounded event queue.
+
+        ``maxsize`` must be positive: ``queue.Queue(maxsize=0)`` is unbounded,
+        which would violate the controller's bounded-queue contract.
+        """
+        if maxsize <= 0:
+            raise ValueError(f"maxsize must be positive, got {maxsize}")
         self._llm = llm
         self._req = req
         self._session_id = session_id
@@ -187,18 +195,31 @@ class LLMStreamController:
 
         An available event is returned immediately — the poll never delays a
         queued event; it only bounds how long an empty queue is waited on.
+        A finite timeout is a fixed deadline from ``time.monotonic()``: each
+        poll waits ``min(remaining, _GET_POLL_S)`` so drift does not extend
+        the deadline, and ``timeout=0`` performs one non-blocking get so an
+        already-queued event still wins over a fabricated timeout. Cancelled
+        controllers return None even with an event queued: once cancelled,
+        queued deltas may be abandoned.
         """
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             if self._stop.is_set() or (cancel is not None and cancel.is_set()):
                 return None
-            if timeout is not None and timeout <= 0.0:
-                return None
-            wait = _GET_POLL_S if timeout is None else min(timeout, _GET_POLL_S)
+            if deadline is None:
+                wait = _GET_POLL_S
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    try:
+                        return self._queue.get_nowait()
+                    except queue.Empty:
+                        return None
+                wait = min(remaining, _GET_POLL_S)
             try:
                 return self._queue.get(timeout=wait)
             except queue.Empty:
-                if timeout is not None:
-                    timeout -= wait
+                continue
 
     def _close_generator(self) -> None:
         generator = self._generator
