@@ -49,11 +49,17 @@ from typing import Any
 
 from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
 from backend.application.contracts.tts_engines import TTSEngine
+from .llm_stream_controller import (
+    DEFAULT_QUEUE_MAXSIZE,
+    EofEvent,
+    ErrorEvent,
+    LLMStreamController,
+)
 from .windows import AudioWindow, VideoWindow
 from .queue import BoundedVideoQueue, CoordinatorMetrics
 
 from ..speech_chunking import TextChunk
-from ..text_chunker import TextChunker
+from ..text_chunker import ChunkDecisionReason, TextChunker
 
 # Default TextChunker config (mirrors AppConfig.text_chunk_* defaults). The
 # orchestrator reads these from the ``config`` dict if provided, else uses these
@@ -96,6 +102,7 @@ class StreamOrchestrator:
         self._flush_timeout_ms = int(
             cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS)
         )
+        self._flush_timeout_s = self._flush_timeout_ms / 1000.0
         self._cancel_event = threading.Event()
         self._running_session: str | None = None
         self._audio_window_callback = audio_window_callback
@@ -267,7 +274,15 @@ class StreamOrchestrator:
         req: LLMRequest,
         bridge: queue.Queue[VideoWindow | object],
     ) -> tuple[str, int]:
-        """Stream each complete LLM phrase into TTS as soon as it is available."""
+        """Stream each complete LLM phrase into TTS as soon as it is available.
+
+        The LLM stream runs in a dedicated producer thread; this consumer owns
+        the ``TextChunker`` exclusively and waits on the controller with a
+        deadline computed only from ``chunker.buffer_started_at``, so a
+        stalled upstream generator can still fire a latency flush. Producer
+        errors propagate through the error path; no EOF is emitted after an
+        error, and the chunker is never stamped normal-final on error/cancel.
+        """
         spoken_parts: list[str] = []
 
         def render_phrase(phrase: TextChunk) -> None:
@@ -290,6 +305,9 @@ class StreamOrchestrator:
                         return
                     bridge.put(video_window)
 
+        controller: LLMStreamController | None = None
+        saw_final_token = False
+        cancelled = False
         try:
             chunker = TextChunker(
                 session_id=session_id,
@@ -299,15 +317,33 @@ class StreamOrchestrator:
                 max_chars=self._max_chars,
                 flush_timeout_ms=self._flush_timeout_ms,
             )
-            saw_final_token = False
-            for token in self._llm.stream_chunks(
-                req, session_id=session_id, utterance_id=utterance_id
-            ):
+            controller = LLMStreamController(
+                self._llm,
+                req,
+                session_id=session_id,
+                utterance_id=utterance_id,
+                maxsize=DEFAULT_QUEUE_MAXSIZE,
+            )
+            controller.start()
+            while True:
                 if self._cancel_event.is_set():
+                    cancelled = True
                     break
-                spoken_parts.append(token.text)
-                phrases = chunker.feed(token.text) + chunker.check_timeout()
-                if token.is_final:
+                event = controller.get(self._remaining_deadline(chunker))
+                if event is None:
+                    if not self._cancel_event.is_set():
+                        phrases = chunker.flush(reason=ChunkDecisionReason.LATENCY_DEADLINE)
+                        for phrase in phrases:
+                            render_phrase(phrase)
+                    continue
+                if isinstance(event, EofEvent):
+                    break
+                if isinstance(event, ErrorEvent):
+                    raise event.exc
+                # DeltaEvent
+                spoken_parts.append(event.text)
+                phrases = chunker.feed(event.text)
+                if event.is_final:
                     saw_final_token = True
                     phrases.extend(chunker.finalize())
                     if phrases and not phrases[-1].is_final:
@@ -323,13 +359,29 @@ class StreamOrchestrator:
                         )
                 for phrase in phrases:
                     render_phrase(phrase)
-            else:
-                if not self._cancel_event.is_set() and not saw_final_token:
-                    for phrase in chunker.finalize():
-                        render_phrase(phrase)
+
+            if not cancelled and not saw_final_token:
+                for phrase in chunker.finalize():
+                    render_phrase(phrase)
             return "".join(spoken_parts), 0
         finally:
+            if controller is not None:
+                controller.stop()
             bridge.put(_BRIDGE_SENTINEL)
+
+    def _remaining_deadline(self, chunker: TextChunker) -> float | None:
+        """Seconds until the buffer latency deadline, or None when no deadline.
+
+        The deadline is measured from ``buffer_started_at`` only: an empty
+        buffer (long LLM TTFT, flushed remainder, or a sub-min buffer below
+        the quality floor) waits without a fake deadline. ``flush_timeout_ms``
+        of 0 is honored as an immediate flush once text is buffered.
+        """
+        started = chunker.buffer_started_at
+        if started is None:
+            return None
+        remaining = self._flush_timeout_s - chunker.buffer_age_ms / 1000.0
+        return max(0.0, remaining)
 
 
 __all__ = ["StreamOrchestrator"]
