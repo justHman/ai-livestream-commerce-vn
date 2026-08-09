@@ -22,6 +22,18 @@ VIETNAMESE_TEXT = (
 )
 
 
+# Oracle for 1.3/1.4: fixed segmentation of VIETNAMESE_TEXT, derived from
+# character-at-a-time feeding. Every punctuation position is a candidate
+# boundary and min_chars=12 gates each split; max_chars=80 never binds here
+# (every oracle chunk is well under it).
+FULL_SCRIPT_EXPECTED = [
+    "Xin chào mọi người.",
+    " Hôm nay shop có áo khoác SKU-P004 giá 199.",
+    "000đ, giảm 50%!",
+    " Bạn muốn xem màu nào?",
+]
+
+
 # ---------- helpers / fakes ----------
 
 
@@ -183,10 +195,17 @@ def test_exact_text_preservation_including_finalize_remainder() -> None:
 # ---------- 1.3 fragmentation invariance (regression: fails at baseline) ----------
 
 
+def test_full_script_segmentation_matches_intended_boundaries() -> None:
+    # Fixture integrity: the oracle must reproduce VIETNAMESE_TEXT exactly.
+    assert "".join(FULL_SCRIPT_EXPECTED) == VIETNAMESE_TEXT
+    assert _segment([VIETNAMESE_TEXT], min_chars=12, target_chars=40, max_chars=80) == (
+        FULL_SCRIPT_EXPECTED
+    )
+
+
 @pytest.mark.parametrize(
     "fragments",
     [
-        [VIETNAMESE_TEXT],
         _word_fragments(VIETNAMESE_TEXT),
         list(VIETNAMESE_TEXT),
         [
@@ -197,11 +216,13 @@ def test_exact_text_preservation_including_finalize_remainder() -> None:
         ],
         _provider_fragments(VIETNAMESE_TEXT),
     ],
-    ids=["full", "words", "characters", "punctuation-coalesced", "provider-deltas"],
+    ids=["words", "characters", "punctuation-coalesced", "provider-deltas"],
 )
 def test_segmentation_is_invariant_to_fragmentation(fragments: list[str]) -> None:
-    expected = _segment([VIETNAMESE_TEXT], min_chars=12, target_chars=40, max_chars=80)
-    assert _segment(fragments, min_chars=12, target_chars=40, max_chars=80) == expected
+    assert "".join(fragments) == VIETNAMESE_TEXT
+    assert _segment(fragments, min_chars=12, target_chars=40, max_chars=80) == (
+        FULL_SCRIPT_EXPECTED
+    )
 
 
 # ---------- 1.4 internal-punctuation draining (regression: fails at baseline) ----------
@@ -246,8 +267,30 @@ def test_automatic_chunks_respect_hard_max_without_text_loss(
         max_chars=max_chars,
     )
     emitted = _feed_all(chunker, fragments)
-    remainder = "".join(chunk.text for chunk in chunker.finalize())
 
-    assert len(emitted) >= 1
+    # No automatic chunk may exceed the hard cap...
     assert all(len(chunk.text) <= max_chars for chunk in emitted)
+    # ...and no oversized remainder may be left for finalize() to hide.
+    # Private-buffer inspection is a stopgap: task 2.2 adds a public
+    # buffered-text state to assert against instead.
+    assert chunker._buffer_len <= max_chars
+
+    remainder = "".join(chunk.text for chunk in chunker.finalize())
     assert "".join(chunk.text for chunk in emitted) + remainder == "".join(fragments)
+
+
+def test_single_delta_over_two_caps_emits_at_least_two_automatic_chunks() -> None:
+    chunker = TextChunker(
+        session_id="s",
+        utterance_id="u",
+        min_chars=12,
+        target_chars=40,
+        max_chars=80,
+    )
+    emitted = chunker.feed("x" * 190)
+
+    # 190 > 2 * 80: one 80-char cut cannot leave a <= max remainder, so the
+    # drain must emit at least two automatic chunks.
+    assert len(emitted) >= 2
+    assert all(len(chunk.text) <= 80 for chunk in emitted)
+    assert chunker._buffer_len <= 80
