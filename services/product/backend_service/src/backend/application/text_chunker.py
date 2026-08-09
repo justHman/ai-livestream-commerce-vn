@@ -67,6 +67,11 @@ class TextChunker:
             )
         if flush_timeout_ms < 0:
             raise ValueError(f"flush_timeout_ms must be >= 0, got {flush_timeout_ms}")
+        if policy == ChunkPolicy.ADAPTIVE_VI:
+            raise ValueError(
+                f"policy {policy!r} is declared but not implemented; "
+                "adaptive scoring lands in task 3.7"
+            )
         if policy != ChunkPolicy.FIXED:
             raise ValueError(f"unknown policy {policy!r}")
         self.session_id = session_id
@@ -148,6 +153,15 @@ class TextChunker:
                 if char in PUNCTUATION_BOUNDARIES and self.min_chars <= index + 1 <= self.max_chars:
                     return index + 1, ChunkDecisionReason.PUNCTUATION
         if self._buffer_len >= self.max_chars:
+            # Safe fixed-core fallback: no qualifying punctuation was found,
+            # so prefer the LAST whitespace at or before the cap — the head
+            # then ends on a word boundary and keeps that whitespace, so
+            # exact slicing/order stays trivial. Only when the split position
+            # is >= min_chars; otherwise cut exactly at the cap. HARD_MAX is
+            # stamped either way: the cap forced the decision.
+            for split_at in range(self.max_chars - 1, 0, -1):
+                if text[split_at - 1].isspace() and split_at >= self.min_chars:
+                    return split_at, ChunkDecisionReason.HARD_MAX
             return self.max_chars, ChunkDecisionReason.HARD_MAX
         return None
 

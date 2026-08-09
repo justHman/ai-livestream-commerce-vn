@@ -37,11 +37,15 @@ class TextChunk:
 class ChunkPolicy(StrEnum):
     """Deterministic chunking policy (source-agnostic).
 
-    Only ``FIXED`` is implemented; adaptive scoring (tasks 3.x) is not
-    advertised until the engine exists.
+    ``FIXED`` is the only implemented policy. ``ADAPTIVE_VI`` is part of the
+    canonical type contract from the approved design (task 2.1) — declaring
+    the value is type availability, not behavior. ``TextChunker`` rejects it
+    until adaptive scoring lands (task 3.7) rather than silently running the
+    fixed policy.
     """
 
     FIXED = "fixed"
+    ADAPTIVE_VI = "adaptive_vi"
 
 
 @dataclass(frozen=True)
@@ -60,9 +64,20 @@ class RuntimeHints:
 
 
 class ChunkDecisionReason(StrEnum):
-    """Why a chunk was committed. String enum so values serialize as text."""
+    """Why a chunk was committed. String enum so values serialize as text.
 
+    The declared set is the stable contract locked by the approved design
+    for later phases (adaptive scoring, protected spans). Cluster 2A emits
+    only ``punctuation``, ``hard_max``, ``latency_deadline``, ``finalize``;
+    enum declarations are not scoring.
+    """
+
+    PARAGRAPH = "paragraph"
+    SENTENCE = "sentence"
+    CLAUSE = "clause"
     PUNCTUATION = "punctuation"
-    HARD_MAX = "hard_max"
+    TARGET = "target"
     LATENCY_DEADLINE = "latency_deadline"
+    HARD_MAX = "hard_max"
     FINALIZE = "finalize"
+    FIXED_FALLBACK = "fixed_fallback"
