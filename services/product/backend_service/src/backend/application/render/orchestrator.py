@@ -329,7 +329,10 @@ class StreamOrchestrator:
                 if self._cancel_event.is_set():
                     cancelled = True
                     break
-                event = controller.get(self._remaining_deadline(chunker))
+                event = controller.get(
+                    self._remaining_deadline(chunker),
+                    cancel=self._cancel_event,
+                )
                 if event is None:
                     if not self._cancel_event.is_set():
                         phrases = chunker.flush(reason=ChunkDecisionReason.LATENCY_DEADLINE)
@@ -376,9 +379,17 @@ class StreamOrchestrator:
         buffer (long LLM TTFT, flushed remainder, or a sub-min buffer below
         the quality floor) waits without a fake deadline. ``flush_timeout_ms``
         of 0 is honored as an immediate flush once text is buffered.
+
+        Min-quality guard: a non-empty buffer below ``min_chars`` returns
+        None — the latency deadline never forces a sub-min flush. The
+        acceptance contract is that sub-min timeout continues buffering until
+        min is reached (or finalization/cancellation/hard cap), so the
+        timeout only fires once the buffer has at least ``min_chars``.
         """
         started = chunker.buffer_started_at
         if started is None:
+            return None
+        if len(chunker.buffered_text) < self._min_chars:
             return None
         remaining = self._flush_timeout_s - chunker.buffer_age_ms / 1000.0
         return max(0.0, remaining)
