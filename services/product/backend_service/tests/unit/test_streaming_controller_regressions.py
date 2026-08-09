@@ -441,7 +441,9 @@ async def test_normal_completion_exactly_one_final_video_window():
     llm = _StubLLM(["Xin chào.", "Bạn khỏe không?", "Cảm ơn!"])
     tts = _StubTTS()
     received: list[AudioWindow] = []
-    orch, backend, queue, metrics = _build_orchestrator(llm, tts, audio_window_callback=_capture_into(received))
+    orch, backend, queue, metrics = _build_orchestrator(
+        llm, tts, audio_window_callback=_capture_into(received)
+    )
     sid = _start_session(backend)
 
     await asyncio.wait_for(orch.run(sid, "hello"), timeout=5.0)
@@ -479,7 +481,9 @@ async def test_empty_final_remainder_does_not_create_empty_terminal_artifact():
     llm = _StubLLM(["Xin chào.", "Tạm biệt!"])
     tts = _StubTTS()
     received: list[AudioWindow] = []
-    orch, backend, queue, metrics = _build_orchestrator(llm, tts, audio_window_callback=_capture_into(received))
+    orch, backend, queue, metrics = _build_orchestrator(
+        llm, tts, audio_window_callback=_capture_into(received)
+    )
     sid = _start_session(backend)
 
     await asyncio.wait_for(orch.run(sid, "hello"), timeout=5.0)
@@ -519,7 +523,9 @@ async def test_llm_error_does_not_emit_normal_final_marker():
     llm = _RaisingLLM(first_delta="Xin chào bạn.", raise_gate=raise_gate)
     tts = _StubTTS()
     received: list[AudioWindow] = []
-    orch, backend, queue, metrics = _build_orchestrator(llm, tts, audio_window_callback=_capture_into(received))
+    orch, backend, queue, metrics = _build_orchestrator(
+        llm, tts, audio_window_callback=_capture_into(received)
+    )
     sid = _start_session(backend)
 
     task = asyncio.create_task(orch.run(sid, "hello"))
@@ -563,7 +569,9 @@ async def test_tts_error_does_not_emit_normal_final_marker():
     llm = _StubLLM(["Xin chào bạn", "Tạm biệt nhé!"])
     tts = _FailingTTS()
     received: list[AudioWindow] = []
-    orch, backend, queue, metrics = _build_orchestrator(llm, tts, audio_window_callback=_capture_into(received))
+    orch, backend, queue, metrics = _build_orchestrator(
+        llm, tts, audio_window_callback=_capture_into(received)
+    )
     sid = _start_session(backend)
 
     with pytest.raises(RuntimeError, match="tts stream failed"):
@@ -589,7 +597,9 @@ async def test_cancellation_does_not_fabricate_normal_final_marker():
     llm = _StubLLM([f"chunk {i}." for i in range(50)])
     tts = _StubTTS()
     received: list[AudioWindow] = []
-    orch, backend, queue, metrics = _build_orchestrator(llm, tts, audio_window_callback=_capture_into(received))
+    orch, backend, queue, metrics = _build_orchestrator(
+        llm, tts, audio_window_callback=_capture_into(received)
+    )
     sid = _start_session(backend)
 
     stop = asyncio.Event()
@@ -618,4 +628,6 @@ async def test_cancellation_does_not_fabricate_normal_final_marker():
     assert all(not w.is_final for w in video_windows), (
         "cancel must not fabricate a final marker in the video queue"
     )
-    assert all(not w.is_final for w in received), "cancel must not fabricate a final marker in audio"
+    assert all(not w.is_final for w in received), (
+        "cancel must not fabricate a final marker in audio"
+    )
