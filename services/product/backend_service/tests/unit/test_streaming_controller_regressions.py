@@ -21,6 +21,7 @@ work; only the finality guarantees are missing.
 from __future__ import annotations
 
 import asyncio
+import queue
 import threading
 from typing import Iterator
 
@@ -34,6 +35,7 @@ from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetri
 from backend.application.render.orchestrator import StreamOrchestrator
 from backend.application.text_chunker import ChunkDecisionReason, TextChunker
 from backend.application.render import llm_stream_controller as lsc
+from backend.application.render import orchestrator as orch_module
 from backend.application.render.llm_stream_controller import (
     DeltaEvent,
     EofEvent,
@@ -609,6 +611,15 @@ async def test_cancellation_does_not_fabricate_normal_final_marker():
 
 
 # ---------- task 4.x: bounded LLM stream controller ----------
+#
+# Not tested (deliberate): the stop-before-provider-invocation race in
+# ``_produce`` — if ``stop()`` fires between the ``_stop`` check at thread
+# start and the first ``stream_chunks`` call, the producer exits without
+# invoking upstream (and closes a never-iterated generator). Scheduling
+# cannot be forced deterministically without hooking thread internals; the
+# race is handled by the code itself (checked both before invocation and
+# after generator assignment), so a synthetic test would be flaky, not
+# meaningful. Reviewed at 75bc5aa.
 
 
 def _TC(sid: str, uid: str, seq: int, text: str, is_final: bool) -> TextChunk:
@@ -709,6 +720,36 @@ async def test_error_event_without_trailing_eof():
         )
     finally:
         raise_gate.set()
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_base_exception_becomes_error_event_without_eof():
+    """4.1: a custom BaseException surfaces as one ErrorEvent with no EOF.
+
+    The producer must catch exceptions outside ``Exception`` (e.g.
+    ``KeyboardInterrupt``) and carry them across the thread boundary verbatim;
+    a bare ``except Exception`` would kill the producer thread silently and
+    leave the consumer waiting forever on a terminal event.
+    """
+    exc = KeyboardInterrupt("custom base exception")
+
+    def on_call(req, sid, uid):
+        yield _TC(sid, uid, 0, "Xin chào.", False)
+        raise exc
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        first = await asyncio.to_thread(controller.get, 5.0)
+        assert first == DeltaEvent(text="Xin chào.", is_final=False), first
+        error = await asyncio.to_thread(controller.get, 5.0)
+        assert isinstance(error, ErrorEvent), error
+        assert error.exc is exc, "the original exception object must be preserved"
+        assert await asyncio.to_thread(controller.get, 0.2) is None, (
+            "no event may follow the ErrorEvent"
+        )
+    finally:
         await asyncio.to_thread(controller.stop)
 
 
@@ -875,9 +916,16 @@ async def test_external_cancel_responsive_get_returns_none():
 
 @pytest.mark.asyncio
 async def test_cancel_closes_suspended_generator_and_thread_ends(monkeypatch):
-    """4.4: stop() calls close() on a generator suspended at a yield."""
+    """4.4: repeated stop() closes the suspended generator exactly once.
+
+    A custom close-aware iterator's ``close()`` is not required to be
+    repeatable, so the controller must guard close-at-most-once: invoking
+    ``stop()`` three times must call ``close()`` once and still terminate the
+    producer thread. (A second ``stop()`` is also the typical cleanup path —
+    the ``finally`` of the first.)
+    """
     monkeypatch.setattr(lsc, "JOIN_TIMEOUT_S", 0.05)
-    close_called = threading.Event()
+    close_count = 0
     stop_wait = threading.Event()
 
     def on_call(req, sid, uid):
@@ -887,7 +935,8 @@ async def test_cancel_closes_suspended_generator_and_thread_ends(monkeypatch):
                 stop_wait.wait()
 
             def close(self):
-                close_called.set()
+                nonlocal close_count
+                close_count += 1
                 stop_wait.set()
 
         return _CloseAware()
@@ -898,7 +947,9 @@ async def test_cancel_closes_suspended_generator_and_thread_ends(monkeypatch):
         first = await asyncio.to_thread(controller.get, 5.0)
         assert first == DeltaEvent(text="Xin chào.", is_final=False), first
         await asyncio.to_thread(controller.stop)
-        assert close_called.is_set(), "stop() must close the suspended generator"
+        await asyncio.to_thread(controller.stop)
+        await asyncio.to_thread(controller.stop)
+        assert close_count == 1, f"close() must run exactly once, got {close_count}"
         assert not controller._thread.is_alive(), "producer thread must terminate"
     finally:
         await asyncio.to_thread(controller.stop)
@@ -950,3 +1001,31 @@ async def test_constructor_rejects_non_positive_maxsize():
         _build_controller(_HookLLM(lambda req, sid, uid: iter(())), maxsize=0)
     with pytest.raises(ValueError, match="maxsize"):
         _build_controller(_HookLLM(lambda req, sid, uid: iter(())), maxsize=-1)
+
+
+def test_cleanup_raise_still_emits_bridge_sentinel(monkeypatch):
+    """1.8/4.4: a raising controller.stop() propagates AND emits the sentinel.
+
+    ``_run_sync`` puts ``_BRIDGE_SENTINEL`` in a nested ``finally`` around
+    ``controller.stop()``: the async ``run()`` drain blocks forever in
+    ``bridge.get`` if the sentinel is skipped, so a cleanup failure must not
+    swallow the sentinel — and the exception must still propagate (never
+    swallowed). The LLM EOFs immediately, so the producer thread is already
+    finished when cleanup raises and nothing leaks.
+    """
+
+    def raising_stop(self) -> None:
+        raise RuntimeError("controller cleanup failed")
+
+    monkeypatch.setattr(LLMStreamController, "stop", raising_stop)
+    orch, _, _, _ = _build_orchestrator(_StubLLM([]), _StubTTS())
+    bridge: queue.Queue = queue.Queue()
+
+    with pytest.raises(RuntimeError, match="controller cleanup failed"):
+        orch._run_sync("sess-cleanup", "utt-cleanup", LLMRequest.from_prompt("hello"), bridge)
+
+    sentinel = bridge.get_nowait()
+    assert sentinel is orch_module._BRIDGE_SENTINEL, (
+        "the bridge sentinel must reach the async drain even when cleanup raises"
+    )
+    assert bridge.empty(), "the sentinel must be the last item on the bridge"
