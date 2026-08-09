@@ -427,17 +427,19 @@ async def test_stalled_llm_iterator_cleanup_on_release():
 async def test_final_reconstruction_preserves_decision_reason():
     """The orchestrator's final-marker reconstruction keeps decision_reason.
 
-    When feed() drains a fixed_fallback chunk (non-final) and the
-    orchestrator re-stamps the last emitted phrase is_final=True, the
-    reconstructed TextChunk must carry the original decision_reason — the
-    reason is part of the canonical chunk contract and must not be dropped.
+    finalize() splits the pending buffer into a non-final fixed_fallback
+    head plus the exact final remainder (stamped FINALIZE); the orchestrator
+    re-stamps the LAST emitted phrase is_final=True, and the reconstructed
+    TextChunk must carry the original decision_reason — the reason is part
+    of the canonical chunk contract and must not be dropped.
     """
-    # The single delta is 40 chars ending at a whitespace (the only
-    # qualifying split): feed drains the whole buffer as a fixed_fallback
-    # chunk (non-final), finalize returns [] (buffer empty), and the
-    # orchestrator re-stamps the LAST emitted phrase as final. The
+    # The single delta is 19 chars ending at a whitespace (the only
+    # qualifying split), under max_chars=40 so feed() holds the buffer and
+    # finalize() splits it at the whitespace nearest target_chars=20: a
+    # non-final fixed_fallback head plus the exact final remainder. The
+    # orchestrator re-stamps the LAST emitted phrase as final, and the
     # reconstruction must preserve the original decision_reason.
-    llm = _StubLLM(["a" * 39 + " "])
+    llm = _StubLLM(["a" * 18 + " "])
     tts = _StubTTS()
     orch, backend, queue, metrics = _build_orchestrator(llm, tts)
     sid = _start_session(backend)
@@ -446,7 +448,36 @@ async def test_final_reconstruction_preserves_decision_reason():
 
     final_input = tts.received_inputs[-1]
     assert getattr(final_input, "is_final", None) is True
-    assert getattr(final_input, "decision_reason", None) == "fixed_fallback"
+    assert getattr(final_input, "decision_reason", None) == "finalize"
+
+
+@pytest.mark.asyncio
+async def test_speak_verbatim_passes_canonical_textchunk_to_tts():
+    """``speak_verbatim`` hands TTS the canonical TextChunk, not a bare str.
+
+    The canonical seam: ``_speak_verbatim_sync`` builds a ``TextChunk``
+    carrying the session/utterance ids and must pass that object into
+    ``stream_audio`` (the structural ``TextChunkLike`` protocol accepts any
+    chunk-like object without importing the backend package). Asserting the
+    exact canonical class pins the object identity, not just duck typing.
+    """
+    from backend.application.speech_chunking.types import TextChunk as CanonicalTextChunk
+
+    llm = _StubLLM([])
+    tts = _StubTTS()
+    orch, backend, queue, metrics = _build_orchestrator(llm, tts)
+    sid = _start_session(backend)
+
+    spoken = await asyncio.wait_for(orch.speak_verbatim(sid, "Xin chào bạn."), timeout=5.0)
+
+    assert spoken == "Xin chào bạn."
+    assert len(tts.received_inputs) == 1
+    chunk = tts.received_inputs[0]
+    assert isinstance(chunk, CanonicalTextChunk)
+    assert chunk.text == "Xin chào bạn."
+    assert chunk.session_id == sid
+    assert chunk.utterance_id == tts.received_inputs[0].utterance_id
+    assert chunk.is_final is True
 
 
 # ---------- task 1.8: E2E finality ----------

@@ -153,7 +153,7 @@ class TTSEngine(ABC):
 
     def stream_audio(
         self,
-        text_or_chunk: Union[TextChunk, str],
+        text_or_chunk: Union[TextChunkLike, str],
         *,
         session_id: str = "",
         utterance_id: str = "",

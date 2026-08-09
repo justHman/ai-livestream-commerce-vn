@@ -145,39 +145,24 @@ class TextChunker:
         return chunks
 
     def _next_boundary(self, text: str) -> Optional[tuple[int, ChunkDecisionReason]]:
-        """First qualifying split in ``text``: punctuation or the fallbacks.
+        """First qualifying split in ``text``: punctuation or the hard cap.
 
         A punctuation boundary qualifies only when its prefix lands in
-        ``[min_chars, max_chars]``. Without one, once the buffer has reached
-        the ``max_chars`` decision horizon the deterministic target fallback
-        splits at the whitespace nearest ``target_chars`` on both sides
-        (ties prefer the lower index); if no qualifying whitespace exists,
-        the hard cap is reached at exactly ``max_chars``. Progress is
-        guaranteed: 1 <= end <= max_chars. Returns None while the buffer
-        stays pending.
+        ``[min_chars, max_chars]``; without one, the hard cap is reached at
+        exactly ``max_chars`` (progress is guaranteed: 1 <= end <= max_chars).
+        Returns None while the buffer stays pending.
         """
         if self._buffer_len >= self.min_chars:
             for index, char in enumerate(text):
                 if char in PUNCTUATION_BOUNDARIES and self.min_chars <= index + 1 <= self.max_chars:
                     return index + 1, ChunkDecisionReason.PUNCTUATION
-        if self._buffer_len >= self.max_chars and self._buffer_len > self.target_chars:
-            # Target-character fallback (spec "Target character fallback"):
-            # at the max_chars decision horizon, split at the whitespace
-            # nearest target_chars on BOTH sides; ties prefer the lower
-            # index. The head keeps the whitespace, so slicing stays exact.
-            # A split requires >= min_chars; a whole-text buffer
-            # (target_chars >= len) never splits here (zero-length head).
-            best: Optional[int] = None
-            for index in range(max(1, self.min_chars), min(self.max_chars, len(text)) + 1):
-                if not text[index - 1].isspace():
-                    continue
-                if best is None or abs(index - self.target_chars) < abs(best - self.target_chars):
-                    best = index
-            if best is not None:
-                return best, ChunkDecisionReason.FIXED_FALLBACK
-            # Hard-cap fallback: no qualifying whitespace, cut at the last
-            # whitespace at or before the cap, else exactly at the cap.
-            # HARD_MAX is stamped either way: the cap forced the decision.
+        if self._buffer_len >= self.max_chars:
+            # Safe fixed-core fallback: no qualifying punctuation was found,
+            # so prefer the LAST whitespace at or before the cap — the head
+            # then ends on a word boundary and keeps that whitespace, so
+            # exact slicing/order stays trivial. Only when the split position
+            # is >= min_chars; otherwise cut exactly at the cap. HARD_MAX is
+            # stamped either way: the cap forced the decision.
             for split_at in range(self.max_chars, 0, -1):
                 if text[split_at - 1].isspace() and split_at >= self.min_chars:
                     return split_at, ChunkDecisionReason.HARD_MAX
@@ -256,18 +241,45 @@ class TextChunker:
         return self._flush_buffer(is_final=False, reason=reason)
 
     def finalize(self, runtime_hints: Optional[RuntimeHints] = None) -> list[TextChunk]:
-        """Flush the remaining buffer as the final chunk of the utterance.
+        """Flush the remaining buffer as the final chunk(s) of the utterance.
 
         An empty buffer returns [] — completion with no textual remainder is
         handled by orchestration finality (task 6.x), not by fabricating an
         empty terminal chunk.
+
+        The pending buffer is necessarily < max_chars (the drain loop splits
+        at len >= max_chars), so target_chars gets its real role here: when
+        the buffer exceeds target_chars, split ONCE at the whitespace nearest
+        target_chars within [min_chars, len-1] (ties prefer the lower index).
+        The head is emitted as a non-final FIXED_FALLBACK chunk — the target
+        is only a fallback, not a deadline — and the remainder follows as the
+        exact final FINALIZE chunk. With no qualifying whitespace, or when
+        target_chars >= len, the whole buffer is one final chunk.
         """
         del runtime_hints  # no-op under fixed policy
         if self._buffer_len == 0:
             return []
-        # The drain loop always splits buffers at len >= max_chars, so the
-        # pending buffer here is necessarily < max_chars: a whole-text final
-        # chunk. No fallback branch can fire; the buffer is emitted as-is.
+        text = "".join(self._buffer)
+        if self._buffer_len > self.target_chars:
+            # Target fallback only at finalize of a pending buffer below the
+            # cap: no punctuation drained and no hard-max split applies, so
+            # the closest whitespace around target_chars fixes the boundary.
+            best: Optional[int] = None
+            for index in range(self.min_chars, self._buffer_len):
+                if not text[index - 1].isspace():
+                    continue
+                if best is None or abs(index - self.target_chars) < abs(best - self.target_chars):
+                    best = index
+            if best is not None:
+                head = self._emit(
+                    text[:best], is_final=False, reason=ChunkDecisionReason.FIXED_FALLBACK
+                )
+                self._buffer = [text[best:]]
+                self._buffer_len = len(text[best:])
+                self._buffer_started_at = self._clock() if self._buffer_len else None
+                return [head] + self._flush_buffer(
+                    is_final=True, reason=ChunkDecisionReason.FINALIZE
+                )
         return self._flush_buffer(is_final=True, reason=ChunkDecisionReason.FINALIZE)
 
     def _flush_buffer(self, is_final: bool, reason: str | ChunkDecisionReason) -> list[TextChunk]:

@@ -86,24 +86,26 @@ def test_zero_flush_timeout_is_accepted() -> None:
 
 # One sentence with no internal punctuation, safely under the hard cap, so
 # the only split signal under the fixed policy is the fallback target.
-TARGET_PROBE_TEXT = "Xin chào quý khách hàng thân mến hôm nay"
+TARGET_PROBE_TEXT = "Xin chào quý khách hàng thân mến hôm nay"  # len 40
 
 
 def test_target_chars_changes_fixed_fallback_boundary() -> None:
     """Two runs differing ONLY in target_chars must pick different boundaries.
 
-    INTENDED RED on baseline: the chunker never consults target_chars
-    beyond ordering validation, so the runs produce identical chunk texts.
-    The implementer must give target_chars a deterministic fixed fallback
-    role (spec "Target character fallback").
+    The probe (len 40) is fed under max_chars=80 so no hard-max split
+    participates: feed() must emit nothing and the buffer stays exact until
+    finalize(). At finalize, the whitespace nearest target_chars fixes the
+    boundary — a larger target moves it, so the two runs differ.
     """
     text = TARGET_PROBE_TEXT
-    probe = TextChunker(session_id="s", utterance_id="u")
+    probe = TextChunker(
+        session_id="s", utterance_id="u", min_chars=6, target_chars=40, max_chars=80
+    )
     probe.feed(text)
     assert probe.buffered_text == text
 
-    low = _segment([text], min_chars=6, target_chars=12, max_chars=40)
-    high = _segment([text], min_chars=6, target_chars=36, max_chars=40)
+    low = _segment([text], min_chars=6, target_chars=12, max_chars=80)
+    high = _segment([text], min_chars=6, target_chars=36, max_chars=80)
     assert "".join(low) == text
     assert "".join(high) == text
     assert low != high
@@ -113,7 +115,7 @@ def test_target_chars_equals_probe_text_length_is_whole_chunk() -> None:
     """When the fallback target exactly matches the pending text length, the
     whole probe is one chunk; a much smaller target splits it."""
     text = TARGET_PROBE_TEXT
-    whole = _segment([text], min_chars=6, target_chars=len(text), max_chars=len(text))
+    whole = _segment([text], min_chars=6, target_chars=len(text), max_chars=80)
     assert whole == [text]
 
 
@@ -123,23 +125,29 @@ def test_target_chars_equals_probe_text_length_is_whole_chunk() -> None:
 def test_target_fallback_splits_at_whitespace_immediately_above_target() -> None:
     """Whitespace immediately above target_chars wins, stamped FIXED_FALLBACK.
 
-    The decision horizon (len >= max_chars) scans whitespace on BOTH sides of
-    target_chars. With whitespace at target+1 (13) and a far whitespace at 38,
-    the boundary must land at 13 with fixed_fallback — a downward-only scan
-    would land at 38 with hard_max, so this pins the both-sides behavior and
-    the decision reason.
+    The probe (len 40) stays pending under max_chars=80: feed() emits
+    nothing and the buffer is exact. Only finalize() splits — at the
+    whitespace nearest target_chars on both sides (13 vs 38 -> 13), as a
+    non-final fixed_fallback head plus the exact final remainder, so a
+    downward-only scan (which would land at 38 with hard_max) is pinned out
+    and the decision reason is locked.
     """
-    probe = "a" * 12 + " " + "a" * 24 + " " + "a" * 2  # len 40 = max_chars
+    probe = "a" * 12 + " " + "a" * 24 + " " + "a" * 2  # len 40 < max_chars 80
     chunker = TextChunker(
-        session_id="s", utterance_id="u", min_chars=6, target_chars=12, max_chars=40
+        session_id="s", utterance_id="u", min_chars=6, target_chars=12, max_chars=80
     )
 
     emitted: list[TextChunk] = []
     emitted.extend(chunker.feed(probe))
+    assert chunker.buffered_text == probe
     emitted.extend(chunker.finalize())
 
     assert emitted[0].text == probe[:13]
     assert emitted[0].decision_reason == "fixed_fallback"
+    assert emitted[0].is_final is False
+    assert emitted[1].text == probe[13:]
+    assert emitted[1].decision_reason == "finalize"
+    assert emitted[1].is_final is True
     assert "".join(chunk.text for chunk in emitted) == probe
 
 
@@ -147,13 +155,13 @@ def test_target_fallback_fragmentation_invariance() -> None:
     """One full feed and char/word fragments produce identical chunk texts.
 
     The fallback split position depends only on the accumulated buffer text
-    (whitespace nearest target on both sides), never on how the buffer was
+    (whitespace nearest target at finalize), never on how the buffer was
     fed, so fragmentation cannot shift the boundary. The only whitespace sits
     exactly at target_chars (15), so the head is exactly target-length in all
     three fragmentations.
     """
     text = "abcdefghijklmn opqrstuvwxyzabcdefghijklmnop"  # space at 15, len 41
-    params = dict(min_chars=6, target_chars=15, max_chars=40)
+    params = dict(min_chars=6, target_chars=15, max_chars=80)
 
     whole = _segment([text], **params)
 
@@ -166,6 +174,29 @@ def test_target_fallback_fragmentation_invariance() -> None:
     assert "".join(whole) == text
     assert whole == by_words == by_chars
     assert whole[0] == text[:15]
+
+
+# ---------- 2.5 hard max keeps the base last-whitespace-at-cap behavior ----------
+
+
+def test_hard_max_with_whitespace_splits_at_last_whitespace_at_or_before_cap() -> None:
+    """The hard cap keeps its base behavior: with qualifying whitespace
+    before the cap, the split lands on the LAST whitespace at or before
+    max_chars and is stamped HARD_MAX (the cap forced the decision)."""
+    text = "a" * 70 + " " + "b" * 30  # len 101; space at 71 (last whitespace <= 80)
+    chunker = TextChunker(session_id="s", utterance_id="u", min_chars=12, max_chars=80)
+
+    emitted: list[TextChunk] = []
+    emitted.extend(chunker.feed(text))
+
+    assert emitted[0].text == "a" * 70 + " "
+    assert emitted[0].decision_reason == "hard_max"
+    assert emitted[0].is_final is False
+    emitted.extend(chunker.finalize())
+    assert "".join(chunk.text for chunk in emitted) == text
+    assert emitted[1].text == "b" * 30
+    assert emitted[1].decision_reason == "finalize"
+    assert emitted[1].is_final is True
 
 
 # ---------- 2.6 canonical TextChunk identity and compatibility ----------

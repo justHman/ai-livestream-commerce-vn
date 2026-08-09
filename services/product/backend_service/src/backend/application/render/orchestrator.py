@@ -239,7 +239,7 @@ class StreamOrchestrator:
                 is_final=True,
             )
             for audio_window in self._tts.stream_audio(
-                phrase.text,
+                phrase,
                 session_id=session_id,
                 utterance_id=utterance_id,
             ):
