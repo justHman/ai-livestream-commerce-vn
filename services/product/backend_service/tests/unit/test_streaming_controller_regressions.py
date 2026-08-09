@@ -956,6 +956,84 @@ async def test_cancel_closes_suspended_generator_and_thread_ends(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stop_retries_close_failed_while_provider_active(monkeypatch):
+    """dd50ce5: a close that fails while the provider is active must be retried.
+
+    The custom iterator blocks inside its first ``__next__`` (provider I/O in
+    flight), so stop()'s close from the consumer thread raises ValueError
+    (mid-execution, like a real generator) and the join is bounded. Once the
+    release event lets ``__next__`` return one delta, the producer's top-of-
+    body stop check retries the close successfully: exactly one successful
+    close, at least two close attempts, and no further ``__next__`` after
+    stop. A cleanup stop() must not close it again.
+    """
+    monkeypatch.setattr(lsc, "JOIN_TIMEOUT_S", 0.05)
+    active = threading.Event()
+    release = threading.Event()
+
+    class _BlockingIterator:
+        def __init__(self, tc: TextChunk) -> None:
+            self._tc = tc
+            self.next_calls = 0
+            self.close_attempts = 0
+            self.close_successes = 0
+            self._in_next = False
+            self._closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> TextChunk:
+            self.next_calls += 1
+            self._in_next = True
+            try:
+                active.set()
+                if not release.wait(10.0):
+                    raise TimeoutError("release never set — test harness failure")
+                return self._tc
+            finally:
+                self._in_next = False
+
+        def close(self) -> None:
+            self.close_attempts += 1
+            if self._in_next:
+                # Mid-__next__ in the producer thread: closing from the
+                # consumer thread is unsupported (real generators raise).
+                raise ValueError("generator is executing in another thread")
+            if not self._closed:
+                self._closed = True
+                self.close_successes += 1
+
+    iterator = _BlockingIterator(_TC("sess-controller", "utt-controller", 0, "Xin chào.", False))
+    controller = _build_controller(_HookLLM(lambda req, sid, uid: iterator))
+    await asyncio.to_thread(controller.start)
+    try:
+        await asyncio.to_thread(active.wait, 5.0)
+        assert active.is_set(), "producer must be blocked inside the first __next__"
+        await asyncio.to_thread(controller.stop)
+        assert controller._thread.is_alive(), (
+            "join must be bounded while the provider is still blocked"
+        )
+        release.set()
+        await asyncio.to_thread(controller._thread.join, 5.0)
+        assert not controller._thread.is_alive(), "producer thread must terminate"
+        assert iterator.next_calls == 1, (
+            f"no __next__ may run after stop, got {iterator.next_calls}"
+        )
+        assert iterator.close_successes == 1, (
+            f"close() must succeed exactly once, got {iterator.close_successes}"
+        )
+        assert iterator.close_attempts >= 2, (
+            "close must be retried after the failed consumer attempt, "
+            f"got {iterator.close_attempts}"
+        )
+    finally:
+        release.set()
+        await asyncio.to_thread(controller.stop)
+        assert iterator.close_successes == 1, "a cleanup stop() must not close the generator again"
+
+
+@pytest.mark.asyncio
 async def test_sub_min_buffer_deadline_is_none_until_min_reached():
     """4.3: sub-min buffer yields no deadline; min reached derives from start."""
     orch, _, _, _ = _build_orchestrator(_StubLLM([]), _StubTTS())
