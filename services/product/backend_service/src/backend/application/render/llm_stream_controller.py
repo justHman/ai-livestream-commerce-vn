@@ -7,9 +7,12 @@ duplicating/reordering deltas, and clean up the producer on EOF/error/cancel
 without unsafe thread kills.
 
 Threading contract:
-  - ONE producer thread invokes and iterates ``stream_chunks`` and puts typed
-    events (``DeltaEvent`` / ``EofEvent`` / ``ErrorEvent``) into a bounded
-    FIFO. The controller consumer never calls upstream provider methods.
+  - ONE producer thread invokes, iterates, and closes the upstream
+    generator/iterator. The controller consumer never calls upstream
+    provider methods — ``close()`` included. A provider/custom-iterator
+    ``close()`` may block indefinitely, so it must never run on the caller's
+    thread; bounded cancellation only ever sets ``_stop`` and bounded-joins
+    the producer.
   - The orchestrator consumer is the only party that mutates the
     ``TextChunker``; the controller never touches chunker state.
   - Blocking puts are stop-event responsive: a full queue never strands the
@@ -17,10 +20,16 @@ Threading contract:
   - Blocking gets are stop/wake-event responsive: ``get(None)`` re-checks the
     stop and an optional external cancel event with a bounded poll, so a
     stalled upstream generator cannot hang the consumer forever.
-  - Cleanup is honest and bounded: set stop, close the generator when it is
-    safe (suspended at a yield), and ``join`` with a finite timeout. Python
-    cannot force-kill a thread blocked in arbitrary provider/network I/O, so
-    providers must retain their own finite I/O timeouts at the engine seam.
+  - ``stop()`` is honest and bounded: set stop, join with a finite timeout.
+    The producer owns the generator and closes it at every cooperative exit
+    point where it has control (post-assignment stop, stop observed after
+    ``next()`` returns, stop observed after ``_put``, abnormal-exit cleanup).
+    If the provider is blocked in arbitrary I/O, ``stop()`` returns after
+    ``JOIN_TIMEOUT_S`` and the daemon producer remains until the provider's
+    finite I/O timeout returns; it then observes stop, closes on its own
+    thread, and exits. Python cannot force-kill a thread, so providers must
+    retain their own finite I/O timeouts at the engine seam (current backend
+    outbound OpenAI client: httpx timeout=60s).
 """
 
 from __future__ import annotations
@@ -29,7 +38,6 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Optional
 
 __all__ = ["DeltaEvent", "EofEvent", "ErrorEvent", "LLMStreamController"]
@@ -77,20 +85,6 @@ class ErrorEvent:
 StreamEvent = DeltaEvent | EofEvent | ErrorEvent
 
 
-class _CloseState(Enum):
-    """Generator-close coordination between consumer and producer threads.
-
-    OPEN -> CLOSING -> CLOSED. A close that fails while the generator is
-    mid-execution resets to OPEN so a later retry (from the consumer after the
-    producer suspends, or from the producer itself) can still close it. The
-    state lock is never held while invoking the custom ``close()`` code.
-    """
-
-    OPEN = "open"
-    CLOSING = "closing"
-    CLOSED = "closed"
-
-
 class LLMStreamController:
     """Produce typed stream events in one thread; consume with a bounded wait."""
 
@@ -117,11 +111,7 @@ class LLMStreamController:
         self._queue: queue.Queue[StreamEvent] = queue.Queue(maxsize=maxsize)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._generator: Optional[Any] = None
         self._started = False
-        self._close_state = _CloseState.OPEN
-        #: Guards ``_close_state`` transitions; never held across ``close()``.
-        self._close_lock = threading.Lock()
 
     # -- public API ---------------------------------------------------------
 
@@ -160,19 +150,16 @@ class LLMStreamController:
         return self._get(timeout, cancel)
 
     def stop(self) -> None:
-        """Stop the producer, close the generator when safe, and join bounded.
+        """Request producer stop, then bounded-join the producer thread.
 
-        Idempotent. Closing a generator suspended at a yield point is the
-        supported cancellation path; a generator mid-execution in foreign I/O
-        cannot be closed, so the bounded join reports the leak instead of
-        hanging the run.
+        Idempotent. Never runs arbitrary provider ``close()`` code on this
+        thread: a provider/custom-iterator close may block forever, which
+        would make cancellation unbounded. The producer alone owns the
+        generator and closes it at its next cooperative checkpoint; if it is
+        blocked in foreign I/O, the join times out and the daemon producer
+        cleans up on its own thread once the provider I/O returns.
         """
         self._stop.set()
-        # If the producer is currently suspended at a yield point (waiting on
-        # the queue or on a stop-check re-read), close() from this thread
-        # succeeds; if it is mid-execution in foreign I/O, close() fails fast
-        # here and is retried by the producer once it re-checks the stop.
-        self._close_generator()
         thread = self._thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(JOIN_TIMEOUT_S)
@@ -183,48 +170,54 @@ class LLMStreamController:
         # If stop() fired before this thread started, never invoke upstream.
         if self._stop.is_set():
             return
+        generator = None
         try:
             generator = self._llm.stream_chunks(
                 self._req,
                 session_id=self._session_id,
                 utterance_id=self._utterance_id,
             )
-            # Stash so ``stop()`` can close it from the consumer thread when
-            # it is suspended at a yield point. If ``stop()`` won the race
-            # between invocation and this assignment, close the never-iterated
-            # generator and exit without starting upstream.
-            self._generator = generator
             if self._stop.is_set():
-                self._close_generator()
+                # stop() won the race between invocation and the first next():
+                # close the never-iterated generator and exit without
+                # starting upstream.
+                self._close_generator(generator)
                 return
             for delta in generator:
                 if self._stop.is_set():
                     # ``next()`` just returned, possibly after blocking in
                     # provider I/O: the generator is now suspended and this
-                    # thread owns it, so a close that failed from the
-                    # consumer (mid-execution) can succeed from here.
-                    self._close_generator()
+                    # thread owns it, so it can be closed here.
+                    self._close_generator(generator)
                     return
                 self._put(DeltaEvent(text=delta.text, is_final=delta.is_final))
                 # stop() may have fired while this put was blocked on a full
                 # queue: do not request the next upstream item after a
                 # cancellation (that would perform/block on one extra provider
                 # I/O). The producer now owns the suspended generator, so it
-                # can close it safely and return.
+                # can close it and return.
                 if self._stop.is_set():
-                    self._close_generator()
+                    self._close_generator(generator)
                     return
             if not self._stop.is_set():
                 self._put(EofEvent())
         except GeneratorExit:
-            # Either stop() closed the generator at a yield point (normal
-            # exit), or a concurrent close won a race while this body was
-            # between yields. Both are normal exits: stop() already set the
-            # closed flag when it ran close() successfully.
+            # A concurrent stop() closed the generator at a yield point (the
+            # standard generator-cancellation path). Normal exit; no terminal
+            # event: the stop was requested.
             return
         except BaseException as exc:  # noqa: BLE001 - must cross threads verbatim
             if not self._stop.is_set():
+                # Terminal decision first: queue the ErrorEvent BEFORE any
+                # potentially blocking close(), so the consumer's error path
+                # is never hidden or hung by cleanup. Cleanup afterwards is
+                # best-effort; if it raises, the ErrorEvent already won.
                 self._put(ErrorEvent(exc))
+            self._close_generator(generator)
+            # A close that raised was deliberately swallowed: the terminal
+            # decision was already made above, and close-at-most-once holds
+            # (the generator is never touched again after this attempt).
+            return
 
     def _put(self, event: StreamEvent) -> None:
         while not self._stop.is_set():
@@ -267,40 +260,23 @@ class LLMStreamController:
             except queue.Empty:
                 continue
 
-    def _close_generator(self) -> None:
-        """Close the generator at most once, retrying a failed attempt.
+    @staticmethod
+    def _close_generator(generator: Optional[Any]) -> None:
+        """Close the generator on the producer thread, at most once per exit.
 
-        Close-at-most-once must hold across the consumer thread (``stop()``)
-        and the producer thread (stop-check after ``_put``): a custom
-        iterator's ``close()`` is not required to be repeatable. The
-        OPEN/CLOSING/CLOSED state machine under ``_close_lock`` arbitrates
-        concurrent attempts without holding the lock across the arbitrary
-        close() code (which would risk deadlock if it touches the controller).
-        A failed close (generator mid-execution in the producer thread)
-        resets to OPEN so a later retry can still close it; repeated
-        successful closes remain at-most-once.
+        The producer is the only thread that ever calls this, so no lock or
+        state machine is needed: close-at-most-once falls out of the control
+        flow (each ``_produce`` exit path closes at most one generator it
+        still owns, and a generator closed by ``GeneratorExit`` is never
+        closed again because the exit path returns before reaching the
+        cleanup). A ``close()`` that raises (e.g. it blocks or fails) is
+        swallowed here: the caller has already made its terminal decision,
+        and cleanup is best-effort — it must not replace a queued
+        ``ErrorEvent`` or create a second terminal event.
         """
-        generator = self._generator
-        # A None generator (stop before any invocation) has nothing to close,
-        # and the guard must not be burned so a later stop() after a real
-        # assignment can still close it.
         if generator is None or not hasattr(generator, "close"):
             return
-        with self._close_lock:
-            if self._close_state is not _CloseState.OPEN:
-                return
-            self._close_state = _CloseState.CLOSING
         try:
             generator.close()
-        except (ValueError, RuntimeError):
-            # Generator is mid-execution in the producer thread (blocked in
-            # foreign I/O); closing from another thread is not supported.
-            # Reset so a retry (consumer after the producer suspends, or the
-            # producer itself at its next stop-check) can still close it.
-            with self._close_lock:
-                if self._close_state is _CloseState.CLOSING:
-                    self._close_state = _CloseState.OPEN
+        except BaseException:  # noqa: BLE001 - cleanup is best-effort
             return
-        with self._close_lock:
-            if self._close_state is _CloseState.CLOSING:
-                self._close_state = _CloseState.CLOSED
