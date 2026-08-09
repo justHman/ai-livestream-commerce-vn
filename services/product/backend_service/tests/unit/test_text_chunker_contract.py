@@ -117,6 +117,57 @@ def test_target_chars_equals_probe_text_length_is_whole_chunk() -> None:
     assert whole == [text]
 
 
+# ---------- 2.5 target fallback: boundary and fragmentation invariance ----------
+
+
+def test_target_fallback_splits_at_whitespace_immediately_above_target() -> None:
+    """Whitespace immediately above target_chars wins, stamped FIXED_FALLBACK.
+
+    The decision horizon (len >= max_chars) scans whitespace on BOTH sides of
+    target_chars. With whitespace at target+1 (13) and a far whitespace at 38,
+    the boundary must land at 13 with fixed_fallback — a downward-only scan
+    would land at 38 with hard_max, so this pins the both-sides behavior and
+    the decision reason.
+    """
+    probe = "a" * 12 + " " + "a" * 24 + " " + "a" * 2  # len 40 = max_chars
+    chunker = TextChunker(
+        session_id="s", utterance_id="u", min_chars=6, target_chars=12, max_chars=40
+    )
+
+    emitted: list[TextChunk] = []
+    emitted.extend(chunker.feed(probe))
+    emitted.extend(chunker.finalize())
+
+    assert emitted[0].text == probe[:13]
+    assert emitted[0].decision_reason == "fixed_fallback"
+    assert "".join(chunk.text for chunk in emitted) == probe
+
+
+def test_target_fallback_fragmentation_invariance() -> None:
+    """One full feed and char/word fragments produce identical chunk texts.
+
+    The fallback split position depends only on the accumulated buffer text
+    (whitespace nearest target on both sides), never on how the buffer was
+    fed, so fragmentation cannot shift the boundary. The only whitespace sits
+    exactly at target_chars (15), so the head is exactly target-length in all
+    three fragmentations.
+    """
+    text = "abcdefghijklmn opqrstuvwxyzabcdefghijklmnop"  # space at 15, len 41
+    params = dict(min_chars=6, target_chars=15, max_chars=40)
+
+    whole = _segment([text], **params)
+
+    words = text.split(" ")
+    word_frags = [w + " " for w in words[:-1]] + [words[-1]]
+    by_words = _segment(word_frags, **params)
+
+    by_chars = _segment(list(text), **params)
+
+    assert "".join(whole) == text
+    assert whole == by_words == by_chars
+    assert whole[0] == text[:15]
+
+
 # ---------- 2.6 canonical TextChunk identity and compatibility ----------
 
 

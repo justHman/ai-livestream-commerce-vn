@@ -271,7 +271,7 @@ class StreamOrchestrator:
 
         def render_phrase(phrase: TextChunk) -> None:
             for audio_window in self._tts.stream_audio(
-                phrase.text,
+                phrase,
                 session_id=session_id,
                 utterance_id=utterance_id,
             ):
@@ -318,6 +318,7 @@ class StreamOrchestrator:
                             text=last.text,
                             is_final=True,
                             id=last.id,
+                            decision_reason=last.decision_reason,
                         )
                 for phrase in phrases:
                     render_phrase(phrase)

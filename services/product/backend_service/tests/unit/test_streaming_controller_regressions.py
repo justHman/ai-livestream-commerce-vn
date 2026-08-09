@@ -420,6 +420,35 @@ async def test_stalled_llm_iterator_cleanup_on_release():
     assert windows[-1].is_final is True
 
 
+# ---------- task 2.6: decision_reason preserved through finality ----------
+
+
+@pytest.mark.asyncio
+async def test_final_reconstruction_preserves_decision_reason():
+    """The orchestrator's final-marker reconstruction keeps decision_reason.
+
+    When feed() drains a fixed_fallback chunk (non-final) and the
+    orchestrator re-stamps the last emitted phrase is_final=True, the
+    reconstructed TextChunk must carry the original decision_reason — the
+    reason is part of the canonical chunk contract and must not be dropped.
+    """
+    # The single delta is 40 chars ending at a whitespace (the only
+    # qualifying split): feed drains the whole buffer as a fixed_fallback
+    # chunk (non-final), finalize returns [] (buffer empty), and the
+    # orchestrator re-stamps the LAST emitted phrase as final. The
+    # reconstruction must preserve the original decision_reason.
+    llm = _StubLLM(["a" * 39 + " "])
+    tts = _StubTTS()
+    orch, backend, queue, metrics = _build_orchestrator(llm, tts)
+    sid = _start_session(backend)
+
+    await asyncio.wait_for(orch.run(sid, "hello"), timeout=5.0)
+
+    final_input = tts.received_inputs[-1]
+    assert getattr(final_input, "is_final", None) is True
+    assert getattr(final_input, "decision_reason", None) == "fixed_fallback"
+
+
 # ---------- task 1.8: E2E finality ----------
 
 
