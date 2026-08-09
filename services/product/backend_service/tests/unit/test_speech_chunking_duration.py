@@ -255,9 +255,62 @@ def test_ascii_multiplier_scales_ascii_english_words() -> None:
 def test_ascii_multiplier_does_not_affect_accented_vietnamese() -> None:
     # Diacritic Vietnamese words are syllable units, never length-complexity
     # or ascii tokens: ascii_multiplier must not change their estimate.
-    text = "xin chào bạn ơi hôm nay đi chợ nhé"
+    # Every word below carries a diacritic, so none is an ASCII token.
+    text = "cảm ơn bạn ơi hôm này đi chợ nhé"
     est_flat = SpeechDurationEstimator(DurationCoefficients(ascii_multiplier=1.0))
     est_high = SpeechDurationEstimator(DurationCoefficients(ascii_multiplier=9.0))
+    assert est_flat.estimate_ms(text) == est_high.estimate_ms(text)
+
+
+def test_ascii_only_word_ship_scales_with_ascii_multiplier() -> None:
+    # "ship" is ASCII-only, so it is English-like despite all its letters
+    # appearing in the Vietnamese alphabet: ascii_multiplier must scale it.
+    text = "ship"
+    est_flat = SpeechDurationEstimator(DurationCoefficients(ascii_multiplier=1.0))
+    est_high = SpeechDurationEstimator(DurationCoefficients(ascii_multiplier=9.0))
+    assert est_high.estimate_ms(text) > est_flat.estimate_ms(text)
+
+
+def test_accented_word_chao_is_invariant_to_ascii_multiplier() -> None:
+    # "chào" carries a Vietnamese diacritic, so it is exactly one Vietnamese
+    # syllable unit: ascii_multiplier must not change its estimate.
+    text = "chào"
+    est_flat = SpeechDurationEstimator(DurationCoefficients(ascii_multiplier=1.0))
+    est_high = SpeechDurationEstimator(DurationCoefficients(ascii_multiplier=9.0))
+    assert est_flat.estimate_ms(text) == est_high.estimate_ms(text)
+
+
+def test_symbol_currency_50_dollar_scales_with_currency_multiplier() -> None:
+    # "$50" is a currency compact form (symbol prefix): raising
+    # currency_multiplier must change its estimate.
+    est_flat = SpeechDurationEstimator(DurationCoefficients(currency_multiplier=1.0))
+    est_high = SpeechDurationEstimator(DurationCoefficients(currency_multiplier=9.0))
+    assert est_high.estimate_ms("$50") > est_flat.estimate_ms("$50")
+
+
+def test_code_currency_50_usd_scales_with_currency_multiplier() -> None:
+    # "50 USD" is a currency compact form (standalone code): raising
+    # currency_multiplier must change its estimate.
+    est_flat = SpeechDurationEstimator(DurationCoefficients(currency_multiplier=1.0))
+    est_high = SpeechDurationEstimator(DurationCoefficients(currency_multiplier=9.0))
+    assert est_high.estimate_ms("50 USD") > est_flat.estimate_ms("50 USD")
+
+
+def test_acronym_multiplier_scales_all_caps_token() -> None:
+    # All-caps tokens ("TTS") are acronyms: raising acronym_multiplier must
+    # change their estimate.
+    text = "dùng TTS nha"
+    est_flat = SpeechDurationEstimator(DurationCoefficients(acronym_multiplier=1.0))
+    est_high = SpeechDurationEstimator(DurationCoefficients(acronym_multiplier=9.0))
+    assert est_high.estimate_ms(text) > est_flat.estimate_ms(text)
+
+
+def test_acronym_multiplier_does_not_scale_lowercase_equivalent() -> None:
+    # The lowercase equivalent ("tts") is not an acronym: acronym_multiplier
+    # must not change its estimate.
+    text = "dùng tts nha"
+    est_flat = SpeechDurationEstimator(DurationCoefficients(acronym_multiplier=1.0))
+    est_high = SpeechDurationEstimator(DurationCoefficients(acronym_multiplier=9.0))
     assert est_flat.estimate_ms(text) == est_high.estimate_ms(text)
 
 

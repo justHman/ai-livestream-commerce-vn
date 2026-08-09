@@ -77,13 +77,15 @@ class SpeechDurationEstimator:
     """
 
     # Compact written forms whose spoken form differs from plain characters.
-    # Token-boundary aware: currency symbols, digit-adjacent suffixes
-    # (``99.000đ``, ``50k``), and standalone currency words/codes (``VND``,
+    # Token-boundary aware: currency symbols (prefix ``$50``, standalone
+    # ``$``/``€``/``£``/``¥``), digit-adjacent suffixes (``99.000đ``,
+    # ``50k``), and standalone currency words/codes (``VND``, ``USD``,
     # ``đồng``); never bare letters inside ordinary Vietnamese words
     # (``k``/``đ`` in ``không``/``đi`` are plain syllables).
     _CURRENCY = re.compile(
-        r"(?<!\w)(?:đồng|vnđ|vnd|usd|dollar|đô|nghìn|triệu|tỷ|₫|đ|k)(?!\w)"
+        r"(?<!\w)(?:đồng|vnđ|vnd|VND|usd|USD|dollar|đô|nghìn|triệu|tỷ|₫|đ|k|\$|€|£|¥)(?!\w)"
         r"|\d{1,15}(?:[.,]\d{1,15})?\s*(?:đ|₫|k)"
+        r"|[$€£¥]\s*\d{1,15}(?:[.,]\d{1,15})?"
     )
     _GROUPED_NUMBER = re.compile(r"\d{1,3}(?:[.,]\d{3})+")
     # Any digit token, grouped or ungrouped (bare "50" counts like "1.234").
@@ -92,9 +94,11 @@ class SpeechDurationEstimator:
     # digit run stays linear: an unbounded ``\d+`` retries every position
     # of the run (quadratic) before failing on the missing suffix.
     _PERCENT = re.compile(r"\d{1,15}(?:[.,]\d{1,15})?\s*%")
-    # ASCII dotted acronyms only (U.S.A., e.g.): the broad Unicode uppercase
-    # range counted diacritic letter runs as acronyms.
-    _ACRONYM = re.compile(r"\b(?:[A-Z]\.){2,}[A-Z]?\.?")
+    # Common all-caps tokens (AI, TTS, SKU) plus ASCII dotted acronyms
+    # (U.S.A., e.g.). Uppercase-only avoids false positives on lowercase
+    # Vietnamese words; the broad Unicode uppercase range would count
+    # diacritic letter runs as acronyms, so both branches stay ASCII-only.
+    _ACRONYM = re.compile(r"\b[A-Z]{2,12}\b|\b(?:[A-Z]\.){2,}[A-Z]?\.?")
     _WORD = re.compile(r"[\w]+")
     _SENTENCE_END = re.compile(r"[.!?…]")
     _PAUSE_COMMA = re.compile(r"[,;:]")
@@ -162,13 +166,13 @@ class SpeechDurationEstimator:
     def _estimate_syllables(self, text: str) -> float:
         """Syllable-like units over Unicode word runs.
 
-        A word is a maximal ``\\w`` run (``_WORD``). If every character is
-        in the Vietnamese alphabet (ASCII or diacritic), it is one
-        Vietnamese syllable unit with a bounded complexity factor for
-        unusually long words — diacritic words are never length-scored, so
-        ASCII accents do not gate English detection. Otherwise the word is
+        A word is a maximal ``\\w`` run (``_WORD``). It is one Vietnamese
+        syllable unit (exactly 1.0) iff it contains at least one
+        Vietnamese-specific non-ASCII character (a diacritic vowel or
+        ``đ``) and every character is in the Vietnamese alphabet — length
+        never inflates a spoken Vietnamese syllable. Otherwise the word is
         an ASCII English/product token: one base unit, inflated by
-        ``ascii_multiplier``, times the same bounded complexity. Digits and
+        ``ascii_multiplier``, times a bounded complexity factor. Digits and
         grouped numbers are excluded here: their multiplier/counters are
         handled separately in ``estimate_ms`` (``_NUMBER``)."""
         total = 0.0
@@ -181,10 +185,12 @@ class SpeechDurationEstimator:
             word_match = self._WORD.match(text, index)
             if word_match:
                 word = word_match.group()
-                if all(c in self._VI_CHARS for c in word):
-                    # Vietnamese syllable unit (one per word run), with a
-                    # bounded complexity factor for unusually long words.
-                    total += 1.0 + min(len(word) - 1, self._MAX_SYLLABLE_COMPLEXITY - 1.0)
+                is_vietnamese = any(ord(c) > 127 for c in word) and all(
+                    c in self._VI_CHARS for c in word
+                )
+                if is_vietnamese:
+                    # Vietnamese syllable unit: one per word run, exactly.
+                    total += 1.0
                 else:
                     # ASCII English/product token: base unit times the
                     # ascii multiplier (reads letter-by-letter).
