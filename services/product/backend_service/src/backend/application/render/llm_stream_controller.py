@@ -104,6 +104,9 @@ class LLMStreamController:
         self._thread: Optional[threading.Thread] = None
         self._generator: Optional[Any] = None
         self._started = False
+        #: True once ``stop()`` has closed the generator; close-at-most-once
+        #: guard so an idempotent ``stop()`` never closes it repeatedly.
+        self._generator_closed = False
 
     # -- public API ---------------------------------------------------------
 
@@ -158,6 +161,9 @@ class LLMStreamController:
     # -- producer internals -------------------------------------------------
 
     def _produce(self) -> None:
+        # If stop() fired before this thread started, never invoke upstream.
+        if self._stop.is_set():
+            return
         try:
             generator = self._llm.stream_chunks(
                 self._req,
@@ -165,8 +171,13 @@ class LLMStreamController:
                 utterance_id=self._utterance_id,
             )
             # Stash so ``stop()`` can close it from the consumer thread when
-            # it is suspended at a yield point.
+            # it is suspended at a yield point. If ``stop()`` won the race
+            # between invocation and this assignment, close the never-iterated
+            # generator and exit without starting upstream.
             self._generator = generator
+            if self._stop.is_set():
+                self._close_generator()
+                return
             for delta in generator:
                 if self._stop.is_set():
                     return
@@ -176,7 +187,7 @@ class LLMStreamController:
         except GeneratorExit:
             # stop() closed the generator at a yield point: normal exit.
             return
-        except Exception as exc:  # noqa: BLE001 - must cross threads verbatim
+        except BaseException as exc:  # noqa: BLE001 - must cross threads verbatim
             if not self._stop.is_set():
                 self._put(ErrorEvent(exc))
 
@@ -223,8 +234,16 @@ class LLMStreamController:
 
     def _close_generator(self) -> None:
         generator = self._generator
+        # Close at most once: an idempotent ``stop()`` may be called from
+        # multiple threads, and a custom iterator's ``close()`` is not
+        # required to be repeatable. A None generator (stop before any
+        # invocation) has nothing to close, and the guard must not be burned
+        # so a later stop() after a real assignment can still close it.
         if generator is None or not hasattr(generator, "close"):
             return
+        if self._generator_closed:
+            return
+        self._generator_closed = True
         try:
             generator.close()
         except (ValueError, RuntimeError):

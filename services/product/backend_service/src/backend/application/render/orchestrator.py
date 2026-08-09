@@ -368,9 +368,15 @@ class StreamOrchestrator:
                     render_phrase(phrase)
             return "".join(spoken_parts), 0
         finally:
-            if controller is not None:
-                controller.stop()
-            bridge.put(_BRIDGE_SENTINEL)
+            # The sentinel must ALWAYS reach the bridge: if it is skipped the
+            # async drain in ``run()`` blocks forever in ``bridge.get``. Put it
+            # in a nested finally so a raising cleanup still propagates (never
+            # swallowed) while the consumer is unblocked.
+            try:
+                if controller is not None:
+                    controller.stop()
+            finally:
+                bridge.put(_BRIDGE_SENTINEL)
 
     def _remaining_deadline(self, chunker: TextChunker) -> float | None:
         """Seconds until the buffer latency deadline, or None when no deadline.
