@@ -20,6 +20,11 @@ Threading contract:
   - Blocking gets are stop/wake-event responsive: ``get(None)`` re-checks the
     stop and an optional external cancel event with a bounded poll, so a
     stalled upstream generator cannot hang the consumer forever.
+  - Terminal invariant: normal exhaustion emits exactly one ``EofEvent``,
+    but only after the producer-owned ``close()`` succeeded (or is absent);
+    an upstream/cleanup error emits exactly one ``ErrorEvent``; cancellation
+    emits no terminal event and never EOF. No terminal event is ever
+    swallowed, and EOF is never emitted after an error.
   - ``stop()`` is honest and bounded: set stop, join with a finite timeout.
     The producer owns the generator and closes it at every cooperative exit
     point where it has control (post-assignment stop, stop observed after
@@ -80,8 +85,9 @@ class ErrorEvent:
     exc: BaseException
 
 
-#: A typed ``EofEvent`` is never emitted after an ``ErrorEvent``: the producer
-#: emits exactly one terminal event (EOF or error), unless stopped early.
+#: Normal exhaustion emits exactly one ``EofEvent``; an error emits exactly one
+#: ``ErrorEvent``; cancellation emits no terminal event. EOF is never emitted
+#: after an error.
 StreamEvent = DeltaEvent | EofEvent | ErrorEvent
 
 
@@ -170,7 +176,7 @@ class LLMStreamController:
         # If stop() fired before this thread started, never invoke upstream.
         if self._stop.is_set():
             return
-        generator = None
+        generator: Optional[Any] = None
         try:
             generator = self._llm.stream_chunks(
                 self._req,
@@ -179,45 +185,60 @@ class LLMStreamController:
             )
             if self._stop.is_set():
                 # stop() won the race between invocation and the first next():
-                # close the never-iterated generator and exit without
-                # starting upstream.
+                # cancel path — close the never-iterated generator, no
+                # terminal event.
                 self._close_generator(generator)
                 return
             for delta in generator:
                 if self._stop.is_set():
                     # ``next()`` just returned, possibly after blocking in
-                    # provider I/O: the generator is now suspended and this
-                    # thread owns it, so it can be closed here.
+                    # provider I/O: cancel path — the generator is suspended
+                    # and this thread owns it, so close and exit, no terminal
+                    # event.
                     self._close_generator(generator)
                     return
                 self._put(DeltaEvent(text=delta.text, is_final=delta.is_final))
-                # stop() may have fired while this put was blocked on a full
-                # queue: do not request the next upstream item after a
-                # cancellation (that would perform/block on one extra provider
-                # I/O). The producer now owns the suspended generator, so it
-                # can close it and return.
                 if self._stop.is_set():
+                    # stop() fired while the put was blocked on a full queue:
+                    # cancel path — do not request the next upstream item
+                    # (that would perform/block on one extra provider I/O);
+                    # close the suspended generator, no terminal event.
                     self._close_generator(generator)
                     return
-            if not self._stop.is_set():
+            if self._stop.is_set():
+                # Cancellation observed between the last delta and exhaustion.
+                return
+            # Normal exhaustion: cleanup FIRST (EOF means clean), then decide
+            # the terminal event. If close raises, EOF is withheld — the
+            # consumer sees an ErrorEvent instead, exactly one terminal event.
+            if self._close_generator(generator) is None:
                 self._put(EofEvent())
         except GeneratorExit:
-            # A concurrent stop() closed the generator at a yield point (the
-            # standard generator-cancellation path). Normal exit; no terminal
-            # event: the stop was requested.
-            return
-        except BaseException as exc:  # noqa: BLE001 - must cross threads verbatim
+            # Only the producer itself can raise GeneratorExit, and it never
+            # closes the generator while it is executing. Therefore this is
+            # an unexpected upstream termination: if not cancelled, surface
+            # it as the single terminal ErrorEvent (never EOF).
             if not self._stop.is_set():
-                # Terminal decision first: queue the ErrorEvent BEFORE any
-                # potentially blocking close(), so the consumer's error path
-                # is never hidden or hung by cleanup. Cleanup afterwards is
-                # best-effort; if it raises, the ErrorEvent already won.
+                self._put(ErrorEvent(GeneratorExit()))
+        except BaseException as exc:  # noqa: BLE001 - must cross threads verbatim
+            # Upstream iteration/invocation raised. Preserve the original
+            # exception as the single terminal ErrorEvent (unless cancelled).
+            if not self._stop.is_set():
                 self._put(ErrorEvent(exc))
-            self._close_generator(generator)
-            # A close that raised was deliberately swallowed: the terminal
-            # decision was already made above, and close-at-most-once holds
-            # (the generator is never touched again after this attempt).
-            return
+            # Best-effort cleanup after the terminal decision. If close also
+            # raises, do not replace the original; the only non-destructive
+            # way to keep both is to annotate the original when supported.
+            close_exc = self._close_generator(generator)
+            if close_exc is not None:
+                try:
+                    exc.add_note(
+                        f"generator close() failed: {type(close_exc).__name__}: {close_exc}"
+                    )
+                except Exception:  # noqa: BLE001 - annotation is best-effort
+                    # add_note unavailable (or rejects) on this exception:
+                    # keep the original untouched rather than mask it with a
+                    # cleanup error or a second terminal event.
+                    pass
 
     def _put(self, event: StreamEvent) -> None:
         while not self._stop.is_set():
@@ -261,22 +282,21 @@ class LLMStreamController:
                 continue
 
     @staticmethod
-    def _close_generator(generator: Optional[Any]) -> None:
-        """Close the generator on the producer thread, at most once per exit.
+    def _close_generator(generator: Optional[Any]) -> Optional[BaseException]:
+        """Close the generator on the producer thread; return any close error.
 
-        The producer is the only thread that ever calls this, so no lock or
-        state machine is needed: close-at-most-once falls out of the control
-        flow (each ``_produce`` exit path closes at most one generator it
-        still owns, and a generator closed by ``GeneratorExit`` is never
-        closed again because the exit path returns before reaching the
-        cleanup). A ``close()`` that raises (e.g. it blocks or fails) is
-        swallowed here: the caller has already made its terminal decision,
-        and cleanup is best-effort — it must not replace a queued
-        ``ErrorEvent`` or create a second terminal event.
+        Only ever called by the producer thread, so no lock is needed and
+        close-at-most-once falls out of the control flow (each ``_produce``
+        exit path closes at most one generator it still owns). Returns the
+        cleanup exception (or None) instead of swallowing it so the caller
+        decides the terminal policy: EOF only after a clean close, error
+        otherwise. ``BaseException`` is caught because a close that raises
+        ``GeneratorExit``/``KeyboardInterrupt`` must be surfaced the same way.
         """
         if generator is None or not hasattr(generator, "close"):
-            return
+            return None
         try:
             generator.close()
-        except BaseException:  # noqa: BLE001 - cleanup is best-effort
-            return
+        except BaseException as exc:  # noqa: BLE001 - caller decides the policy
+            return exc
+        return None
