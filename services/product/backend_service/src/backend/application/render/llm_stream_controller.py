@@ -22,9 +22,10 @@ Threading contract:
     stalled upstream generator cannot hang the consumer forever.
   - Terminal invariant: normal exhaustion emits exactly one ``EofEvent``,
     but only after the producer-owned ``close()`` succeeded (or is absent);
-    an upstream/cleanup error emits exactly one ``ErrorEvent``; cancellation
-    emits no terminal event and never EOF. No terminal event is ever
-    swallowed, and EOF is never emitted after an error.
+    an upstream/cleanup error — including a raising ``close()`` and an
+    unexpected ``GeneratorExit`` — emits exactly one ``ErrorEvent``;
+    cancellation emits no terminal event and never EOF. No terminal event is
+    ever swallowed, and EOF is never emitted after an error.
   - ``stop()`` is honest and bounded: set stop, join with a finite timeout.
     The producer owns the generator and closes it at every cooperative exit
     point where it has control (post-assignment stop, stop observed after
@@ -207,19 +208,46 @@ class LLMStreamController:
                     return
             if self._stop.is_set():
                 # Cancellation observed between the last delta and exhaustion.
+                # The producer owns the generator; close it best-effort, no
+                # terminal event (cancellation emits none).
+                self._close_generator(generator)
                 return
             # Normal exhaustion: cleanup FIRST (EOF means clean), then decide
             # the terminal event. If close raises, EOF is withheld — the
-            # consumer sees an ErrorEvent instead, exactly one terminal event.
-            if self._close_generator(generator) is None:
+            # consumer sees exactly one ErrorEvent carrying the close error
+            # instead.
+            close_exc = self._close_generator(generator)
+            if close_exc is None:
                 self._put(EofEvent())
-        except GeneratorExit:
+            else:
+                self._put(ErrorEvent(close_exc))
+        except GeneratorExit as exc:
             # Only the producer itself can raise GeneratorExit, and it never
             # closes the generator while it is executing. Therefore this is
             # an unexpected upstream termination: if not cancelled, surface
-            # it as the single terminal ErrorEvent (never EOF).
+            # the ORIGINAL exception as the single terminal ErrorEvent (never
+            # EOF). A constructed fresh GeneratorExit() would lose the
+            # upstream's state; the caught one is the original.
             if not self._stop.is_set():
-                self._put(ErrorEvent(GeneratorExit()))
+                self._put(ErrorEvent(exc))
+                # Best-effort cleanup after the terminal decision. If close
+                # also raises, do not replace the original; the only
+                # non-destructive way to keep both is to annotate the
+                # original when supported.
+                close_exc = self._close_generator(generator)
+                if close_exc is not None:
+                    try:
+                        exc.add_note(
+                            f"generator close() failed: {type(close_exc).__name__}: {close_exc}"
+                        )
+                    except Exception:  # noqa: BLE001 - annotation is best-effort
+                        # add_note unavailable (or rejects) on this exception:
+                        # keep the original untouched rather than mask it with
+                        # a cleanup error or a second terminal event.
+                        pass
+            else:
+                # Cancellation path: cleanup best-effort, no terminal event.
+                self._close_generator(generator)
         except BaseException as exc:  # noqa: BLE001 - must cross threads verbatim
             # Upstream iteration/invocation raised. Preserve the original
             # exception as the single terminal ErrorEvent (unless cancelled).
