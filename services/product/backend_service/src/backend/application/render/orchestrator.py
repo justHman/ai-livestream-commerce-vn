@@ -52,7 +52,8 @@ from backend.application.contracts.tts_engines import TTSEngine
 from .windows import AudioWindow, VideoWindow
 from .queue import BoundedVideoQueue, CoordinatorMetrics
 
-from ..text_chunker import TextChunk, TextChunker
+from ..speech_chunking import TextChunk
+from ..text_chunker import TextChunker
 
 # Default TextChunker config (mirrors AppConfig.text_chunk_* defaults). The
 # orchestrator reads these from the ``config`` dict if provided, else uses these
