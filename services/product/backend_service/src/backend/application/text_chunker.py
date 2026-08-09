@@ -159,7 +159,7 @@ class TextChunker:
             # exact slicing/order stays trivial. Only when the split position
             # is >= min_chars; otherwise cut exactly at the cap. HARD_MAX is
             # stamped either way: the cap forced the decision.
-            for split_at in range(self.max_chars - 1, 0, -1):
+            for split_at in range(self.max_chars, 0, -1):
                 if text[split_at - 1].isspace() and split_at >= self.min_chars:
                     return split_at, ChunkDecisionReason.HARD_MAX
             return self.max_chars, ChunkDecisionReason.HARD_MAX
