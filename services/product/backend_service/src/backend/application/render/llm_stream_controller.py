@@ -29,6 +29,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Optional
 
 __all__ = ["DeltaEvent", "EofEvent", "ErrorEvent", "LLMStreamController"]
@@ -76,6 +77,20 @@ class ErrorEvent:
 StreamEvent = DeltaEvent | EofEvent | ErrorEvent
 
 
+class _CloseState(Enum):
+    """Generator-close coordination between consumer and producer threads.
+
+    OPEN -> CLOSING -> CLOSED. A close that fails while the generator is
+    mid-execution resets to OPEN so a later retry (from the consumer after the
+    producer suspends, or from the producer itself) can still close it. The
+    state lock is never held while invoking the custom ``close()`` code.
+    """
+
+    OPEN = "open"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
 class LLMStreamController:
     """Produce typed stream events in one thread; consume with a bounded wait."""
 
@@ -104,9 +119,9 @@ class LLMStreamController:
         self._thread: Optional[threading.Thread] = None
         self._generator: Optional[Any] = None
         self._started = False
-        #: True once ``stop()`` has closed the generator; close-at-most-once
-        #: guard so an idempotent ``stop()`` never closes it repeatedly.
-        self._generator_closed = False
+        self._close_state = _CloseState.OPEN
+        #: Guards ``_close_state`` transitions; never held across ``close()``.
+        self._close_lock = threading.Lock()
 
     # -- public API ---------------------------------------------------------
 
@@ -153,6 +168,10 @@ class LLMStreamController:
         hanging the run.
         """
         self._stop.set()
+        # If the producer is currently suspended at a yield point (waiting on
+        # the queue or on a stop-check re-read), close() from this thread
+        # succeeds; if it is mid-execution in foreign I/O, close() fails fast
+        # here and is retried by the producer once it re-checks the stop.
         self._close_generator()
         thread = self._thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
@@ -180,12 +199,28 @@ class LLMStreamController:
                 return
             for delta in generator:
                 if self._stop.is_set():
+                    # ``next()`` just returned, possibly after blocking in
+                    # provider I/O: the generator is now suspended and this
+                    # thread owns it, so a close that failed from the
+                    # consumer (mid-execution) can succeed from here.
+                    self._close_generator()
                     return
                 self._put(DeltaEvent(text=delta.text, is_final=delta.is_final))
+                # stop() may have fired while this put was blocked on a full
+                # queue: do not request the next upstream item after a
+                # cancellation (that would perform/block on one extra provider
+                # I/O). The producer now owns the suspended generator, so it
+                # can close it safely and return.
+                if self._stop.is_set():
+                    self._close_generator()
+                    return
             if not self._stop.is_set():
                 self._put(EofEvent())
         except GeneratorExit:
-            # stop() closed the generator at a yield point: normal exit.
+            # Either stop() closed the generator at a yield point (normal
+            # exit), or a concurrent close won a race while this body was
+            # between yields. Both are normal exits: stop() already set the
+            # closed flag when it ran close() successfully.
             return
         except BaseException as exc:  # noqa: BLE001 - must cross threads verbatim
             if not self._stop.is_set():
@@ -233,21 +268,39 @@ class LLMStreamController:
                 continue
 
     def _close_generator(self) -> None:
+        """Close the generator at most once, retrying a failed attempt.
+
+        Close-at-most-once must hold across the consumer thread (``stop()``)
+        and the producer thread (stop-check after ``_put``): a custom
+        iterator's ``close()`` is not required to be repeatable. The
+        OPEN/CLOSING/CLOSED state machine under ``_close_lock`` arbitrates
+        concurrent attempts without holding the lock across the arbitrary
+        close() code (which would risk deadlock if it touches the controller).
+        A failed close (generator mid-execution in the producer thread)
+        resets to OPEN so a later retry can still close it; repeated
+        successful closes remain at-most-once.
+        """
         generator = self._generator
-        # Close at most once: an idempotent ``stop()`` may be called from
-        # multiple threads, and a custom iterator's ``close()`` is not
-        # required to be repeatable. A None generator (stop before any
-        # invocation) has nothing to close, and the guard must not be burned
-        # so a later stop() after a real assignment can still close it.
+        # A None generator (stop before any invocation) has nothing to close,
+        # and the guard must not be burned so a later stop() after a real
+        # assignment can still close it.
         if generator is None or not hasattr(generator, "close"):
             return
-        if self._generator_closed:
-            return
-        self._generator_closed = True
+        with self._close_lock:
+            if self._close_state is not _CloseState.OPEN:
+                return
+            self._close_state = _CloseState.CLOSING
         try:
             generator.close()
         except (ValueError, RuntimeError):
             # Generator is mid-execution in the producer thread (blocked in
             # foreign I/O); closing from another thread is not supported.
-            # The bounded join is the honest outcome.
-            pass
+            # Reset so a retry (consumer after the producer suspends, or the
+            # producer itself at its next stop-check) can still close it.
+            with self._close_lock:
+                if self._close_state is _CloseState.CLOSING:
+                    self._close_state = _CloseState.OPEN
+            return
+        with self._close_lock:
+            if self._close_state is _CloseState.CLOSING:
+                self._close_state = _CloseState.CLOSED
