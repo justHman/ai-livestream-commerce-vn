@@ -58,6 +58,10 @@ class TextChunker:
         clock: Optional[Callable[[], float]] = None,
         policy: str | ChunkPolicy = "fixed",
     ) -> None:
+        if min_chars <= 0:
+            raise ValueError(f"min_chars must be > 0, got {min_chars}")
+        if target_chars <= 0:
+            raise ValueError(f"target_chars must be > 0, got {target_chars}")
         if max_chars <= 0:
             raise ValueError(f"max_chars must be > 0, got {max_chars}")
         if not (min_chars <= target_chars <= max_chars):
@@ -141,24 +145,41 @@ class TextChunker:
         return chunks
 
     def _next_boundary(self, text: str) -> Optional[tuple[int, ChunkDecisionReason]]:
-        """First qualifying split in ``text``: punctuation or the hard cap.
+        """First qualifying split in ``text``: punctuation or the fallbacks.
 
         A punctuation boundary qualifies only when its prefix lands in
-        ``[min_chars, max_chars]``; without one, the hard cap is reached at
-        exactly ``max_chars`` (progress is guaranteed: 1 <= end <= max_chars).
+        ``[min_chars, max_chars]``. Without one, once the buffer has reached
+        the ``max_chars`` decision horizon the deterministic target fallback
+        may split at the whitespace nearest ``target_chars``; if that cannot
+        apply (no qualifying whitespace, or a whole-text buffer where
+        ``target_chars >= len``), the hard cap is reached at exactly
+        ``max_chars``. Progress is guaranteed: 1 <= end <= max_chars.
         Returns None while the buffer stays pending.
         """
         if self._buffer_len >= self.min_chars:
             for index, char in enumerate(text):
                 if char in PUNCTUATION_BOUNDARIES and self.min_chars <= index + 1 <= self.max_chars:
                     return index + 1, ChunkDecisionReason.PUNCTUATION
-        if self._buffer_len >= self.max_chars:
-            # Safe fixed-core fallback: no qualifying punctuation was found,
-            # so prefer the LAST whitespace at or before the cap — the head
+        if self._buffer_len >= self.max_chars and self._buffer_len > self.target_chars:
+            # Deterministic target-character fallback (spec "Target character
+            # fallback"): once the buffer has reached the max_chars decision
+            # horizon, split at the whitespace nearest the target — the head
             # then ends on a word boundary and keeps that whitespace, so
             # exact slicing/order stays trivial. Only when the split position
-            # is >= min_chars; otherwise cut exactly at the cap. HARD_MAX is
-            # stamped either way: the cap forced the decision.
+            # is >= min_chars; without qualifying whitespace the hard-cap
+            # fallback below stays authoritative. A whole-text buffer
+            # (target_chars >= len) never splits here: cutting would produce
+            # a zero-length remainder.
+            for split_at in range(self.target_chars, 0, -1):
+                if text[split_at - 1].isspace() and split_at >= self.min_chars:
+                    return split_at, ChunkDecisionReason.FIXED_FALLBACK
+        if self._buffer_len >= self.max_chars and self._buffer_len > self.target_chars:
+            # Safe hard-cap fallback: no qualifying punctuation (and no
+            # target-fallback whitespace) was found, so prefer the LAST
+            # whitespace at or before the cap — the head then ends on a word
+            # boundary and keeps that whitespace. Only when the split
+            # position is >= min_chars; otherwise cut exactly at the cap.
+            # HARD_MAX is stamped either way: the cap forced the decision.
             for split_at in range(self.max_chars, 0, -1):
                 if text[split_at - 1].isspace() and split_at >= self.min_chars:
                     return split_at, ChunkDecisionReason.HARD_MAX
@@ -244,9 +265,28 @@ class TextChunker:
         empty terminal chunk.
         """
         del runtime_hints  # no-op under fixed policy
-        if self._buffer_len > 0:
-            return self._flush_buffer(is_final=True, reason=ChunkDecisionReason.FINALIZE)
-        return []
+        if self._buffer_len == 0:
+            return []
+        text = "".join(self._buffer)
+        if self._buffer_len >= self.max_chars and self._buffer_len > self.target_chars:
+            # Deterministic target-character fallback at finalize: split the
+            # final no-punctuation pending text at the whitespace nearest the
+            # target, keeping the nonfinal head >= min_chars and preserving
+            # the remaining text exactly. A whole-text buffer (target >= len)
+            # stays one final chunk.
+            for split_at in range(self.target_chars, 0, -1):
+                if text[split_at - 1].isspace() and split_at >= self.min_chars:
+                    return [
+                        self._emit(
+                            text[:split_at],
+                            is_final=False,
+                            reason=ChunkDecisionReason.FIXED_FALLBACK,
+                        ),
+                        self._emit(
+                            text[split_at:], is_final=True, reason=ChunkDecisionReason.FINALIZE
+                        ),
+                    ]
+        return self._flush_buffer(is_final=True, reason=ChunkDecisionReason.FINALIZE)
 
     def _flush_buffer(self, is_final: bool, reason: str | ChunkDecisionReason) -> list[TextChunk]:
         if self._buffer_len == 0:
