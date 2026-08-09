@@ -1,43 +1,21 @@
-"""Phase-1 regression tests for OpenSpec adaptive-speech-text-chunking.
+"""Regression tests for OpenSpec adaptive-speech-text-chunking.
 
-Covers task 1.7 (orchestrator-level stalled-LLM deadline) and task 1.8
-(E2E finality guarantees: exactly one final marker, no empty terminal
-artifact, no final marker on error/cancel).
+Covers task 1.7 (stalled-LLM deadline — fixed via the bounded stream
+controller, now PASS), task 1.8 (E2E finality — INTENDED RED, normalization
+pending), and task 4.x (bounded LLM stream controller: producer-thread
+ownership, typed events, backpressure, cooperative cleanup, deadline).
 
-Stub-engine pattern mirrors test_playback_queue.py: stub LLM yielding
-TextChunk deltas, stub TTS yielding one AudioWindow per phrase, real
-MockRenderBackend for the video stage.
+Stub engines mirror test_playback_queue.py. The TTS stub models production
+per-call finality (tts/engines/base.py): the last window of every synthesis
+call is is_final=True, input finality ignored. The orchestrator passes plain
+strings into tts.stream_audio, so no finality survives the boundary — the
+orchestrator must normalize per-call finals into exactly one utterance-level
+final.
 
-The TTS stub models PRODUCTION per-call finality (``TTSEngine.stream_audio``
-in tts/engines/base.py): the LAST window of every synthesis call is marked
-``is_final=True`` and ``text_span`` carries the input text on every window,
-regardless of the input chunk's finality. The orchestrator currently passes
-``phrase.text`` (a plain string) into ``tts.stream_audio``, so no finality
-information survives the TTS boundary: every window arrives final unless the
-orchestrator normalizes per-call finals into exactly one utterance-level
-final (one-window lookahead / end-of-utterance stamping).
-
-Intended-failure map on the current baseline (HEAD 486b4f5, observed 2026-08-09):
-  - test_stalled_llm_iterator_flushes_before_next_yield: INTENDED RED (task
-    1.7). ``_run_sync`` only calls ``chunker.feed()`` /
-    ``chunker.check_timeout()`` inside the ``for token in
-    stream_chunks(...)`` loop, so a stalled (non-yielding) synchronous
-    generator suspends the whole pipeline and the flush deadline is never
-    honored until the next token arrives. Observed: ``tts.phrase_rendered``
-    is never set while the LLM is stalled (no phrase reaches TTS).
-  - test_normal_completion_exactly_one_final_video_window /
-    test_empty_final_remainder_does_not_create_empty_terminal_artifact /
-    test_llm_error_does_not_emit_normal_final_marker /
-    test_tts_error_does_not_emit_normal_final_marker /
-    test_cancellation_does_not_fabricate_normal_final_marker: INTENDED RED
-    (task 1.8, finality normalization). Per-call finality makes every window
-    final (a normal 3-phrase run yields finals [0, 1, 2]) and the recorded
-    TTS inputs are plain strings carrying no ``is_final`` — the orchestrator
-    must normalize to exactly one utterance-level final and stamp nothing
-    final on error/cancel. Error propagation and cancel drain DO work on
-    baseline; only the finality guarantees are missing.
-  - test_stalled_llm_iterator_cleanup_on_release: BASELINE PASS (harness
-    sanity: releasing the stall promptly completes a full run).
+Intended-failure map (observed 2026-08-10 at c6398a9): the five task-1.8
+tests are INTENDED RED — per-call finality makes every window final and
+recorded TTS inputs carry no is_final. Error propagation and cancel drain
+work; only the finality guarantees are missing.
 """
 
 from __future__ import annotations
@@ -54,6 +32,14 @@ from backend.application.render.engines_base import StartOptions
 from backend.application.render.windows import AudioWindow, TextChunk, VideoWindow
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 from backend.application.render.orchestrator import StreamOrchestrator
+from backend.application.text_chunker import ChunkDecisionReason, TextChunker
+from backend.application.render import llm_stream_controller as lsc
+from backend.application.render.llm_stream_controller import (
+    DeltaEvent,
+    EofEvent,
+    ErrorEvent,
+    LLMStreamController,
+)
 from tts.engines.base import AudioChunk, TTSEngine, TTSRequest
 
 
@@ -87,14 +73,11 @@ class _StubLLM(LLMEngine):
 
 
 class _StallingLLM(LLMEngine):
-    """LLM stub that yields one delta, then blocks until a release event.
+    """LLM stub: yield one delta, then block until ``release`` is set.
 
-    Models a synchronous generator that stalls (no next token) mid-utterance.
-    ``stalled_event`` is set immediately BEFORE entering ``release.wait()``
-    so the test can deterministically observe the stall (event-based, no
-    sleep-polling). ``release.wait()`` is bounded by ``STALL_SAFETY_TIMEOUT``
-    (far longer than any monitor wait): a TimeoutError there means the test
-    itself forgot to release — a harness failure, never the intended red.
+    ``stalled_event`` is set BEFORE ``release.wait()`` so the stall is
+    observable event-based (no sleep-polling). The bounded wait's
+    TimeoutError is a harness failure, never the intended red.
     """
 
     name = "stall-llm"
@@ -126,13 +109,7 @@ class _StallingLLM(LLMEngine):
 
 
 class _RaisingLLM(LLMEngine):
-    """LLM stub that yields a renderable delta, blocks, then raises.
-
-    The first delta is a complete phrase ("Xin chào bạn." — punctuation
-    flush with min_chars=4), so a window renders BEFORE the error fires.
-    ``raise_gate`` controls when the error is raised; the bounded wait means
-    an unset gate is a harness failure, never the intended red.
-    """
+    """LLM stub: yield a renderable first phrase, then (after a gate) raise."""
 
     name = "raising-llm"
 
@@ -161,23 +138,12 @@ class _RaisingLLM(LLMEngine):
 
 
 class _StubTTS(TTSEngine):
-    """TTS stub modeling PRODUCTION per-call finality.
+    """TTS stub modeling production per-call finality (tts/engines/base.py).
 
-    Mirror of ``TTSEngine.stream_audio`` (tts/engines/base.py): accepts a
-    TextChunk or a plain string, reads only text/session_id/utterance_id,
-    marks the LAST window of every synthesis call ``is_final=True``
-    (per-call finality), and sets ``text_span`` to the input text on every
-    window. Input finality (``TextChunk.is_final``) is IGNORED, exactly like
-    production.
-
-    Records:
-      - ``received_inputs``: the ACTUAL object passed (str or TextChunk), so
-        tests can inspect ``getattr(input, "is_final", None)`` — on baseline
-        the orchestrator passes plain strings and nothing carries is_final.
-      - ``spoken_texts``: the text of each synthesis call.
-      - ``phrase_rendered``: threading.Event set at the top of every
-        ``stream_audio`` call (thread-safe), so tests can deterministically
-        confirm a phrase reached TTS without sleep-polling.
+    Last window of each call is is_final=True, text_span carries the input,
+    input finality ignored. Records: ``received_inputs`` (actual objects, so
+    tests can inspect is_final), ``spoken_texts``, ``phrase_rendered`` (event
+    set on every call — deterministic phrase-reached-TTS signal).
     """
 
     name = "stub-tts"
@@ -230,12 +196,7 @@ class _StubTTS(TTSEngine):
 
 
 class _FailingTTS(_StubTTS):
-    """TTS stub that yields one window, then raises RuntimeError on the next.
-
-    Per-call finality applies like _StubTTS: the single window it yields is
-    the last of its call, so it is is_final=True unless the orchestrator
-    normalizes it. Records inputs/spoken_texts the same way.
-    """
+    """TTS stub: yield one window (per-call finality applies), then raise."""
 
     name = "failing-tts"
 
@@ -326,12 +287,7 @@ async def _drain_video(
     received: list[VideoWindow],
     first_captured: asyncio.Event,
 ) -> None:
-    """Concurrently drain VideoWindows into ``received`` until ``stop`` is set.
-
-    Each get is bounded (0.05 s), so the drainer always terminates quickly
-    after ``stop`` is set. Races ``clear()`` on cancel harmlessly (both
-    dequeue).
-    """
+    """Drain VideoWindows into ``received`` until ``stop`` is set (bounded gets)."""
     while not stop.is_set():
         try:
             w = await asyncio.wait_for(queue.get(), timeout=0.05)
@@ -354,15 +310,7 @@ def _assert_single_final_marker(windows: list[VideoWindow]) -> None:
 
 @pytest.mark.asyncio
 async def test_stalled_llm_iterator_flushes_before_next_yield():
-    """INTENDED RED (task 1.7): a stalled LLM generator must not block flushing.
-
-    The 50 ms flush deadline must be honored while the LLM iterator is
-    stalled (no next token): the buffered text must reach TTS before the
-    release event is set. On baseline, ``_run_sync`` only polls the chunker
-    inside the stream loop, so nothing flushes during the stall and
-    ``tts.phrase_rendered`` is never set. The red lands on
-    ``assert tts.phrase_rendered.is_set()``.
-    """
+    """Task 1.7 (fixed): a stalled LLM must not block the 50 ms flush deadline."""
     release = threading.Event()
     llm = _StallingLLM(first_delta="Xin chào bạn", release=release)
     tts = _StubTTS()
@@ -374,7 +322,6 @@ async def test_stalled_llm_iterator_flushes_before_next_yield():
         await asyncio.to_thread(llm.stalled_event.wait, 2.0)
         assert llm.stalled_event.is_set(), "LLM must reach the stall point"
         await asyncio.to_thread(tts.phrase_rendered.wait, 2.0)
-        # INTENDED RED on baseline: no flush during the stall.
         assert tts.phrase_rendered.is_set(), (
             "no phrase reached TTS while the LLM was stalled — the flush deadline "
             "must be honored during the stall, not only at the next token"
@@ -392,13 +339,7 @@ async def test_stalled_llm_iterator_flushes_before_next_yield():
 
 @pytest.mark.asyncio
 async def test_stalled_llm_iterator_cleanup_on_release():
-    """BASELINE PASS: the stall harness is sound — releasing promptly completes.
-
-    Same stalling LLM, but the release event is set immediately after start:
-    the run must complete, return non-empty spoken text, and end with a final
-    VideoWindow. Proves the harness itself works (no import/setup failure)
-    and isolates the task-1.7 defect to the stall case.
-    """
+    """BASELINE PASS: the stall harness is sound — releasing promptly completes."""
     release = threading.Event()
     llm = _StallingLLM(first_delta="Xin chào bạn", release=release)
     tts = _StubTTS()
@@ -487,16 +428,10 @@ async def test_speak_verbatim_passes_canonical_textchunk_to_tts():
 async def test_normal_completion_exactly_one_final_video_window():
     """INTENDED RED (task 1.8): normal completion emits exactly one final marker.
 
-    Three phrase deltas -> exactly one VideoWindow with is_final=True and it
-    is the last window; all earlier windows non-final. The audio path must
-    mirror this: exactly one final AudioWindow (the last one received). TTS
-    must be called with the exact phrase sequence, and exactly ONE recorded
-    input carries is_final=True — the last one.
-
-    Observed on baseline: production per-call finality makes every window
-    final (finals [0, 1, 2]) and the orchestrator passes plain strings into
-    ``tts.stream_audio``, so no recorded input carries is_final. The red
-    lands on ``_assert_single_final_marker`` first.
+    Three phrase deltas -> exactly one final VideoWindow (the last), one final
+    AudioWindow (the last), exact TTS phrase sequence, exactly one recorded
+    input carrying is_final (the last). Baseline per-call finality yields
+    finals [0,1,2]; red lands on ``_assert_single_final_marker``.
     """
     llm = _StubLLM(["Xin chào.", "Bạn khỏe không?", "Cảm ơn!"])
     tts = _StubTTS()
@@ -526,17 +461,12 @@ async def test_normal_completion_exactly_one_final_video_window():
 
 @pytest.mark.asyncio
 async def test_empty_final_remainder_does_not_create_empty_terminal_artifact():
-    """INTENDED RED (task 1.8): no empty terminal artifact from a finalize.
+    """INTENDED RED (task 1.8): finalize must not fabricate an empty artifact.
 
-    The last delta ends with punctuation, so the buffer is already flushed
-    when the final token arrives: finalize must not fabricate an empty final
-    chunk. Exactly two TTS calls (one per phrase, no extra synthesis call),
-    exactly one recorded input final (the last), exactly one final
-    AudioWindow (the last) and one final VideoWindow (the last), every audio
-    window's text_span non-empty, and exactly two audio windows total.
-
-    Observed on baseline: per-call finality makes both windows final
-    (finals [0, 1]). The red lands on ``_assert_single_final_marker``.
+    Last delta ends with punctuation, so the buffer is flushed before the
+    final token: exactly two TTS calls, one final input (the last), one final
+    AudioWindow and VideoWindow (the last), non-empty text_spans, two windows
+    total. Baseline makes both windows final; red on the marker assert.
     """
     llm = _StubLLM(["Xin chào.", "Tạm biệt!"])
     tts = _StubTTS()
@@ -570,14 +500,9 @@ async def test_empty_final_remainder_does_not_create_empty_terminal_artifact():
 async def test_llm_error_does_not_emit_normal_final_marker():
     """INTENDED RED (task 1.8): an LLM stream error emits no final marker.
 
-    The stub LLM yields a RENDERABLE first phrase, then (after a gate) raises
-    RuntimeError. The error must propagate out of ``run()``, and neither the
-    audio callback nor any drained video window may carry is_final=True —
-    the pre-error window must be normalized to non-final, not stamped final.
-
-    Observed on baseline: the error propagates cleanly (good), but the window
-    rendered before the failure arrives is_final=True because of production
-    per-call finality. The red lands on the zero-finals assertions.
+    Error must propagate from run(); no is_final may reach audio/video.
+    Baseline: error propagates, but the pre-error window is final (per-call
+    finality). Red lands on the zero-finals asserts.
     """
     raise_gate = threading.Event()
     llm = _RaisingLLM(first_delta="Xin chào bạn.", raise_gate=raise_gate)
@@ -617,14 +542,8 @@ async def test_llm_error_does_not_emit_normal_final_marker():
 async def test_tts_error_does_not_emit_normal_final_marker():
     """INTENDED RED (task 1.8): a TTS stream error emits no final marker.
 
-    The stub TTS yields one AudioWindow for the first phrase (per-call
-    finality: it is the last window of its call), then raises RuntimeError.
-    The error must propagate out of ``run()`` and no is_final=True marker
-    may reach the video queue or the audio callback.
-
-    Observed on baseline: the error DOES propagate (good), but the window
-    rendered before the failure arrives is_final=True because of production
-    per-call finality. The red lands on the zero-finals assertions.
+    Error propagates; no is_final may reach audio/video. Baseline: error
+    propagates but the pre-error window is final. Red on zero-finals asserts.
     """
     llm = _StubLLM(["Xin chào bạn", "Tạm biệt nhé!"])
     tts = _FailingTTS()
@@ -646,13 +565,9 @@ async def test_tts_error_does_not_emit_normal_final_marker():
 async def test_cancellation_does_not_fabricate_normal_final_marker():
     """INTENDED RED (task 1.8): cancel mid-run must not fabricate a final marker.
 
-    A long-running LLM is cancelled while streaming; the run must complete
-    without raising, drain the queue, and never emit any VideoWindow or
-    AudioWindow with is_final=True — cancel is not a normal completion.
-    Audio is captured via the callback (immune to the cancel queue clear);
-    video is captured by a concurrent drainer that races ``clear()``
-    harmlessly. The red lands on the zero-finals assertions: pre-cancel
-    windows arrive is_final=True because of production per-call finality.
+    Long LLM cancelled while streaming; run completes without raising; no
+    VideoWindow/AudioWindow with is_final. Baseline: pre-cancel windows are
+    final. Red on zero-finals asserts.
     """
     llm = _StubLLM([f"chunk {i}." for i in range(50)])
     tts = _StubTTS()
@@ -691,3 +606,347 @@ async def test_cancellation_does_not_fabricate_normal_final_marker():
     assert all(not w.is_final for w in received), (
         "cancel must not fabricate a final marker in audio"
     )
+
+
+# ---------- task 4.x: bounded LLM stream controller ----------
+
+
+def _TC(sid: str, uid: str, seq: int, text: str, is_final: bool) -> TextChunk:
+    return TextChunk(session_id=sid, utterance_id=uid, seq=seq, text=text, is_final=is_final)
+
+
+def _build_controller(llm: LLMEngine, maxsize: int = 64) -> LLMStreamController:
+    return LLMStreamController(
+        llm,
+        LLMRequest.from_prompt("hello"),
+        session_id="sess-controller",
+        utterance_id="utt-controller",
+        maxsize=maxsize,
+    )
+
+
+def _drain_to_terminal(controller: LLMStreamController) -> list:
+    events = []
+    while True:
+        event = controller.get(timeout=5.0)
+        assert event is not None, "controller must emit a terminal event within 5s"
+        events.append(event)
+        if isinstance(event, (EofEvent, ErrorEvent)):
+            return events
+
+
+class _HookLLM(LLMEngine):
+    """Injected stream_chunks behavior via ``on_call`` (yields/raises/stalls/close)."""
+
+    name = "hook-llm"
+
+    def __init__(self, on_call) -> None:
+        self.on_call = on_call
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "_HookLLM":  # pragma: no cover
+        return cls(lambda req, sid, uid: iter(()))
+
+    def generate(self, req: LLMRequest) -> LLMResponse:  # pragma: no cover
+        raise RuntimeError("stub: use stream_chunks()")
+
+    def stream_chunks(self, req, *, session_id="", utterance_id="") -> Iterator[TextChunk]:
+        return self.on_call(req, session_id, utterance_id)
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_invoked_and_iterated_in_producer_thread():
+    """4.1: invocation AND iteration happen on the producer thread."""
+    invoke_thread: list[str] = []
+    iterate_thread: list[str] = []
+    consumer_name = threading.current_thread().name
+
+    def on_call(req, sid, uid):
+        invoke_thread.append(threading.current_thread().name)
+
+        def gen():
+            iterate_thread.append(threading.current_thread().name)
+            yield _TC(sid, uid, 0, "Xin chào.", True)
+
+        return gen()
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    events = await asyncio.to_thread(_drain_to_terminal, controller)
+    await asyncio.to_thread(controller.stop)
+
+    assert invoke_thread == ["llm-stream-producer"], invoke_thread
+    assert iterate_thread == ["llm-stream-producer"], iterate_thread
+    assert "llm-stream-producer" != consumer_name
+    assert isinstance(events[-1], EofEvent)
+    assert [e for e in events if isinstance(e, DeltaEvent)] == [
+        DeltaEvent(text="Xin chào.", is_final=True)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_error_event_without_trailing_eof():
+    """4.1: an upstream exception surfaces as one ErrorEvent with no EOF."""
+    raise_gate = threading.Event()
+
+    def on_call(req, sid, uid):
+        yield _TC(sid, uid, 0, "Xin chào.", False)
+        if not raise_gate.wait(5.0):
+            raise TimeoutError("raise gate never set — test harness failure")
+        raise RuntimeError("boom mid-stream")
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        first = await asyncio.to_thread(controller.get, 5.0)
+        assert first == DeltaEvent(text="Xin chào.", is_final=False), first
+        raise_gate.set()
+        error = await asyncio.to_thread(controller.get, 5.0)
+        assert isinstance(error, ErrorEvent), error
+        assert isinstance(error.exc, RuntimeError) and str(error.exc) == "boom mid-stream"
+        assert await asyncio.to_thread(controller.get, 0.2) is None, (
+            "no event may follow the ErrorEvent"
+        )
+    finally:
+        raise_gate.set()
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_zero_deadline_returns_queued_event():
+    """4.2: get(timeout=0) returns an event queued before the call (c6398a9 fix)."""
+    queued = threading.Event()
+
+    def on_call(req, sid, uid):
+        yield _TC(sid, uid, 0, "Xin chào.", True)
+        queued.set()
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        await asyncio.to_thread(queued.wait, 5.0)
+        assert queued.is_set(), "delta must be queued before the zero-deadline get"
+        assert await asyncio.to_thread(controller.get, 0) == DeltaEvent(
+            text="Xin chào.", is_final=True
+        )
+    finally:
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_tiny_queue_backpressures_without_drop_reorder_duplicate():
+    """4.4: maxsize=1 backpressure blocks the producer; drain is exact, one EOF."""
+    first_delta_gate = threading.Event()
+    blocked_after_marker = threading.Event()
+
+    def on_call(req, sid, uid):
+        for i in range(30):
+            yield _TC(sid, uid, i, f"delta {i} ", i == 29)
+            if i == 0:
+                first_delta_gate.set()
+            elif i == 1:
+                # Only reachable after put(delta 1) succeeded (slot drained).
+                blocked_after_marker.set()
+
+    controller = _build_controller(_HookLLM(on_call), maxsize=1)
+    await asyncio.to_thread(controller.start)
+    try:
+        await asyncio.to_thread(first_delta_gate.wait, 5.0)
+        assert first_delta_gate.is_set()
+        await asyncio.to_thread(blocked_after_marker.wait, 0.2)
+        assert not blocked_after_marker.is_set(), (
+            "producer must be blocked on the full queue, not advancing past yield 1"
+        )
+
+        first = await asyncio.to_thread(controller.get, 5.0)
+        assert first == DeltaEvent(text="delta 0 ", is_final=False), first
+        await asyncio.to_thread(blocked_after_marker.wait, 5.0)
+        assert blocked_after_marker.is_set(), "draining one slot must unblock the producer put"
+
+        rest = await asyncio.to_thread(_drain_to_terminal, controller)
+        deltas = [e for e in rest if isinstance(e, DeltaEvent)]
+        assert [d.text for d in deltas] == [f"delta {i} " for i in range(1, 30)], (
+            "exact order, no drops, no duplicates"
+        )
+        assert isinstance(rest[-1], EofEvent)
+    finally:
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_stop_unblocks_producer_blocked_in_put():
+    """4.4: stop() unblocks a producer stuck in _put on a full queue.
+
+    The marker proves the producer reached put(delta 1) with maxsize=1 and
+    an idle consumer, so it is blocked in the full-queue poll; thread
+    termination after stop() proves the stop-responsive put.
+    """
+    reached_second_put = threading.Event()
+
+    def on_call(req, sid, uid):
+        for i in range(10):
+            if i == 1:
+                # put(delta 0) filled the only slot; put(delta 1) will block.
+                reached_second_put.set()
+            yield _TC(sid, uid, i, f"delta {i} ", i == 9)
+
+    controller = _build_controller(_HookLLM(on_call), maxsize=1)
+    await asyncio.to_thread(controller.start)
+    try:
+        await asyncio.to_thread(reached_second_put.wait, 5.0)
+        assert reached_second_put.is_set(), "producer must reach the second put"
+        await asyncio.to_thread(controller.stop)
+        assert not controller._thread.is_alive(), (
+            "producer thread must terminate after stop() unblocks the put"
+        )
+    finally:
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_stop_responsive_get_returns_none(monkeypatch):
+    """4.4: stop() unblocks a pending get(None) with None, promptly.
+
+    Queue empty + producer stalled: the waiter is blocked in the poll loop.
+    JOIN_TIMEOUT_S monkeypatched small so the join returns promptly.
+    """
+    monkeypatch.setattr(lsc, "JOIN_TIMEOUT_S", 0.05)
+    release = threading.Event()
+    first_delta_gate = threading.Event()
+
+    def on_call(req, sid, uid):
+        yield _TC(sid, uid, 0, "Xin chào.", False)
+        first_delta_gate.set()
+        if not release.wait(5.0):
+            raise TimeoutError("release never set")
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        await asyncio.to_thread(first_delta_gate.wait, 5.0)
+        assert first_delta_gate.is_set()
+        first = await asyncio.to_thread(controller.get, 5.0)
+        assert first == DeltaEvent(text="Xin chào.", is_final=False), first
+
+        waiter = asyncio.create_task(asyncio.to_thread(controller.get, None, None))
+        await asyncio.to_thread(controller.stop)
+        assert await asyncio.wait_for(waiter, timeout=1.0) is None, (
+            "stop must unblock the pending get with None"
+        )
+    finally:
+        release.set()
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_external_cancel_responsive_get_returns_none():
+    """4.4: an external cancel event unblocks a pending get(None) with None.
+
+    Waiter polls the empty queue, re-checking the external cancel event each
+    poll; setting it — NOT stop() — must return None. stop() for cleanup.
+    """
+    release = threading.Event()
+    first_delta_gate = threading.Event()
+
+    def on_call(req, sid, uid):
+        yield _TC(sid, uid, 0, "Xin chào.", False)
+        first_delta_gate.set()
+        if not release.wait(5.0):
+            raise TimeoutError("release never set")
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        await asyncio.to_thread(first_delta_gate.wait, 5.0)
+        assert first_delta_gate.is_set()
+        first = await asyncio.to_thread(controller.get, 5.0)
+        assert first == DeltaEvent(text="Xin chào.", is_final=False), first
+
+        cancel = threading.Event()
+        waiter = asyncio.create_task(asyncio.to_thread(controller.get, None, cancel))
+        cancel.set()
+        assert await asyncio.wait_for(waiter, timeout=1.0) is None, (
+            "an external cancel must unblock the pending get with None"
+        )
+    finally:
+        release.set()
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_suspended_generator_and_thread_ends(monkeypatch):
+    """4.4: stop() calls close() on a generator suspended at a yield."""
+    monkeypatch.setattr(lsc, "JOIN_TIMEOUT_S", 0.05)
+    close_called = threading.Event()
+    stop_wait = threading.Event()
+
+    def on_call(req, sid, uid):
+        class _CloseAware:
+            def __iter__(self):
+                yield _TC(sid, uid, 0, "Xin chào.", False)
+                stop_wait.wait()
+
+            def close(self):
+                close_called.set()
+                stop_wait.set()
+
+        return _CloseAware()
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        first = await asyncio.to_thread(controller.get, 5.0)
+        assert first == DeltaEvent(text="Xin chào.", is_final=False), first
+        await asyncio.to_thread(controller.stop)
+        assert close_called.is_set(), "stop() must close the suspended generator"
+        assert not controller._thread.is_alive(), "producer thread must terminate"
+    finally:
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_sub_min_buffer_deadline_is_none_until_min_reached():
+    """4.3: sub-min buffer yields no deadline; min reached derives from start."""
+    orch, _, _, _ = _build_orchestrator(_StubLLM([]), _StubTTS())
+    chunker = TextChunker(
+        session_id="sess-deadline",
+        utterance_id="utt-deadline",
+        min_chars=4,
+        target_chars=20,
+        max_chars=40,
+        flush_timeout_ms=50,
+    )
+
+    assert orch._remaining_deadline(chunker) is None, "empty buffer must have no deadline"
+
+    chunker.feed("X")
+    assert len(chunker.buffered_text) < chunker.min_chars
+    assert orch._remaining_deadline(chunker) is None, "sub-min buffer must have no deadline"
+
+    started = chunker.buffer_started_at
+    chunker.feed("Y")
+    chunker.feed("Z")
+    chunker.feed("W")
+    assert len(chunker.buffered_text) == 4
+    assert chunker.buffer_started_at == started, (
+        "buffer start must be the FIRST fragment's timestamp"
+    )
+    deadline = orch._remaining_deadline(chunker)
+    assert deadline is not None and deadline <= 0.05, (
+        f"deadline must derive from buffer_started_at, got {deadline!r}"
+    )
+
+    chunker.flush(reason=ChunkDecisionReason.LATENCY_DEADLINE)
+    assert chunker.buffer_started_at is None, "flush must reset the buffer clock"
+    assert orch._remaining_deadline(chunker) is None, (
+        "post-flush empty buffer must have no deadline"
+    )
+
+
+@pytest.mark.asyncio
+async def test_constructor_rejects_non_positive_maxsize():
+    """4.4: maxsize 0/negative are rejected (Queue(maxsize=0) is unbounded)."""
+    with pytest.raises(ValueError, match="maxsize"):
+        _build_controller(_HookLLM(lambda req, sid, uid: iter(())), maxsize=0)
+    with pytest.raises(ValueError, match="maxsize"):
+        _build_controller(_HookLLM(lambda req, sid, uid: iter(())), maxsize=-1)
