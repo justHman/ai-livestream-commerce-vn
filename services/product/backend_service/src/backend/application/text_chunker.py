@@ -33,11 +33,15 @@ Policies (task 3.7):
   non-protected boundary at/after ``min_chars`` — a function of the
   accumulated prefix alone, so segmentation is invariant to how the input
   was fragmented. Weak boundaries (clause/comma/cue/whitespace) are never
-  committed prematurely; they only decide forced hard-cap splits. The hard
-  cap always wins when no natural boundary exists at or before ``max_chars``.
-  If adaptive analysis fails (exception or non-finite estimate), the
-  utterance fails closed to ``fixed`` segmentation and every subsequent
-  chunk is stamped ``fixed_fallback`` — text is never dropped or reordered.
+  committed prematurely by default; runtime hints (task 5.x) may shrink the
+  soft duration target, which allows committing the earliest weak boundary
+  whose head fits the shrunk target (startup/starvation), and shift scoring
+  under hard-cap pressure — the hard invariants (strong commitment, cap,
+  ``min_chars``/``max_chars``, protection) are unchanged. The hard cap always
+  wins when no natural boundary exists at or before ``max_chars``. If
+  adaptive analysis fails (exception or non-finite estimate), the utterance
+  fails closed to ``fixed`` segmentation and every subsequent chunk is
+  stamped ``fixed_fallback`` — text is never dropped or reordered.
 
 No timers or threads: realtime waiting belongs to orchestration.
 """
@@ -358,7 +362,8 @@ class TextChunker:
 
         Returns zero, one, or many chunks; exact text is never dropped,
         duplicated, or reordered. Runtime hints are a no-op under the fixed
-        policy and a soft-target input under the adaptive policy.
+        policy and adjust the adaptive soft duration target (startup/steady/
+        starvation) without changing the hard invariants.
         """
         if token_text == "":
             return []
