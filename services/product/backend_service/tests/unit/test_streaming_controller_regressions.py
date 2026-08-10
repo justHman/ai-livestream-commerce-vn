@@ -754,6 +754,77 @@ async def test_base_exception_becomes_error_event_without_eof():
 
 
 @pytest.mark.asyncio
+async def test_close_error_on_normal_exhaustion_emits_error_event_no_eof():
+    """610023d: a raising close() on normal exhaustion yields one ErrorEvent.
+
+    The iterator's ``close()`` raises after the generator exhausted normally:
+    EOF is withheld and the consumer sees exactly one ErrorEvent carrying the
+    close exception — never EOF, never a hang.
+    """
+    close_error = RuntimeError("close failed")
+
+    def on_call(req, sid, uid):
+        class _CloseRaises:
+            def __iter__(self):
+                yield _TC(sid, uid, 0, "Xin chào.", True)
+
+            def close(self):
+                raise close_error
+
+        return _CloseRaises()
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        events = await asyncio.to_thread(_drain_to_terminal, controller)
+        errors = [e for e in events if isinstance(e, ErrorEvent)]
+        assert len(errors) == 1, f"exactly one ErrorEvent expected, got {errors}"
+        assert errors[0].exc is close_error, "the close exception must be preserved"
+        assert not any(isinstance(e, EofEvent) for e in events), (
+            "EOF must be withheld after a close error"
+        )
+    finally:
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
+async def test_iteration_and_close_errors_preserve_original_with_notes():
+    """610023d: a close error annotates the ORIGINAL exception, never replaces it.
+
+    Upstream iteration raises RuntimeError AND ``close()`` also raises: the
+    single terminal ErrorEvent carries the original iteration exception with
+    a ``__notes__`` entry describing the close failure. No EOF follows.
+    """
+    iteration_error = RuntimeError("iteration boom")
+    close_error = RuntimeError("close boom")
+
+    def on_call(req, sid, uid):
+        class _RaiseThenClose:
+            def __iter__(self):
+                yield _TC(sid, uid, 0, "Xin chào.", False)
+                raise iteration_error
+
+            def close(self):
+                raise close_error
+
+        return _RaiseThenClose()
+
+    controller = _build_controller(_HookLLM(on_call))
+    await asyncio.to_thread(controller.start)
+    try:
+        events = await asyncio.to_thread(_drain_to_terminal, controller)
+        errors = [e for e in events if isinstance(e, ErrorEvent)]
+        assert len(errors) == 1, f"exactly one ErrorEvent expected, got {errors}"
+        assert errors[0].exc is iteration_error, "the ORIGINAL exception must be preserved"
+        assert "close" in " ".join(errors[0].exc.__notes__), (
+            f"close failure must be annotated, got {errors[0].exc.__notes__}"
+        )
+        assert not any(isinstance(e, EofEvent) for e in events), "no EOF after an error"
+    finally:
+        await asyncio.to_thread(controller.stop)
+
+
+@pytest.mark.asyncio
 async def test_zero_deadline_returns_queued_event():
     """4.2: get(timeout=0) returns an event queued before the call (c6398a9 fix)."""
     queued = threading.Event()
@@ -916,56 +987,63 @@ async def test_external_cancel_responsive_get_returns_none():
 
 @pytest.mark.asyncio
 async def test_cancel_closes_suspended_generator_and_thread_ends(monkeypatch):
-    """4.4: repeated stop() closes the suspended generator exactly once.
+    """4.4: stop() never closes on the consumer thread; the producer closes once.
 
-    A custom close-aware iterator's ``close()`` is not required to be
-    repeatable, so the controller must guard close-at-most-once: invoking
-    ``stop()`` three times must call ``close()`` once and still terminate the
-    producer thread. (A second ``stop()`` is also the typical cleanup path —
-    the ``finally`` of the first.)
+    maxsize=1 deterministically parks the producer at a full-queue put right
+    after the second delta: stop() then returns while the producer is still
+    suspended in ``_put``, and only its own stop-aware poll unblocks it. The
+    producer owns the generator: stop() sets the flag and bounded-joins, it
+    never calls close() itself. After stop() returns, the producer observes
+    stop, closes the generator exactly once on its own thread
+    (close_at_most_once falls out of the single producer exit path), and the
+    bounded join completes.
     """
     monkeypatch.setattr(lsc, "JOIN_TIMEOUT_S", 0.05)
     close_count = 0
-    stop_wait = threading.Event()
+    close_thread: list[str] = []
+    suspended = threading.Event()
 
     def on_call(req, sid, uid):
         class _CloseAware:
             def __iter__(self):
                 yield _TC(sid, uid, 0, "Xin chào.", False)
-                stop_wait.wait()
+                suspended.set()
+                yield _TC(sid, uid, 1, "Tạm biệt!", True)
 
             def close(self):
                 nonlocal close_count
                 close_count += 1
-                stop_wait.set()
+                close_thread.append(threading.current_thread().name)
 
         return _CloseAware()
 
-    controller = _build_controller(_HookLLM(on_call))
+    controller = _build_controller(_HookLLM(on_call), maxsize=1)
     await asyncio.to_thread(controller.start)
     try:
-        first = await asyncio.to_thread(controller.get, 5.0)
-        assert first == DeltaEvent(text="Xin chào.", is_final=False), first
+        await asyncio.to_thread(suspended.wait, 5.0)
+        assert suspended.is_set(), "producer must reach the second delta"
         await asyncio.to_thread(controller.stop)
-        await asyncio.to_thread(controller.stop)
-        await asyncio.to_thread(controller.stop)
-        assert close_count == 1, f"close() must run exactly once, got {close_count}"
-        assert not controller._thread.is_alive(), "producer thread must terminate"
+        assert not controller._thread.is_alive(), (
+            "producer thread must terminate within stop()'s bounded join"
+        )
+        assert close_count == 1, f"producer-side close must run exactly once, got {close_count}"
+        assert close_thread == ["llm-stream-producer"], close_thread
     finally:
         await asyncio.to_thread(controller.stop)
 
 
 @pytest.mark.asyncio
 async def test_stop_retries_close_failed_while_provider_active(monkeypatch):
-    """dd50ce5: a close that fails while the provider is active must be retried.
+    """dd50ce5: stop() bounded-joins while the provider is active; producer closes once.
 
     The custom iterator blocks inside its first ``__next__`` (provider I/O in
-    flight), so stop()'s close from the consumer thread raises ValueError
-    (mid-execution, like a real generator) and the join is bounded. Once the
-    release event lets ``__next__`` return one delta, the producer's top-of-
-    body stop check retries the close successfully: exactly one successful
-    close, at least two close attempts, and no further ``__next__`` after
-    stop. A cleanup stop() must not close it again.
+    flight), so stop() cannot reach the generator: it sets the stop flag and
+    bounded-joins, leaving the thread alive. Releasing the iterator lets
+    ``__next__`` return exactly one delta; the producer's top-of-body stop
+    check then closes the generator exactly once (attempts == successes == 1 —
+    no consumer-thread close exists anymore) and requests no further
+    ``__next__``. The thread terminates. A cleanup stop() must not close it
+    again.
     """
     monkeypatch.setattr(lsc, "JOIN_TIMEOUT_S", 0.05)
     active = threading.Event()
@@ -997,8 +1075,8 @@ async def test_stop_retries_close_failed_while_provider_active(monkeypatch):
         def close(self) -> None:
             self.close_attempts += 1
             if self._in_next:
-                # Mid-__next__ in the producer thread: closing from the
-                # consumer thread is unsupported (real generators raise).
+                # Mid-__next__ in the producer thread: closing from another
+                # thread is unsupported (real generators raise).
                 raise ValueError("generator is executing in another thread")
             if not self._closed:
                 self._closed = True
@@ -1020,12 +1098,11 @@ async def test_stop_retries_close_failed_while_provider_active(monkeypatch):
         assert iterator.next_calls == 1, (
             f"no __next__ may run after stop, got {iterator.next_calls}"
         )
+        assert iterator.close_attempts == 1, (
+            f"the producer must close exactly once, got {iterator.close_attempts}"
+        )
         assert iterator.close_successes == 1, (
             f"close() must succeed exactly once, got {iterator.close_successes}"
-        )
-        assert iterator.close_attempts >= 2, (
-            "close must be retried after the failed consumer attempt, "
-            f"got {iterator.close_attempts}"
         )
     finally:
         release.set()
