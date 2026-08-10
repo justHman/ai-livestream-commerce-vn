@@ -50,6 +50,7 @@ from typing import Callable, Optional
 from .speech_chunking.boundaries import extract_candidates
 from .speech_chunking.duration import SpeechDurationEstimator
 from .speech_chunking.policy import chunk_decision_reason, select_boundary
+from .speech_chunking.telemetry import ChunkTelemetry, TelemetryCollector
 from .speech_chunking.types import ChunkDecisionReason, ChunkPolicy, RuntimeHints, TextChunk
 
 __all__ = ["TextChunk", "TextChunker"]
@@ -89,6 +90,7 @@ class TextChunker:
         clock: Optional[Callable[[], float]] = None,
         policy: str | ChunkPolicy = "fixed",
         estimator: Optional[SpeechDurationEstimator] = None,
+        telemetry: Optional[TelemetryCollector] = None,
     ) -> None:
         if min_chars <= 0:
             raise ValueError(f"min_chars must be > 0, got {min_chars}")
@@ -129,6 +131,7 @@ class TextChunker:
         # stamps ``fixed_fallback`` (design "Failure handling").
         self._fallback_active = False
         self._fallback_reason: Optional[str] = None
+        self._telemetry = telemetry
         self._buffer: list[str] = []
         self._buffer_len = 0
         self._buffer_started_at: Optional[float] = None
@@ -136,7 +139,14 @@ class TextChunker:
 
     # -- internal helpers -------------------------------------------------
 
-    def _emit(self, text: str, is_final: bool, reason: str | ChunkDecisionReason) -> TextChunk:
+    def _emit(
+        self,
+        text: str,
+        is_final: bool,
+        reason: str | ChunkDecisionReason,
+        *,
+        protected_fallback: bool = False,
+    ) -> TextChunk:
         # StrEnum members serialize as their stable value; plain strings
         # (e.g. a caller-supplied flush reason) pass through unchanged.
         reason_value = reason.value if isinstance(reason, ChunkDecisionReason) else reason
@@ -148,6 +158,23 @@ class TextChunker:
             is_final=is_final,
             decision_reason=reason_value,
         )
+        # Content-free telemetry at the single emit chokepoint (task 7.1):
+        # only lengths, the reason value, flags, and policy id — never text.
+        if self._telemetry is not None:
+            self._telemetry.record_chunk(
+                ChunkTelemetry(
+                    seq=self._seq,
+                    decision_reason=reason_value,
+                    char_length=len(text),
+                    estimated_duration_ms=(
+                        self._estimator.estimate_ms(text) if self._estimator is not None else None
+                    ),
+                    hard_max_used=reason_value == ChunkDecisionReason.HARD_MAX,
+                    protected_span_fallback=protected_fallback,
+                    policy=self.policy.value,
+                    is_final=is_final,
+                )
+            )
         self._seq += 1
         return chunk
 
@@ -261,7 +288,15 @@ class TextChunker:
                 if forced
                 else chunk_decision_reason(selected.candidate.kind)
             )
-            chunks.append(self._emit(head, is_final=False, reason=reason))
+            # A forced cap split whose candidate cuts inside a protected span
+            # is a protected-span fallback (nothing safe existed); the flag is
+            # telemetry-only, the chunk itself is unchanged.
+            protected_fallback = forced and selected.candidate.protected
+            chunks.append(
+                self._emit(
+                    head, is_final=False, reason=reason, protected_fallback=protected_fallback
+                )
+            )
             self._buffer = [tail] if tail else []
             self._buffer_len = len(tail)
             self._buffer_started_at = self._clock() if tail else None

@@ -53,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -69,6 +70,7 @@ from .windows import AudioWindow, VideoWindow
 from .queue import BoundedVideoQueue, CoordinatorMetrics
 
 from ..speech_chunking import TextChunk
+from ..speech_chunking.telemetry import TelemetryCollector
 from ..text_chunker import ChunkDecisionReason, TextChunker
 
 # Default TextChunker config (mirrors AppConfig.text_chunk_* defaults). The
@@ -99,6 +101,7 @@ class StreamOrchestrator:
         metrics: CoordinatorMetrics,
         config: dict | None = None,
         audio_window_callback: AudioWindowCallback | None = None,
+        telemetry: TelemetryCollector | None = None,
     ) -> None:
         self._llm = llm
         self._tts = tts
@@ -116,6 +119,7 @@ class StreamOrchestrator:
         self._cancel_event = threading.Event()
         self._running_session: str | None = None
         self._audio_window_callback = audio_window_callback
+        self._telemetry = telemetry
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
@@ -354,6 +358,12 @@ class StreamOrchestrator:
                     decision_reason=phrase.decision_reason,
                 )
             pending: AudioWindow | None = None
+            # Task 7.2: time real synthesis/streaming lazily — the generator
+            # is consumed in place (cancel stays responsive), duration is
+            # accumulated per window, and the record lands on both the normal
+            # and error completions of the loop (cancel path skips it).
+            t0 = time.monotonic()
+            audio_duration_ms = 0
             try:
                 for audio_window in self._tts.stream_audio(
                     phrase,
@@ -362,6 +372,7 @@ class StreamOrchestrator:
                 ):
                     if self._cancel_event.is_set():
                         return
+                    audio_duration_ms += audio_window.duration_ms
                     if pending is not None:
                         self._deliver_audio_window(
                             pending,
@@ -382,7 +393,9 @@ class StreamOrchestrator:
                         session_id=session_id,
                         bridge=bridge,
                     )
+                self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
                 raise
+            self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
             if pending is not None:
                 if hold_last:
                     held_windows.append(pending)
@@ -412,6 +425,7 @@ class StreamOrchestrator:
                 target_chars=self._target_chars,
                 max_chars=self._max_chars,
                 flush_timeout_ms=self._flush_timeout_ms,
+                telemetry=self._telemetry,
             )
             controller = LLMStreamController(
                 self._llm,
@@ -484,6 +498,16 @@ class StreamOrchestrator:
                     controller.stop()
             finally:
                 bridge.put(_BRIDGE_SENTINEL)
+
+    def _record_tts_timing(self, elapsed_s: float, audio_duration_ms: int) -> None:
+        """Record one synthesis call's timing (no-op without a collector).
+
+        ``elapsed_s`` spans the whole lazy stream consumption, so the
+        first-audio latency equals the synthesis wall time on this
+        non-streaming seam (synthesize once, then split windows).
+        """
+        if self._telemetry is not None:
+            self._telemetry.record_tts_timing(elapsed_s * 1000.0, audio_duration_ms)
 
     def _deliver_audio_window(
         self,
