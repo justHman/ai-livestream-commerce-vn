@@ -234,7 +234,8 @@ def soft_target_duration_ms(runtime_hints: Optional[RuntimeHints]) -> float:
                 / STARTUP_LATE_ELAPSED_MS,
             )
             target = min(
-                target, TARGET_DURATION_MS - progress * (TARGET_DURATION_MS - STARTUP_EARLY_TARGET_MS)
+                target,
+                TARGET_DURATION_MS - progress * (TARGET_DURATION_MS - STARTUP_EARLY_TARGET_MS),
             )
 
     return min(MAX_SOFT_TARGET_MS, max(MIN_SOFT_TARGET_MS, target))
@@ -302,11 +303,19 @@ def _select_adaptive(
        EARLIEST weak candidate (clause/comma/cue/whitespace) that is not
        protected, lands in ``[min_chars, max_chars]``, and whose head
        duration fits the shrunk target. Earliest-qualifying is again a pure
-       function of (prefix, hints), so fragmentation invariance holds. The
+       function of (prefix, hints), so fragmentation invariance holds —
+       including when the buffer already exceeds the cap (a one-feed
+       delivery and a fragmented delivery of the same text under the same
+       hints then commit the same boundary; see the cap rule below). The
        duration check uses ``_require_duration``: a non-finite estimate
        raises ``AdaptiveAnalysisError`` (fail closed).
-    3. Cap pressure (unchanged structure): no strong committed and the cap
-       candidate exists — best weak by composite score against
+    3. Cap pressure: no strong committed and the buffer exceeds the cap —
+       when the hints also shrink the target, the same earliest-qualifying
+       weak rule fires first (the earliest boundary that fits the shrunk
+       target is a pure function of (prefix, hints), exactly like the
+       no-cap case, so single-feed and fragmented deliveries of the same
+       text under the same hints commit the same boundary — fragmentation
+       invariance); otherwise the best weak by composite score against
        ``soft_target``, else the exact-cap split. ``forced=True``.
     4. Else ``None`` ("keep buffering").
 
@@ -331,7 +340,7 @@ def _select_adaptive(
         CandidateKind.VIETNAMESE_CUE,
         CandidateKind.WHITESPACE,
     )
-    if soft_target < TARGET_DURATION_MS and cap_candidate is None:
+    if soft_target < TARGET_DURATION_MS:
         for candidate in candidates:
             if candidate.hard_cap or candidate.kind not in weak_kinds or candidate.protected:
                 continue
@@ -351,7 +360,9 @@ def _select_adaptive(
         if pool:
             best = min(
                 pool,
-                key=lambda c: score_boundary(text, c, estimator, target_chars, soft_target=soft_target),
+                key=lambda c: score_boundary(
+                    text, c, estimator, target_chars, soft_target=soft_target
+                ),
             )
             return SelectedBoundary(best, forced=True)
         return SelectedBoundary(cap_candidate, forced=True)
