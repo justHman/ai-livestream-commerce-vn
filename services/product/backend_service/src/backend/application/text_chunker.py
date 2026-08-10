@@ -20,6 +20,9 @@ Behavior contract:
   (task 2.5 keeps ``flush_timeout_ms`` in scope); it measures age from
   ``buffer_started_at``, which starts only when the first non-empty
   fragment enters an empty buffer — long TTFT never ages an empty buffer.
+  The orchestrator does NOT use the poll anymore (task 4.5): it owns the
+  realtime deadline itself via ``LLMStreamController.get(timeout=...)`` and
+  only calls ``flush(reason=LATENCY_DEADLINE)`` when the deadline expires.
 
 Policies (task 3.7):
 - ``fixed``: the historical deterministic rule (first punctuation with a
