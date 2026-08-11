@@ -2,23 +2,23 @@
 
 ## 1. Baseline, contracts, and dependency lock
 
-- [ ] 1.1 Record the current `tts_service` active files, API contract fixtures, Docker entrypoint, provider/runtime config, and backend TTS caller assumptions before editing.
-- [ ] 1.2 Add/refresh contract tests for the existing backend-facing `POST /v1/audio/speech` behavior that must remain provider-neutral after the runtime migration.
-- [ ] 1.3 Add failing tests for `GET /health`, `GET /ready`, and `GET /v1/audio/capabilities` liveness/readiness/capability distinctions.
-- [ ] 1.4 Pin an exact VieNeu v3 Turbo package/revision plus compatible PyTorch/transformers/CUDA dependency set in `services/product/tts_service/pyproject.toml` and lockfile; do not use a floating upstream branch at runtime.
-- [ ] 1.5 Replace stale default model/runtime configuration that points to VieNeu v2/vLLM-Omni with explicit provider-neutral model/provider configuration for VieNeu v3 Turbo.
-- [ ] 1.6 Add configuration validation for provider, accelerator mode (`auto|cpu|gpu` or repository-equivalent), model revision, response format, scheduler bounds, and voice-profile store URI.
-- [ ] 1.7 Add a startup compatibility test that fails if the pinned VieNeu adapter cannot find/execute the required v3 Turbo provider surface.
+- [x] 1.1 Record the current `tts_service` active files, API contract fixtures, Docker entrypoint, provider/runtime config, and backend TTS caller assumptions before editing.
+- [x] 1.2 Add/refresh contract tests for the existing backend-facing `POST /v1/audio/speech` behavior that must remain provider-neutral after the runtime migration.
+- [x] 1.3 Add failing tests for `GET /health`, `GET /ready`, and `GET /v1/audio/capabilities` liveness/readiness/capability distinctions.
+- [x] 1.4 Pin an exact VieNeu v3 Turbo package/revision plus compatible PyTorch/transformers/CUDA dependency set in `services/product/tts_service/pyproject.toml` and lockfile; do not use a floating upstream branch at runtime.
+- [x] 1.5 Replace stale default model/runtime configuration that points to VieNeu v2/vLLM-Omni with explicit provider-neutral model/provider configuration for VieNeu v3 Turbo.
+- [x] 1.6 Add configuration validation for provider, accelerator mode (`auto|cpu|gpu` or repository-equivalent), model revision, response format, scheduler bounds, and voice-profile store URI.
+- [x] 1.7 Add a startup compatibility test that fails if the pinned VieNeu adapter cannot find/execute the required v3 Turbo provider surface.
 
 ## 2. Provider-neutral request/result and capability model
 
-- [ ] 2.1 Create `src/tts/providers/base.py` with the provider protocol for capabilities, batch key, single synthesis, batch synthesis, and voice enrollment.
-- [ ] 2.2 Create `src/tts/providers/capabilities.py` with typed provider capabilities for provider/model revision, sample rate, native batching, max batch size, voice cloning, mixed-voice batching, styles, expressive cues, and output formats.
-- [ ] 2.3 Create internal synthesis request/result types carrying immutable `request_id`, `session_id`, `utterance_id`, `chunk_seq`, text, `voice_profile_id`, style, priority, generation config, response format, submission time, and deadline.
-- [ ] 2.4 Define typed provider request/result structures that do not expose provider tensors to API/scheduler layers.
-- [ ] 2.5 Add tests proving provider-specific profile payloads cannot be serialized through the public synthesis schema.
-- [ ] 2.6 Add tests proving preset and cloned voices use the same external `voice_profile_id` field.
-- [ ] 2.7 Add stable domain error types for invalid capability, profile not found/unauthorized, overload, deadline, cancellation, provider unavailable, and provider inference failure.
+- [x] 2.1 Create `src/tts/providers/base.py` with the provider protocol for capabilities, batch key, single synthesis, batch synthesis, and voice enrollment.
+- [x] 2.2 Create `src/tts/providers/capabilities.py` with typed provider capabilities for provider/model revision, sample rate, native batching, max batch size, voice cloning, mixed-voice batching, styles, expressive cues, and output formats.
+- [x] 2.3 Create internal synthesis request/result types carrying immutable `request_id`, `session_id`, `utterance_id`, `chunk_seq`, text, `voice_profile_id`, style, priority, generation config, response format, submission time, and deadline.
+- [x] 2.4 Define typed provider request/result structures that do not expose provider tensors to API/scheduler layers.
+- [x] 2.5 Add tests proving provider-specific profile payloads cannot be serialized through the public synthesis schema.
+- [x] 2.6 Add tests proving preset and cloned voices use the same external `voice_profile_id` field.
+- [x] 2.7 Add stable domain error types for invalid capability, profile not found/unauthorized, overload, deadline, cancellation, provider unavailable, and provider inference failure.
 
 ## 3. Stable HTTP API and readiness
 
