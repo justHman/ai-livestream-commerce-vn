@@ -9,7 +9,7 @@ dependencies = ["numpy", "fastapi"]
 [project.optional-dependencies]
 cosyvoice = ["torch"]
 transformers = ["torch", "transformers"]
-vieneu = ["vieneu"]
+vieneu = ["vieneu==3.2.4"]
 test = ["pytest"]
 
 [dependency-groups]
