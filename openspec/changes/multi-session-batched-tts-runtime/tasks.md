@@ -22,14 +22,14 @@
 
 ## 3. Stable HTTP API and readiness
 
-- [ ] 3.1 Update/add `src/tts/api/schemas.py` for provider-neutral speech, capability, and voice-profile API shapes.
+- [x] 3.1 Update/add `src/tts/api/schemas.py` for provider-neutral speech, capability, and voice-profile API shapes.
 - [ ] 3.2 Update/add `src/tts/api/routes.py` so `POST /v1/audio/speech` creates one scheduler request and waits for exactly that request's result.
-- [ ] 3.3 Add response metadata/headers or structured tracing needed to preserve request/session/utterance/chunk identity without embedding raw text.
-- [ ] 3.4 Implement `GET /health` as process liveness only.
-- [ ] 3.5 Implement `GET /ready` so it is false while provider/model/profile store/scheduler startup is incomplete or adapter compatibility checks fail.
-- [ ] 3.6 Implement `GET /v1/audio/capabilities` from the active provider plus service-level limits; do not expose speaker embeddings/reference codes.
-- [ ] 3.7 Add API contract tests for valid speech, invalid text/profile/style/cue, unsupported response format, overload, deadline, provider failure, and readiness states.
-- [ ] 3.8 Verify no backend-facing public `/v1/audio/speech/batch` dependency is introduced; if a legacy route exists, remove it from required caller contracts or mark it non-production/internal according to final design.
+- [x] 3.3 Add response metadata/headers or structured tracing needed to preserve request/session/utterance/chunk identity without embedding raw text.
+- [x] 3.4 Implement `GET /health` as process liveness only.
+- [x] 3.5 Implement `GET /ready` so it is false while provider/model/profile store/scheduler startup is incomplete or adapter compatibility checks fail.
+- [x] 3.6 Implement `GET /v1/audio/capabilities` from the active provider plus service-level limits; do not expose speaker embeddings/reference codes.
+- [x] 3.7 Add API contract tests for valid speech, invalid text/profile/style/cue, unsupported response format, overload, deadline, provider failure, and readiness states.
+- [x] 3.8 Verify no backend-facing public `/v1/audio/speech/batch` dependency is introduced; if a legacy route exists, remove it from required caller contracts or mark it non-production/internal according to final design.
 
 ## 4. Voice profile domain and persistence
 
