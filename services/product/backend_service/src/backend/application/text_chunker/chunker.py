@@ -1,10 +1,8 @@
-"""Canonical streaming text chunker (OpenSpec adaptive-speech-text-chunking).
+"""Source-agnostic speech text chunker state machine (OpenSpec
+adaptive-speech-text-chunking).
 
-Source-agnostic segmentation state machine: coalesces arbitrary text
-fragments into phrase-sized ``TextChunk`` values under a selectable policy
-(``fixed`` or ``adaptive_vi``). The canonical types live in
-``backend.application.speech_chunking``; this facade keeps the legacy
-import path while forwarding the canonical ``TextChunk`` class.
+Coalesces arbitrary text fragments into phrase-sized ``TextChunk`` values
+under a selectable segmentation policy (``fixed`` or ``adaptive_vi``).
 
 Behavior contract:
 - ``feed()`` appends arbitrary text, scans the accumulated buffer for
@@ -51,11 +49,11 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 
-from .speech_chunking.boundaries import extract_candidates
-from .speech_chunking.duration import SpeechDurationEstimator
-from .speech_chunking.policy import chunk_decision_reason, select_boundary
-from .speech_chunking.telemetry import ChunkTelemetry, TelemetryCollector
-from .speech_chunking.types import ChunkDecisionReason, ChunkPolicy, RuntimeHints, TextChunk
+from .boundaries import extract_candidates
+from .duration import SpeechDurationEstimator
+from .policy import chunk_decision_reason, select_boundary
+from .telemetry import ChunkTelemetry, TelemetryCollector
+from .types import ChunkDecisionReason, ChunkPolicy, RuntimeHints, TextChunk
 
 __all__ = ["TextChunk", "TextChunker"]
 

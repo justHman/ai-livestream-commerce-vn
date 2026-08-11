@@ -2,33 +2,14 @@
 
 Covers task 1.6 (buffer age starts at the first non-empty fragment, not at
 chunker construction — long TTFT must not count as buffer age) and task 1.9
-(type identity: the legacy render TextChunk must become the canonical
-speech_chunking type once cluster A migrates it).
-
-Intended-failure map on the current baseline (HEAD 486b4f5):
-  - test_long_ttft_before_first_delta_does_not_age_empty_buffer: INTENDED RED
-    (task 1.6). Current TextChunker stamps ``_last_flush_time`` at
-    construction, so ``feed()`` after a long idle TTFT sees an already-aged
-    buffer and flushes inside ``feed()`` instead of letting the age clock
-    start at the first non-empty fragment.
-  - test_buffer_age_starts_on_first_non_empty_fragment: INTENDED RED (task
-    1.6) for the same reason: the timeout counter counts from construction,
-    not from the first non-empty fragment.
-  - test_empty_fragments_at_advanced_times_do_not_start_buffer_age: INTENDED
-    RED (task 1.6). The baseline chunker stamps ``_last_flush_time`` at
-    construction, so the FIRST non-empty ``feed()`` sees a construction-aged
-    buffer and flushes inside ``feed()`` once the buffer reaches min_chars —
-    the assertion that the first fragment does not flush at 200 ms of age
-    fails with a spurious chunk. Empty fragments must not start (or restart)
-    the buffer-age clock.
-  - test_legacy_render_textchunk_is_canonical_speech_chunking_type: INTENDED
-    RED (task 1.9) with ModuleNotFoundError: the canonical
-    ``backend.application.speech_chunking`` package does not exist yet
-    (cluster A's responsibility); the test passes once the canonical package
-    is created and ``render.windows.TextChunk`` is migrated to it.
+(canonical type contract: ``backend.application.text_chunker.TextChunk`` is
+the one canonical class and ``render.windows`` does not define or re-export
+it).
 """
 
 from __future__ import annotations
+
+import pytest
 
 from backend.application.text_chunker import TextChunker
 
@@ -148,16 +129,16 @@ def test_empty_fragments_at_advanced_times_do_not_start_buffer_age():
     assert chunks[0].is_final is False
 
 
-def test_legacy_render_textchunk_is_canonical_speech_chunking_type():
-    """Legacy ``render.windows.TextChunk`` must BE the canonical type.
+def test_render_windows_does_not_export_textchunk():
+    """``render.windows`` must not define or re-export ``TextChunk``.
 
-    Fails with ModuleNotFoundError until cluster A creates the canonical
-    ``backend.application.speech_chunking`` package and migrates
-    ``render.windows.TextChunk`` to it (canonical migration is cluster A's
-    responsibility; task 2.x of the OpenSpec change). Intentionally not
-    skipped/xfailed — the coordinator wants to see the actual red.
+    ``backend.application.text_chunker.TextChunk`` is the one canonical
+    class; importing ``TextChunk`` from ``render.windows`` must raise
+    ImportError.
     """
-    from backend.application.speech_chunking import TextChunk as CanonicalTextChunk
-    from backend.application.render.windows import TextChunk as LegacyRenderTextChunk
+    from backend.application.text_chunker import TextChunk as CanonicalTextChunk
 
-    assert CanonicalTextChunk is LegacyRenderTextChunk
+    with pytest.raises(ImportError):
+        from backend.application.render.windows import TextChunk  # noqa: F401
+
+    assert CanonicalTextChunk.__module__ == "backend.application.text_chunker.types"

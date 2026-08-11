@@ -26,7 +26,8 @@ from backend.application.director.decision import Decision
 from backend.application.director.session_context import DirectorRuntime
 from backend.application.render.locks import SessionLockRegistry
 from avatar.engines.mock import MockRenderBackend, _MockSession
-from backend.application.render.windows import AudioWindow, TextChunk
+from backend.application.render.windows import AudioWindow
+from backend.application.text_chunker import TextChunk
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from tts.engines.base import AudioChunk, TTSEngine, TTSRequest
 

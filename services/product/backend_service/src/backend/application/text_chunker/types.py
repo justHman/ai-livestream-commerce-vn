@@ -1,8 +1,7 @@
 """Canonical speech-text chunking types.
 
-``TextChunk`` is the single canonical class for speech-text chunks; legacy
-import paths re-export this class object during migration. All other types
-support the deterministic fixed chunk policy (task 2.2) and later adaptive
+``TextChunk`` is the single canonical class for speech-text chunks. All
+other types support the deterministic fixed chunk policy and the adaptive
 scoring; none carries source identity.
 """
 
@@ -37,11 +36,10 @@ class TextChunk:
 class ChunkPolicy(StrEnum):
     """Deterministic chunking policy (source-agnostic).
 
-    ``FIXED`` is the only implemented policy. ``ADAPTIVE_VI`` is part of the
-    canonical type contract from the approved design (task 2.1) — declaring
-    the value is type availability, not behavior. ``TextChunker`` rejects it
-    until adaptive scoring lands (task 3.7) rather than silently running the
-    fixed policy.
+    ``FIXED`` is the deterministic character-threshold baseline and explicit
+    runtime rollback. ``ADAPTIVE_VI`` selects deterministic Vietnamese
+    boundary scoring; the fixed policy remains the default until the VieNeu
+    benchmark gate passes.
     """
 
     FIXED = "fixed"
@@ -66,10 +64,10 @@ class RuntimeHints:
 class ChunkDecisionReason(StrEnum):
     """Why a chunk was committed. String enum so values serialize as text.
 
-    The declared set is the stable contract locked by the approved design
-    for later phases (adaptive scoring, protected spans). Cluster 2A emits
-    only ``punctuation``, ``hard_max``, ``latency_deadline``, ``finalize``;
-    enum declarations are not scoring.
+    ``punctuation``/``hard_max``/``latency_deadline``/``finalize`` come from
+    the fixed policy and orchestration; ``paragraph``/``sentence``/etc. come
+    from adaptive boundary scoring; ``fixed_fallback`` stamps every chunk
+    after adaptive analysis failed closed to the fixed policy.
     """
 
     PARAGRAPH = "paragraph"

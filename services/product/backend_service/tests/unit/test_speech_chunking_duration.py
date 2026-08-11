@@ -14,7 +14,7 @@ import math
 
 import pytest
 
-from backend.application.speech_chunking.duration import (
+from backend.application.text_chunker.duration import (
     DurationCoefficients,
     SpeechDurationEstimator,
 )

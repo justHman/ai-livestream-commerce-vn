@@ -12,13 +12,13 @@ import math
 
 import pytest
 
-from backend.application.speech_chunking.boundaries import (
+from backend.application.text_chunker.boundaries import (
     BoundaryCandidate,
     CandidateKind,
     extract_candidates,
 )
-from backend.application.speech_chunking.duration import SpeechDurationEstimator
-from backend.application.speech_chunking.policy import (
+from backend.application.text_chunker.duration import SpeechDurationEstimator
+from backend.application.text_chunker.policy import (
     TARGET_DURATION_MS,
     AdaptiveAnalysisError,
     chunk_decision_reason,

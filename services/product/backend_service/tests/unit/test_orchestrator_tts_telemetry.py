@@ -15,10 +15,11 @@ import pytest
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from avatar.engines.mock import MockRenderBackend
 from backend.application.render.engines_base import StartOptions
-from backend.application.render.windows import AudioWindow, TextChunk, VideoWindow
+from backend.application.render.windows import AudioWindow, VideoWindow
+from backend.application.text_chunker import TextChunk
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 from backend.application.render.orchestrator import StreamOrchestrator
-from backend.application.speech_chunking.telemetry import TelemetryCollector
+from backend.application.text_chunker.telemetry import TelemetryCollector
 
 
 class _StubLLM(LLMEngine):

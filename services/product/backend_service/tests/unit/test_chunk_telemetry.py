@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.application.speech_chunking.duration import SpeechDurationEstimator
-from backend.application.speech_chunking.telemetry import ChunkTelemetry, TelemetryCollector
+from backend.application.text_chunker.duration import SpeechDurationEstimator
+from backend.application.text_chunker.telemetry import ChunkTelemetry, TelemetryCollector
 from backend.application.text_chunker import TextChunker
 
 PHRASE = "Chào bạn. Hôm nay shop giảm giá 50%, nhanh tay nhé!"

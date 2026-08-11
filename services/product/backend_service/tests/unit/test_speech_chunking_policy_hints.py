@@ -9,13 +9,13 @@ invariants (min/max chars, protected spans, hard cap) never change.
 from __future__ import annotations
 
 
-from backend.application.speech_chunking.boundaries import (
+from backend.application.text_chunker.boundaries import (
     BoundaryCandidate,
     CandidateKind,
     extract_candidates,
 )
-from backend.application.speech_chunking.duration import SpeechDurationEstimator
-from backend.application.speech_chunking.policy import (
+from backend.application.text_chunker.duration import SpeechDurationEstimator
+from backend.application.text_chunker.policy import (
     FIRST_AUDIO_SLOW_MS,
     HEALTHY_WATERMARK_MS,
     MAX_SOFT_TARGET_MS,
@@ -30,7 +30,7 @@ from backend.application.speech_chunking.policy import (
     select_boundary,
     soft_target_duration_ms,
 )
-from backend.application.speech_chunking.types import RuntimeHints
+from backend.application.text_chunker.types import RuntimeHints
 
 _ESTIMATOR = SpeechDurationEstimator()
 

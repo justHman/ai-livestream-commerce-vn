@@ -30,7 +30,8 @@ import pytest
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from avatar.engines.mock import MockRenderBackend
 from backend.application.render.engines_base import StartOptions
-from backend.application.render.windows import AudioWindow, TextChunk, VideoWindow
+from backend.application.render.windows import AudioWindow, VideoWindow
+from backend.application.text_chunker import TextChunk
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 from backend.application.render.orchestrator import StreamOrchestrator
 from backend.application.text_chunker import ChunkDecisionReason, TextChunker
@@ -404,7 +405,7 @@ async def test_speak_verbatim_passes_canonical_textchunk_to_tts():
     chunk-like object without importing the backend package). Asserting the
     exact canonical class pins the object identity, not just duck typing.
     """
-    from backend.application.speech_chunking.types import TextChunk as CanonicalTextChunk
+    from backend.application.text_chunker import TextChunk as CanonicalTextChunk
 
     llm = _StubLLM([])
     tts = _StubTTS()

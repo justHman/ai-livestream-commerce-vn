@@ -33,7 +33,7 @@ from avatar.engines.mock import MockRenderBackend, _MockSession
 from backend.application.render.queue import BoundedVideoQueue
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from tts.engines.base import ToneEngine
-from backend.application.render.windows import TextChunk
+from backend.application.text_chunker import TextChunk
 
 pytestmark = pytest.mark.asyncio
 

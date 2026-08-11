@@ -12,7 +12,7 @@ sentence splits.
 
 from __future__ import annotations
 
-from backend.application.speech_chunking.boundaries import (
+from backend.application.text_chunker.boundaries import (
     BoundaryCandidate,
     CandidateKind,
     extract_candidates,

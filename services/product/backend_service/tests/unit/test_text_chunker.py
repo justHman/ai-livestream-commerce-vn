@@ -16,7 +16,7 @@ TextChunk itself — assertions are on text content, seq, is_final, and count.
 
 from __future__ import annotations
 
-from backend.application.render.windows import TextChunk
+from backend.application.text_chunker import TextChunk
 from backend.application.text_chunker import TextChunker
 
 

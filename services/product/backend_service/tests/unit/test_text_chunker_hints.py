@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
-from backend.application.speech_chunking.types import RuntimeHints
+from backend.application.text_chunker.types import RuntimeHints
 from backend.application.text_chunker import TextChunk, TextChunker
 
 STARTUP_HINTS = RuntimeHints(speech_start_elapsed_ms=5000.0)

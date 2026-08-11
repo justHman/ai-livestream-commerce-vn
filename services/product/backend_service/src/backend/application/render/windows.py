@@ -1,14 +1,15 @@
 """Streaming data abstractions + audio windowing helpers.
 
-This module defines the two dataclasses that flow between stages of the
-streaming pipeline (LLM stream -> text chunker -> TTS stream -> avatar render):
+This module defines the two dataclasses that flow between render stages of
+the streaming pipeline (LLM stream -> text chunker -> TTS stream -> avatar
+render):
 
   AudioWindow : TTS stage output (PCM bytes or file path)
   VideoWindow : avatar render stage output
 
-``TextChunk`` (LLM/text stage output) is the canonical type owned by
-``backend.application.speech_chunking``; this module re-exports it so legacy
-import paths keep working.
+``TextChunk`` (text stage output) is the canonical type owned by
+``backend.application.text_chunker``; this module does not define or
+re-export it.
 
 And three pure helper functions for audio windowing:
 
@@ -25,8 +26,6 @@ import math
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
-
-from ..speech_chunking.types import TextChunk  # noqa: F401  (re-export for legacy import paths)
 
 # ---------------------------------------------------------------------------
 # Dataclasses

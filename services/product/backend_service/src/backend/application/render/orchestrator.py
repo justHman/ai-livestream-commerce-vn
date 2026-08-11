@@ -69,9 +69,7 @@ from .llm_stream_controller import (
 from .windows import AudioWindow, VideoWindow
 from .queue import BoundedVideoQueue, CoordinatorMetrics
 
-from ..speech_chunking import TextChunk
-from ..speech_chunking.telemetry import TelemetryCollector
-from ..text_chunker import ChunkDecisionReason, TextChunker
+from ..text_chunker import ChunkDecisionReason, TelemetryCollector, TextChunk, TextChunker
 
 # Default TextChunker config (mirrors AppConfig.text_chunk_* defaults). The
 # orchestrator reads these from the ``config`` dict if provided, else uses these

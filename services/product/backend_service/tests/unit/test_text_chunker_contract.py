@@ -4,29 +4,9 @@ Section 2.5 validates the configuration contract (positive ordered character
 thresholds, non-negative timeout, clear ValueError messages) and pins the
 deterministic fallback role of ``target_chars``: the setting must not be
 dead under the fixed policy. Section 2.6 locks the canonical ``TextChunk``
-identity contract.
-
-Intended-failure map on the current baseline (HEAD 62eddfa):
-  - min_chars=0 / target_chars=0 / max_chars=0 currently pass construction
-    (only the ordering and flush_timeout_ms guards exist), so all
-    zero-threshold tests are INTENDED RED. The ordering guard
-    (min <= target <= max) and flush_timeout_ms >= 0 guard already exist
-    and stay green.
-  - test_target_chars_changes_fixed_fallback_boundary: INTENDED RED. The
-    baseline chunker only consults ``target_chars`` to validate ordering;
-    two runs differing only in target_chars produce identical chunks.
-  - test_canonical_render_windows_textchunk_is_speech_chunking_textchunk:
-    INTENDED RED. ``render.windows`` still defines its own ``TextChunk``
-    instead of re-exporting the canonical class.
-  - test_render_textchunk_supports_metadata_fields: INTENDED RED for the
-    same reason. Once the migration lands, the canonical ``TextChunk``
-    (with ``decision_reason``) must remain compatible with every metadata
-    field the current ``render.windows.TextChunk`` carries.
-  - test_no_source_field_on_public_chunk_types: GREEN (canonical type has
-    no llm/script/source/producer field); kept as a contract guard.
-  - test_no_duplicate_textchunk_class_in_backend_application: INTENDED RED.
-    The baseline defines ``TextChunk`` in both ``render/windows.py`` and
-    ``speech_chunking/types.py``.
+identity contract: exactly one canonical class, exported by
+``backend.application.text_chunker``, with ``render.windows`` defining or
+re-exporting nothing.
 """
 
 from __future__ import annotations
@@ -202,31 +182,28 @@ def test_hard_max_with_whitespace_splits_at_last_whitespace_at_or_before_cap() -
 # ---------- 2.6 canonical TextChunk identity and compatibility ----------
 
 
-def test_canonical_render_windows_textchunk_is_speech_chunking_textchunk() -> None:
-    """Legacy ``render.windows.TextChunk`` must BE the canonical type.
+def test_render_windows_does_not_export_textchunk() -> None:
+    """``render.windows`` must not define or re-export ``TextChunk``.
 
-    INTENDED RED until task 2.6 migrates ``render.windows.TextChunk`` to
-    re-export the canonical class.
+    ``backend.application.text_chunker.TextChunk`` is the one canonical
+    class; importing ``TextChunk`` from ``render.windows`` must raise
+    ImportError.
     """
-    from backend.application.render.windows import TextChunk as RenderTextChunk
-    from backend.application.speech_chunking import TextChunk as CanonicalTextChunk
+    from backend.application.text_chunker import TextChunk as CanonicalTextChunk
 
-    assert CanonicalTextChunk is RenderTextChunk
+    with pytest.raises(ImportError):
+        from backend.application.render.windows import TextChunk  # noqa: F401
+
+    assert CanonicalTextChunk.__module__ == "backend.application.text_chunker.types"
 
 
-def test_render_textchunk_supports_metadata_fields() -> None:
-    """The canonical type must accept every constructor field the current
-    render TextChunk carries, plus the canonical metadata (decision_reason).
+def test_canonical_textchunk_supports_all_fields() -> None:
+    """The canonical type accepts every constructor field (keyword and
+    positional-compatible ordering) plus the canonical metadata
+    (``decision_reason``)."""
+    from backend.application.text_chunker import TextChunk as CanonicalTextChunk
 
-    INTENDED RED until task 2.6 lands; then the canonical dataclass (with
-    ``decision_reason``) must remain compatible with positional and keyword
-    construction.
-    """
-    from backend.application.render.windows import TextChunk as RenderTextChunk
-    from backend.application.speech_chunking import TextChunk as CanonicalTextChunk
-
-    assert CanonicalTextChunk is RenderTextChunk
-    instance = RenderTextChunk(
+    instance = CanonicalTextChunk(
         session_id="sess-1",
         utterance_id="utt-1",
         seq=3,
@@ -250,7 +227,7 @@ def test_no_source_field_on_public_chunk_types() -> None:
     """
     from dataclasses import fields
 
-    from backend.application.speech_chunking import TextChunk as CanonicalTextChunk
+    from backend.application.text_chunker import TextChunk as CanonicalTextChunk
 
     field_names = {f.name for f in fields(CanonicalTextChunk)}
     assert not {"llm", "script", "source", "producer"} & field_names
@@ -261,11 +238,8 @@ def test_no_source_field_on_public_chunk_types() -> None:
 
 def test_no_duplicate_textchunk_class_in_backend_application() -> None:
     """Exactly one ``TextChunk`` class definition may exist in the backend
-    application package; ``render.windows`` and ``text_chunker`` must re-export
-    the canonical class, not re-declare it.
-
-    INTENDED RED on baseline: ``render/windows.py`` and
-    ``speech_chunking/types.py`` both define the class.
+    application package; ``render.windows`` does not define or re-export it,
+    and the canonical class lives in ``text_chunker/types.py``.
     """
     import backend.application
     from pathlib import Path

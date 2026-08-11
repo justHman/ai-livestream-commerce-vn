@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.application.speech_chunking.telemetry import BoundedEwma, TelemetryCollector
-from backend.application.speech_chunking.types import RuntimeHints
+from backend.application.text_chunker.telemetry import BoundedEwma, TelemetryCollector
+from backend.application.text_chunker.types import RuntimeHints
 
 
 def test_bounded_ewma_deterministic() -> None:
