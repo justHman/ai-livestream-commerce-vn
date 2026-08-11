@@ -26,6 +26,9 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     engine = _build_engine()
     app.state.engine = engine
     app.state.engine_ready = True
+    # Voice-profile service over the configured store URI (runtime cluster
+    # replaces the injected enrollment fn with the real provider).
+    _wire_voice_service(app)
     # With no provider runtime wired yet, the engine alone satisfies
     # readiness; the runtime cluster additionally gates runtime_ready.
     app.state.runtime_ready = True
@@ -34,7 +37,19 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     finally:
         app.state.engine_ready = False
         app.state.runtime_ready = False
+        app.state.voice_service = None
         try:
             engine.unload()
         finally:
             app.state.engine = None
+
+
+def _wire_voice_service(app: FastAPI) -> None:
+    """Build the VoiceProfileService from the app's validated config."""
+    from tts.voices.service import VoiceProfileService
+    from tts.voices.store import get_store
+
+    server = app.state.server_config
+    runtime = app.state.runtime_config
+    store = get_store(runtime.voice_store_uri, server.runtime_root)
+    app.state.voice_service = VoiceProfileService(store, runtime)

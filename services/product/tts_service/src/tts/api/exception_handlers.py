@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from tts.engines.base import EngineError, EngineUnavailable
 from tts.providers.errors import ProviderError
+from tts.voices.enrollment import InvalidReferenceAudioError
 
 
 def _envelope(code: str, message: str, http_status: int) -> JSONResponse:
@@ -39,6 +40,13 @@ async def _provider_error_handler(request: Request, exc: ProviderError) -> JSONR
     return _envelope(f"provider_{type(exc).__name__}", exc.message, exc.http_status)
 
 
+async def _invalid_reference_audio_handler(
+    request: Request, exc: InvalidReferenceAudioError
+) -> JSONResponse:
+    """Reference WAV failed enrollment constraints -> stable 422 (task 5.1)."""
+    return _envelope("invalid_reference_audio", str(exc), 422)
+
+
 async def _unexpected_handler(request: Request, exc: Exception) -> JSONResponse:
     return _envelope("internal_error", "internal server error", 500)
 
@@ -49,4 +57,5 @@ def register(app: FastAPI) -> None:
     app.add_exception_handler(EngineError, _engine_error_handler)
     app.add_exception_handler(EngineUnavailable, _engine_unavailable_handler)
     app.add_exception_handler(ProviderError, _provider_error_handler)
+    app.add_exception_handler(InvalidReferenceAudioError, _invalid_reference_audio_handler)
     app.add_exception_handler(Exception, _unexpected_handler)
