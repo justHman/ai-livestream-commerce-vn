@@ -353,6 +353,93 @@
         },
         "title": "VoiceListResponse",
         "type": "object"
+      },
+      "VoiceProfileCreateResponse": {
+        "description": "Opaque profile id plus provider-neutral metadata.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "object": {
+            "default": "voice_profile",
+            "title": "Object",
+            "type": "string"
+          },
+          "profile_kind": {
+            "enum": [
+              "preset",
+              "cloned"
+            ],
+            "title": "Profile Kind",
+            "type": "string"
+          },
+          "voice_profile_id": {
+            "title": "Voice Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voice_profile_id",
+          "profile_kind",
+          "display_name"
+        ],
+        "title": "VoiceProfileCreateResponse",
+        "type": "object"
+      },
+      "VoiceProfileResponse": {
+        "description": "Provider-neutral profile metadata (no speaker data ever).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "object": {
+            "default": "voice_profile",
+            "title": "Object",
+            "type": "string"
+          },
+          "profile_kind": {
+            "enum": [
+              "preset",
+              "cloned"
+            ],
+            "title": "Profile Kind",
+            "type": "string"
+          },
+          "provider_model_revision": {
+            "title": "Provider Model Revision",
+            "type": "string"
+          },
+          "provider_name": {
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "voice_profile_id": {
+            "title": "Voice Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voice_profile_id",
+          "tenant_id",
+          "profile_kind",
+          "display_name",
+          "provider_name",
+          "provider_model_revision",
+          "created_at"
+        ],
+        "title": "VoiceProfileResponse",
+        "type": "object"
       }
     }
   },
@@ -663,7 +750,7 @@
     },
     "/v1/voices": {
       "get": {
-        "description": "Return the voices available on the active self-host engine.",
+        "description": "Return the voices available on the active self-host engine (legacy).",
         "operationId": "list_voices_v1_voices_get",
         "parameters": [
           {
@@ -706,6 +793,315 @@
           }
         },
         "summary": "List Voices"
+      },
+      "post": {
+        "description": "Create a voice profile.\n\n``preset=true`` seeds a profile for an existing preset display name (no\nreference audio, no provider call). Otherwise the raw request body must be\na reference WAV; the injected enrollment provider encodes it once and the\npayload is persisted. The provider is wired in cluster 4 \u2014 until then the\ncloned path returns 503.",
+        "operationId": "create_voice_profile_v1_voices_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "display_name",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Display Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "style",
+            "required": false,
+            "schema": {
+              "default": "natural",
+              "title": "Style",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "preset",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Preset",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceProfileCreateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Create Voice Profile"
+      }
+    },
+    "/v1/voices/{voice_profile_id}": {
+      "delete": {
+        "description": "Delete a profile and its payload; 404 when it does not exist here.",
+        "operationId": "delete_voice_profile_v1_voices__voice_profile_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voice_profile_id",
+            "required": true,
+            "schema": {
+              "title": "Voice Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Delete Voice Profile"
+      },
+      "get": {
+        "description": "Return provider-neutral metadata for one profile (never the payload).",
+        "operationId": "get_voice_profile_v1_voices__voice_profile_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voice_profile_id",
+            "required": true,
+            "schema": {
+              "title": "Voice Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Voice Profile"
       }
     }
   }
