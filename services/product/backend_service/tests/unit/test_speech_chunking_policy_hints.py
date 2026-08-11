@@ -27,6 +27,7 @@ from backend.application.text_chunker.policy import (
     STARVATION_WATERMARK_MS,
     STEADY_TARGET_MS,
     TARGET_DURATION_MS,
+    AdaptiveViPolicyConfig,
     select_boundary,
     soft_target_duration_ms,
 )
@@ -51,9 +52,9 @@ def _selected_end(
         text,
         _candidates(text, max_chars),
         estimator=_ESTIMATOR,
-        target_chars=target_chars,
-        max_chars=max_chars,
-        min_chars=min_chars,
+        config=AdaptiveViPolicyConfig(
+            min_chars=min_chars, max_chars=max_chars, char_bias_chars=target_chars
+        ),
         runtime_hints=runtime_hints,
     )
     return None if selected is None else selected.candidate.end
@@ -272,9 +273,9 @@ def test_hard_cap_enforced_under_active_hints() -> None:
         _FLIP_TEXT,
         _candidates(_FLIP_TEXT, 80),
         estimator=_ESTIMATOR,
-        target_chars=_FLIP_TARGET_CHARS,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(
+            min_chars=12, max_chars=80, char_bias_chars=_FLIP_TARGET_CHARS
+        ),
         runtime_hints=_STARTUP_HINTS,
     )
     assert selected is not None
@@ -290,9 +291,7 @@ def test_hard_cap_forced_split_when_no_weak_candidate_with_hints() -> None:
         text,
         _candidates(text, 80),
         estimator=_ESTIMATOR,
-        target_chars=40,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(min_chars=12, max_chars=80, char_bias_chars=40),
         runtime_hints=_STARTUP_HINTS,
     )
     assert selected is not None
@@ -313,9 +312,7 @@ def test_protected_candidate_never_selected_while_safe_exists_with_hints() -> No
             text,
             candidates,
             estimator=_ESTIMATOR,
-            target_chars=40,
-            max_chars=80,
-            min_chars=12,
+            config=AdaptiveViPolicyConfig(min_chars=12, max_chars=80, char_bias_chars=40),
             runtime_hints=hints,
         )
         assert selected is not None
@@ -333,9 +330,9 @@ def test_weak_commit_with_hints_holds_over_cap() -> None:
         _FLIP_TEXT,
         _candidates(_FLIP_TEXT, 80),
         estimator=_ESTIMATOR,
-        target_chars=_FLIP_TARGET_CHARS,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(
+            min_chars=12, max_chars=80, char_bias_chars=_FLIP_TARGET_CHARS
+        ),
         runtime_hints=_STARTUP_HINTS,
     )
     assert selected is not None

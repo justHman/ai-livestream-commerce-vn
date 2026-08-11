@@ -21,6 +21,7 @@ from backend.application.text_chunker.duration import SpeechDurationEstimator
 from backend.application.text_chunker.policy import (
     TARGET_DURATION_MS,
     AdaptiveAnalysisError,
+    AdaptiveViPolicyConfig,
     chunk_decision_reason,
     score_boundary,
     select_boundary,
@@ -42,9 +43,9 @@ def _selected_end(
         text,
         _candidates(text, max_chars),
         estimator=SpeechDurationEstimator(),
-        target_chars=target_chars,
-        max_chars=max_chars,
-        min_chars=min_chars,
+        config=AdaptiveViPolicyConfig(
+            min_chars=min_chars, max_chars=max_chars, char_bias_chars=target_chars
+        ),
     )
     return None if selected is None else selected.candidate.end
 
@@ -55,9 +56,7 @@ def test_empty_text_selects_none() -> None:
             "",
             [],
             estimator=SpeechDurationEstimator(),
-            target_chars=40,
-            max_chars=80,
-            min_chars=12,
+            config=AdaptiveViPolicyConfig(),
         )
         is None
     )
@@ -75,12 +74,9 @@ def test_stronger_kind_outranks_weaker_regardless_of_duration() -> None:
     whitespace_end = text.index(" khoác") + 1
     assert sentence_end < whitespace_end
     estimator = SpeechDurationEstimator()
-    sentence_score = score_boundary(
-        text, BoundaryCandidate(CandidateKind.SENTENCE, sentence_end, False), estimator, 40
-    )
-    white_score = score_boundary(
-        text, BoundaryCandidate(CandidateKind.WHITESPACE, whitespace_end, False), estimator, 40
-    )
+    config = AdaptiveViPolicyConfig(char_bias_chars=40)
+    sentence_score = score_boundary(text, BoundaryCandidate(CandidateKind.SENTENCE, sentence_end, False), estimator, config)
+    white_score = score_boundary(text, BoundaryCandidate(CandidateKind.WHITESPACE, whitespace_end, False), estimator, config)
     assert sentence_score < white_score
 
 
@@ -101,8 +97,9 @@ def test_duration_proximity_breaks_kind_ties() -> None:
     # to the soft duration target than a's (a is a very short head).
     assert db > da
     assert abs(db - TARGET_DURATION_MS) < abs(da - TARGET_DURATION_MS)
-    score_a = score_boundary(text, a, estimator, 40)
-    score_b = score_boundary(text, b, estimator, 40)
+    config = AdaptiveViPolicyConfig(char_bias_chars=40)
+    score_a = score_boundary(text, a, estimator, config)
+    score_b = score_boundary(text, b, estimator, config)
     assert score_b < score_a
 
 
@@ -137,9 +134,7 @@ def test_protected_candidate_not_selected_when_safe_exists() -> None:
         text,
         ends,
         estimator=SpeechDurationEstimator(),
-        target_chars=40,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(),
     )
     assert selected is not None
     assert not selected.candidate.protected
@@ -153,9 +148,7 @@ def test_protected_strong_never_auto_committed_before_safe_boundary() -> None:
         text,
         _candidates(text),
         estimator=SpeechDurationEstimator(),
-        target_chars=40,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(),
     )
     assert selected is None
 
@@ -178,8 +171,9 @@ def test_target_chars_breaks_duration_ties() -> None:
     a = whitespaces[2]  # end 13 — exactly on target
     b = whitespaces[0]  # end 4 — far from target
     assert a.end == 13
-    score_a = score_boundary(text, a, estimator, target_chars=13)
-    score_b = score_boundary(text, b, estimator, target_chars=13)
+    config = AdaptiveViPolicyConfig(char_bias_chars=13)
+    score_a = score_boundary(text, a, estimator, config)
+    score_b = score_boundary(text, b, estimator, config)
     assert score_a < score_b
 
 
@@ -202,9 +196,7 @@ def test_hard_cap_wins_when_no_natural_boundary_before_cap() -> None:
         text,
         _candidates(text, 80),
         estimator=SpeechDurationEstimator(),
-        target_chars=40,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(),
     )
     assert selected is not None
     assert selected.candidate.end == 80
@@ -219,9 +211,7 @@ def test_hard_cap_forced_split_prefers_best_natural_boundary() -> None:
         text,
         _candidates(text, 80),
         estimator=SpeechDurationEstimator(),
-        target_chars=40,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(),
     )
     assert selected is not None
     assert selected.forced is True
@@ -237,9 +227,7 @@ def test_hard_cap_with_protected_only_forces_protected_split() -> None:
         text,
         _candidates(text, 80),
         estimator=SpeechDurationEstimator(),
-        target_chars=40,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(),
     )
     assert selected is not None
     assert selected.candidate.end == 80
@@ -254,9 +242,7 @@ def test_no_boundary_selected_below_min() -> None:
         text,
         _candidates(text),
         estimator=SpeechDurationEstimator(),
-        target_chars=40,
-        max_chars=80,
-        min_chars=12,
+        config=AdaptiveViPolicyConfig(),
     )
     assert selected is None
 
@@ -273,7 +259,10 @@ def test_non_finite_estimate_raises_adaptive_analysis_error() -> None:
     text = "Xin chào mọi người. Tôi cần mua."
     with pytest.raises(AdaptiveAnalysisError):
         score_boundary(
-            text, BoundaryCandidate(CandidateKind.SENTENCE, 20, False), _BrokenEstimator(), 40
+            text,
+            BoundaryCandidate(CandidateKind.SENTENCE, 20, False),
+            _BrokenEstimator(),
+            AdaptiveViPolicyConfig(),
         )
 
 
@@ -281,7 +270,7 @@ def test_score_is_finite_and_deterministic() -> None:
     text = "Xin chào mọi người. Hôm nay shop giảm 50%!"
     estimator = SpeechDurationEstimator()
     for candidate in _candidates(text):
-        score = score_boundary(text, candidate, estimator, 40)
+        score = score_boundary(text, candidate, estimator, AdaptiveViPolicyConfig())
         assert math.isfinite(score)
     assert _selected_end(text) == _selected_end(text)
 

@@ -12,7 +12,13 @@ from enum import StrEnum
 from typing import Optional
 from uuid import uuid4
 
-__all__ = ["TextChunk", "ChunkPolicy", "RuntimeHints", "ChunkDecisionReason"]
+__all__ = [
+    "TextChunk",
+    "FixedChunkPolicyConfig",
+    "ChunkPolicy",
+    "RuntimeHints",
+    "ChunkDecisionReason",
+]
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,36 @@ class TextChunk:
     is_final: bool = False
     id: str = field(default_factory=lambda: uuid4().hex)
     decision_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class FixedChunkPolicyConfig:
+    """Fixed character-threshold policy configuration.
+
+    The deterministic baseline and explicit runtime rollback. ``min_chars``
+    is the quality floor for automatic emission, ``target_chars`` the
+    finalize fallback boundary, and ``max_chars`` the hard safety cap for
+    every automatic non-final chunk (an intentional invariant under BOTH
+    policies). Adaptive scoring never consumes ``target_chars`` — the
+    adaptive path has its own config with its own tie-break reference.
+    """
+
+    min_chars: int = 12
+    target_chars: int = 40
+    max_chars: int = 80
+
+    def __post_init__(self) -> None:
+        if self.min_chars <= 0:
+            raise ValueError(f"min_chars must be > 0, got {self.min_chars}")
+        if self.target_chars <= 0:
+            raise ValueError(f"target_chars must be > 0, got {self.target_chars}")
+        if self.max_chars <= 0:
+            raise ValueError(f"max_chars must be > 0, got {self.max_chars}")
+        if not (self.min_chars <= self.target_chars <= self.max_chars):
+            raise ValueError(
+                f"require min_chars <= target_chars <= max_chars, got "
+                f"min={self.min_chars}, target={self.target_chars}, max={self.max_chars}"
+            )
 
 
 class ChunkPolicy(StrEnum):
