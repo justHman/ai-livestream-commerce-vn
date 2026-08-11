@@ -78,9 +78,9 @@
 
 ## 9. Regression and closeout
 
-- [ ] 9.0 Architecture cleanliness: repository-wide audit passes — zero `speech_chunking` references in active code, zero `render.windows` `TextChunk` definition/re-export, zero `text_chunker.py` facade file, zero duplicated chunking defaults, and the verbatim/full-script path uses the same `TextChunker` state machine.
-- [ ] 9.1 Run all backend unit/integration/contract tests affected by chunking/render orchestration plus Ruff/format/static checks used by service CI.
-- [ ] 9.2 Run existing local Stage 2 speech-path regression without AWS mutation and verify no session cleanup, playback correlation, or stop semantics regress.
-- [ ] 9.3 Run OpenSpec validation for `adaptive-speech-text-chunking` and correct every structural/spec-format finding before implementation is considered complete.
-- [ ] 9.4 Update developer/runbook documentation with the source-agnostic chunking contract, fixed rollback switch, telemetry fields, benchmark procedure, and explicit rule that script authoring/moderation belongs to downstream Change B.
+- [x] 9.0 Architecture cleanliness: repository-wide audit passes — zero `speech_chunking` references in active code, zero `render.windows` `TextChunk` definition/re-export, zero `text_chunker.py` facade file, zero duplicated chunking defaults, and the verbatim/full-script path uses the same `TextChunker` state machine. Audit PASS (a-f); fixed 9.0d duplicated fallback mirrors in `sessions.py` + `coordinator.py` (commit 1280b47).
+- [x] 9.1 Run all backend unit/integration/contract tests affected by chunking/render orchestration plus Ruff/format/static checks used by service CI. 515 unit + 194 integration/contract passed (excl. env-bound sentence-transformers test); contract drift fixed via LF normalization + `.gitattributes` (9e5a481); ruff check + format clean (ae1f57b).
+- [x] 9.2 Run existing local Stage 2 speech-path regression without AWS mutation and verify no session cleanup, playback correlation, or stop semantics regress. `stage2_pipeline.py --lane offline` PASS: 25 turns, cleanup clean, queue underflow/drops/stale 0, errors []; playback telemetry (7.3) flows through orchestrator without error.
+- [x] 9.3 Run OpenSpec validation for `adaptive-speech-text-chunking` and correct every structural/spec-format finding before implementation is considered complete. `openspec validate adaptive-speech-text-chunking` → valid.
+- [x] 9.4 Update developer/runbook documentation with the source-agnostic chunking contract, fixed rollback switch, telemetry fields, benchmark procedure, and explicit rule that script authoring/moderation belongs to downstream Change B. New `docs/chunking-contract.md` + link from `docs/architecture.md` (0366952).
 - [ ] 9.5 Only after task 8.9 and all regression gates pass, authorize creation of `approved-script-authoring-pipeline`; otherwise leave Change B blocked.
