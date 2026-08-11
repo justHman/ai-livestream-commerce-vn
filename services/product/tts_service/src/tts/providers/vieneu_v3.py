@@ -1,4 +1,4 @@
-"""VieNeu v3 Turbo provider — single synthesis path (Change T tasks 6.1-6.8).
+"""VieNeu v3 Turbo provider — single and mixed-voice batched synthesis.
 
 Provider-owned lifecycle: the provider builds the SDK model in ``__init__``.
 The ``vieneu`` import is deferred so the module (and anything importing it)
@@ -6,13 +6,15 @@ loads safely on installs without the SDK; construction failure raises
 ``ProviderUnavailableError`` instead of crashing the app.
 
 All SDK access lives in this module (task 7.1 isolation); the scheduler and
-API layers only ever see the provider-neutral ``TTSProvider`` surface.
-The low-level ``V3TurboBatchEngine`` stays unused here — cluster 5 wires
-``synthesize_batch`` around ``_get_batch_engine()``.
+API layers only ever see the provider-neutral ``TTSProvider`` surface. The
+low-level ``V3TurboBatchEngine`` is reached through ``tts._get_batch_engine()``
+on the PyTorch backend; the ONNX/CPU backend has no batch engine and falls
+back to sequential single-path synthesis.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Callable, Optional
 
@@ -52,18 +54,37 @@ _VIENEU_STYLES: dict[str, str] = {
 
 SUPPORTED_CUES: tuple[str, ...] = ("[cười]", "[thở dài]", "[hắng giọng]")
 
-# Baseline generation params passed through to the SDK single-inference call.
+# Baseline generation params passed through to the SDK single-inference call
+# and the batch engine's batch-wide scalar knobs (task 7.3 batch_key).
 _TEMPERATURE = 0.8
 _TOP_K = 25
 _TOP_P = 0.95
 _MAX_NEW_FRAMES = 300
 _REPETITION_PENALTY = 1.2
+_BATCH_SCALAR_PARAMS = (
+    "temperature",
+    "top_k",
+    "top_p",
+    "repetition_penalty",
+    "max_new_frames",
+)
 
 ProfileLoader = Callable[[str, str], tuple[object, dict]]
 
 
 def _accelerator_device(accelerator: str) -> str:
     return {"gpu": "cuda", "cpu": "cpu", "auto": "auto"}[accelerator]
+
+
+def _phonemize(text: str) -> str:
+    """Phonemize with the SDK's emotion-preserving phonemizer.
+
+    The import is lazy so modules importing this one load on installs without
+    ``vieneu_utils`` (it ships with the pinned vieneu wheel).
+    """
+    from vieneu_utils.phonemize_text import phonemize_text_with_emotions
+
+    return phonemize_text_with_emotions(text)
 
 
 class VieNeuV3TurboProvider:
@@ -88,6 +109,15 @@ class VieNeuV3TurboProvider:
             raise ProviderUnavailableError(
                 f"unexpected VieNeu backend {self._backend!r}; expected 'pytorch' or 'onnx'"
             )
+        self._batch_engine = None
+        if self._backend == "pytorch":
+            self._verify_batch_contract()
+            self._batch_engine = self._tts._get_batch_engine()
+            if self._batch_engine is None:
+                raise ProviderUnavailableError(
+                    "VieNeu pytorch backend reported no batch engine; batched "
+                    "synthesis is unavailable"
+                )
         self._capabilities = self._build_capabilities(config, self._backend)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
@@ -127,6 +157,7 @@ class VieNeuV3TurboProvider:
         )
 
     def close(self) -> None:
+        self._batch_engine = None
         self._tts = None
 
     # ── TTSProvider surface ──────────────────────────────────────────────────
@@ -139,13 +170,26 @@ class VieNeuV3TurboProvider:
         return self._capabilities
 
     def batch_key(self, request: ProviderRequest) -> object:
-        # Batched generation params (cluster 5); single path always computes
-        # one compatible key so the scheduler may coalesce.
+        """Compatibility key: batch-wide engine scalars + model revision.
+
+        The engine only consumes the batch-wide sampling params as scalars
+        (task 7.3); ``voice_profile_id``/``style`` are per-row and intentionally
+        absent, and ``speed``/``seed``/``response_format`` never reach
+        ``generate_batch`` so they stay out of the key.
+        """
         cfg = request.generation_config
-        return (self.provider_name, cfg.temperature, cfg.seed)
+        return (
+            self.provider_name,
+            self._config.model_revision,
+            cfg.temperature,
+            _TOP_K,
+            _TOP_P,
+            _REPETITION_PENALTY,
+            _MAX_NEW_FRAMES,
+        )
 
     def synthesize(self, request: ProviderRequest) -> AudioResult:
-        """Synthesize one request; cluster 5 adds the batched path."""
+        """Synthesize one request via the SDK single-inference path."""
         self._validate_style(request.style)
         self._validate_cues(request.input_text)
         payload = self._resolve_profile(request)
@@ -167,8 +211,48 @@ class VieNeuV3TurboProvider:
         return self._to_result(request, np.asarray(wav, dtype=np.float32).reshape(-1))
 
     def synthesize_batch(self, requests: list[ProviderRequest]) -> list[ProviderResult]:
-        # Cluster 5 replaces this with the V3TurboBatchEngine path.
-        return [self.synthesize(r) for r in requests]
+        """Mixed-voice static batch via the SDK batch engine; order preserved.
+
+        The scheduler coalesces on ``batch_key``, but the provider re-checks so
+        a misrouted request can never ride the wrong batch. The ONNX/CPU
+        backend has no batch engine: it falls back to sequential single-path
+        synthesis (each request resolves its own profile/style).
+        """
+        if not requests:
+            return []
+        if self._backend != "pytorch":
+            return [self.synthesize(request) for request in requests]
+        first_key = self.batch_key(requests[0])
+        for request in requests[1:]:
+            if self.batch_key(request) != first_key:
+                raise ProviderInferenceError(
+                    "mixed batch_key requests in one batch; scheduler must "
+                    "coalesce on batch_key before dispatch"
+                )
+        engine_dicts = [self._build_engine_request(request) for request in requests]
+        params = self._batch_scalar_params(requests[0])
+        try:
+            waveforms = self._batch_engine.generate_batch(engine_dicts, **params)
+        except Exception as exc:
+            raise ProviderInferenceError(
+                f"VieNeu batch inference failed for {len(requests)} requests "
+                f"(first {requests[0].request_id!r})"
+            ) from exc
+        if len(waveforms) != len(requests):
+            raise ProviderInferenceError(
+                f"VieNeu batch engine returned {len(waveforms)} waveforms for "
+                f"{len(requests)} requests; refusing to misalign results"
+            )
+        results = []
+        for request, waveform in zip(requests, waveforms):
+            wav = np.asarray(waveform, dtype=np.float32).reshape(-1)
+            if wav.ndim != 1:
+                raise ProviderInferenceError(
+                    f"VieNeu batch engine returned non-1D waveform for "
+                    f"request {request.request_id!r}"
+                )
+            results.append(self._to_result(request, wav))
+        return results
 
     def enroll_voice(self, reference_audio: bytes, options: dict) -> object:
         raise ProviderUnavailableError("VieNeu provider enrollment is not wired yet (cluster 5)")
@@ -227,6 +311,71 @@ class VieNeuV3TurboProvider:
         if ref_codes is not None:
             voice_payload["codes"] = np.asarray(ref_codes, dtype=np.int64)
         return voice_payload
+
+    def _verify_batch_contract(self) -> None:
+        """Startup check (task 7.2): pinned engine must satisfy the batch surface.
+
+        Failures raise ``ProviderUnavailableError`` — readiness fails loud
+        instead of degrading to a silently single-path runtime on a PyTorch
+        box. Accessing the internal engine through ``tts._get_batch_engine()``
+        keeps ``vieneu.v3_turbo_serve`` imports inside this module (task 7.1).
+        """
+        try:
+            engine = self._tts._get_batch_engine()
+        except Exception as exc:
+            raise ProviderUnavailableError(
+                f"VieNeu batch engine failed to initialize: {exc}"
+            ) from exc
+        if engine is None:
+            raise ProviderUnavailableError(
+                "VieNeu pytorch backend has no batch engine; expected "
+                "V3TurboBatchEngine for batched synthesis"
+            )
+        signature = inspect.signature(engine.generate_batch)
+        parameters = signature.parameters
+        if "requests" not in parameters:
+            raise ProviderUnavailableError(
+                "VieNeu batch engine generate_batch lacks a 'requests' parameter"
+            )
+        missing = [name for name in _BATCH_SCALAR_PARAMS if name not in parameters]
+        if missing:
+            raise ProviderUnavailableError(
+                "VieNeu batch engine generate_batch lacks batch-wide scalar "
+                f"params: {', '.join(missing)}"
+            )
+        if not hasattr(self._tts.engine, "_resolve_style_id"):
+            raise ProviderUnavailableError(
+                "VieNeu engine lacks _resolve_style_id; per-row style resolution is unavailable"
+            )
+
+    @staticmethod
+    def _batch_scalar_params(request: ProviderRequest) -> dict:
+        """Batch-wide engine scalars, derived from the request generation config."""
+        return {
+            "temperature": request.generation_config.temperature,
+            "top_k": _TOP_K,
+            "top_p": _TOP_P,
+            "repetition_penalty": _REPETITION_PENALTY,
+            "max_new_frames": _MAX_NEW_FRAMES,
+        }
+
+    def _build_engine_request(self, request: ProviderRequest) -> dict:
+        """One engine batch row: phonemes, voice anchor, style, ref-code flag.
+
+        Phonemes are pre-computed with the SDK's emotion-preserving phonemizer
+        so cue handling stays consistent with the single path; each row keeps
+        its own style/profile — nothing can leak across rows (tasks 7.4/7.10).
+        """
+        payload = self._resolve_profile(request)
+        speaker_emb = payload["speaker_emb"]
+        ref_codes = payload.get("codes")
+        return {
+            "phonemes": _phonemize(request.input_text),
+            "speaker_emb": speaker_emb,
+            "ref_codes": ref_codes,
+            "style": _VIENEU_STYLES[request.style],
+            "use_ref_codes": True,
+        }
 
     def _to_result(self, request: ProviderRequest, wav: np.ndarray) -> AudioResult:
         duration_ms = int(len(wav) / SAMPLE_RATE_HZ * 1000) if len(wav) else 0

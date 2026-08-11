@@ -7,6 +7,8 @@ the capabilities route are exercised end to end without loading a model.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +16,23 @@ from fastapi.testclient import TestClient
 from tts import create_app
 
 _PRESET_NAME = "Phạm Tuyên"
+
+
+class FakeBatchEngine:
+    """Signature mirrors the SDK engine so the startup contract check passes."""
+
+    def generate_batch(
+        self,
+        requests: list[dict],
+        *,
+        temperature: float = 0.8,
+        top_k: int = 25,
+        top_p: float = 0.95,
+        repetition_penalty: float = 1.2,
+        max_new_frames: int = 300,
+        use_cudagraph: bool = False,
+    ) -> list[np.ndarray]:
+        return [np.zeros(48_000 // 10, dtype=np.float32) for _ in requests]
 
 
 class FakeTTS:
@@ -26,6 +45,8 @@ class FakeTTS:
                 "codes": np.zeros(62, dtype=np.int64),
             }
         }
+        self.engine = SimpleNamespace(_resolve_style_id=lambda style: 0)
+        self.batch_engine = FakeBatchEngine()
 
     def get_preset_voice(self, name: str | None = None) -> dict:
         return self.preset_voices[_PRESET_NAME]
@@ -34,7 +55,7 @@ class FakeTTS:
         return np.zeros(48_000 // 10, dtype=np.float32)
 
     def _get_batch_engine(self):
-        return None
+        return self.batch_engine
 
 
 @pytest.fixture
