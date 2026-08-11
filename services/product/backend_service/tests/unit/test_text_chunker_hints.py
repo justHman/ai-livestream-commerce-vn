@@ -14,11 +14,31 @@ from collections.abc import Iterable
 
 from backend.application.text_chunker.types import RuntimeHints
 from backend.application.text_chunker import TextChunk, TextChunker
+from backend.application.text_chunker.policy import (
+    STARTUP_EARLY_TARGET_MS,
+    STARVATION_TARGET_MS,
+    AdaptiveViPolicyConfig,
+)
 
 STARTUP_HINTS = RuntimeHints(speech_start_elapsed_ms=5000.0)
 STEADY_HINTS = RuntimeHints(playback_buffer_ms=6000.0)
 STARVATION_HINTS = RuntimeHints(playback_buffer_ms=100.0)
 STARTUP_THRESHOLD_HINTS = RuntimeHints(speech_start_elapsed_ms=2500.0)
+
+# The word-fragmented hint scripts below commit early ~13-char weak-boundary
+# chunks under startup/starvation hints. Those thresholds and this script were
+# empirically verified against the pre-calibration law constants
+# (STARTUP_EARLY_TARGET_MS=1500, STARVATION_TARGET_MS=1400); the cand-05
+# calibrated defaults (1200/1200, task 8.9) are covered by the unit-level
+# defaults test, so these integration tests pin the direction law with an
+# explicit legacy config.
+LEGACY_CONFIG = AdaptiveViPolicyConfig(
+    min_chars=12,
+    max_chars=80,
+    char_bias_chars=40,
+    startup_early_target_ms=STARTUP_EARLY_TARGET_MS,
+    starvation_target_ms=STARVATION_TARGET_MS,
+)
 
 # Long multi-clause script without sentence-final punctuation, plus compact
 # protected forms. Empirically verified: word-fragmented delivery under
@@ -43,10 +63,13 @@ def _run(
     *,
     policy: str = "adaptive_vi",
     finalize_hints: RuntimeHints | None = None,
+    adaptive_config: AdaptiveViPolicyConfig | None = LEGACY_CONFIG,
 ) -> list[TextChunk]:
     """Feed fragments with ``hints``, finalize with ``finalize_hints`` (defaults
     to the feed hints), returning every emitted chunk."""
-    chunker = TextChunker(session_id="s", utterance_id="u", policy=policy)
+    chunker = TextChunker(
+        session_id="s", utterance_id="u", policy=policy, adaptive_config=adaptive_config
+    )
     chunks: list[TextChunk] = []
     for fragment in fragments:
         chunks.extend(chunker.feed(fragment, runtime_hints=hints))
@@ -57,7 +80,9 @@ def _run(
 
 
 def _chunker() -> TextChunker:
-    return TextChunker(session_id="s", utterance_id="u", policy="adaptive_vi")
+    return TextChunker(
+        session_id="s", utterance_id="u", policy="adaptive_vi", adaptive_config=LEGACY_CONFIG
+    )
 
 
 # ---------- startup vs steady vs starvation on identical text ----------

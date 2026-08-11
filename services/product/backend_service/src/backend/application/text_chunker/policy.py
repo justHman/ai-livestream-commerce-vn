@@ -129,6 +129,13 @@ class AdaptiveViPolicyConfig:
     """Adaptive_vi policy configuration: speech-duration targets, linguistic
     scoring weights, and hard safety constraints.
 
+    The duration-target fields feed ``soft_target_duration_ms`` directly
+    (task 8.9): every control-law constant is read from this config when one
+    is passed, so the tuned targets are not dead knobs. Defaults equal the
+    cand-05 calibrated constants (target 2200ms, startup early 1200ms,
+    starvation 1200ms); the module-level constants remain the no-config
+    backward-compatible fallback.
+
     This config deliberately carries NO ``target_chars``: the fixed policy's
     character sizing semantics never leak into adaptive scoring. The only
     character-size inputs are the hard safety constraints (``min_chars`` and
@@ -146,9 +153,9 @@ class AdaptiveViPolicyConfig:
     max_soft_target_ms: float = MAX_SOFT_TARGET_MS
     steady_target_ms: float = STEADY_TARGET_MS
     startup_late_elapsed_ms: float = STARTUP_LATE_ELAPSED_MS
-    startup_early_target_ms: float = STARTUP_EARLY_TARGET_MS
+    startup_early_target_ms: float = 1200.0  # cand-05 calibrated (was 1500)
     starvation_watermark_ms: float = STARVATION_WATERMARK_MS
-    starvation_target_ms: float = STARVATION_TARGET_MS
+    starvation_target_ms: float = 1200.0  # cand-05 calibrated (was 1400)
     healthy_watermark_ms: float = HEALTHY_WATERMARK_MS
     rtf_degraded_threshold: float = RTF_DEGRADED_THRESHOLD
     first_audio_slow_ms: float = FIRST_AUDIO_SLOW_MS
@@ -484,15 +491,25 @@ def _hint_neutral(value: Optional[float]) -> bool:
     return value is None or not math.isfinite(value)
 
 
-def soft_target_duration_ms(runtime_hints: Optional[RuntimeHints]) -> float:
+def soft_target_duration_ms(
+    runtime_hints: Optional[RuntimeHints],
+    config: Optional[AdaptiveViPolicyConfig] = None,
+) -> float:
     """Soft duration target (ms) derived from ``runtime_hints``.
 
-    Deterministic control law, monotone in the right directions:
-    - Base is ``TARGET_DURATION_MS``; the result is always clamped to
+    Deterministic control law, monotone in the right directions. When
+    ``config`` is given, every law constant is read from the config fields
+    (``target_duration_ms``, ``min_soft_target_ms``, ``max_soft_target_ms``,
+    ``steady_target_ms``, ``startup_late_elapsed_ms``,
+    ``startup_early_target_ms``, ``starvation_watermark_ms``,
+    ``starvation_target_ms``, ``healthy_watermark_ms``,
+    ``rtf_degraded_threshold``, ``first_audio_slow_ms``); without a config the
+    module-level constants are used (backward-compatible default).
+    - Base is the target; the result is always clamped to
       ``[MIN_SOFT_TARGET_MS, MAX_SOFT_TARGET_MS]``.
     - Startup (no audio observed yet — playback buffer AND first-audio EWMA
-      both absent): the target shrinks linearly from ``TARGET_DURATION_MS``
-      (at ``STARTUP_LATE_ELAPSED_MS``) to ``STARTUP_EARLY_TARGET_MS`` (at
+      both absent): the target shrinks linearly from the base target (at
+      ``STARTUP_LATE_ELAPSED_MS``) to ``STARTUP_EARLY_TARGET_MS`` (at
       ``2 * STARTUP_LATE_ELAPSED_MS``, clamped beyond) as the speech start
       falls later; before the late threshold, no startup adjustment.
     - Steady: playback buffer at/above ``HEALTHY_WATERMARK_MS`` may raise the
@@ -509,54 +526,67 @@ def soft_target_duration_ms(runtime_hints: Optional[RuntimeHints]) -> float:
     Never raises: neutral/absent/non-finite hints simply keep the base
     target, so a garbage hint cannot trip the chunker's failure fallback.
     """
-    if runtime_hints is None:
-        return TARGET_DURATION_MS
+    base_target = TARGET_DURATION_MS if config is None else config.target_duration_ms
+    min_target = MIN_SOFT_TARGET_MS if config is None else config.min_soft_target_ms
+    max_target = MAX_SOFT_TARGET_MS if config is None else config.max_soft_target_ms
+    steady_target = STEADY_TARGET_MS if config is None else config.steady_target_ms
+    late_elapsed = STARTUP_LATE_ELAPSED_MS if config is None else config.startup_late_elapsed_ms
+    early_target = STARTUP_EARLY_TARGET_MS if config is None else config.startup_early_target_ms
+    starvation_watermark = (
+        STARVATION_WATERMARK_MS if config is None else config.starvation_watermark_ms
+    )
+    starvation_target = STARVATION_TARGET_MS if config is None else config.starvation_target_ms
+    healthy_watermark = HEALTHY_WATERMARK_MS if config is None else config.healthy_watermark_ms
+    rtf_degraded = RTF_DEGRADED_THRESHOLD if config is None else config.rtf_degraded_threshold
+    first_audio_slow = FIRST_AUDIO_SLOW_MS if config is None else config.first_audio_slow_ms
 
-    target = TARGET_DURATION_MS
+    if runtime_hints is None:
+        return base_target
+
+    target = base_target
 
     # Steady: healthy playback buffer allows longer chunks.
     if (
         not _hint_neutral(runtime_hints.playback_buffer_ms)
-        and runtime_hints.playback_buffer_ms >= HEALTHY_WATERMARK_MS
+        and runtime_hints.playback_buffer_ms >= healthy_watermark
     ):
-        target = max(target, STEADY_TARGET_MS)
+        target = max(target, steady_target)
 
     # Starvation: each degraded signal independently shrinks the target.
     if (
         not _hint_neutral(runtime_hints.playback_buffer_ms)
-        and runtime_hints.playback_buffer_ms < STARVATION_WATERMARK_MS
+        and runtime_hints.playback_buffer_ms < starvation_watermark
     ):
-        target = min(target, STARVATION_TARGET_MS)
+        target = min(target, starvation_target)
     if (
         not _hint_neutral(runtime_hints.tts_rtf_ewma)
-        and runtime_hints.tts_rtf_ewma >= RTF_DEGRADED_THRESHOLD
+        and runtime_hints.tts_rtf_ewma >= rtf_degraded
     ):
-        target = min(target, STARVATION_TARGET_MS)
+        target = min(target, starvation_target)
     if (
         not _hint_neutral(runtime_hints.tts_first_audio_ewma_ms)
-        and runtime_hints.tts_first_audio_ewma_ms >= FIRST_AUDIO_SLOW_MS
+        and runtime_hints.tts_first_audio_ewma_ms >= first_audio_slow
     ):
-        target = min(target, STARVATION_TARGET_MS)
+        target = min(target, starvation_target)
 
     # Startup: only while no audio has ever been observed.
     if runtime_hints.playback_buffer_ms is None and runtime_hints.tts_first_audio_ewma_ms is None:
         if (
             not _hint_neutral(runtime_hints.speech_start_elapsed_ms)
-            and runtime_hints.speech_start_elapsed_ms >= STARTUP_LATE_ELAPSED_MS
+            and runtime_hints.speech_start_elapsed_ms >= late_elapsed
         ):
-            # Linear ramp from TARGET_DURATION_MS (at the late threshold) down
+            # Linear ramp from the base target (at the late threshold) down
             # to STARTUP_EARLY_TARGET_MS at 2x the threshold, clamped beyond.
             progress = min(
                 1.0,
-                (runtime_hints.speech_start_elapsed_ms - STARTUP_LATE_ELAPSED_MS)
-                / STARTUP_LATE_ELAPSED_MS,
+                (runtime_hints.speech_start_elapsed_ms - late_elapsed) / late_elapsed,
             )
             target = min(
                 target,
-                TARGET_DURATION_MS - progress * (TARGET_DURATION_MS - STARTUP_EARLY_TARGET_MS),
+                base_target - progress * (base_target - early_target),
             )
 
-    return min(MAX_SOFT_TARGET_MS, max(MIN_SOFT_TARGET_MS, target))
+    return min(max_target, max(min_target, target))
 
 
 def _duration_distance(estimate: float, target: float) -> float:
@@ -709,7 +739,7 @@ def select_boundary(
     """
     if not text or not candidates:
         return None
-    soft_target = soft_target_duration_ms(runtime_hints)
+    soft_target = soft_target_duration_ms(runtime_hints, config)
     return _select_adaptive(
         text,
         candidates,

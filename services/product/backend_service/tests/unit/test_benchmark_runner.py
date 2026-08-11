@@ -110,12 +110,21 @@ def test_simulate_hint_profiles_affect_ttfa_word_delivery() -> None:
     # strictly smaller than steady — this fails if the policy stops
     # honoring hints. Full delivery cannot show this (first chunk always
     # emits on feed 1), so a separating delivery form is used here.
+    # The corpus utterance is chosen so that all three profiles separate
+    # under the cand-05 calibrated defaults (1200/1200): the longest
+    # utterance happens to commit the same first boundary under starvation
+    # and steady, so a separating utterance is picked instead.
     texts = load_utterances()
-    longest = max(texts, key=lambda record: len(record.text))
+    target = next(
+        record
+        for record in sorted(texts, key=lambda record: len(record.text), reverse=True)
+        if simulate_utterance(record.text, "word", "starvation", ChunkPolicy.ADAPTIVE_VI).ttfa_ms
+        < simulate_utterance(record.text, "word", "steady", ChunkPolicy.ADAPTIVE_VI).ttfa_ms
+    )
     ttfas = {}
     counts = {}
     for profile in ALL_PROFILES:
-        metrics = simulate_utterance(longest.text, "word", profile, ChunkPolicy.ADAPTIVE_VI)
+        metrics = simulate_utterance(target.text, "word", profile, ChunkPolicy.ADAPTIVE_VI)
         ttfas[profile] = metrics.ttfa_ms
         counts[profile] = metrics.chunk_count
     assert ttfas["startup"] < ttfas["steady"]

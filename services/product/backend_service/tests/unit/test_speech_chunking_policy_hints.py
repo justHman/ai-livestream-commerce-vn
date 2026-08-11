@@ -68,6 +68,113 @@ def _is_real_end(text: str, end: int, min_chars: int = 12, max_chars: int = 80) 
     )
 
 
+def _legacy_config(char_bias_chars: int) -> AdaptiveViPolicyConfig:
+    """Config with the pre-calibration law constants (1500/1400).
+
+    The hint-mechanics selection tests below (weak-commit under cap, flip
+    text) were empirically verified against ``STARTUP_EARLY_TARGET_MS=1500``
+    and ``STARVATION_TARGET_MS=1400``, which the cand-05 calibrated defaults
+    (1200/1200) no longer provide. An explicit legacy config keeps those
+    tests exercising the hint law; the calibrated defaults themselves are
+    covered by ``test_default_config_calibrated_constant_values``.
+    """
+    return AdaptiveViPolicyConfig(
+        min_chars=12,
+        max_chars=80,
+        char_bias_chars=char_bias_chars,
+        startup_early_target_ms=STARTUP_EARLY_TARGET_MS,
+        starvation_target_ms=STARVATION_TARGET_MS,
+    )
+
+
+# ---------- config-driven law (task 8.9) ----------
+
+
+def test_config_startup_early_target_used_instead_of_module_constant() -> None:
+    # The control law must read startup_early_target_ms from the config, not
+    # the module constant: the calibrated default config (1200) already
+    # differs from the module constant (STARTUP_EARLY_TARGET_MS), and an
+    # explicit tuned field flows through the ramp (above the min clamp).
+    hints = RuntimeHints(speech_start_elapsed_ms=10 * STARTUP_LATE_ELAPSED_MS)
+    module_law = soft_target_duration_ms(hints)
+    assert module_law == STARTUP_EARLY_TARGET_MS
+    default = soft_target_duration_ms(hints, AdaptiveViPolicyConfig())
+    assert default == 1200.0
+    assert default != module_law
+    tuned = AdaptiveViPolicyConfig(startup_early_target_ms=1300.0)
+    assert soft_target_duration_ms(hints, tuned) == 1300.0
+    assert soft_target_duration_ms(hints, tuned) != default
+
+
+def test_config_starvation_target_used_instead_of_module_constant() -> None:
+    # Same proof for the starvation branch: config.starvation_target_ms must
+    # be what the law returns under a starvation hint. The calibrated default
+    # (1200) already differs from the module constant (STARVATION_TARGET_MS),
+    # and an explicit tuned field flows through (above the min clamp).
+    hints = RuntimeHints(playback_buffer_ms=STARVATION_WATERMARK_MS - 1.0)
+    module_law = soft_target_duration_ms(hints)
+    assert module_law == STARVATION_TARGET_MS
+    default = soft_target_duration_ms(hints, AdaptiveViPolicyConfig())
+    assert default == 1200.0
+    assert default != module_law
+    tuned = AdaptiveViPolicyConfig(starvation_target_ms=1300.0)
+    assert soft_target_duration_ms(hints, tuned) == 1300.0
+    assert soft_target_duration_ms(hints, tuned) != default
+
+
+def test_config_target_duration_used_as_law_base() -> None:
+    # The base target comes from config.target_duration_ms: neutral hints with
+    # a tuned base return the tuned base, not the module constant.
+    hints = RuntimeHints()
+    assert soft_target_duration_ms(hints, AdaptiveViPolicyConfig()) == TARGET_DURATION_MS
+    tuned = AdaptiveViPolicyConfig(target_duration_ms=2000.0)
+    assert soft_target_duration_ms(hints, tuned) == 2000.0
+
+
+def test_config_fields_flow_into_selection() -> None:
+    # Config-driven law must reach selection: select_boundary passes its
+    # config into soft_target_duration_ms. The calibrated default config
+    # (startup early target 1200 vs the module 1500 used by the no-config
+    # call) changes the selected end for the flip text under startup hints.
+    tuned = AdaptiveViPolicyConfig(min_chars=12, max_chars=80, char_bias_chars=_FLIP_TARGET_CHARS)
+    with_startup = select_boundary(
+        _FLIP_TEXT,
+        _candidates(_FLIP_TEXT, 80),
+        estimator=_ESTIMATOR,
+        config=tuned,
+        runtime_hints=_STARTUP_HINTS,
+    )
+    with_neutral = select_boundary(
+        _FLIP_TEXT,
+        _candidates(_FLIP_TEXT, 80),
+        estimator=_ESTIMATOR,
+        config=tuned,
+        runtime_hints=None,
+    )
+    assert with_startup is not None and with_neutral is not None
+    assert with_startup.candidate.end != with_neutral.candidate.end
+
+
+def test_config_none_keeps_module_constant_behavior() -> None:
+    # Backward compatibility: without a config the law uses the module
+    # constants exactly as before. A config that re-declares the module
+    # constants reproduces the no-config result.
+    hints = RuntimeHints(speech_start_elapsed_ms=10 * STARTUP_LATE_ELAPSED_MS)
+    module_law = soft_target_duration_ms(hints)
+    assert module_law == STARTUP_EARLY_TARGET_MS
+    legacy = AdaptiveViPolicyConfig(
+        startup_early_target_ms=STARTUP_EARLY_TARGET_MS,
+        starvation_target_ms=STARVATION_TARGET_MS,
+        target_duration_ms=TARGET_DURATION_MS,
+    )
+    assert soft_target_duration_ms(hints, legacy) == module_law
+    starvation_hints = RuntimeHints(playback_buffer_ms=STARVATION_WATERMARK_MS - 1.0)
+    assert soft_target_duration_ms(starvation_hints, legacy) == soft_target_duration_ms(
+        starvation_hints
+    )
+    assert soft_target_duration_ms(RuntimeHints(), legacy) == TARGET_DURATION_MS
+
+
 # ---------- neutral hints ----------
 
 
@@ -273,9 +380,7 @@ def test_hard_cap_enforced_under_active_hints() -> None:
         _FLIP_TEXT,
         _candidates(_FLIP_TEXT, 80),
         estimator=_ESTIMATOR,
-        config=AdaptiveViPolicyConfig(
-            min_chars=12, max_chars=80, char_bias_chars=_FLIP_TARGET_CHARS
-        ),
+        config=_legacy_config(_FLIP_TARGET_CHARS),
         runtime_hints=_STARTUP_HINTS,
     )
     assert selected is not None
@@ -330,9 +435,7 @@ def test_weak_commit_with_hints_holds_over_cap() -> None:
         _FLIP_TEXT,
         _candidates(_FLIP_TEXT, 80),
         estimator=_ESTIMATOR,
-        config=AdaptiveViPolicyConfig(
-            min_chars=12, max_chars=80, char_bias_chars=_FLIP_TARGET_CHARS
-        ),
+        config=_legacy_config(_FLIP_TARGET_CHARS),
         runtime_hints=_STARTUP_HINTS,
     )
     assert selected is not None

@@ -50,6 +50,24 @@ def _selected_end(
     return None if selected is None else selected.candidate.end
 
 
+def test_default_config_calibrated_constant_values() -> None:
+    # Task 8.9: the config defaults equal the cand-05 calibrated constants
+    # (target 2200, startup early 1200, starvation 1200); the remaining law
+    # fields keep their pre-calibration values.
+    config = AdaptiveViPolicyConfig()
+    assert config.target_duration_ms == 2200.0
+    assert config.startup_early_target_ms == 1200.0
+    assert config.starvation_target_ms == 1200.0
+    assert config.min_soft_target_ms == 1200.0
+    assert config.max_soft_target_ms == 3200.0
+    assert config.steady_target_ms == 2800.0
+    assert config.startup_late_elapsed_ms == 2500.0
+    assert config.starvation_watermark_ms == 1500.0
+    assert config.healthy_watermark_ms == 5000.0
+    assert config.rtf_degraded_threshold == 1.5
+    assert config.first_audio_slow_ms == 3000.0
+
+
 def test_empty_text_selects_none() -> None:
     assert (
         select_boundary(
