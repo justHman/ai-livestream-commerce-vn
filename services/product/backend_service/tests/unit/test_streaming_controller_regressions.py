@@ -398,11 +398,10 @@ async def test_final_reconstruction_preserves_decision_reason():
 async def test_speak_verbatim_passes_canonical_textchunk_to_tts():
     """``speak_verbatim`` hands TTS the canonical TextChunk, not a bare str.
 
-    The canonical seam: ``_speak_verbatim_sync`` builds a ``TextChunk``
-    carrying the session/utterance ids and must pass that object into
-    ``stream_audio`` (the structural ``TextChunkLike`` protocol accepts any
-    chunk-like object without importing the backend package). Asserting the
-    exact canonical class pins the object identity, not just duck typing.
+    The full-script path runs the SAME TextChunker as realtime input
+    (feed + finalize), so the TTS seam receives the canonical class with
+    the session/utterance ids. Asserting the exact canonical class pins the
+    object identity, not just duck typing.
     """
     from backend.application.text_chunker import TextChunk as CanonicalTextChunk
 
@@ -421,6 +420,36 @@ async def test_speak_verbatim_passes_canonical_textchunk_to_tts():
     assert chunk.session_id == sid
     assert chunk.utterance_id == tts.received_inputs[0].utterance_id
     assert chunk.is_final is True
+
+
+@pytest.mark.asyncio
+async def test_speak_verbatim_segments_multi_phrase_script_through_same_chunker():
+    """A full script is segmented by the SAME TextChunker as realtime input.
+
+    The verbatim path must not construct one giant TextChunk: a
+    multi-sentence script fed + finalized yields the same segmentation as
+    the realtime path would, with exactly one final marker on the LAST TTS
+    input and exactly one final VideoWindow.
+    """
+    script = "Xin chào mọi người. Hôm nay shop giảm giá 50%, nhanh tay nhé!"
+    llm = _StubLLM([])
+    tts = _StubTTS()
+    orch, backend, queue, metrics = _build_orchestrator(llm, tts)
+    sid = _start_session(backend)
+
+    spoken = await asyncio.wait_for(orch.speak_verbatim(sid, script), timeout=5.0)
+
+    assert spoken == script
+    # The script contains internal punctuation >= min_chars, so the same
+    # TextChunker drain that the realtime path uses emits multiple phrases.
+    assert len(tts.received_inputs) > 1, "verbatim must segment, not one giant chunk"
+    assert "".join(tts.spoken_texts) == script, "exact text preserved across phrases"
+    finals = [i for i, x in enumerate(tts.received_inputs) if getattr(x, "is_final", None) is True]
+    assert finals == [len(tts.received_inputs) - 1], (
+        f"exactly the LAST TTS input must carry is_final, got {finals}"
+    )
+    windows = await _drain(queue)
+    _assert_single_final_marker(windows)
 
 
 # ---------- task 1.8: E2E finality ----------
