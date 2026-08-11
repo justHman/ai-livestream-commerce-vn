@@ -80,24 +80,24 @@
 
 ## 8. Scheduler data structures and admission
 
-- [ ] 8.1 Create `src/tts/scheduler/models.py` with pending/in-flight request state, priority, effective deadline, immutable completion future, and provider batch key.
-- [ ] 8.2 Create `src/tts/scheduler/admission.py` with bounded global and per-session pending accounting.
-- [ ] 8.3 Implement admission validation before queue insertion, including profile/capability checks that can fail without consuming scheduler capacity.
-- [ ] 8.4 Implement stable overload outcome when the global queue is full.
-- [ ] 8.5 Implement stable overload outcome when one session exceeds its pending limit while preserving capacity for other sessions.
-- [ ] 8.6 Implement pending-request cancellation/removal when the HTTP caller disconnects before provider dispatch.
-- [ ] 8.7 Add deterministic unit tests for global/per-session bounds, admission/release accounting, duplicate request IDs, cancellation, and deadline expiration.
+- [x] 8.1 Create `src/tts/scheduler/models.py` with pending/in-flight request state, priority, effective deadline, immutable completion future, and provider batch key.
+- [x] 8.2 Create `src/tts/scheduler/admission.py` with bounded global and per-session pending accounting.
+- [x] 8.3 Implement admission validation before queue insertion, including profile/capability checks that can fail without consuming scheduler capacity.
+- [x] 8.4 Implement stable overload outcome when the global queue is full.
+- [x] 8.5 Implement stable overload outcome when one session exceeds its pending limit while preserving capacity for other sessions.
+- [x] 8.6 Implement pending-request cancellation/removal when the HTTP caller disconnects before provider dispatch.
+- [x] 8.7 Add deterministic unit tests for global/per-session bounds, admission/release accounting, duplicate request IDs, cancellation, and deadline expiration.
 
 ## 9. Fairness and priority selection
 
-- [ ] 9.1 Create `src/tts/scheduler/fairness.py` implementing session-aware deterministic fair selection (deficit round robin or equivalent) within one priority tier.
-- [ ] 9.2 Preserve per-session FIFO chunk selection for accepted requests at the same priority.
-- [ ] 9.3 Add `normal` and `high` provider-neutral priority tiers without referencing `/ws/platform`, comments, Q&A, or Director concepts.
-- [ ] 9.4 Implement high-before-normal selection for pending work without preempting an already-running static provider batch.
-- [ ] 9.5 Implement aging/starvation protection so accepted normal work makes bounded progress under sustained high-priority arrivals.
-- [ ] 9.6 Ensure batch-packing optimizations cannot skip an old eligible session indefinitely.
-- [ ] 9.7 Add fairness tests with one 60-minute-equivalent deep queue plus newly arriving same-priority sessions.
-- [ ] 9.8 Add priority tests for high arrival during normal in-flight batch, mixed high/normal backlog, and sustained high traffic with normal progress.
+- [x] 9.1 Create `src/tts/scheduler/fairness.py` implementing session-aware deterministic fair selection (deficit round robin or equivalent) within one priority tier.
+- [x] 9.2 Preserve per-session FIFO chunk selection for accepted requests at the same priority.
+- [x] 9.3 Add `normal` and `high` provider-neutral priority tiers without referencing `/ws/platform`, comments, Q&A, or Director concepts.
+- [x] 9.4 Implement high-before-normal selection for pending work without preempting an already-running static provider batch.
+- [x] 9.5 Implement aging/starvation protection so accepted normal work makes bounded progress under sustained high-priority arrivals.
+- [x] 9.6 Ensure batch-packing optimizations cannot skip an old eligible session indefinitely.
+- [x] 9.7 Add fairness tests with one 60-minute-equivalent deep queue plus newly arriving same-priority sessions.
+- [x] 9.8 Add priority tests for high arrival during normal in-flight batch, mixed high/normal backlog, and sustained high traffic with normal progress.
 
 ## 10. Continuous dynamic micro-batch runtime
 
