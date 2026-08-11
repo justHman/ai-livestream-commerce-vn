@@ -33,25 +33,25 @@
 
 ## 4. Voice profile domain and persistence
 
-- [ ] 4.1 Create `src/tts/voices/models.py` with tenant-scoped opaque `VoiceProfile` metadata and `preset|cloned` profile kinds.
-- [ ] 4.2 Create `src/tts/voices/store.py` with `VoiceProfileStore` interface for metadata/provider payload load/save/delete/list-by-tenant operations.
-- [ ] 4.3 Implement a filesystem-backed profile store for local/test use with atomic writes and restart persistence.
-- [ ] 4.4 Implement/configure the production restart-safe shared profile store using the project's existing persistent object-storage mechanism without requiring backend access to provider payloads.
-- [ ] 4.5 Define serialized VieNeu profile payload containing provider model revision, speaker embedding, optional reference codes, and provider metadata with schema/version tagging.
-- [ ] 4.6 Add bounded in-memory LRU cache for decoded voice profiles; persistent store remains source of truth.
-- [ ] 4.7 Add tests for cache hit/miss/eviction and process restart reload.
-- [ ] 4.8 Add tenant-isolation tests proving two tenants may use the same display name while IDs/data remain distinct.
-- [ ] 4.9 Add delete tests proving one tenant/profile deletion does not affect unrelated profiles and future requests by deleted ID fail deterministically.
+- [x] 4.1 Create `src/tts/voices/models.py` with tenant-scoped opaque `VoiceProfile` metadata and `preset|cloned` profile kinds.
+- [x] 4.2 Create `src/tts/voices/store.py` with `VoiceProfileStore` interface for metadata/provider payload load/save/delete/list-by-tenant operations.
+- [x] 4.3 Implement a filesystem-backed profile store for local/test use with atomic writes and restart persistence.
+- [x] 4.4 Implement/configure the production restart-safe shared profile store using the project's existing persistent object-storage mechanism without requiring backend access to provider payloads.
+- [x] 4.5 Define serialized VieNeu profile payload containing provider model revision, speaker embedding, optional reference codes, and provider metadata with schema/version tagging.
+- [x] 4.6 Add bounded in-memory LRU cache for decoded voice profiles; persistent store remains source of truth.
+- [x] 4.7 Add tests for cache hit/miss/eviction and process restart reload.
+- [x] 4.8 Add tenant-isolation tests proving two tenants may use the same display name while IDs/data remain distinct.
+- [x] 4.9 Add delete tests proving one tenant/profile deletion does not affect unrelated profiles and future requests by deleted ID fail deterministically.
 
 ## 5. Voice enrollment API and validation
 
-- [ ] 5.1 Create `src/tts/voices/enrollment.py` to validate reference media type, decodeability, duration, channel/sample constraints, and configured byte limit before provider enrollment.
-- [ ] 5.2 Implement `POST /v1/voices` enrollment API with tenant authorization, reference WAV upload, display metadata, optional style/defaults, and opaque ID creation.
-- [ ] 5.3 Implement `GET /v1/voices/{voice_profile_id}` returning provider-neutral profile metadata only.
-- [ ] 5.4 Implement `DELETE /v1/voices/{voice_profile_id}` with tenant authorization and persistent/cache cleanup.
-- [ ] 5.5 Seed/import VieNeu preset voices as provider-owned `VoiceProfile` records or deterministic preset-profile mappings so callers use the same ID abstraction.
-- [ ] 5.6 Add enrollment tests for valid clean audio, provider denoise/default path, malformed audio, oversized/overlong audio, tenant collision, restart reuse, and deletion.
-- [ ] 5.7 Add tests proving synthesis reuses enrolled representation and does not re-encode the reference WAV for every speech chunk.
+- [x] 5.1 Create `src/tts/voices/enrollment.py` to validate reference media type, decodeability, duration, channel/sample constraints, and configured byte limit before provider enrollment.
+- [x] 5.2 Implement `POST /v1/voices` enrollment API with tenant authorization, reference WAV upload, display metadata, optional style/defaults, and opaque ID creation.
+- [x] 5.3 Implement `GET /v1/voices/{voice_profile_id}` returning provider-neutral profile metadata only.
+- [x] 5.4 Implement `DELETE /v1/voices/{voice_profile_id}` with tenant authorization and persistent/cache cleanup.
+- [x] 5.5 Seed/import VieNeu preset voices as provider-owned `VoiceProfile` records or deterministic preset-profile mappings so callers use the same ID abstraction.
+- [x] 5.6 Add enrollment tests for valid clean audio, provider denoise/default path, malformed audio, oversized/overlong audio, tenant collision, restart reuse, and deletion.
+- [x] 5.7 Add tests proving synthesis reuses enrolled representation and does not re-encode the reference WAV for every speech chunk.
 
 ## 6. VieNeu v3 Turbo single-provider path
 
