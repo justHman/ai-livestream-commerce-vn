@@ -178,12 +178,14 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
     queue = BoundedVideoQueue(max_size=max_q)
     metrics = CoordinatorMetrics()
     fixed_config = FixedChunkPolicyConfig(
-        min_chars=getattr(cfg, "text_chunk_min_chars", 12),
-        target_chars=getattr(cfg, "text_chunk_target_chars", 40),
-        max_chars=getattr(cfg, "text_chunk_max_chars", 80),
+        min_chars=getattr(cfg, "text_chunk_min_chars", FixedChunkPolicyConfig().min_chars),
+        target_chars=getattr(cfg, "text_chunk_target_chars", FixedChunkPolicyConfig().target_chars),
+        max_chars=getattr(cfg, "text_chunk_max_chars", FixedChunkPolicyConfig().max_chars),
     )
     controller_config = StreamingControllerConfig(
-        flush_timeout_ms=getattr(cfg, "text_chunk_flush_timeout_ms", 350),
+        flush_timeout_ms=getattr(
+            cfg, "text_chunk_flush_timeout_ms", StreamingControllerConfig().flush_timeout_ms
+        ),
     )
     try:
         orchestrator = StreamOrchestrator(

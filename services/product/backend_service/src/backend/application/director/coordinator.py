@@ -107,6 +107,9 @@ class DirectorCoordinator:
         chunker_config: Optional[dict] = None,
         fixed_config: Optional[FixedChunkPolicyConfig] = None,
         controller_config: Optional[StreamingControllerConfig] = None,
+        # NOTE: ``chunker_config`` is a legacy dict shim kept for signature
+        # compatibility only — production wiring passes typed configs
+        # (fixed_config/controller_config).
         lock_registry: Optional[SessionLockRegistry] = None,
         cfg: Optional[CoordinatorConfig] = None,
         hub: Optional["ControlHub"] = None,
@@ -126,20 +129,8 @@ class DirectorCoordinator:
         self._llm = llm
         self._tts = tts
         self._backend = backend
-        # Typed orchestrator configs (the dict form is accepted for legacy
-        # callers and normalized here once).
-        if chunker_config is not None:
-            fixed_config = FixedChunkPolicyConfig(
-                min_chars=int(chunker_config.get("text_chunk_min_chars", 12)),
-                target_chars=int(chunker_config.get("text_chunk_target_chars", 40)),
-                max_chars=int(chunker_config.get("text_chunk_max_chars", 80)),
-            )
-            if controller_config is None:
-                controller_config = StreamingControllerConfig(
-                    flush_timeout_ms=int(chunker_config.get("text_chunk_flush_timeout_ms", 350))
-                )
-        self._fixed_config = fixed_config
-        self._controller_config = controller_config
+        self._fixed_config = fixed_config or FixedChunkPolicyConfig()
+        self._controller_config = controller_config or StreamingControllerConfig()
         self._max_queue_windows = max_queue_windows
         self._lock_registry = lock_registry or SessionLockRegistry()
         self._cfg = cfg or CoordinatorConfig()
