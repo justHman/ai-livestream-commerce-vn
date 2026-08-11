@@ -251,31 +251,43 @@ class StreamOrchestrator:
         bridge: queue.Queue[VideoWindow | object],
     ) -> None:
         try:
-            phrase = TextChunk(
+            # Full-script path uses the SAME TextChunker as realtime input —
+            # the only difference is ingestion timing (the whole text is
+            # available up front). feed() + finalize() segments it; the last
+            # phrase of the run carries the exactly-once utterance final,
+            # stamped here from finalize()'s terminal position. Per-call TTS
+            # finality is normalized by the shared one-window lookahead, so a
+            # multi-phrase script still yields exactly one final marker.
+            chunker = TextChunker(
                 session_id=session_id,
                 utterance_id=utterance_id,
-                seq=0,
-                text=text,
-                is_final=True,
+                min_chars=self._min_chars,
+                target_chars=self._target_chars,
+                max_chars=self._max_chars,
+                telemetry=self._telemetry,
             )
-            for audio_window in self._tts.stream_audio(
-                phrase,
-                session_id=session_id,
-                utterance_id=utterance_id,
-            ):
+            phrases = chunker.feed(text)
+            phrases.extend(chunker.finalize())
+            for index, phrase in enumerate(phrases):
                 if self._cancel_event.is_set():
                     break
-                if self._audio_window_callback is not None:
-                    loop = self._loop
-                    if loop is None:
-                        raise RuntimeError("orchestrator event loop is unavailable")
-                    asyncio.run_coroutine_threadsafe(
-                        self._audio_window_callback(audio_window), loop
-                    ).result()
-                for video_window in self._backend.stream_audio(session_id, audio_window):
-                    if self._cancel_event.is_set():
-                        break
-                    bridge.put(video_window)
+                if index == len(phrases) - 1:
+                    phrase = TextChunk(
+                        session_id=phrase.session_id,
+                        utterance_id=phrase.utterance_id,
+                        seq=phrase.seq,
+                        text=phrase.text,
+                        is_final=True,
+                        id=phrase.id,
+                        decision_reason=phrase.decision_reason,
+                    )
+                self._render_phrase_with_lookahead(
+                    phrase,
+                    session_id=session_id,
+                    utterance_id=utterance_id,
+                    bridge=bridge,
+                    stamp_final=index == len(phrases) - 1,
+                )
         finally:
             bridge.put(_BRIDGE_SENTINEL)
 
@@ -496,6 +508,69 @@ class StreamOrchestrator:
                     controller.stop()
             finally:
                 bridge.put(_BRIDGE_SENTINEL)
+
+    def _render_phrase_with_lookahead(
+        self,
+        phrase: TextChunk,
+        *,
+        session_id: str,
+        utterance_id: str,
+        bridge: queue.Queue[VideoWindow | object],
+        stamp_final: bool,
+    ) -> None:
+        """Synthesize one phrase and deliver its windows with one-window lookahead.
+
+        The TTS seam marks the last window of EVERY call final
+        (tts/engines/base.py), so per-call finals are meaningless across
+        calls. Within one call each window is delivered carrying the NEXT
+        window's finality (non-final), and the call's last window is
+        delivered final only when ``stamp_final`` (the utterance's final
+        phrase). Errors deliver the partial window non-final then propagate;
+        cancellation returns early without delivering.
+        """
+        pending: AudioWindow | None = None
+        t0 = time.monotonic()
+        audio_duration_ms = 0
+        try:
+            for audio_window in self._tts.stream_audio(
+                phrase,
+                session_id=session_id,
+                utterance_id=utterance_id,
+            ):
+                if self._cancel_event.is_set():
+                    return
+                audio_duration_ms += audio_window.duration_ms
+                if pending is not None:
+                    self._deliver_audio_window(
+                        pending,
+                        is_final=False,
+                        text_span=pending.text_span,
+                        session_id=session_id,
+                        bridge=bridge,
+                    )
+                pending = audio_window
+        except BaseException:
+            # Mid-call TTS error: the partial window is still real audio —
+            # deliver it non-final, then propagate (no fabricated final).
+            if pending is not None:
+                self._deliver_audio_window(
+                    pending,
+                    is_final=False,
+                    text_span=pending.text_span,
+                    session_id=session_id,
+                    bridge=bridge,
+                )
+            self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+            raise
+        self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+        if pending is not None:
+            self._deliver_audio_window(
+                pending,
+                is_final=stamp_final,
+                text_span=pending.text_span,
+                session_id=session_id,
+                bridge=bridge,
+            )
 
     def _record_tts_timing(self, elapsed_s: float, audio_duration_ms: int) -> None:
         """Record one synthesis call's timing (no-op without a collector).
