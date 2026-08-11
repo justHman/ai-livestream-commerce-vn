@@ -5,16 +5,21 @@ stream, coalescing small incoming tokens into phrase-sized TextChunks
 suitable for TTS. It flushes on:
   1. punctuation boundary (. , ! ? ; : newline) when length >= min_chars,
   2. hard max_chars cap,
-  3. flush_timeout_ms elapsed since last flush (pollable via check_timeout),
-  4. forced flush() / finalize() (finalize marks is_final=True and may emit
-     a sub-min_chars remainder).
+  3. forced flush(reason=...) / finalize() (finalize marks is_final=True and
+     may emit a sub-min_chars remainder).
+
+The chunker owns NO timeout knob: realtime deadlines belong to streaming
+orchestration, which computes them from buffer_started_at/buffer_age_ms and
+calls flush(reason=LATENCY_DEADLINE) explicitly.
 
 A fake clock (closure over a mutable single-element list) is injected for
-deterministic timeout behaviour. No real time, no network, no mocks of
+deterministic age behaviour. No real time, no network, no mocks of
 TextChunk itself — assertions are on text content, seq, is_final, and count.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from backend.application.text_chunker import TextChunk
 from backend.application.text_chunker import TextChunker
@@ -118,103 +123,103 @@ def test_max_chars_exactly_at_boundary_no_extra():
 # ---------- timeout flush ----------
 
 
-def test_timeout_flush_via_check_timeout():
-    """With a fake clock, a buffer >= min_chars flushed past the timeout
-    threshold is emitted by check_timeout(). A sub-min buffer does NOT fire
-    timeout — it keeps waiting until more tokens arrive or finalize() is
-    called (timeout respects the min-chars coalescing rule)."""
+def test_latency_deadline_flush_via_explicit_flush():
+    """The chunker owns no timeout knob: the orchestrator computes the
+    deadline from buffer_started_at/buffer_age_ms and calls
+    flush(reason=LATENCY_DEADLINE) explicitly. flush() is an explicit caller
+    action (sub-min allowed); the orchestrator's deadline computation
+    (``_remaining_deadline``) is what refuses to request a sub-min flush."""
     clock, advance = make_clock(start=0.0)
     c = TextChunker(
         session_id="s",
         utterance_id="u",
         min_chars=12,
-        flush_timeout_ms=350,
         clock=clock,
     )
 
-    # Buffer a short token (< min_chars) — no flush (below min, no punct).
+    # Buffer a short token (< min_chars) — feed() alone never flushes.
     assert c.feed("hello") == []  # "hello" = 5 chars < 12
 
-    # Even past the timeout threshold, a sub-min buffer must NOT flush:
-    # timeout respects min_chars.
-    advance(0.400)  # 400ms >= 350ms
-    assert c.check_timeout() == []
-
-    # The sub-min buffer is still waiting; finalize must emit it as a
-    # sub-min final chunk (timeout never did).
-    final = c.finalize()
-    assert len(final) == 1
-    assert final[0].text == "hello"
-    assert final[0].is_final is True
+    # An explicit caller flush commits the sub-min buffer non-final (the
+    # min-chars guard lives in the orchestrator's deadline computation, not
+    # in flush()).
+    advance(0.400)
+    flushed = c.flush(reason="latency_deadline")
+    assert len(flushed) == 1
+    assert flushed[0].text == "hello"
+    assert flushed[0].is_final is False
+    assert flushed[0].decision_reason == "latency_deadline"
 
     # Now a separate chunker: feed >= min_chars with no punctuation so only
-    # timeout can fire.
+    # the deadline can fire.
     clock2, advance2 = make_clock(start=0.0)
     c2 = TextChunker(
         session_id="s",
         utterance_id="u",
         min_chars=12,
-        flush_timeout_ms=350,
         clock=clock2,
     )
     # Feed 13 chars with no punctuation/boundary — stays buffered.
     assert c2.feed("hello world ") == []  # 12 chars, no punct, no flush
     assert c2.feed("x") == []  # 13 chars, no punct, no flush
 
-    # Before timeout: check_timeout returns nothing.
+    # Buffer age derives from buffer_started_at only.
     advance2(0.100)  # 100ms < 350ms
-    assert c2.check_timeout() == []
+    assert c2.buffer_started_at == 0.0
+    assert c2.buffer_age_ms == pytest.approx(100.0)
 
-    # Cross the timeout threshold.
-    advance2(0.300)  # total 400ms >= 350ms
-    flushed = c2.check_timeout()
+    # An explicit latency-deadline flush commits the buffer as one
+    # non-final chunk, regardless of the age.
+    flushed = c2.flush(reason="latency_deadline")
     assert len(flushed) == 1
     assert flushed[0].text == "hello world x"
     assert flushed[0].is_final is False
     assert flushed[0].seq == 0
+    assert flushed[0].decision_reason == "latency_deadline"
 
-    # After flush, buffer is empty; a further check_timeout returns [].
-    assert c2.check_timeout() == []
+    # After flush, buffer is empty; a further flush returns [].
+    assert c2.flush(reason="latency_deadline") == []
 
 
-def test_timeout_flush_triggered_inside_feed():
-    """If the clock has advanced past the timeout by the time feed() is
-    called with a new token, the timeout condition flushes the previously
-    buffered text — but ONLY when the buffer is >= min_chars (timeout
-    respects min_chars). A sub-min buffer does NOT flush on timeout; it
-    keeps accumulating until it reaches min_chars, or until finalize()."""
+def test_feed_does_not_flush_on_buffer_age():
+    """feed() never fires a timeout flush: the deadline is owned by
+    orchestration, which calls flush(reason=LATENCY_DEADLINE) explicitly.
+    A sub-min buffer keeps accumulating until it reaches min_chars, or until
+    finalize()."""
     clock, advance = make_clock(start=0.0)
     c = TextChunker(
         session_id="s",
         utterance_id="u",
         min_chars=12,
-        flush_timeout_ms=350,
         clock=clock,
     )
 
     # Buffer sub-min content ("firstsecon" = 10 chars < 12).
     c.feed("first")  # 5 chars
     c.feed("secon")  # +5 = 10 chars, still < 12
-    advance(0.500)  # 500ms >= 350ms — but buffer < min, no timeout flush.
+    advance(0.500)  # 500ms of age — feed() must NOT flush on age.
 
-    # Feeding another token: still below min_chars (11), no flush (timeout
-    # cannot fire; no punct; not at max).
+    # Feeding another token: still below min_chars (11), no flush (no
+    # punctuation; not at max).
     out = c.feed("x")  # +1 = 11 chars, still < 12
     assert out == []
 
-    # Now feed one more token to reach min_chars (12). Timeout fires on the
-    # whole buffer (including the new token) because clock is still past
-    # threshold and buffer >= min_chars.
+    # Now feed one more token to reach min_chars (12): still no flush —
+    # age alone never commits content; only the explicit deadline flush does.
     out = c.feed("y")  # buffer becomes "firstseconxy" = 12 chars
-    assert len(out) == 1
-    assert out[0].text == "firstseconxy"
-    assert out[0].is_final is False
-    assert out[0].seq == 0
+    assert out == []
 
-    # Sub-min remainder after flush: timeout will not emit it, finalize will.
+    # The orchestrator's latency-deadline flush commits the whole buffer.
+    flushed = c.flush(reason="latency_deadline")
+    assert len(flushed) == 1
+    assert flushed[0].text == "firstseconxy"
+    assert flushed[0].is_final is False
+    assert flushed[0].seq == 0
+
+    # Sub-min remainder after flush: the orchestrator's deadline computation
+    # refuses sub-min flushes (see _remaining_deadline); finalize emits it.
     c.feed("tail")  # 4 chars buffered, < min
-    advance(1.000)  # well past timeout
-    assert c.check_timeout() == []  # sub-min: no timeout flush
+    advance(1.000)  # well past any deadline
     final = c.finalize()
     assert len(final) == 1
     assert final[0].text == "tail"

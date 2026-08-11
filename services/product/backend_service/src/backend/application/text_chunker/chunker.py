@@ -14,13 +14,12 @@ Behavior contract:
 - ``finalize()`` emits the remaining buffer as the final chunk; an empty
   buffer returns ``[]`` — completion with no textual remainder is handled
   by orchestration finality (task 6.x).
-- ``check_timeout()`` preserves the legacy poll interface for callers/tests
-  (task 2.5 keeps ``flush_timeout_ms`` in scope); it measures age from
-  ``buffer_started_at``, which starts only when the first non-empty
-  fragment enters an empty buffer — long TTFT never ages an empty buffer.
-  The orchestrator does NOT use the poll anymore (task 4.5): it owns the
-  realtime deadline itself via ``LLMStreamController.get(timeout=...)`` and
-  only calls ``flush(reason=LATENCY_DEADLINE)`` when the deadline expires.
+- The chunker owns NO timeout knob: realtime waiting/deadlines belong to
+  streaming orchestration. The orchestrator computes the deadline from
+  ``buffer_started_at``/``buffer_age_ms`` (both exposed) and calls
+  ``flush(reason=LATENCY_DEADLINE)`` explicitly when it expires. Buffer age
+  starts only when the first non-empty fragment enters an empty buffer —
+  long TTFT never ages an empty buffer.
 
 Policies (task 3.7):
 - ``fixed``: the historical deterministic rule (first punctuation with a
@@ -88,7 +87,6 @@ class TextChunker:
         min_chars: int = 12,
         target_chars: int = 40,
         max_chars: int = 80,
-        flush_timeout_ms: int = 350,
         clock: Optional[Callable[[], float]] = None,
         policy: str | ChunkPolicy = "fixed",
         estimator: Optional[SpeechDurationEstimator] = None,
@@ -105,8 +103,6 @@ class TextChunker:
                 f"require min_chars <= target_chars <= max_chars, got "
                 f"min={min_chars}, target={target_chars}, max={max_chars}"
             )
-        if flush_timeout_ms < 0:
-            raise ValueError(f"flush_timeout_ms must be >= 0, got {flush_timeout_ms}")
         if isinstance(policy, ChunkPolicy):
             self.policy = policy
         else:
@@ -119,7 +115,6 @@ class TextChunker:
         self.min_chars = min_chars
         self.target_chars = target_chars
         self.max_chars = max_chars
-        self._flush_timeout_s = flush_timeout_ms / 1000.0
         self._clock: Callable[[], float] = clock if clock is not None else time.monotonic
         self._estimator = (
             estimator
@@ -368,28 +363,7 @@ class TextChunker:
         self._start_buffer_clock()
         self._buffer.append(token_text)
         self._buffer_len += len(token_text)
-        chunks = self._drain(runtime_hints)
-        # Legacy compatibility: feed() also fires the timeout poll so
-        # callers/tests that only call feed() still observe deadline flushes.
-        if self._check_timeout():
-            chunks.extend(
-                self._flush_buffer(is_final=False, reason=ChunkDecisionReason.LATENCY_DEADLINE)
-            )
-        return chunks
-
-    def check_timeout(self) -> list[TextChunk]:
-        """Poll-only flush on timeout (no new text); legacy callers/tests.
-
-        Measured from ``buffer_started_at``; a sub-min buffer never fires.
-        """
-        if self._check_timeout():
-            return self._flush_buffer(is_final=False, reason=ChunkDecisionReason.LATENCY_DEADLINE)
-        return []
-
-    def _check_timeout(self) -> bool:
-        if self._buffer_started_at is None or self._buffer_len < self.min_chars:
-            return False
-        return (self._clock() - self._buffer_started_at) >= self._flush_timeout_s
+        return self._drain(runtime_hints)
 
     def flush(
         self,

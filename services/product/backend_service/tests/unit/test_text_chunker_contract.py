@@ -53,13 +53,19 @@ def test_reversed_threshold_order_is_rejected() -> None:
 
 
 def test_negative_flush_timeout_is_rejected() -> None:
+    # flush_timeout_ms is owned by orchestration (StreamingControllerConfig),
+    # not by the chunker: its validation lives with the controller config.
+    from backend.application.render.orchestrator import StreamingControllerConfig
+
     with pytest.raises(ValueError, match="flush_timeout_ms"):
-        TextChunker(session_id="s", utterance_id="u", flush_timeout_ms=-1)
+        StreamingControllerConfig(flush_timeout_ms=-1)
 
 
 def test_zero_flush_timeout_is_accepted() -> None:
     # flush_timeout_ms >= 0 per spec: zero is a legal non-negative value.
-    TextChunker(session_id="s", utterance_id="u", flush_timeout_ms=0)
+    from backend.application.render.orchestrator import StreamingControllerConfig
+
+    StreamingControllerConfig(flush_timeout_ms=0)
 
 
 # ---------- 2.5 target_chars deterministic fallback role ----------

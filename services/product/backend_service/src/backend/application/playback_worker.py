@@ -57,7 +57,6 @@ class PlaybackWorker:
             min_chars=self.config.min_chars,
             target_chars=self.config.target_chars,
             max_chars=self.config.max_chars,
-            flush_timeout_ms=self.config.flush_timeout_ms,
         )
 
     def queue(self, session_id: str) -> PlaybackQueue:

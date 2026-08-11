@@ -67,11 +67,10 @@ def test_hard_max_records_hard_max_flag() -> None:
 
 
 def test_latency_deadline_flush_records_reason() -> None:
-    fake_clock = iter([0.0, 10.0])
     telemetry = TelemetryCollector()
-    chunker = _fixed_chunker(telemetry, flush_timeout_ms=5, clock=lambda: next(fake_clock))
-    chunker.feed("đủ dài chữ")  # >= min_chars, buffer_started_at=0.0
-    chunker.check_timeout()  # clock=10.0 -> deadline fired
+    chunker = _fixed_chunker(telemetry)
+    chunker.feed("đủ dài chữ")  # >= min_chars, stays buffered (no punctuation)
+    chunker.flush(reason="latency_deadline")  # orchestrator applies the deadline
     records = telemetry.records
     assert any(r.decision_reason == "latency_deadline" for r in records)
 

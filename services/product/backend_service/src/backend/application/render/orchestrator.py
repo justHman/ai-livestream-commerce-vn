@@ -56,6 +56,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
@@ -82,6 +83,26 @@ _BRIDGE_SENTINEL = object()
 AudioWindowCallback = Callable[[AudioWindow], Awaitable[None]]
 
 
+@dataclass(frozen=True)
+class StreamingControllerConfig:
+    """Realtime buffer-deadline knobs owned by streaming orchestration.
+
+    The TextChunker is content segmentation only; how long the controller
+    waits on an idle upstream generator before forcing a latency flush is an
+    orchestration decision. The deadline itself is computed by the
+    orchestrator from ``TextChunker.buffer_started_at``/``buffer_age_ms`` and
+    applied via ``chunker.flush(reason=LATENCY_DEADLINE)``.
+    """
+
+    flush_timeout_ms: int = _DEFAULT_FLUSH_TIMEOUT_MS
+
+    def __post_init__(self) -> None:
+        if self.flush_timeout_ms < 0:
+            raise ValueError(
+                f"flush_timeout_ms must be >= 0, got {self.flush_timeout_ms}"
+            )
+
+
 class StreamOrchestrator:
     """Wires LLM -> TextChunker -> TTS -> streaming backend into one run.
 
@@ -98,6 +119,7 @@ class StreamOrchestrator:
         queue: BoundedVideoQueue,
         metrics: CoordinatorMetrics,
         config: dict | None = None,
+        controller_config: StreamingControllerConfig | None = None,
         audio_window_callback: AudioWindowCallback | None = None,
         telemetry: TelemetryCollector | None = None,
     ) -> None:
@@ -110,9 +132,10 @@ class StreamOrchestrator:
         self._min_chars = int(cfg.get("text_chunk_min_chars", _DEFAULT_MIN_CHARS))
         self._target_chars = int(cfg.get("text_chunk_target_chars", _DEFAULT_TARGET_CHARS))
         self._max_chars = int(cfg.get("text_chunk_max_chars", _DEFAULT_MAX_CHARS))
-        self._flush_timeout_ms = int(
-            cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS)
+        self._controller_config = controller_config or StreamingControllerConfig(
+            flush_timeout_ms=int(cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS))
         )
+        self._flush_timeout_ms = self._controller_config.flush_timeout_ms
         self._flush_timeout_s = self._flush_timeout_ms / 1000.0
         self._cancel_event = threading.Event()
         self._running_session: str | None = None
@@ -434,7 +457,6 @@ class StreamOrchestrator:
                 min_chars=self._min_chars,
                 target_chars=self._target_chars,
                 max_chars=self._max_chars,
-                flush_timeout_ms=self._flush_timeout_ms,
                 telemetry=self._telemetry,
             )
             controller = LLMStreamController(

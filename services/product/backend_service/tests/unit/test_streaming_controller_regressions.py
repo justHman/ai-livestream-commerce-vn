@@ -1114,14 +1114,13 @@ async def test_stop_retries_close_failed_while_provider_active(monkeypatch):
 @pytest.mark.asyncio
 async def test_sub_min_buffer_deadline_is_none_until_min_reached():
     """4.3: sub-min buffer yields no deadline; min reached derives from start."""
-    orch, _, _, _ = _build_orchestrator(_StubLLM([]), _StubTTS())
+    orch, _, _, _ = _build_orchestrator(_StubLLM([]), _StubTTS(), flush_timeout_ms=50)
     chunker = TextChunker(
         session_id="sess-deadline",
         utterance_id="utt-deadline",
         min_chars=4,
         target_chars=20,
         max_chars=40,
-        flush_timeout_ms=50,
     )
 
     assert orch._remaining_deadline(chunker) is None, "empty buffer must have no deadline"

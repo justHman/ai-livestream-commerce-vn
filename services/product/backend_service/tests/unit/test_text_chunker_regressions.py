@@ -94,20 +94,25 @@ def test_default_thresholds_lock() -> None:
     assert (chunker.min_chars, chunker.target_chars, chunker.max_chars) == (12, 40, 80)
 
 
-def test_default_timeout_does_not_flush_before_350ms() -> None:
+def test_feed_does_not_flush_before_350ms() -> None:
+    """feed() alone never fires a latency flush; the deadline is owned by
+    orchestration and applied via explicit flush(reason=LATENCY_DEADLINE)."""
     clock, advance = make_clock()
     chunker = TextChunker(session_id="s", utterance_id="u", clock=clock)
     chunker.feed("hello world x")  # 13 chars, no punctuation
     advance(0.349)
-    assert chunker.check_timeout() == []
+    assert chunker.feed("y") == []  # age alone must not commit content
+    assert chunker.buffer_age_ms == pytest.approx(349.0)
 
 
-def test_default_timeout_flushes_at_350ms() -> None:
+def test_explicit_latency_deadline_flush_emits_buffer() -> None:
+    """The orchestrator's explicit flush(reason=LATENCY_DEADLINE) commits the
+    buffered text as one non-final chunk regardless of age."""
     clock, advance = make_clock()
     chunker = TextChunker(session_id="s", utterance_id="u", clock=clock)
     chunker.feed("hello world x")  # 13 chars, no punctuation
     advance(0.350)
-    flushed = chunker.check_timeout()
+    flushed = chunker.flush(reason="latency_deadline")
     assert [chunk.text for chunk in flushed] == ["hello world x"]
     assert flushed[0].is_final is False
 
@@ -130,12 +135,14 @@ def test_sub_min_feed_emits_nothing_then_finalize() -> None:
     assert final[0].is_final is True
 
 
-def test_timeout_respects_min_chars_on_sub_min_buffer() -> None:
+def test_sub_min_buffer_finalize_emits_single_final() -> None:
+    """A sub-min buffer that was never flushed by the orchestrator (its
+    deadline computation refuses sub-min flushes) finalizes as one chunk."""
     clock, advance = make_clock()
     chunker = TextChunker(session_id="s", utterance_id="u", clock=clock)
     chunker.feed("hello")  # 5 chars < min_chars
     advance(1.0)
-    assert chunker.check_timeout() == []
+    assert chunker.buffered_text == "hello"
     final = chunker.finalize()
     assert [chunk.text for chunk in final] == ["hello"]
     assert final[0].is_final is True
