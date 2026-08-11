@@ -1,6 +1,71 @@
 {
   "components": {
     "schemas": {
+      "CapabilityResponse": {
+        "description": "Provider-neutral capability facts.\n\nShape mirrors `ProviderCapabilities`; provider payloads (speaker\nembeddings, reference codes, tensors) never serialize here.",
+        "properties": {
+          "max_batch_size": {
+            "default": 1,
+            "title": "Max Batch Size",
+            "type": "integer"
+          },
+          "model_revision": {
+            "title": "Model Revision",
+            "type": "string"
+          },
+          "provider_name": {
+            "title": "Provider Name",
+            "type": "string"
+          },
+          "sample_rate_hz": {
+            "title": "Sample Rate Hz",
+            "type": "integer"
+          },
+          "supported_expressive_cues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Expressive Cues",
+            "type": "array"
+          },
+          "supported_response_formats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Response Formats",
+            "type": "array"
+          },
+          "supported_styles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Styles",
+            "type": "array"
+          },
+          "supports_mixed_voice_batch": {
+            "default": false,
+            "title": "Supports Mixed Voice Batch",
+            "type": "boolean"
+          },
+          "supports_native_batch": {
+            "default": false,
+            "title": "Supports Native Batch",
+            "type": "boolean"
+          },
+          "supports_voice_cloning": {
+            "default": false,
+            "title": "Supports Voice Cloning",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "provider_name",
+          "model_revision",
+          "sample_rate_hz"
+        ],
+        "title": "CapabilityResponse",
+        "type": "object"
+      },
       "Error": {
         "properties": {
           "code": {
@@ -306,7 +371,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityResponse"
+                }
               }
             },
             "description": "Successful Response"

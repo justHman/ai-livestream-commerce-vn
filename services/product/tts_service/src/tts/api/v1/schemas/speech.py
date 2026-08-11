@@ -50,6 +50,25 @@ class SpeechResponse(BaseModel):
     format: str = "pcm"
 
 
+class CapabilityResponse(BaseModel):
+    """Provider-neutral capability facts.
+
+    Shape mirrors `ProviderCapabilities`; provider payloads (speaker
+    embeddings, reference codes, tensors) never serialize here.
+    """
+
+    provider_name: str
+    model_revision: str
+    sample_rate_hz: int
+    supports_native_batch: bool = False
+    max_batch_size: int = 1
+    supports_voice_cloning: bool = False
+    supports_mixed_voice_batch: bool = False
+    supported_styles: list[str] = Field(default_factory=lambda: ["natural"])
+    supported_expressive_cues: list[str] = Field(default_factory=list)
+    supported_response_formats: list[str] = Field(default_factory=lambda: ["pcm", "wav"])
+
+
 class SpeechChunk(BaseModel):
     """One streaming audio chunk description (SSE frames carry PCM later)."""
 
