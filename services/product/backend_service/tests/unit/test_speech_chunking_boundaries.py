@@ -1,4 +1,4 @@
-"""Table-driven tests for speech_chunking.boundaries (tasks 3.1-3.3).
+"""Table-driven tests for text_chunker.boundaries (tasks 3.1-3.3).
 
 Pure candidate extraction: every candidate ``end`` is an exact slice end
 offset of the ORIGINAL string (``text[:end]``/``text[end:]`` join back to
