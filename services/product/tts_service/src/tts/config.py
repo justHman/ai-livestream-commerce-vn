@@ -19,6 +19,10 @@ DEFAULT_TTS_MODEL_REVISION = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
 DEFAULT_TTS_RESPONSE_FORMAT = "wav"
 ACCELERATORS = ("auto", "cpu", "gpu")
 RESPONSE_FORMATS = ("pcm", "wav")
+# Voice enrollment bounds (task 5.1): reference WAVs are bounded before the
+# provider encodes them. 10 MB / 30 s match the SDK's prepare_reference trim.
+DEFAULT_VOICE_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_VOICE_MAX_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,8 @@ class RuntimeConfig:
     max_batch_size: int = 32
     coalesce_window_ms: int = 10
     voice_store_uri: str = ""
+    voice_max_bytes: int = DEFAULT_VOICE_MAX_BYTES
+    voice_max_seconds: int = DEFAULT_VOICE_MAX_SECONDS
 
     def __post_init__(self) -> None:
         if not self.provider:
@@ -100,6 +106,8 @@ class RuntimeConfig:
             ("TTS_REQUEST_DEADLINE_MS", self.request_deadline_ms),
             ("TTS_MAX_BATCH_SIZE", self.max_batch_size),
             ("TTS_COALESCE_WINDOW_MS", self.coalesce_window_ms),
+            ("TTS_VOICE_MAX_BYTES", self.voice_max_bytes),
+            ("TTS_VOICE_MAX_SECONDS", self.voice_max_seconds),
         ):
             if value < 1:
                 raise ValueError(f"{name} must be >= 1")
@@ -214,4 +222,8 @@ def load_runtime_config() -> RuntimeConfig:
         max_batch_size=_parse_int(os.environ.get("TTS_MAX_BATCH_SIZE"), 32),
         coalesce_window_ms=_parse_int(os.environ.get("TTS_COALESCE_WINDOW_MS"), 10),
         voice_store_uri=voice_store,
+        voice_max_bytes=_parse_int(os.environ.get("TTS_VOICE_MAX_BYTES"), DEFAULT_VOICE_MAX_BYTES),
+        voice_max_seconds=_parse_int(
+            os.environ.get("TTS_VOICE_MAX_SECONDS"), DEFAULT_VOICE_MAX_SECONDS
+        ),
     )

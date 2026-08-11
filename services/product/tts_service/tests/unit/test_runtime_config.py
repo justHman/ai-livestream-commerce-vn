@@ -71,8 +71,24 @@ def test_response_formats_accepted() -> None:
         ("request_deadline_ms", 0, "TTS_REQUEST_DEADLINE_MS"),
         ("max_batch_size", 0, "TTS_MAX_BATCH_SIZE"),
         ("coalesce_window_ms", 0, "TTS_COALESCE_WINDOW_MS"),
+        ("voice_max_bytes", 0, "TTS_VOICE_MAX_BYTES"),
+        ("voice_max_seconds", 0, "TTS_VOICE_MAX_SECONDS"),
     ],
 )
 def test_scheduler_bounds_must_be_positive(field: str, bad_value: int, env_name: str) -> None:
     with pytest.raises(ValueError, match=env_name):
         RuntimeConfig(**{field: bad_value})
+
+
+def test_voice_enrollment_bounds_defaults() -> None:
+    cfg = RuntimeConfig()
+    assert cfg.voice_max_bytes == 10 * 1024 * 1024
+    assert cfg.voice_max_seconds == 30
+
+
+def test_voice_enrollment_bounds_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("TTS_VOICE_MAX_BYTES", "2048")
+    monkeypatch.setenv("TTS_VOICE_MAX_SECONDS", "5")
+    cfg = load_runtime_config()
+    assert cfg.voice_max_bytes == 2048
+    assert cfg.voice_max_seconds == 5
