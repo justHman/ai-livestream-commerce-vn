@@ -25,6 +25,7 @@ def test_defaults_are_provider_neutral_and_v3() -> None:
     assert cfg.request_deadline_ms == 30_000
     assert cfg.max_batch_size == 32
     assert cfg.coalesce_window_ms == 10
+    assert cfg.aging_threshold_ms == 5_000
 
 
 def test_voice_store_uri_defaults_under_runtime_root() -> None:
@@ -71,6 +72,7 @@ def test_response_formats_accepted() -> None:
         ("request_deadline_ms", 0, "TTS_REQUEST_DEADLINE_MS"),
         ("max_batch_size", 0, "TTS_MAX_BATCH_SIZE"),
         ("coalesce_window_ms", 0, "TTS_COALESCE_WINDOW_MS"),
+        ("aging_threshold_ms", 0, "TTS_AGING_THRESHOLD_MS"),
         ("voice_max_bytes", 0, "TTS_VOICE_MAX_BYTES"),
         ("voice_max_seconds", 0, "TTS_VOICE_MAX_SECONDS"),
     ],
@@ -92,3 +94,9 @@ def test_voice_enrollment_bounds_from_env(monkeypatch) -> None:
     cfg = load_runtime_config()
     assert cfg.voice_max_bytes == 2048
     assert cfg.voice_max_seconds == 5
+
+
+def test_aging_threshold_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("TTS_AGING_THRESHOLD_MS", "2500")
+    cfg = load_runtime_config()
+    assert cfg.aging_threshold_ms == 2500

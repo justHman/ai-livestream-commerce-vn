@@ -81,6 +81,7 @@ class RuntimeConfig:
     request_deadline_ms: int = 30_000
     max_batch_size: int = 32
     coalesce_window_ms: int = 10
+    aging_threshold_ms: int = 5_000
     voice_store_uri: str = ""
     voice_max_bytes: int = DEFAULT_VOICE_MAX_BYTES
     voice_max_seconds: int = DEFAULT_VOICE_MAX_SECONDS
@@ -106,6 +107,7 @@ class RuntimeConfig:
             ("TTS_REQUEST_DEADLINE_MS", self.request_deadline_ms),
             ("TTS_MAX_BATCH_SIZE", self.max_batch_size),
             ("TTS_COALESCE_WINDOW_MS", self.coalesce_window_ms),
+            ("TTS_AGING_THRESHOLD_MS", self.aging_threshold_ms),
             ("TTS_VOICE_MAX_BYTES", self.voice_max_bytes),
             ("TTS_VOICE_MAX_SECONDS", self.voice_max_seconds),
         ):
@@ -221,6 +223,7 @@ def load_runtime_config() -> RuntimeConfig:
         request_deadline_ms=_parse_int(os.environ.get("TTS_REQUEST_DEADLINE_MS"), 30_000),
         max_batch_size=_parse_int(os.environ.get("TTS_MAX_BATCH_SIZE"), 32),
         coalesce_window_ms=_parse_int(os.environ.get("TTS_COALESCE_WINDOW_MS"), 10),
+        aging_threshold_ms=_parse_int(os.environ.get("TTS_AGING_THRESHOLD_MS"), 5_000),
         voice_store_uri=voice_store,
         voice_max_bytes=_parse_int(os.environ.get("TTS_VOICE_MAX_BYTES"), DEFAULT_VOICE_MAX_BYTES),
         voice_max_seconds=_parse_int(
