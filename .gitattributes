@@ -1,3 +1,6 @@
 *.sh text eol=lf
 *.py text eol=lf
 entrypoint.sh text eol=lf
+# Contract artifacts are machine-generated with LF; force LF in both index
+# and worktree so drift checks (byte-compare) stay stable on Windows.
+**/contracts/** text eol=lf

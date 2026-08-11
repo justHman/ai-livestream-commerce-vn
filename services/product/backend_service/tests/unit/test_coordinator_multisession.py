@@ -31,9 +31,10 @@ from backend.application.director.session_context import DirectorRuntime
 from backend.application.render.locks import SessionLockRegistry
 from avatar.engines.mock import MockRenderBackend, _MockSession
 from backend.application.render.queue import BoundedVideoQueue
+from backend.application.render.orchestrator import StreamingControllerConfig
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from tts.engines.base import ToneEngine
-from backend.application.render.windows import TextChunk
+from backend.application.text_chunker import FixedChunkPolicyConfig, TextChunk
 
 pytestmark = pytest.mark.asyncio
 
@@ -119,12 +120,8 @@ def _make_coordinator(
         llm=llm,
         tts=tts,
         backend=backend,
-        chunker_config={
-            "text_chunk_min_chars": 12,
-            "text_chunk_target_chars": 40,
-            "text_chunk_max_chars": 80,
-            "text_chunk_flush_timeout_ms": 350,
-        },
+        fixed_config=FixedChunkPolicyConfig(),
+        controller_config=StreamingControllerConfig(),
         lock_registry=locks,
         cfg=cfg,
         hub=None,
@@ -157,14 +154,23 @@ async def test_two_concurrent_sessions_both_progress(monkeypatch: pytest.MonkeyP
         coord.ingest(sid_a, f"San pham P001 gia bao nhieu? {i}", f"a-user{i}", ts=now)
         coord.ingest(sid_b, f"San pham P002 co khuyen mai gi khong? {i}", f"b-user{i}", ts=now)
 
-    # Let both tick loops run several ticks. The slow stub LLM (8 chunks with
-    # 10ms delay = ~80ms per orchestrator.run) plus thread-offload overhead
-    # means each speak() takes ~100-150ms; give both sessions enough wall
-    # time to complete at least one tick that produces a decision.
-    await asyncio.sleep(1.5)
+    # Let both tick loops run until each session has completed at least one
+    # decision/skip, polling progress state instead of sleeping a fixed
+    # duration: a speak() completes only after the render path finishes,
+    # which can take ~2.5-3.4s under ToneEngine+PIL, so a fixed sleep either
+    # races it or wastes time. The deadline is a deadlock backstop only.
+    deadline = time.monotonic() + 8.0
+    stats_a = stats_b = None
+    while time.monotonic() < deadline:
+        stats_a = coord.stats(sid_a)
+        stats_b = coord.stats(sid_b)
+        if (
+            stats_a["decisions_emitted"] + stats_a["skips"] > 0
+            and stats_b["decisions_emitted"] + stats_b["skips"] > 0
+        ):
+            break
+        await asyncio.sleep(0.02)
 
-    stats_a = coord.stats(sid_a)
-    stats_b = coord.stats(sid_b)
     # Both sessions must have processed at least one tick (decision or skip).
     assert stats_a["decisions_emitted"] + stats_a["skips"] > 0, (
         f"session A did not progress: {stats_a}"

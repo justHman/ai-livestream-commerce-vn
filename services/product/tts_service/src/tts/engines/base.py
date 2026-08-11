@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Iterator, Optional, Union
+from typing import Callable, Iterator, Optional, Protocol, Union, runtime_checkable
 from uuid import uuid4
 
 import numpy as np
@@ -80,6 +80,20 @@ except ImportError:
         ]
 
 
+@runtime_checkable
+class TextChunkLike(Protocol):
+    """Structural contract for streamed text chunks (str or chunk object).
+
+    ``stream_audio`` accepts any object exposing ``text``/``session_id``/
+    ``utterance_id`` attributes — the service-local TextChunk or the
+    canonical backend TextChunk — without importing the backend package.
+    """
+
+    text: str
+    session_id: str
+    utterance_id: str
+
+
 class EngineError(RuntimeError):
     """Typed engine failure surfaced at the API boundary."""
 
@@ -139,7 +153,7 @@ class TTSEngine(ABC):
 
     def stream_audio(
         self,
-        text_or_chunk: Union[TextChunk, str],
+        text_or_chunk: Union[TextChunkLike, str],
         *,
         session_id: str = "",
         utterance_id: str = "",
@@ -170,7 +184,13 @@ class TTSEngine(ABC):
 
         Yields nothing when ``synthesize`` returns an empty AudioChunk.
         """
-        if isinstance(text_or_chunk, TextChunk):
+        if isinstance(text_or_chunk, TextChunkLike):
+            # Structural seam: any chunk-like object (the canonical backend
+            # TextChunk or the service-local TextChunk) is accepted — the
+            # tts_service never imports the backend package (no circular /
+            # cross-service ownership). Decision metadata (e.g. is_final) is
+            # intentionally ignored here: per-call finality comes from the
+            # last AudioWindow, matching the production contract.
             text = text_or_chunk.text
             sid = text_or_chunk.session_id or session_id
             uid = text_or_chunk.utterance_id or utterance_id

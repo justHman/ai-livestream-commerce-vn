@@ -50,7 +50,8 @@ from .state import StreamState
 from backend.application.render.locks import SessionLockRegistry
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
-from ..render.orchestrator import StreamOrchestrator
+from ..render.orchestrator import StreamOrchestrator, StreamingControllerConfig
+from ..text_chunker import FixedChunkPolicyConfig
 
 if TYPE_CHECKING:
     # The hub is only used through its async ``emit(session_id, event)``
@@ -104,6 +105,11 @@ class DirectorCoordinator:
         tts: Any,
         backend: Any,
         chunker_config: Optional[dict] = None,
+        fixed_config: Optional[FixedChunkPolicyConfig] = None,
+        controller_config: Optional[StreamingControllerConfig] = None,
+        # NOTE: ``chunker_config`` is a legacy dict shim kept for signature
+        # compatibility only — production wiring passes typed configs
+        # (fixed_config/controller_config).
         lock_registry: Optional[SessionLockRegistry] = None,
         cfg: Optional[CoordinatorConfig] = None,
         hub: Optional["ControlHub"] = None,
@@ -123,7 +129,8 @@ class DirectorCoordinator:
         self._llm = llm
         self._tts = tts
         self._backend = backend
-        self._chunker_config = dict(chunker_config or {})
+        self._fixed_config = fixed_config or FixedChunkPolicyConfig()
+        self._controller_config = controller_config or StreamingControllerConfig()
         self._max_queue_windows = max_queue_windows
         self._lock_registry = lock_registry or SessionLockRegistry()
         self._cfg = cfg or CoordinatorConfig()
@@ -880,7 +887,8 @@ class DirectorCoordinator:
             backend=self._backend,
             queue=queue,
             metrics=metrics,
-            config=self._chunker_config,
+            fixed_config=self._fixed_config,
+            controller_config=self._controller_config,
             audio_window_callback=self._audio_window_callback,
         )
         self._register_speaking(session_id, orchestrator, queue)

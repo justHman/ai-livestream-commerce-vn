@@ -140,6 +140,7 @@ requires-dist = [
     { name = "fastapi" },
     { name = "llama-cpp-python", marker = "extra == 'llamacpp'" },
     { name = "pytest", marker = "extra == 'test'" },
+    { name = "pytest-asyncio", marker = "extra == 'test'" },
     { name = "sglang", marker = "extra == 'sglang'" },
     { name = "torch", marker = "extra == 'transformers'" },
     { name = "transformers", marker = "extra == 'transformers'" },
@@ -151,6 +152,7 @@ provides-extras = ["llamacpp", "sglang", "transformers", "vllm", "test"]
 dev = [
     { name = "httpx" },
     { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "pytest-cov" },
 ]
 

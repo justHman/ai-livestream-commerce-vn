@@ -1,11 +1,15 @@
 """Streaming data abstractions + audio windowing helpers.
 
-This module defines the three dataclasses that flow between stages of the
-streaming pipeline (LLM stream -> text chunker -> TTS stream -> avatar render):
+This module defines the two dataclasses that flow between render stages of
+the streaming pipeline (LLM stream -> text chunker -> TTS stream -> avatar
+render):
 
-  TextChunk   : LLM/text stage output
   AudioWindow : TTS stage output (PCM bytes or file path)
   VideoWindow : avatar render stage output
+
+``TextChunk`` (text stage output) is the canonical type owned by
+``backend.application.text_chunker``; this module does not define or
+re-export it.
 
 And three pure helper functions for audio windowing:
 
@@ -23,31 +27,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
-
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TextChunk:
-    """A chunk of text emitted by the LLM/text stage of the stream.
-
-    Attributes:
-        id: Unique identifier (uuid4 hex, auto-generated if not supplied).
-        session_id: Render session identifier.
-        utterance_id: Utterance identifier within the session.
-        seq: Sequence number within the utterance (0-based).
-        text: The text content of this chunk.
-        is_final: True if this is the final chunk of the utterance.
-    """
-
-    session_id: str
-    utterance_id: str
-    seq: int
-    text: str
-    is_final: bool
-    id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 @dataclass(frozen=True)
