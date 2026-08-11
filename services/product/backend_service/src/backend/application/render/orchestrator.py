@@ -136,6 +136,7 @@ class StreamOrchestrator:
         self._running_session: str | None = None
         self._audio_window_callback = audio_window_callback
         self._telemetry = telemetry
+        self._last_window_duration_ms: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
@@ -184,7 +185,9 @@ class StreamOrchestrator:
                 if not first_emitted:
                     self._metrics.record_first_frame()
                     first_emitted = True
+                self._last_window_duration_ms = vw.duration_ms
                 self._metrics.update_queue_depth(self._queue.qsize())
+                self._record_playback_depth()
 
             spoken, dropped = await worker
             if dropped:
@@ -233,7 +236,9 @@ class StreamOrchestrator:
                 if not first_emitted:
                     self._metrics.record_first_frame()
                     first_emitted = True
+                self._last_window_duration_ms = item.duration_ms
                 self._metrics.update_queue_depth(self._queue.qsize())
+                self._record_playback_depth()
             await worker
             if self._cancel_event.is_set():
                 self._queue.clear()
@@ -284,8 +289,9 @@ class StreamOrchestrator:
                 max_chars=self._max_chars,
                 telemetry=self._telemetry,
             )
-            phrases = chunker.feed(text)
-            phrases.extend(chunker.finalize())
+            hints = self._telemetry.to_runtime_hints() if self._telemetry is not None else None
+            phrases = chunker.feed(text, runtime_hints=hints)
+            phrases.extend(chunker.finalize(runtime_hints=hints))
             for index, phrase in enumerate(phrases):
                 if self._cancel_event.is_set():
                     break
@@ -454,6 +460,7 @@ class StreamOrchestrator:
                 max_chars=self._max_chars,
                 telemetry=self._telemetry,
             )
+            hints = self._telemetry.to_runtime_hints() if self._telemetry is not None else None
             controller = LLMStreamController(
                 self._llm,
                 req,
@@ -473,7 +480,9 @@ class StreamOrchestrator:
                     )
                     if event is None:
                         if not self._cancel_event.is_set():
-                            phrases = chunker.flush(reason=ChunkDecisionReason.LATENCY_DEADLINE)
+                            phrases = chunker.flush(
+                                reason=ChunkDecisionReason.LATENCY_DEADLINE, runtime_hints=hints
+                            )
                             for i, phrase in enumerate(phrases):
                                 render_phrase(phrase, hold_last=i == len(phrases) - 1)
                         continue
@@ -485,8 +494,8 @@ class StreamOrchestrator:
                     spoken_parts.append(event.text)
                     if event.is_final:
                         normal_complete = True
-                        final_phrases = chunker.feed(event.text)
-                        final_phrases.extend(chunker.finalize())
+                        final_phrases = chunker.feed(event.text, runtime_hints=hints)
+                        final_phrases.extend(chunker.finalize(runtime_hints=hints))
                         if final_phrases:
                             render_final_batch(final_phrases)
                         else:
@@ -494,14 +503,14 @@ class StreamOrchestrator:
                             # held flush phrase (if any) is the last one.
                             release_held(is_final=True)
                         break
-                    phrases = chunker.feed(event.text)
+                    phrases = chunker.feed(event.text, runtime_hints=hints)
                     if phrases:
                         release_held(is_final=False)
                         for phrase in phrases:
                             render_phrase(phrase)
 
                 if not cancelled and not normal_complete:
-                    final_phrases = chunker.finalize()
+                    final_phrases = chunker.finalize(runtime_hints=hints)
                     if final_phrases:
                         render_final_batch(final_phrases)
                     else:
@@ -588,6 +597,20 @@ class StreamOrchestrator:
                 session_id=session_id,
                 bridge=bridge,
             )
+
+    def _record_playback_depth(self) -> None:
+        """Estimate and record the queued-but-undelivered playback depth (ms).
+
+        Depth is the queue depth in windows scaled by the most recent window's
+        duration; a fixed linear estimate over a typical window duration would
+        guess at window size, so the last window actually put is the closest
+        deterministic size signal available at the drain loop. No-op until the
+        first window is put; no-op without a collector (neutral hints).
+        """
+        if self._telemetry is None or self._last_window_duration_ms is None:
+            return
+        depth_ms = self._queue.qsize() * self._last_window_duration_ms
+        self._telemetry.record_playback_buffer(depth_ms)
 
     def _record_tts_timing(self, elapsed_s: float, audio_duration_ms: int) -> None:
         """Record one synthesis call's timing (no-op without a collector).

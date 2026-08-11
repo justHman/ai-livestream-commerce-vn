@@ -93,6 +93,7 @@ class TelemetryCollector:
         self._records: list[ChunkTelemetry] = []
         self._first_audio = BoundedEwma(ewma_alpha, ewma_window)
         self._rtf = BoundedEwma(ewma_alpha, ewma_window)
+        self._playback = BoundedEwma(ewma_alpha, ewma_window)
 
     def record_chunk(self, telemetry: ChunkTelemetry) -> None:
         self._records.append(telemetry)
@@ -113,11 +114,22 @@ class TelemetryCollector:
             self._rtf.update(synthesis_ms / audio_duration_ms)
         self._first_audio.update(synthesis_ms)
 
+    def record_playback_buffer(self, depth_ms: float) -> None:
+        """Record one playback-buffer depth sample (ms of queued-but-undelivered video).
+
+        Depth is the orchestration boundary's estimate of pending playback:
+        queue depth in windows scaled by the most recent window's duration.
+        Non-finite samples are ignored (NaN-safe via ``BoundedEwma``), and
+        missing telemetry degrades to None — the neutral hint.
+        """
+        self._playback.update(depth_ms)
+
     def to_runtime_hints(self) -> RuntimeHints:
         """RuntimeHints-compatible neutral values (None when no data yet)."""
         return RuntimeHints(
             tts_first_audio_ewma_ms=self._first_audio.value,
             tts_rtf_ewma=self._rtf.value,
+            playback_buffer_ms=self._playback.value,
         )
 
     @property
