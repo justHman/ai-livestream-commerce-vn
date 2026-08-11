@@ -45,11 +45,27 @@
         "type": "object"
       },
       "SpeechRequest": {
-        "description": "Synthesis request \u2014 text, voice, and output bounds.",
+        "additionalProperties": false,
+        "description": "Synthesis request \u2014 text, voice, and output bounds.\n\n`model_config` forbids unknown fields so provider-specific payloads\n(speaker embeddings, reference codes, tensors) fail loudly at the API\nboundary instead of being silently dropped or leaking into the runtime.",
         "properties": {
+          "chunk_seq": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Chunk Seq",
+            "type": "integer"
+          },
           "language": {
             "default": "vi",
             "title": "Language",
+            "type": "string"
+          },
+          "priority": {
+            "default": "normal",
+            "enum": [
+              "normal",
+              "high"
+            ],
+            "title": "Priority",
             "type": "string"
           },
           "response_format": {
@@ -68,6 +84,19 @@
             "title": "Sample Rate",
             "type": "integer"
           },
+          "session_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
           "speed": {
             "default": 1.0,
             "maximum": 2.0,
@@ -75,11 +104,29 @@
             "title": "Speed",
             "type": "number"
           },
+          "style": {
+            "default": "natural",
+            "title": "Style",
+            "type": "string"
+          },
           "text": {
             "maxLength": 4000,
             "minLength": 1,
             "title": "Text",
             "type": "string"
+          },
+          "utterance_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utterance Id"
           },
           "voice": {
             "anyOf": [
@@ -91,6 +138,18 @@
               }
             ],
             "title": "Voice"
+          },
+          "voice_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Profile Id"
           }
         },
         "required": [
@@ -239,6 +298,140 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/audio/capabilities": {
+      "get": {
+        "description": "Return provider-neutral capability facts.\n\nCluster 1 serves a static capability stub (provider defaults from config);\nthe runtime cluster replaces it with the active provider's capabilities.\nNo speaker embeddings or reference codes ever appear here.",
+        "operationId": "audio_capabilities_v1_audio_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Audio Capabilities"
+      }
+    },
+    "/v1/audio/speech": {
+      "post": {
+        "description": "Synthesize speech from text.\n\nReturns raw PCM (int16 mono) by default, or a WAV container when\n`response_format=wav`. Auth, body limit, and GPU concurrency gates run\nbefore any engine work.",
+        "operationId": "synthesize_v1_audio_speech_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Synthesize"
+      }
+    },
     "/v1/speech": {
       "post": {
         "description": "Synthesize speech from text.\n\nReturns raw PCM (int16 mono) by default, or a WAV container when\n`response_format=wav`. Auth, body limit, and GPU concurrency gates run\nbefore any engine work.",

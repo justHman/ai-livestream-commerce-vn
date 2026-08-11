@@ -3,6 +3,11 @@
 Routes resolve the active engine from a dependency and invoke the typed
 base interface directly — no pass-through delegation (Task 1.31).
 Validates text/voice/output bounds; safe streaming/chunk semantics.
+
+Change T: `POST /v1/speech` stays the canonical backend-facing path (the
+backend caller uses it); `POST /v1/audio/speech` is an alias to the SAME
+handler per the Change T spec. The scheduler integration in the runtime
+cluster replaces the engine call; request/response shape stays provider-neutral.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from tts.api.security.rate_limit import GPUConcurrencyLimiter
 from tts.api.v1.schemas.common import ErrorResponse
 from tts.api.v1.schemas.speech import SpeechRequest, SpeechResponse
 from tts.engines.base import TTSEngine, TTSRequest
+from tts.providers.capabilities import ProviderCapabilities
 
 router = APIRouter()
 
@@ -89,6 +95,66 @@ async def synthesize(
         "X-Audio-Duration-Ms": str(duration_ms),
     }
     return StreamingResponse(io.BytesIO(payload), media_type=media_type, headers=headers)
+
+
+# Change T spec path: alias to the canonical handler above. FastAPI reuses
+# the same operation function; the OpenAPI contract documents both paths.
+router.add_api_route(
+    "/audio/speech",
+    synthesize,
+    methods=["POST"],
+    response_model=SpeechResponse,
+    responses={
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        429: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+
+
+@router.get("/audio/capabilities")
+def audio_capabilities() -> JSONResponse:
+    """Return provider-neutral capability facts.
+
+    Cluster 1 serves a static capability stub (provider defaults from config);
+    the runtime cluster replaces it with the active provider's capabilities.
+    No speaker embeddings or reference codes ever appear here.
+    """
+    from tts.config import load_runtime_config
+
+    cfg = load_runtime_config()
+    caps = ProviderCapabilities(
+        provider_name=cfg.provider,
+        model_revision=cfg.model_revision,
+        sample_rate_hz=48_000,
+        supports_native_batch=False,
+        max_batch_size=1,
+        supports_voice_cloning=False,
+        supports_mixed_voice_batch=False,
+        supported_styles=("natural",),
+        supported_response_formats=("pcm", "wav"),
+    )
+    return JSONResponse(_capabilities_payload(caps))
+
+
+def _capabilities_payload(caps: ProviderCapabilities) -> dict:
+    """Serialize capabilities to the provider-neutral API shape."""
+    return {
+        "provider_name": caps.provider_name,
+        "model_revision": caps.model_revision,
+        "sample_rate_hz": caps.sample_rate_hz,
+        "supports_native_batch": caps.supports_native_batch,
+        "max_batch_size": caps.max_batch_size,
+        "supports_voice_cloning": caps.supports_voice_cloning,
+        "supports_mixed_voice_batch": caps.supports_mixed_voice_batch,
+        "supported_styles": list(caps.supported_styles),
+        "supported_expressive_cues": list(caps.supported_expressive_cues),
+        "supported_response_formats": list(caps.supported_response_formats),
+    }
 
 
 @router.get("/speech/formats")
