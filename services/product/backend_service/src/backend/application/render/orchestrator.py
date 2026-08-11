@@ -67,7 +67,7 @@ from .llm_stream_controller import (
     ErrorEvent,
     LLMStreamController,
 )
-from .windows import AudioWindow, VideoWindow
+from .windows import AudioWindow, VideoWindow, trim_trailing_silence
 from .queue import BoundedVideoQueue, CoordinatorMetrics
 
 from ..text_chunker import (
@@ -636,7 +636,31 @@ class StreamOrchestrator:
         A frozen dataclass cannot be mutated, so the finality/span stamping
         reconstructs the window (same id, same PCM). ``decision_reason``
         lives on the TextChunk, not the audio window, so no reason is lost.
+
+        Trailing silence from the TTS engine is trimmed here, at the boundary
+        every engine's windows cross, so the trim is source-agnostic: engines
+        that append no silence are untouched (removed_ms == 0 -> no-op).
+        Deferred windows (audio_path, no PCM) are never read, so they pass
+        through untrimmed. The final window is trimmed too: its trailing
+        silence is garbage audio and ``keep_ms`` preserves a natural end pause.
         """
+        if audio_window.pcm is not None:
+            trimmed_pcm, removed_ms = trim_trailing_silence(
+                audio_window.pcm, audio_window.sample_rate
+            )
+            if removed_ms > 0:
+                audio_window = AudioWindow(
+                    session_id=audio_window.session_id,
+                    utterance_id=audio_window.utterance_id,
+                    seq=audio_window.seq,
+                    sample_rate=audio_window.sample_rate,
+                    duration_ms=max(1, audio_window.duration_ms - removed_ms),
+                    pcm=trimmed_pcm,
+                    audio_path=audio_window.audio_path,
+                    text_span=audio_window.text_span,
+                    is_final=audio_window.is_final,
+                    id=audio_window.id,
+                )
         if is_final != audio_window.is_final or text_span != audio_window.text_span:
             audio_window = AudioWindow(
                 session_id=audio_window.session_id,
