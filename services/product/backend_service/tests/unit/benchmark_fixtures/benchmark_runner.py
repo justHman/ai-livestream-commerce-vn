@@ -122,7 +122,9 @@ class BenchmarkMeta:  # reproducibility metadata (handoff 56)
     runtime_mode: str  # "simulation" | "vieneu"
     runtime_report: dict  # mode B: package/weights/gpu availability per item; mode A: probe result that explains why simulation was used
     run_timestamp: str  # ISO 8601 UTC
-    estimator_coefficients: dict  # from SpeechDurationEstimator coefficients (as dict of field->value)
+    estimator_coefficients: (
+        dict  # from SpeechDurationEstimator coefficients (as dict of field->value)
+    )
     scorer_weights: dict  # {"kind_weight": ..., "duration_weight": ..., "char_weight": ...}
     candidate_id: Optional[str]
 
@@ -249,11 +251,13 @@ def probe_runtime() -> dict:
     """
     try:
         import vieneu  # noqa: F401
+
         vieneu_package = True
     except Exception:
         vieneu_package = False
     try:
         import torch  # noqa: F401
+
         gpu_available = bool(torch.cuda.is_available())
     except Exception:
         gpu_available = False
@@ -278,7 +282,9 @@ def probe_runtime() -> dict:
         f"model={model_id}); GPU available={gpu_available}."
     )
     if not (vieneu_package and weights_present):
-        detail += " Mode B needs the vieneu package and configured weights (GPU optional via ONNX-CPU)."
+        detail += (
+            " Mode B needs the vieneu package and configured weights (GPU optional via ONNX-CPU)."
+        )
     return {
         "vieneu_package": vieneu_package,
         "weights_present": weights_present,
@@ -400,9 +406,7 @@ def _simulate_synthesis_timeline(
         if index == 0:
             synth_ms = _FIRST_AUDIO_SYNTHESIS_MS
             # Emission instant (ms) + first-audio synthesis latency (ms).
-            ttfa_ms = (
-                emission_ms_list[0] * 1000.0 + synth_ms if emission_ms_list else 0.0
-            )
+            ttfa_ms = emission_ms_list[0] * 1000.0 + synth_ms if emission_ms_list else 0.0
         else:
             synth_ms = max(audio_ms * _SYNTHESIS_RTF, _MIN_SYNTHESIS_MS)
         latencies.append(synth_ms)
@@ -445,17 +449,15 @@ def _feed_with_deadline(
         all_chunks.extend(chunker.feed(fragment, runtime_hints=hints))
         # The feed() call itself takes real time; emitted chunks (TTS calls)
         # are triggered at the end of the call, right before the next step.
-        for _ in all_chunks[len(emission_ms):]:
+        for _ in all_chunks[len(emission_ms) :]:
             emission_ms.append(fake_clock() + _FEED_WORK_MS / 1000.0)
         fake_clock.advance_ms(_FEED_STEP_MS)
         if chunker.buffer_age_ms >= BASELINE_FLUSH_TIMEOUT_MS:
             fake_clock.advance_ms(BASELINE_FLUSH_TIMEOUT_MS)
             all_chunks.extend(
-                chunker.flush(
-                    reason=ChunkDecisionReason.LATENCY_DEADLINE, runtime_hints=hints
-                )
+                chunker.flush(reason=ChunkDecisionReason.LATENCY_DEADLINE, runtime_hints=hints)
             )
-            for _ in all_chunks[len(emission_ms):]:
+            for _ in all_chunks[len(emission_ms) :]:
                 emission_ms.append(fake_clock() + _FEED_WORK_MS / 1000.0)
     return all_chunks, emission_ms
 
@@ -530,16 +532,14 @@ def simulate_utterance(
         chunker, fragment_deliveries(text)[delivery_form], hints, fake_clock
     )
     all_chunks.extend(chunker.finalize(runtime_hints=hints))
-    for _ in all_chunks[len(emission_ms):]:
+    for _ in all_chunks[len(emission_ms) :]:
         emission_ms.append(fake_clock() + _FEED_WORK_MS / 1000.0)
 
     joined = "".join(chunk.text for chunk in all_chunks)
     hard_splits = sum(1 for chunk in all_chunks if chunk.decision_reason == "hard_max")
     # Protected-span fallback exists only in telemetry (task 7.1) — the
     # content-free record is the source of truth, never TextChunk.
-    protected_fallbacks = sum(
-        1 for record in telemetry.records if record.protected_span_fallback
-    )
+    protected_fallbacks = sum(1 for record in telemetry.records if record.protected_span_fallback)
 
     durations = [estimator.estimate_ms(chunk.text) for chunk in all_chunks]
     ttfa_ms, latencies, rtfs, underruns = _simulate_synthesis_timeline(
@@ -585,8 +585,12 @@ def _build_summary(utterances: list[UtteranceMetrics]) -> dict:
     if not utterances:
         return {}
     ttfa = [u.ttfa_ms for u in utterances]
-    first_estimated = [u.first_chunk_estimated_ms for u in utterances if u.first_chunk_estimated_ms is not None]
-    first_actual = [u.first_chunk_actual_ms for u in utterances if u.first_chunk_actual_ms is not None]
+    first_estimated = [
+        u.first_chunk_estimated_ms for u in utterances if u.first_chunk_estimated_ms is not None
+    ]
+    first_actual = [
+        u.first_chunk_actual_ms for u in utterances if u.first_chunk_actual_ms is not None
+    ]
     latency = [value for u in utterances for value in u.tts_latency_ms]
     rtf = [value for u in utterances for value in u.rtf_values]
     durations = [value for u in utterances for value in u.chunk_durations_ms]
@@ -616,8 +620,12 @@ def _build_summary(utterances: list[UtteranceMetrics]) -> dict:
     }
 
 
-def _effective_fixed_config(fixed_config: Optional[FixedChunkPolicyConfig]) -> FixedChunkPolicyConfig:
-    return fixed_config if fixed_config is not None else FixedChunkPolicyConfig(*BASELINE_FIXED_CHARS)
+def _effective_fixed_config(
+    fixed_config: Optional[FixedChunkPolicyConfig],
+) -> FixedChunkPolicyConfig:
+    return (
+        fixed_config if fixed_config is not None else FixedChunkPolicyConfig(*BASELINE_FIXED_CHARS)
+    )
 
 
 def _build_meta(
@@ -855,7 +863,7 @@ def run_vieneu(
                     chunker, fragment_deliveries(record.text)[form], hints, fake_clock
                 )
                 all_chunks.extend(chunker.finalize(runtime_hints=hints))
-                for _ in all_chunks[len(emission_ms):]:
+                for _ in all_chunks[len(emission_ms) :]:
                     emission_ms.append(fake_clock() + _FEED_WORK_MS / 1000.0)
 
                 # Synthesize every emitted chunk with the real engine and
@@ -870,9 +878,7 @@ def run_vieneu(
                 played_ms = 0.0
                 previous_emission_ms = 0.0
                 ttfa_ms = 0.0
-                for seq, (chunk, emitted_ms) in enumerate(
-                    zip(all_chunks, emission_ms)
-                ):
+                for seq, (chunk, emitted_ms) in enumerate(zip(all_chunks, emission_ms)):
                     started = datetime.now(timezone.utc)
                     audio = engine.synthesize(TTSRequest(text=chunk.text))
                     synth_ms = (datetime.now(timezone.utc) - started).total_seconds() * 1000.0
@@ -1101,7 +1107,9 @@ def _candidate_from_cli(candidate_id: Optional[str]) -> dict:
     for candidate in default_candidates():
         if candidate["candidate_id"] == candidate_id:
             return candidate
-    raise SystemExit(f"unknown candidate {candidate_id!r}; choose from {[c['candidate_id'] for c in default_candidates()]}")
+    raise SystemExit(
+        f"unknown candidate {candidate_id!r}; choose from {[c['candidate_id'] for c in default_candidates()]}"
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
