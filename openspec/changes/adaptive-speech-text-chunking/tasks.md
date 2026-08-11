@@ -8,26 +8,26 @@
 - [x] 1.6 Add fake-clock tests proving long TTFT does not age an empty buffer, and proving buffer age starts on the first non-empty fragment.
 - [x] 1.7 Add an orchestrator-level test where the synchronous LLM iterator stalls longer than the configured deadline without yielding a next delta; assert a chunk is flushed before another LLM yield.
 - [x] 1.8 Add end-to-end finality tests for normal completion, empty-final remainder, LLM error, TTS error, and cancellation; assert exactly one normal terminal marker only on successful completion.
-- [x] 1.9 Add a type-identity test proving legacy and canonical `TextChunk` imports resolve to the same class object after migration.
+- [x] 1.9 Add a canonical-export test proving exactly one `TextChunk` class exists, exported by `backend.application.text_chunker`, and that `render/windows.py` does not define or re-export it.
 
 ## 2. Canonical speech-chunking types and fixed-policy correctness
 
-- [x] 2.1 Create `services/product/backend_service/src/backend/application/speech_chunking/__init__.py` and `types.py` with canonical `TextChunk`, `ChunkPolicy`, `RuntimeHints`, and chunk-decision reason types; keep the public API free of source-type fields such as `llm` or `script`.
-- [x] 2.2 Update `text_chunker.py` to import the canonical types, maintain a real `buffer_started_at`, and expose explicit `feed()`, `flush(reason=...)`, `finalize()`, buffer-age, and buffered-text state without spawning timers/threads.
+- [x] 2.1 Create `services/product/backend_service/src/backend/application/text_chunker/__init__.py` and `types.py` with canonical `TextChunk`, `ChunkPolicy`, `RuntimeHints`, `FixedChunkPolicyConfig`, and chunk-decision reason types; keep the public API free of source-type fields such as `llm` or `script`.
+- [x] 2.2 Move the chunker into the `text_chunker/` package (`chunker.py`) importing the canonical types, maintaining a real `buffer_started_at`, and exposing explicit `feed()`, `flush(reason=...)`, `finalize()`, buffer-age, and buffered-text state without spawning timers/threads.
 - [x] 2.3 Replace end-of-delta punctuation checks with accumulated-buffer scanning and a drain loop so arbitrary deltas can produce multiple chunks.
 - [x] 2.4 Enforce the true hard `max_chars` invariant for every automatic non-final chunk, selecting a safe split at or before the cap and retaining remainder without loss/reorder.
 - [x] 2.5 Give `target_chars` an explicit deterministic fixed-policy/fallback role and tighten configuration validation to require positive ordered character thresholds and a non-negative timeout.
-- [x] 2.6 Re-export canonical `TextChunk` from `render/windows.py`, remove the duplicate dataclass definition/construction paths, and migrate new backend imports to the canonical path.
+- [x] 2.6 Migrate every import to `backend.application.text_chunker`, remove the duplicate `TextChunk` definition/construction paths, and remove the `render/windows.py` re-export; `render/windows.py` does not define or re-export `TextChunk`.
 - [x] 2.7 Run the focused chunker/type tests and backend static checks; do not continue to adaptive heuristics until all correctness regressions are green.
 
 ## 3. Deterministic Vietnamese boundary and duration engine
 
-- [x] 3.1 Create `speech_chunking/boundaries.py` with pure candidate extraction over original-text spans for paragraph/line, sentence punctuation, semicolon/colon, comma/clause, Vietnamese cue/whitespace, and hard-cap candidates.
+- [x] 3.1 Create `text_chunker/boundaries.py` with pure candidate extraction over original-text spans for paragraph/line, sentence punctuation, semicolon/colon, comma/clause, Vietnamese cue/whitespace, and hard-cap candidates.
 - [x] 3.2 Add protected-span detection for decimals/grouped numbers, currency/percent forms, URLs/emails, common acronym/abbreviation forms, SKU-like tokens, and balanced quote/parenthesis regions when a nearby safe boundary exists.
 - [x] 3.3 Add table-driven Vietnamese boundary tests covering multi-sentence paragraphs, commas/clauses, prices, percentages, decimals, product names, SKU codes, acronyms, mixed Vietnamese/English text, quotes, and parentheses.
-- [x] 3.4 Create `speech_chunking/duration.py` with deterministic `SpeechDurationEstimator` features for Vietnamese syllable-like units, punctuation pauses, numbers, currency, percentages, acronyms/English-like tokens, and calibration coefficients.
+- [x] 3.4 Create `text_chunker/duration.py` with deterministic `SpeechDurationEstimator` features for Vietnamese syllable-like units, punctuation pauses, numbers, currency, percentages, acronyms/English-like tokens, and calibration coefficients.
 - [x] 3.5 Add duration-estimator tests proving compact written forms such as prices/percentages are estimated differently from equal-length plain words and that estimation never mutates output text.
-- [x] 3.6 Create `speech_chunking/policy.py` with deterministic candidate scoring that prioritizes linguistic boundary quality, duration-target proximity, protected-span safety, `target_chars` fallback/tie-break, and hard-cap enforcement.
+- [x] 3.6 Create `text_chunker/policy.py` with deterministic candidate scoring that prioritizes linguistic boundary quality, duration-target proximity, protected-span safety, the adaptive char-bias tie-break, and hard-cap enforcement.
 - [x] 3.7 Integrate the scorer/estimator into `TextChunker` behind an `adaptive_vi` policy while preserving a selectable `fixed` policy and automatic fixed fallback on analysis failure.
 - [x] 3.8 Re-run fragmentation-invariance and exact-preservation suites under both fixed and adaptive policies.
 
@@ -37,7 +37,7 @@
 - [x] 4.2 Ensure only the consumer thread mutates `TextChunker`; use `queue.get(timeout=remaining_buffer_deadline)` so a latency deadline can fire with no new LLM delta.
 - [x] 4.3 Start deadline age only from `TextChunker.buffer_started_at`; keep `speech_start_elapsed_ms` as a separate runtime hint so TTFT can influence optimization but not correctness timeout.
 - [x] 4.4 Add bounded backpressure and producer lifecycle cleanup for EOF, exception, cancellation, and normal completion; close the generator when supported and require finite provider I/O timeouts rather than attempting unsafe thread termination.
-- [x] 4.5 Remove the redundant immediate `feed(...) + check_timeout()` polling pattern after the controller provides deadline-driven flushes.
+- [x] 4.5 Remove the chunker-owned timeout knob: `flush_timeout_ms` moves to `StreamingControllerConfig` at the orchestration boundary, and the orchestrator applies the deadline via explicit `chunker.flush(reason=LATENCY_DEADLINE)`.
 - [x] 4.6 Add deterministic synchronization tests for stall, fast producer/slow consumer, queue-full backpressure, producer error, and cancellation; avoid wall-clock sleeps where events/fake clocks can prove behavior.
 
 ## 5. Adaptive startup/steady/starvation policy
@@ -78,6 +78,7 @@
 
 ## 9. Regression and closeout
 
+- [ ] 9.0 Architecture cleanliness: repository-wide audit passes — zero `speech_chunking` references in active code, zero `render.windows` `TextChunk` definition/re-export, zero `text_chunker.py` facade file, zero duplicated chunking defaults, and the verbatim/full-script path uses the same `TextChunker` state machine.
 - [ ] 9.1 Run all backend unit/integration/contract tests affected by chunking/render orchestration plus Ruff/format/static checks used by service CI.
 - [ ] 9.2 Run existing local Stage 2 speech-path regression without AWS mutation and verify no session cleanup, playback correlation, or stop semantics regress.
 - [ ] 9.3 Run OpenSpec validation for `adaptive-speech-text-chunking` and correct every structural/spec-format finding before implementation is considered complete.

@@ -22,7 +22,7 @@ For Vietnamese speech, character count is only a rough proxy for TTS quality and
 - Add **adaptive runtime hints** so the same chunker can prefer a smaller natural first chunk when speech startup is late, longer natural chunks during healthy steady-state playback, and earlier boundaries when playback is near starvation.
 - Keep time-based streaming concerns outside the content segmentation algorithm. A bounded streaming controller around synchronous `LLMEngine.stream_chunks()` SHALL allow a deadline to fire even when no new LLM delta arrives.
 - Establish explicit end-to-end finality: normal completion produces exactly one terminal final marker through `TextChunk` → `AudioWindow` → `VideoWindow`; cancellation does not fabricate a normal final completion.
-- Unify the duplicate `TextChunk` definitions into one canonical type with compatibility re-exports during migration.
+- Unify the duplicate `TextChunk` definitions into one canonical type exported by the `backend.application.text_chunker` package; `render/windows.py` does not define or re-export it.
 - Add observability for chunk reason, estimated duration, actual TTS latency/audio duration, playback-buffer state, and forced-split rate so the adaptive policy can be benchmarked and tuned.
 - Add a VieNeu benchmark harness and acceptance gate. The selected adaptive policy SHALL be the lowest-TTFA candidate among configurations that satisfy correctness and human prosody non-regression versus the existing fixed-threshold baseline.
 
@@ -44,10 +44,10 @@ Change B will own script drafting, LLM-assisted authoring skill use, formatting/
 
 ## Impact
 
-- **Backend application**: `TextChunker` becomes a source-agnostic segmentation state machine with adaptive boundary selection.
+- **Backend application**: the final capability is `backend.application.text_chunker` — one cohesive package (chunker state machine + types/boundaries/duration/policy/telemetry modules) providing a source-agnostic segmentation state machine with selectable fixed/adaptive strategies.
 - **Render orchestration**: synchronous LLM streaming is isolated behind a bounded timed controller; finality and runtime hints are normalized before TTS/video propagation.
-- **Types**: one canonical `TextChunk` replaces duplicate dataclasses while keeping temporary compatibility imports.
-- **Configuration**: existing `TEXT_CHUNK_*` settings remain readable during migration; adaptive duration/latency parameters are introduced only with deterministic defaults and benchmark evidence.
+- **Types**: one canonical `TextChunk` class, exported by `backend.application.text_chunker`; `render/windows.py` defines or re-exports nothing.
+- **Configuration**: existing `TEXT_CHUNK_*` settings remain the env source of truth; callers build typed `FixedChunkPolicyConfig` / `StreamingControllerConfig` objects from `AppConfig` once, with no duplicated defaults.
 - **Tests**: add arbitrary-fragment, fragmentation-invariance, hard-cap, punctuation-inside-delta, true-timeout, finality, adaptive-policy, and benchmark-regression coverage.
 - **Observability**: add chunk decision reason and latency/prosody-relevant metrics without logging script contents by default.
 - **Runtime dependencies**: no new model, tokenizer service, embedding model, or network dependency is required for chunk decisions.

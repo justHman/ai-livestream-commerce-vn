@@ -161,11 +161,13 @@ Character thresholds SHALL remain deterministic compatibility/safety controls un
 
 The backend SHALL expose exactly one canonical `TextChunk` class for speech-text chunks.
 
-#### Scenario: Legacy render import remains during migration
+#### Scenario: Exactly one canonical class exists
 
-- **WHEN** existing code imports `TextChunk` through the render-window compatibility path
-- **THEN** that import SHALL resolve to the same class object as the canonical speech-chunking `TextChunk`
-- **AND** new code SHALL use the canonical import path
+- **GIVEN** the backend application package
+- **THEN** exactly one canonical `TextChunk` class SHALL exist
+- **AND** it SHALL be exported by `backend.application.text_chunker`
+- **AND** `render/windows.py` SHALL NOT define or re-export `TextChunk`
+- **AND** all production paths SHALL use the canonical type
 
 ### Requirement: Exactly-once normal finality
 

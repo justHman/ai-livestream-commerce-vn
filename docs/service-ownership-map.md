@@ -18,7 +18,7 @@ path created by this task.
     {"category": "product/backend", "source": "core/store.py", "target": "services/product/backend_service/src/backend/db/session_store.py"},
     {"category": "product/backend", "source": "core/director/", "target": "services/product/backend_service/src/backend/application/director/"},
     {"category": "product/backend", "source": "core/schemas/", "target": "services/product/backend_service/src/backend/application/schemas/"},
-    {"category": "product/backend", "source": "core/stream/chunker.py", "target": "services/product/backend_service/src/backend/application/text_chunker.py"},
+    {"category": "product/backend", "source": "core/stream/chunker.py", "target": "services/product/backend_service/src/backend/application/text_chunker/"},
     {"category": "product/backend", "source": "core/engine_manager.py", "target": "services/product/backend_service/src/backend/bootstrap/container.py"},
     {"category": "product/backend", "source": "core/livekit_tokens.py", "target": "services/product/backend_service/src/backend/application/clients/livekit.py"},
     {"category": "product/backend", "source": "core/llm/adapters/openai_compat.py", "target": "services/product/backend_service/src/backend/application/clients/llm/openai_compatible.py"},

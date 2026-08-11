@@ -182,13 +182,14 @@ When playback buffer is below the starvation watermark or measured TTS RTF/first
 
 Adaptive hints may change which *valid* boundary wins. They may never violate text preservation, sequence ordering, max cap, protected-span safety, or finality.
 
-## Decision 7 — `target_chars` becomes a fallback, not the adaptive target
+## Decision 7 — `target_chars` is a fixed-policy concept; adaptive uses its own char-bias constant
 
-The old `target_chars` setting is no longer dead, but it is not promoted into the main adaptive objective. It is used to:
+`target_chars` lives in `FixedChunkPolicyConfig` and is used to:
 
-- rank equivalent whitespace candidates when speech-duration estimates are close;
-- provide deterministic fallback if the duration estimator is disabled/unavailable;
+- fix the finalize fallback boundary for an over-target pending buffer under the fixed policy;
 - preserve a low-risk rollback path to fixed-threshold behavior.
+
+It is NOT promoted into the adaptive objective. The adaptive config (`AdaptiveViPolicyConfig`) carries its own fixed neutral char-bias reference used only to rank equivalent whitespace candidates when speech-duration estimates are close, plus a deterministic fallback when the duration estimator is unavailable. `target_chars` never leaks into adaptive scoring.
 
 The production default remains configurable between `fixed` and `adaptive_vi` until the benchmark gate passes. After PASS, `adaptive_vi` becomes the intended default; the fixed policy remains available for rollback during the first release window.
 
@@ -206,24 +207,49 @@ for every non-final automatically emitted chunk.
 
 If no acceptable natural boundary exists before `max_chars`, a forced split occurs at the best safe position at or before the cap. The decision reason is recorded as `hard_max` so forced-split rate can be benchmarked.
 
-## Decision 9 — One canonical `TextChunk`
+## Decision 9 — One canonical `TextChunk` in one cohesive package
 
-Create one canonical `TextChunk` type under the speech-chunking boundary and make legacy import locations re-export that same class object during migration.
-
-Recommended structure:
+Create one canonical `TextChunk` type. The final architecture is a single cohesive package — there is NO `text_chunker.py` facade file and NO parallel `speech_chunking/` package:
 
 ```text
 backend/application/
-├── text_chunker.py                     # public state-machine facade
-└── speech_chunking/
-    ├── __init__.py
-    ├── types.py                        # TextChunk, ChunkPolicy, RuntimeHints
-    ├── boundaries.py                   # candidate extraction/scoring
+└── text_chunker/
+    ├── __init__.py                     # stable package exports
+    ├── chunker.py                      # TextChunker state machine (feed/flush/finalize)
+    ├── types.py                        # TextChunk, ChunkPolicy, RuntimeHints, FixedChunkPolicyConfig
+    ├── boundaries.py                   # candidate extraction + protected spans
     ├── duration.py                     # SpeechDurationEstimator
-    └── policy.py                       # adaptive target/control law
+    ├── policy.py                       # fixed + adaptive_vi strategies and configs
+    └── telemetry.py                    # content-free chunk-decision telemetry
 ```
 
-`render/windows.py` keeps `AudioWindow`/`VideoWindow` and temporarily re-exports canonical `TextChunk` for compatibility. New code imports the canonical type directly.
+Consumers import the public API from the package root:
+
+```python
+from backend.application.text_chunker import TextChunker, TextChunk
+```
+
+`render/windows.py` keeps only render-stage concepts (`AudioWindow`, `VideoWindow`). It does not define or re-export `TextChunk` after migration.
+
+### Full-script path uses the same TextChunker
+
+There is exactly one chunking path. A complete script is fed into the same `TextChunker` and finalized; the only difference from realtime input is ingestion timing. `_speak_verbatim_sync` never constructs a `TextChunk` directly — finality comes from `finalize()`'s terminal position, normalized to exactly one final marker through the TTS seam.
+
+### Realtime deadline ownership
+
+`TextChunker` owns content/boundary state only. `StreamingControllerConfig` (render orchestration) carries `flush_timeout_ms`; the orchestrator computes the deadline from `TextChunker.buffer_started_at`/`buffer_age_ms` and calls `chunker.flush(reason="latency_deadline")` explicitly. The chunker has no timer or timeout knob.
+
+### Policy strategies with typed configs
+
+One `TextChunker` hosts injected segmentation strategies (`FixedPolicyStrategy` / `AdaptiveViPolicyStrategy`) behind a common protocol — no monolithic mode-switch. Configs are split: `FixedChunkPolicyConfig` (min/target/max chars) vs `AdaptiveViPolicyConfig` (speech-duration targets, scoring weights, hard safety constraints). `target_chars` never leaks into adaptive scoring; a fixed neutral char-bias constant lives in `AdaptiveViPolicyConfig`. The hard `max_chars` safety cap is an intentional invariant in both configs. When adaptive analysis fails, the chunker switches explicitly to the fixed strategy and stamps `fixed_fallback`.
+
+### Centralized config ownership
+
+`TEXT_CHUNK_*` env vars remain the source of truth in `AppConfig`. Callers build the typed configs from `AppConfig` once and pass them into `StreamOrchestrator` (`fixed_config`, `controller_config`); no duplicated `_DEFAULT_*` mirrors exist at the orchestration boundary.
+
+### Finality stays exactly-once
+
+`finalize()` owns the final marker. Normal completion with a remainder, completion with no remainder (the last already-emitted chunk is stamped final via the orchestrator's held-window release), errors, and cancellation all keep the existing exactly-once semantics — no new compatibility hacks.
 
 ## Decision 10 — Exactly-once normal finality
 
