@@ -61,7 +61,7 @@
 
 - [x] 7.1 Add content-free-by-default chunk-decision telemetry: sequence, decision reason, character length, estimated speech duration, hard-max/protected-span fallback flags, and policy state.
 - [x] 7.2 Record VieNeu TTS first-audio/synthesis latency, generated audio duration, and RTF where the current engine contract exposes them; retain bounded EWMA state for runtime hints.
-- [ ] 7.3 Record playback-buffer/underrun data at the orchestration boundary where available and ensure missing telemetry degrades gracefully to neutral hints.
+- [x] 7.3 Record playback-buffer/underrun data at the orchestration boundary where available and ensure missing telemetry degrades gracefully to neutral hints.
 - [x] 7.4 Add observability tests proving raw script/chunk text is not logged by default and that fallback/error reasons remain diagnosable.
 
 ## 8. Fixed-versus-adaptive VieNeu benchmark
