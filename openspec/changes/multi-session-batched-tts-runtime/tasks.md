@@ -66,17 +66,17 @@
 
 ## 7. VieNeu mixed-voice static batch adapter
 
-- [ ] 7.1 Isolate import/use of VieNeu `V3TurboBatchEngine`/internal v3 Turbo serving surface to `providers/vieneu_v3.py` (or one provider-private helper under the same package).
-- [ ] 7.2 Add provider startup contract checks for the pinned engine's expected per-request `speaker_emb`, `ref_codes`, `style`, request list, output count/order, and batch-wide generation parameters.
-- [ ] 7.3 Implement `batch_key()` from provider/model revision and batch-wide effective generation parameters; do not include `voice_profile_id` or per-request style when the pinned engine supports those per row.
-- [ ] 7.4 Implement `synthesize_batch()` that builds one per-request VieNeu engine request with its own phonemes/text, speaker embedding, reference codes, style, and reference-code flag.
-- [ ] 7.5 Validate batch result cardinality/order and map each waveform back to immutable provider request identity before returning to the scheduler.
-- [ ] 7.6 Add mixed preset-voice batch tests with at least two distinct preset profiles.
-- [ ] 7.7 Add mixed cloned-voice batch tests with at least two independently enrolled reference profiles.
-- [ ] 7.8 Add mixed preset+cloned batch tests.
-- [ ] 7.9 Add mixed-style batch tests for supported styles.
-- [ ] 7.10 Add expressive-cue batch tests and verify one request's cue/style/profile cannot leak into another row.
-- [ ] 7.11 Add a repository-wide import audit test/script that fails if VieNeu internal batch-engine imports appear outside the designated provider adapter/test boundary.
+- [x] 7.1 Isolate import/use of VieNeu `V3TurboBatchEngine`/internal v3 Turbo serving surface to `providers/vieneu_v3.py` (or one provider-private helper under the same package).
+- [x] 7.2 Add provider startup contract checks for the pinned engine's expected per-request `speaker_emb`, `ref_codes`, `style`, request list, output count/order, and batch-wide generation parameters.
+- [x] 7.3 Implement `batch_key()` from provider/model revision and batch-wide effective generation parameters; do not include `voice_profile_id` or per-request style when the pinned engine supports those per row.
+- [x] 7.4 Implement `synthesize_batch()` that builds one per-request VieNeu engine request with its own phonemes/text, speaker embedding, reference codes, style, and reference-code flag.
+- [x] 7.5 Validate batch result cardinality/order and map each waveform back to immutable provider request identity before returning to the scheduler.
+- [x] 7.6 Add mixed preset-voice batch tests with at least two distinct preset profiles.
+- [x] 7.7 Add mixed cloned-voice batch tests with at least two independently enrolled reference profiles.
+- [x] 7.8 Add mixed preset+cloned batch tests.
+- [x] 7.9 Add mixed-style batch tests for supported styles.
+- [x] 7.10 Add expressive-cue batch tests and verify one request's cue/style/profile cannot leak into another row.
+- [x] 7.11 Add a repository-wide import audit test/script that fails if VieNeu internal batch-engine imports appear outside the designated provider adapter/test boundary.
 
 ## 8. Scheduler data structures and admission
 
