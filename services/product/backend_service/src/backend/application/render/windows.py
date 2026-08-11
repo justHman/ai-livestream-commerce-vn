@@ -16,13 +16,15 @@ And three pure helper functions for audio windowing:
   split_waveform(pcm, sample_rate, min_ms, target_ms, max_ms) -> list[AudioWindow]
   merge_small_chunks(chunks, min_ms) -> list[AudioWindow]
   num_frames_for(window, fps) -> int
+  trim_trailing_silence(pcm, sample_rate, ...) -> tuple[bytes, int]
 
-Stdlib only (dataclasses, math, uuid, typing). No numpy dependency.
+Stdlib only (dataclasses, math, struct, uuid, typing). No numpy dependency.
 """
 
 from __future__ import annotations
 
 import math
+import struct
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -281,6 +283,64 @@ def merge_small_chunks(chunks: list[AudioWindow], min_ms: int) -> list[AudioWind
         )
         for i, w in enumerate(result)
     ]
+
+
+def trim_trailing_silence(
+    pcm: bytes,
+    sample_rate: int,
+    *,
+    keep_ms: int = 250,
+    min_silence_ms: int = 500,
+    amplitude_threshold: int = 200,
+) -> tuple[bytes, int]:
+    """Cut the trailing silence run that TTS engines append per request.
+
+    Edge-tts and friends leave ~0.85 s of silence at the end of EVERY request;
+    when the pipeline concatenates per-chunk TTS requests, every chunk boundary
+    becomes a long gap. This normalizes the media plane at the orchestrator
+    boundary, so any TTS engine's trailing silence is removed once.
+
+    Scans int16 mono PCM from the end: samples with ``abs(sample) <=
+    amplitude_threshold`` count as silence. If the trailing silence run is at
+    least ``min_silence_ms`` long, the run is cut back to ``keep_ms`` so speech
+    is never trimmed flush (natural inter-sentence pause preserved).
+
+    Args:
+        pcm: Raw PCM bytes (int16 mono, 2 bytes/sample).
+        sample_rate: Audio sample rate in Hz.
+        keep_ms: Milliseconds of the silence run kept after the last speech.
+        min_silence_ms: Minimum trailing silence run length to trim at all.
+        amplitude_threshold: Max int16 amplitude that counts as silence.
+
+    Returns:
+        (trimmed_pcm, removed_ms). ``removed_ms`` is 0 and ``trimmed_pcm`` is
+        the input unchanged when there is no long-enough silence run, when the
+        PCM is empty, or when it is shorter than keep_ms + min_silence_ms.
+    """
+    if sample_rate <= 0 or not pcm:
+        return pcm, 0
+
+    # int16 mono, 2 bytes/sample: drop a stray trailing byte before scanning.
+    if len(pcm) % 2 == 1:
+        pcm = pcm[:-1]
+        if not pcm:
+            return pcm, 0
+
+    min_silence_bytes = sample_rate * min_silence_ms // 1000 * 2
+    if len(pcm) < sample_rate * (keep_ms + min_silence_ms) // 1000 * 2:
+        return pcm, 0
+
+    run_bytes = 0
+    for i in range(len(pcm) - 2, -1, -2):
+        if abs(struct.unpack_from("<h", pcm, i)[0]) > amplitude_threshold:
+            break
+        run_bytes += 2
+    if run_bytes < min_silence_bytes:
+        return pcm, 0
+
+    keep_bytes = sample_rate * keep_ms // 1000 * 2
+    cut_bytes = run_bytes - keep_bytes
+    return pcm[: len(pcm) - cut_bytes], cut_bytes * 1000 // (sample_rate * 2)
 
 
 def num_frames_for(window: AudioWindow, fps: int) -> int:
