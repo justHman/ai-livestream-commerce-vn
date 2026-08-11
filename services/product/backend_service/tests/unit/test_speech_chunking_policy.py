@@ -75,8 +75,12 @@ def test_stronger_kind_outranks_weaker_regardless_of_duration() -> None:
     assert sentence_end < whitespace_end
     estimator = SpeechDurationEstimator()
     config = AdaptiveViPolicyConfig(char_bias_chars=40)
-    sentence_score = score_boundary(text, BoundaryCandidate(CandidateKind.SENTENCE, sentence_end, False), estimator, config)
-    white_score = score_boundary(text, BoundaryCandidate(CandidateKind.WHITESPACE, whitespace_end, False), estimator, config)
+    sentence_score = score_boundary(
+        text, BoundaryCandidate(CandidateKind.SENTENCE, sentence_end, False), estimator, config
+    )
+    white_score = score_boundary(
+        text, BoundaryCandidate(CandidateKind.WHITESPACE, whitespace_end, False), estimator, config
+    )
     assert sentence_score < white_score
 
 
