@@ -55,14 +55,14 @@
 
 ## 6. VieNeu v3 Turbo single-provider path
 
-- [ ] 6.1 Create `src/tts/providers/vieneu_v3.py` and initialize `Vieneu` with pinned v3 Turbo configuration using provider-owned lifecycle.
-- [ ] 6.2 Implement normal `auto` backend selection and expose actual selected backend (`pytorch/cuda` or `onnx/cpu`) through capabilities/readiness/metrics.
-- [ ] 6.3 Implement forced CPU and forced GPU configuration paths used by tests/operations, with clear startup failure when forced GPU prerequisites are missing.
-- [ ] 6.4 Implement provider profile resolution from `voice_profile_id` to VieNeu speaker embedding/reference codes without mutating a process-global voice-name registry per request.
-- [ ] 6.5 Implement single synthesis through the provider abstraction and canonical raw waveform/audio-result representation.
-- [ ] 6.6 Add expressive cue/style validation based on the pinned provider capability set, including supported laugh/sigh/throat-clear cue semantics.
-- [ ] 6.7 Add unit/integration tests for preset voice, cloned voice, three supported styles where applicable, expressive cues, 48 kHz metadata, and output encoding.
-- [ ] 6.8 Add CPU fallback smoke tests for startup, one preset synthesis, one cloned synthesis, and public API compatibility; do not add a CPU batch-size throughput sweep.
+- [x] 6.1 Create `src/tts/providers/vieneu_v3.py` and initialize `Vieneu` with pinned v3 Turbo configuration using provider-owned lifecycle.
+- [x] 6.2 Implement normal `auto` backend selection and expose actual selected backend (`pytorch/cuda` or `onnx/cpu`) through capabilities/readiness/metrics.
+- [x] 6.3 Implement forced CPU and forced GPU configuration paths used by tests/operations, with clear startup failure when forced GPU prerequisites are missing.
+- [x] 6.4 Implement provider profile resolution from `voice_profile_id` to VieNeu speaker embedding/reference codes without mutating a process-global voice-name registry per request.
+- [x] 6.5 Implement single synthesis through the provider abstraction and canonical raw waveform/audio-result representation.
+- [x] 6.6 Add expressive cue/style validation based on the pinned provider capability set, including supported laugh/sigh/throat-clear cue semantics.
+- [x] 6.7 Add unit/integration tests for preset voice, cloned voice, three supported styles where applicable, expressive cues, 48 kHz metadata, and output encoding.
+- [x] 6.8 Add CPU fallback smoke tests for startup, one preset synthesis, one cloned synthesis, and public API compatibility; do not add a CPU batch-size throughput sweep.
 
 ## 7. VieNeu mixed-voice static batch adapter
 
