@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import wave
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -25,7 +26,7 @@ from tts.api.dependencies import (
 from tts.api.security.authorization import require_scope
 from tts.api.security.rate_limit import GPUConcurrencyLimiter
 from tts.api.v1.schemas.common import ErrorResponse
-from tts.api.v1.schemas.speech import SpeechRequest, SpeechResponse
+from tts.api.v1.schemas.speech import CapabilityResponse, SpeechRequest, SpeechResponse
 from tts.engines.base import TTSEngine, TTSRequest
 from tts.providers.capabilities import ProviderCapabilities
 
@@ -39,6 +40,21 @@ def _to_tts_request(body: SpeechRequest) -> TTSRequest:
         language=body.language,
         speed=body.speed,
     )
+
+
+def _tracing_headers(body: SpeechRequest) -> dict[str, str]:
+    """Correlate responses to scheduling context.
+
+    Request/session/utterance identifiers echo what the caller supplied and
+    default to a fresh request id or "anonymous" — the scheduler cluster
+    consumes these. Raw text is never placed in headers or logs.
+    """
+    return {
+        "X-Request-Id": body.session_id or uuid4().hex,
+        "X-Session-Id": body.session_id or "anonymous",
+        "X-Utterance-Id": body.utterance_id or "anonymous",
+        "X-Chunk-Seq": str(body.chunk_seq),
+    }
 
 
 def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
@@ -93,6 +109,7 @@ async def synthesize(
         "X-Audio-Engine": engine.name,
         "X-Audio-Sample-Rate": str(chunk.sample_rate),
         "X-Audio-Duration-Ms": str(duration_ms),
+        **_tracing_headers(body),
     }
     return StreamingResponse(io.BytesIO(payload), media_type=media_type, headers=headers)
 
@@ -116,8 +133,8 @@ router.add_api_route(
 )
 
 
-@router.get("/audio/capabilities")
-def audio_capabilities() -> JSONResponse:
+@router.get("/audio/capabilities", response_model=CapabilityResponse)
+def audio_capabilities() -> CapabilityResponse:
     """Return provider-neutral capability facts.
 
     Cluster 1 serves a static capability stub (provider defaults from config);
@@ -138,23 +155,18 @@ def audio_capabilities() -> JSONResponse:
         supported_styles=("natural",),
         supported_response_formats=("pcm", "wav"),
     )
-    return JSONResponse(_capabilities_payload(caps))
-
-
-def _capabilities_payload(caps: ProviderCapabilities) -> dict:
-    """Serialize capabilities to the provider-neutral API shape."""
-    return {
-        "provider_name": caps.provider_name,
-        "model_revision": caps.model_revision,
-        "sample_rate_hz": caps.sample_rate_hz,
-        "supports_native_batch": caps.supports_native_batch,
-        "max_batch_size": caps.max_batch_size,
-        "supports_voice_cloning": caps.supports_voice_cloning,
-        "supports_mixed_voice_batch": caps.supports_mixed_voice_batch,
-        "supported_styles": list(caps.supported_styles),
-        "supported_expressive_cues": list(caps.supported_expressive_cues),
-        "supported_response_formats": list(caps.supported_response_formats),
-    }
+    return CapabilityResponse(
+        provider_name=caps.provider_name,
+        model_revision=caps.model_revision,
+        sample_rate_hz=caps.sample_rate_hz,
+        supports_native_batch=caps.supports_native_batch,
+        max_batch_size=caps.max_batch_size,
+        supports_voice_cloning=caps.supports_voice_cloning,
+        supports_mixed_voice_batch=caps.supports_mixed_voice_batch,
+        supported_styles=list(caps.supported_styles),
+        supported_expressive_cues=list(caps.supported_expressive_cues),
+        supported_response_formats=list(caps.supported_response_formats),
+    )
 
 
 @router.get("/speech/formats")
