@@ -70,15 +70,14 @@ from .llm_stream_controller import (
 from .windows import AudioWindow, VideoWindow
 from .queue import BoundedVideoQueue, CoordinatorMetrics
 
-from ..text_chunker import ChunkDecisionReason, TelemetryCollector, TextChunk, TextChunker
+from ..text_chunker import (
+    ChunkDecisionReason,
+    FixedChunkPolicyConfig,
+    TelemetryCollector,
+    TextChunk,
+    TextChunker,
+)
 
-# Default TextChunker config (mirrors AppConfig.text_chunk_* defaults). The
-# orchestrator reads these from the ``config`` dict if provided, else uses these
-# constants.
-_DEFAULT_MIN_CHARS = 12
-_DEFAULT_TARGET_CHARS = 40
-_DEFAULT_MAX_CHARS = 80
-_DEFAULT_FLUSH_TIMEOUT_MS = 350
 _BRIDGE_SENTINEL = object()
 AudioWindowCallback = Callable[[AudioWindow], Awaitable[None]]
 
@@ -94,13 +93,11 @@ class StreamingControllerConfig:
     applied via ``chunker.flush(reason=LATENCY_DEADLINE)``.
     """
 
-    flush_timeout_ms: int = _DEFAULT_FLUSH_TIMEOUT_MS
+    flush_timeout_ms: int = 350
 
     def __post_init__(self) -> None:
         if self.flush_timeout_ms < 0:
-            raise ValueError(
-                f"flush_timeout_ms must be >= 0, got {self.flush_timeout_ms}"
-            )
+            raise ValueError(f"flush_timeout_ms must be >= 0, got {self.flush_timeout_ms}")
 
 
 class StreamOrchestrator:
@@ -118,7 +115,7 @@ class StreamOrchestrator:
         backend: Any,
         queue: BoundedVideoQueue,
         metrics: CoordinatorMetrics,
-        config: dict | None = None,
+        fixed_config: FixedChunkPolicyConfig | None = None,
         controller_config: StreamingControllerConfig | None = None,
         audio_window_callback: AudioWindowCallback | None = None,
         telemetry: TelemetryCollector | None = None,
@@ -128,13 +125,11 @@ class StreamOrchestrator:
         self._backend = backend
         self._queue = queue
         self._metrics = metrics
-        cfg = config or {}
-        self._min_chars = int(cfg.get("text_chunk_min_chars", _DEFAULT_MIN_CHARS))
-        self._target_chars = int(cfg.get("text_chunk_target_chars", _DEFAULT_TARGET_CHARS))
-        self._max_chars = int(cfg.get("text_chunk_max_chars", _DEFAULT_MAX_CHARS))
-        self._controller_config = controller_config or StreamingControllerConfig(
-            flush_timeout_ms=int(cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS))
-        )
+        self._fixed_config = fixed_config or FixedChunkPolicyConfig()
+        self._min_chars = self._fixed_config.min_chars
+        self._target_chars = self._fixed_config.target_chars
+        self._max_chars = self._fixed_config.max_chars
+        self._controller_config = controller_config or StreamingControllerConfig()
         self._flush_timeout_ms = self._controller_config.flush_timeout_ms
         self._flush_timeout_s = self._flush_timeout_ms / 1000.0
         self._cancel_event = threading.Event()

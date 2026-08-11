@@ -151,7 +151,11 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
     subsequent say always succeeds once this one finishes.
     """
     from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
-    from backend.application.render.orchestrator import StreamOrchestrator
+    from backend.application.render.orchestrator import (
+        StreamOrchestrator,
+        StreamingControllerConfig,
+    )
+    from backend.application.text_chunker import FixedChunkPolicyConfig
     from llm.engines.base import LLMEngine, _NoopEngine
     from tts.engines.base import TTSEngine, ToneEngine
 
@@ -166,17 +170,21 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
     llm: LLMEngine = em.llm if (em is not None and em.llm is not None) else _NoopEngine()
     tts: TTSEngine = em.tts if (em is not None and em.tts is not None) else ToneEngine()
 
-    # Bounded queue + metrics for this utterance.
+    # Bounded queue + metrics for this utterance. The chunking config is
+    # built ONCE from AppConfig into the typed configs the orchestrator
+    # consumes (no dict passthrough, no duplicated defaults).
     cfg = d.config or router.AppConfig()
     max_q = getattr(cfg, "avatar_max_queue_windows", 5)
     queue = BoundedVideoQueue(max_size=max_q)
     metrics = CoordinatorMetrics()
-    orch_cfg = {
-        "text_chunk_min_chars": getattr(cfg, "text_chunk_min_chars", 12),
-        "text_chunk_target_chars": getattr(cfg, "text_chunk_target_chars", 40),
-        "text_chunk_max_chars": getattr(cfg, "text_chunk_max_chars", 80),
-        "text_chunk_flush_timeout_ms": getattr(cfg, "text_chunk_flush_timeout_ms", 350),
-    }
+    fixed_config = FixedChunkPolicyConfig(
+        min_chars=getattr(cfg, "text_chunk_min_chars", 12),
+        target_chars=getattr(cfg, "text_chunk_target_chars", 40),
+        max_chars=getattr(cfg, "text_chunk_max_chars", 80),
+    )
+    controller_config = StreamingControllerConfig(
+        flush_timeout_ms=getattr(cfg, "text_chunk_flush_timeout_ms", 350),
+    )
     try:
         orchestrator = StreamOrchestrator(
             llm=llm,
@@ -184,7 +192,8 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
             backend=d.backend,
             queue=queue,
             metrics=metrics,
-            config=orch_cfg,
+            fixed_config=fixed_config,
+            controller_config=controller_config,
             audio_window_callback=d.livekit_publishers.publish
             if d.livekit_publishers is not None
             else None,

@@ -27,12 +27,12 @@ from llm.engines.base import LLMEngine, LLMRequest, LLMResponse, _NoopEngine
 from avatar.engines.mock import MockRenderBackend
 from backend.application.render.engines_base import StartOptions
 from backend.application.render.windows import AudioWindow, VideoWindow
-from backend.application.text_chunker import TextChunk
+from backend.application.text_chunker import FixedChunkPolicyConfig, TextChunk
 from backend.application.render.queue import (
     BoundedVideoQueue,
     CoordinatorMetrics,
 )
-from backend.application.render.orchestrator import StreamOrchestrator
+from backend.application.render.orchestrator import StreamOrchestrator, StreamingControllerConfig
 from tts.engines.base import AudioChunk, TTSEngine, TTSRequest, ToneEngine
 
 
@@ -264,19 +264,14 @@ def _build_orchestrator(
     tts = _StubTTS()
     queue = BoundedVideoQueue(max_size=max_queue)
     metrics = CoordinatorMetrics()
-    cfg = {
-        "text_chunk_min_chars": 4,
-        "text_chunk_target_chars": 20,
-        "text_chunk_max_chars": 40,
-        "text_chunk_flush_timeout_ms": 350,
-    }
     orch = StreamOrchestrator(
         llm=llm,
         tts=tts,
         backend=backend,
         queue=queue,
         metrics=metrics,
-        config=cfg,
+        fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
+        controller_config=StreamingControllerConfig(flush_timeout_ms=350),
     )
     return orch, backend, queue, metrics
 
@@ -384,12 +379,8 @@ async def test_orchestrator_streaming_drain_exposes_first_window_before_worker_f
         backend=_SlowStreamingBackend(),
         queue=queue,
         metrics=metrics,
-        config={
-            "text_chunk_min_chars": 4,
-            "text_chunk_target_chars": 20,
-            "text_chunk_max_chars": 40,
-            "text_chunk_flush_timeout_ms": 350,
-        },
+        fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
+        controller_config=StreamingControllerConfig(flush_timeout_ms=350),
     )
 
     task = asyncio.create_task(orch.run("sess-stream", "hello"))
@@ -416,19 +407,14 @@ async def test_orchestrator_with_noop_llm_and_tone_tts_smoke():
     sid = next(iter(backend._sessions.keys()))
     queue = BoundedVideoQueue(max_size=5)
     metrics = CoordinatorMetrics()
-    cfg = {
-        "text_chunk_min_chars": 4,
-        "text_chunk_target_chars": 20,
-        "text_chunk_max_chars": 40,
-        "text_chunk_flush_timeout_ms": 350,
-    }
     orch = StreamOrchestrator(
         llm=_NoopEngine(),
         tts=ToneEngine(),
         backend=backend,
         queue=queue,
         metrics=metrics,
-        config=cfg,
+        fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
+        controller_config=StreamingControllerConfig(flush_timeout_ms=350),
     )
     spoken = await orch.run(sid, "hello", system_prompt=None)
     assert spoken, "noop llm + tone tts must produce spoken text"
@@ -453,11 +439,7 @@ async def test_orchestrator_forwards_pcm_window_to_callback_before_rendering():
         backend=backend,
         queue=BoundedVideoQueue(max_size=5),
         metrics=CoordinatorMetrics(),
-        config={
-            "text_chunk_min_chars": 4,
-            "text_chunk_target_chars": 20,
-            "text_chunk_max_chars": 40,
-        },
+        fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
         audio_window_callback=capture,
     )
 
@@ -480,11 +462,7 @@ async def test_orchestrator_propagates_callback_failure():
         backend=backend,
         queue=BoundedVideoQueue(max_size=5),
         metrics=CoordinatorMetrics(),
-        config={
-            "text_chunk_min_chars": 4,
-            "text_chunk_target_chars": 20,
-            "text_chunk_max_chars": 40,
-        },
+        fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
         audio_window_callback=fail,
     )
 

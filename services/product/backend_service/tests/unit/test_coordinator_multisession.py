@@ -31,9 +31,10 @@ from backend.application.director.session_context import DirectorRuntime
 from backend.application.render.locks import SessionLockRegistry
 from avatar.engines.mock import MockRenderBackend, _MockSession
 from backend.application.render.queue import BoundedVideoQueue
+from backend.application.render.orchestrator import StreamingControllerConfig
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from tts.engines.base import ToneEngine
-from backend.application.text_chunker import TextChunk
+from backend.application.text_chunker import FixedChunkPolicyConfig, TextChunk
 
 pytestmark = pytest.mark.asyncio
 
@@ -119,12 +120,8 @@ def _make_coordinator(
         llm=llm,
         tts=tts,
         backend=backend,
-        chunker_config={
-            "text_chunk_min_chars": 12,
-            "text_chunk_target_chars": 40,
-            "text_chunk_max_chars": 80,
-            "text_chunk_flush_timeout_ms": 350,
-        },
+        fixed_config=FixedChunkPolicyConfig(),
+        controller_config=StreamingControllerConfig(),
         lock_registry=locks,
         cfg=cfg,
         hub=None,

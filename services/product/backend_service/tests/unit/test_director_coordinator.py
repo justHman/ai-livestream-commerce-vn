@@ -25,9 +25,10 @@ from backend.application.director.coordinator import CoordinatorConfig, Director
 from backend.application.director.decision import Decision
 from backend.application.director.session_context import DirectorRuntime
 from backend.application.render.locks import SessionLockRegistry
+from backend.application.render.orchestrator import StreamingControllerConfig
 from avatar.engines.mock import MockRenderBackend, _MockSession
 from backend.application.render.windows import AudioWindow
-from backend.application.text_chunker import TextChunk
+from backend.application.text_chunker import FixedChunkPolicyConfig, TextChunk
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from tts.engines.base import AudioChunk, TTSEngine, TTSRequest
 
@@ -160,12 +161,8 @@ def _make_coordinator(
         llm=llm,
         tts=tts,
         backend=backend,
-        chunker_config={
-            "text_chunk_min_chars": 12,
-            "text_chunk_target_chars": 40,
-            "text_chunk_max_chars": 80,
-            "text_chunk_flush_timeout_ms": 350,
-        },
+        fixed_config=FixedChunkPolicyConfig(),
+        controller_config=StreamingControllerConfig(),
         lock_registry=locks,
         cfg=cfg,
     )

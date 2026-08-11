@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .playback_queue import PlaybackCancelled, PlaybackQueue, new_item
-from .text_chunker import TextChunker
+from .text_chunker import FixedChunkPolicyConfig, TextChunker
 
 __all__ = [
     "PlaybackWorker",
@@ -27,12 +27,17 @@ __all__ = [
 
 @dataclass
 class PlaybackWorkerConfig:
-    """Tunable playback pipeline knobs (mirror AppConfig text_chunk_*)."""
+    """Tunable playback pipeline knobs.
 
-    min_chars: int = 12
-    target_chars: int = 40
-    max_chars: int = 80
-    flush_timeout_ms: int = 350
+    The character thresholds source their defaults from the canonical
+    ``FixedChunkPolicyConfig`` (one typed source; no duplicated defaults).
+    The realtime flush deadline is owned by ``StreamingControllerConfig`` at
+    the orchestration boundary, not here.
+    """
+
+    min_chars: int = FixedChunkPolicyConfig().min_chars
+    target_chars: int = FixedChunkPolicyConfig().target_chars
+    max_chars: int = FixedChunkPolicyConfig().max_chars
     max_queue_windows: int = 5
     transient_retry_count: int = 1
 

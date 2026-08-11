@@ -33,8 +33,12 @@ from backend.application.render.engines_base import StartOptions
 from backend.application.render.windows import AudioWindow, VideoWindow
 from backend.application.text_chunker import TextChunk
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
-from backend.application.render.orchestrator import StreamOrchestrator
-from backend.application.text_chunker import ChunkDecisionReason, TextChunker
+from backend.application.render.orchestrator import StreamOrchestrator, StreamingControllerConfig
+from backend.application.text_chunker import (
+    ChunkDecisionReason,
+    FixedChunkPolicyConfig,
+    TextChunker,
+)
 from backend.application.render import llm_stream_controller as lsc
 from backend.application.render import orchestrator as orch_module
 from backend.application.render.llm_stream_controller import (
@@ -246,19 +250,14 @@ def _build_orchestrator(
     backend.start(StartOptions())
     queue = BoundedVideoQueue(max_size=max_queue)
     metrics = CoordinatorMetrics()
-    cfg = {
-        "text_chunk_min_chars": 4,
-        "text_chunk_target_chars": 20,
-        "text_chunk_max_chars": 40,
-        "text_chunk_flush_timeout_ms": flush_timeout_ms,
-    }
     orch = StreamOrchestrator(
         llm=llm,
         tts=tts,
         backend=backend,
         queue=queue,
         metrics=metrics,
-        config=cfg,
+        fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
+        controller_config=StreamingControllerConfig(flush_timeout_ms=flush_timeout_ms),
         audio_window_callback=audio_window_callback,
     )
     return orch, backend, queue, metrics

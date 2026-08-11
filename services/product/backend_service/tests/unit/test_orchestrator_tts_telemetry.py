@@ -16,9 +16,12 @@ from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from avatar.engines.mock import MockRenderBackend
 from backend.application.render.engines_base import StartOptions
 from backend.application.render.windows import AudioWindow, VideoWindow
-from backend.application.text_chunker import TextChunk
+from backend.application.text_chunker import FixedChunkPolicyConfig, TextChunk
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
-from backend.application.render.orchestrator import StreamOrchestrator
+from backend.application.render.orchestrator import (
+    StreamOrchestrator,
+    StreamingControllerConfig,
+)
 from backend.application.text_chunker.telemetry import TelemetryCollector
 
 
@@ -107,12 +110,8 @@ def _build_orchestrator(
         backend=backend,
         queue=queue,
         metrics=metrics,
-        config={
-            "text_chunk_min_chars": 4,
-            "text_chunk_target_chars": 20,
-            "text_chunk_max_chars": 40,
-            "text_chunk_flush_timeout_ms": 50,
-        },
+        fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
+        controller_config=StreamingControllerConfig(flush_timeout_ms=50),
         telemetry=telemetry,
     )
     return orch, backend, queue
