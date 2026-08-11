@@ -40,6 +40,10 @@ developer console.
 2. `attach`, `plan/create`, `chat`, and `ingest` configure Director state.
 3. A `StreamingAvatarBackend` runs LLM → text chunker → TTS → renderer in a
    worker thread, with a bounded video queue. Cloud backends retain `say()`.
+   Text chunking is source-agnostic segmentation owned by
+   `backend/application/text_chunker/`; see
+   [chunking-contract.md](./chunking-contract.md) for invariants, config,
+   rollback, telemetry fields, and the benchmark gate.
 4. With valid LiveKit configuration, the registry creates one audio publisher
    per session, serializes PCM forwarding, and removes the entry on stop/error.
 5. Session stop cancels the orchestrator, stops Director, publisher, renderer,

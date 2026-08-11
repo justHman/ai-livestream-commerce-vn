@@ -32,7 +32,8 @@ from backend.application.render.engines_base import (
     StartOptions,
     StartResult,
 )
-from backend.application.render.windows import AudioWindow, TextChunk
+from backend.application.render.windows import AudioWindow
+from backend.application.text_chunker import TextChunk
 from tts.engines.base import AudioChunk, TTSEngine, TTSRequest
 
 

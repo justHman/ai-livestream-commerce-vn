@@ -32,10 +32,20 @@ Cancel propagation:
   breaks out early. The async ``run()`` drains the bounded queue on cancel so
   consumers do not play stale frames after a barge-in.
 
-is_final propagation:
-  The last phrase chunk is stamped ``is_final=True`` by the orchestrator so TTS
-  propagates it to the final ``AudioWindow`` and the backend propagates it to the
-  final ``VideoWindow``.
+Exactly-once finality (tasks 6.1-6.5):
+  The TTS seam is per-call finality (tts/engines/base.py marks the LAST
+  window of every synthesis call final and ignores ``TextChunk.is_final``).
+  The orchestrator normalizes per-call finals into exactly one
+  utterance-level final using one-window lookahead: each yielded
+  ``AudioWindow`` is held back until the next window of the same TTS call
+  arrives, then delivered with the NEXT window's finality (and the
+  next-window span). On call completion, the final window is delivered with
+  exactly one normal-success final flag — set only when the utterance
+  actually completed (EOF reached and, when the chunker had no textual
+  remainder, the last already-emitted logical chunk is the one stamped
+  final). Errors and cancellation exit through their own paths and never
+  stamp the normal final. No empty terminal audio/video window is ever
+  fabricated. ``decision_reason`` survives every reconstruction.
 """
 
 from __future__ import annotations
@@ -43,26 +53,51 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
 from backend.application.contracts.tts_engines import TTSEngine
-from .windows import AudioWindow, TextChunk, VideoWindow
+from .llm_stream_controller import (
+    DEFAULT_QUEUE_MAXSIZE,
+    EofEvent,
+    ErrorEvent,
+    LLMStreamController,
+)
+from .windows import AudioWindow, VideoWindow
 from .queue import BoundedVideoQueue, CoordinatorMetrics
 
-from ..text_chunker import TextChunker
+from ..text_chunker import (
+    ChunkDecisionReason,
+    FixedChunkPolicyConfig,
+    TelemetryCollector,
+    TextChunk,
+    TextChunker,
+)
 
-# Default TextChunker config (mirrors AppConfig.text_chunk_* defaults). The
-# orchestrator reads these from the ``config`` dict if provided, else uses these
-# constants.
-_DEFAULT_MIN_CHARS = 12
-_DEFAULT_TARGET_CHARS = 40
-_DEFAULT_MAX_CHARS = 80
-_DEFAULT_FLUSH_TIMEOUT_MS = 350
 _BRIDGE_SENTINEL = object()
 AudioWindowCallback = Callable[[AudioWindow], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class StreamingControllerConfig:
+    """Realtime buffer-deadline knobs owned by streaming orchestration.
+
+    The TextChunker is content segmentation only; how long the controller
+    waits on an idle upstream generator before forcing a latency flush is an
+    orchestration decision. The deadline itself is computed by the
+    orchestrator from ``TextChunker.buffer_started_at``/``buffer_age_ms`` and
+    applied via ``chunker.flush(reason=LATENCY_DEADLINE)``.
+    """
+
+    flush_timeout_ms: int = 350
+
+    def __post_init__(self) -> None:
+        if self.flush_timeout_ms < 0:
+            raise ValueError(f"flush_timeout_ms must be >= 0, got {self.flush_timeout_ms}")
 
 
 class StreamOrchestrator:
@@ -80,24 +115,28 @@ class StreamOrchestrator:
         backend: Any,
         queue: BoundedVideoQueue,
         metrics: CoordinatorMetrics,
-        config: dict | None = None,
+        fixed_config: FixedChunkPolicyConfig | None = None,
+        controller_config: StreamingControllerConfig | None = None,
         audio_window_callback: AudioWindowCallback | None = None,
+        telemetry: TelemetryCollector | None = None,
     ) -> None:
         self._llm = llm
         self._tts = tts
         self._backend = backend
         self._queue = queue
         self._metrics = metrics
-        cfg = config or {}
-        self._min_chars = int(cfg.get("text_chunk_min_chars", _DEFAULT_MIN_CHARS))
-        self._target_chars = int(cfg.get("text_chunk_target_chars", _DEFAULT_TARGET_CHARS))
-        self._max_chars = int(cfg.get("text_chunk_max_chars", _DEFAULT_MAX_CHARS))
-        self._flush_timeout_ms = int(
-            cfg.get("text_chunk_flush_timeout_ms", _DEFAULT_FLUSH_TIMEOUT_MS)
-        )
+        self._fixed_config = fixed_config or FixedChunkPolicyConfig()
+        self._min_chars = self._fixed_config.min_chars
+        self._target_chars = self._fixed_config.target_chars
+        self._max_chars = self._fixed_config.max_chars
+        self._controller_config = controller_config or StreamingControllerConfig()
+        self._flush_timeout_ms = self._controller_config.flush_timeout_ms
+        self._flush_timeout_s = self._flush_timeout_ms / 1000.0
         self._cancel_event = threading.Event()
         self._running_session: str | None = None
         self._audio_window_callback = audio_window_callback
+        self._telemetry = telemetry
+        self._last_window_duration_ms: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
@@ -146,7 +185,9 @@ class StreamOrchestrator:
                 if not first_emitted:
                     self._metrics.record_first_frame()
                     first_emitted = True
+                self._last_window_duration_ms = vw.duration_ms
                 self._metrics.update_queue_depth(self._queue.qsize())
+                self._record_playback_depth()
 
             spoken, dropped = await worker
             if dropped:
@@ -195,7 +236,9 @@ class StreamOrchestrator:
                 if not first_emitted:
                     self._metrics.record_first_frame()
                     first_emitted = True
+                self._last_window_duration_ms = item.duration_ms
                 self._metrics.update_queue_depth(self._queue.qsize())
+                self._record_playback_depth()
             await worker
             if self._cancel_event.is_set():
                 self._queue.clear()
@@ -231,31 +274,44 @@ class StreamOrchestrator:
         bridge: queue.Queue[VideoWindow | object],
     ) -> None:
         try:
-            phrase = TextChunk(
+            # Full-script path uses the SAME TextChunker as realtime input —
+            # the only difference is ingestion timing (the whole text is
+            # available up front). feed() + finalize() segments it; the last
+            # phrase of the run carries the exactly-once utterance final,
+            # stamped here from finalize()'s terminal position. Per-call TTS
+            # finality is normalized by the shared one-window lookahead, so a
+            # multi-phrase script still yields exactly one final marker.
+            chunker = TextChunker(
                 session_id=session_id,
                 utterance_id=utterance_id,
-                seq=0,
-                text=text,
-                is_final=True,
+                min_chars=self._min_chars,
+                target_chars=self._target_chars,
+                max_chars=self._max_chars,
+                telemetry=self._telemetry,
             )
-            for audio_window in self._tts.stream_audio(
-                phrase.text,
-                session_id=session_id,
-                utterance_id=utterance_id,
-            ):
+            hints = self._telemetry.to_runtime_hints() if self._telemetry is not None else None
+            phrases = chunker.feed(text, runtime_hints=hints)
+            phrases.extend(chunker.finalize(runtime_hints=hints))
+            for index, phrase in enumerate(phrases):
                 if self._cancel_event.is_set():
                     break
-                if self._audio_window_callback is not None:
-                    loop = self._loop
-                    if loop is None:
-                        raise RuntimeError("orchestrator event loop is unavailable")
-                    asyncio.run_coroutine_threadsafe(
-                        self._audio_window_callback(audio_window), loop
-                    ).result()
-                for video_window in self._backend.stream_audio(session_id, audio_window):
-                    if self._cancel_event.is_set():
-                        break
-                    bridge.put(video_window)
+                if index == len(phrases) - 1:
+                    phrase = TextChunk(
+                        session_id=phrase.session_id,
+                        utterance_id=phrase.utterance_id,
+                        seq=phrase.seq,
+                        text=phrase.text,
+                        is_final=True,
+                        id=phrase.id,
+                        decision_reason=phrase.decision_reason,
+                    )
+                self._render_phrase_with_lookahead(
+                    phrase,
+                    session_id=session_id,
+                    utterance_id=utterance_id,
+                    bridge=bridge,
+                    stamp_final=index == len(phrases) - 1,
+                )
         finally:
             bridge.put(_BRIDGE_SENTINEL)
 
@@ -266,29 +322,135 @@ class StreamOrchestrator:
         req: LLMRequest,
         bridge: queue.Queue[VideoWindow | object],
     ) -> tuple[str, int]:
-        """Stream each complete LLM phrase into TTS as soon as it is available."""
-        spoken_parts: list[str] = []
+        """Stream each complete LLM phrase into TTS as soon as it is available.
 
-        def render_phrase(phrase: TextChunk) -> None:
-            for audio_window in self._tts.stream_audio(
-                phrase.text,
-                session_id=session_id,
-                utterance_id=utterance_id,
-            ):
-                if self._cancel_event.is_set():
-                    return
-                if self._audio_window_callback is not None:
-                    loop = self._loop
-                    if loop is None:
-                        raise RuntimeError("orchestrator event loop is unavailable")
-                    asyncio.run_coroutine_threadsafe(
-                        self._audio_window_callback(audio_window), loop
-                    ).result()
-                for video_window in self._backend.stream_audio(session_id, audio_window):
+        The LLM stream runs in a dedicated producer thread; this consumer owns
+        the ``TextChunker`` exclusively and waits on the controller with a
+        deadline computed only from ``chunker.buffer_started_at``, so a
+        stalled upstream generator can still fire a latency flush. Producer
+        errors propagate through the error path; no EOF is emitted after an
+        error, and the chunker is never stamped normal-final on error/cancel.
+
+        Finality: the TTS seam is per-call final (tts/engines/base.py), so
+        phrase finality does NOT cross the boundary. ``render_phrase`` stamps
+        exactly one utterance-level final — the last audio window of the
+        final phrase — only on true normal completion; error/cancel paths
+        never stamp it.
+        """
+        spoken_parts: list[str] = []
+        # Windows whose utterance-finality is not yet known, held until the
+        # run's completion path decides. Bounded: at most ONE deadline-flush
+        # phrase (whose lastness is unknowable until the next event) is ever
+        # held; feed phrases are always deliverable immediately. Released
+        # non-final on error/cancel, final on normal completion.
+        held_windows: list[AudioWindow] = []
+
+        def release_held(is_final: bool) -> None:
+            """Deliver the held windows with the decided finality.
+
+            Exactly-once rule: only the LAST held window may carry the normal
+            final (``is_final`` True); every earlier one is emitted
+            non-final. On error/cancel ``is_final`` is False for all.
+            """
+            while held_windows:
+                window = held_windows.pop(0)
+                self._deliver_audio_window(
+                    window,
+                    is_final=is_final and not held_windows,
+                    text_span=window.text_span,
+                    session_id=session_id,
+                    bridge=bridge,
+                )
+
+        def render_phrase(
+            phrase: TextChunk,
+            *,
+            hold_last: bool = False,
+            stamp_chunk_final: bool = False,
+        ) -> None:
+            """Synthesize one phrase; deliver all but the call's last window.
+
+            The TTS seam marks the last window of EVERY call final
+            (tts/engines/base.py), so per-call finals are meaningless across
+            calls. One-window lookahead within the call: each window is
+            delivered carrying the NEXT window's finality (non-final), and
+            the call's last window is either delivered now — final only when
+            ``stamp_chunk_final`` (the utterance's final phrase) — or held
+            when ``hold_last`` (a deadline-flush phrase whose lastness is
+            unknown). ``stamp_chunk_final`` also marks the phrase chunk
+            itself is_final=True for the canonical seam (decision_reason
+            preserved).
+            """
+            if stamp_chunk_final:
+                phrase = TextChunk(
+                    session_id=phrase.session_id,
+                    utterance_id=phrase.utterance_id,
+                    seq=phrase.seq,
+                    text=phrase.text,
+                    is_final=True,
+                    id=phrase.id,
+                    decision_reason=phrase.decision_reason,
+                )
+            pending: AudioWindow | None = None
+            # Task 7.2: time real synthesis/streaming lazily — the generator
+            # is consumed in place (cancel stays responsive), duration is
+            # accumulated per window, and the record lands on both the normal
+            # and error completions of the loop (cancel path skips it).
+            t0 = time.monotonic()
+            audio_duration_ms = 0
+            try:
+                for audio_window in self._tts.stream_audio(
+                    phrase,
+                    session_id=session_id,
+                    utterance_id=utterance_id,
+                ):
                     if self._cancel_event.is_set():
                         return
-                    bridge.put(video_window)
+                    audio_duration_ms += audio_window.duration_ms
+                    if pending is not None:
+                        self._deliver_audio_window(
+                            pending,
+                            is_final=False,
+                            text_span=pending.text_span,
+                            session_id=session_id,
+                            bridge=bridge,
+                        )
+                    pending = audio_window
+            except BaseException:
+                # Mid-call TTS error: the partial window is still real audio —
+                # deliver it non-final, then propagate (no fabricated final).
+                if pending is not None:
+                    self._deliver_audio_window(
+                        pending,
+                        is_final=False,
+                        text_span=pending.text_span,
+                        session_id=session_id,
+                        bridge=bridge,
+                    )
+                self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+                raise
+            self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+            if pending is not None:
+                if hold_last:
+                    held_windows.append(pending)
+                else:
+                    self._deliver_audio_window(
+                        pending,
+                        is_final=stamp_chunk_final,
+                        text_span=pending.text_span,
+                        session_id=session_id,
+                        bridge=bridge,
+                    )
 
+        def render_final_batch(phrases: list[TextChunk]) -> None:
+            """Render the utterance-final phrase batch; exactly one final."""
+            release_held(is_final=False)
+            for i, phrase in enumerate(phrases):
+                render_phrase(phrase, stamp_chunk_final=i == len(phrases) - 1)
+
+        controller: LLMStreamController | None = None
+        normal_complete = False
+        cancelled = False
         try:
             chunker = TextChunker(
                 session_id=session_id,
@@ -296,38 +458,233 @@ class StreamOrchestrator:
                 min_chars=self._min_chars,
                 target_chars=self._target_chars,
                 max_chars=self._max_chars,
-                flush_timeout_ms=self._flush_timeout_ms,
+                telemetry=self._telemetry,
             )
-            saw_final_token = False
-            for token in self._llm.stream_chunks(
-                req, session_id=session_id, utterance_id=utterance_id
-            ):
-                if self._cancel_event.is_set():
-                    break
-                spoken_parts.append(token.text)
-                phrases = chunker.feed(token.text) + chunker.check_timeout()
-                if token.is_final:
-                    saw_final_token = True
-                    phrases.extend(chunker.finalize())
-                    if phrases and not phrases[-1].is_final:
-                        last = phrases[-1]
-                        phrases[-1] = TextChunk(
-                            session_id=last.session_id,
-                            utterance_id=last.utterance_id,
-                            seq=last.seq,
-                            text=last.text,
-                            is_final=True,
-                            id=last.id,
-                        )
-                for phrase in phrases:
-                    render_phrase(phrase)
-            else:
-                if not self._cancel_event.is_set() and not saw_final_token:
-                    for phrase in chunker.finalize():
-                        render_phrase(phrase)
+            hints = self._telemetry.to_runtime_hints() if self._telemetry is not None else None
+            controller = LLMStreamController(
+                self._llm,
+                req,
+                session_id=session_id,
+                utterance_id=utterance_id,
+                maxsize=DEFAULT_QUEUE_MAXSIZE,
+            )
+            controller.start()
+            try:
+                while True:
+                    if self._cancel_event.is_set():
+                        cancelled = True
+                        break
+                    event = controller.get(
+                        self._remaining_deadline(chunker),
+                        cancel=self._cancel_event,
+                    )
+                    if event is None:
+                        if not self._cancel_event.is_set():
+                            phrases = chunker.flush(
+                                reason=ChunkDecisionReason.LATENCY_DEADLINE, runtime_hints=hints
+                            )
+                            for i, phrase in enumerate(phrases):
+                                render_phrase(phrase, hold_last=i == len(phrases) - 1)
+                        continue
+                    if isinstance(event, EofEvent):
+                        break
+                    if isinstance(event, ErrorEvent):
+                        raise event.exc
+                    # DeltaEvent
+                    spoken_parts.append(event.text)
+                    if event.is_final:
+                        normal_complete = True
+                        final_phrases = chunker.feed(event.text, runtime_hints=hints)
+                        final_phrases.extend(chunker.finalize(runtime_hints=hints))
+                        if final_phrases:
+                            render_final_batch(final_phrases)
+                        else:
+                            # Completion with no new textual remainder: the
+                            # held flush phrase (if any) is the last one.
+                            release_held(is_final=True)
+                        break
+                    phrases = chunker.feed(event.text, runtime_hints=hints)
+                    if phrases:
+                        release_held(is_final=False)
+                        for phrase in phrases:
+                            render_phrase(phrase)
+
+                if not cancelled and not normal_complete:
+                    final_phrases = chunker.finalize(runtime_hints=hints)
+                    if final_phrases:
+                        render_final_batch(final_phrases)
+                    else:
+                        release_held(is_final=True)
+            except BaseException:
+                # Any abnormal exit (upstream/TTS/callback error) must
+                # release the held windows NON-final, then propagate — never
+                # stamp a normal-success final.
+                release_held(is_final=False)
+                raise
+            if cancelled:
+                release_held(is_final=False)
             return "".join(spoken_parts), 0
         finally:
-            bridge.put(_BRIDGE_SENTINEL)
+            # The sentinel must ALWAYS reach the bridge: if it is skipped the
+            # async drain in ``run()`` blocks forever in ``bridge.get``. Put it
+            # in a nested finally so a raising cleanup still propagates (never
+            # swallowed) while the consumer is unblocked.
+            try:
+                if controller is not None:
+                    controller.stop()
+            finally:
+                bridge.put(_BRIDGE_SENTINEL)
+
+    def _render_phrase_with_lookahead(
+        self,
+        phrase: TextChunk,
+        *,
+        session_id: str,
+        utterance_id: str,
+        bridge: queue.Queue[VideoWindow | object],
+        stamp_final: bool,
+    ) -> None:
+        """Synthesize one phrase and deliver its windows with one-window lookahead.
+
+        The TTS seam marks the last window of EVERY call final
+        (tts/engines/base.py), so per-call finals are meaningless across
+        calls. Within one call each window is delivered carrying the NEXT
+        window's finality (non-final), and the call's last window is
+        delivered final only when ``stamp_final`` (the utterance's final
+        phrase). Errors deliver the partial window non-final then propagate;
+        cancellation returns early without delivering.
+        """
+        pending: AudioWindow | None = None
+        t0 = time.monotonic()
+        audio_duration_ms = 0
+        try:
+            for audio_window in self._tts.stream_audio(
+                phrase,
+                session_id=session_id,
+                utterance_id=utterance_id,
+            ):
+                if self._cancel_event.is_set():
+                    return
+                audio_duration_ms += audio_window.duration_ms
+                if pending is not None:
+                    self._deliver_audio_window(
+                        pending,
+                        is_final=False,
+                        text_span=pending.text_span,
+                        session_id=session_id,
+                        bridge=bridge,
+                    )
+                pending = audio_window
+        except BaseException:
+            # Mid-call TTS error: the partial window is still real audio —
+            # deliver it non-final, then propagate (no fabricated final).
+            if pending is not None:
+                self._deliver_audio_window(
+                    pending,
+                    is_final=False,
+                    text_span=pending.text_span,
+                    session_id=session_id,
+                    bridge=bridge,
+                )
+            self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+            raise
+        self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+        if pending is not None:
+            self._deliver_audio_window(
+                pending,
+                is_final=stamp_final,
+                text_span=pending.text_span,
+                session_id=session_id,
+                bridge=bridge,
+            )
+
+    def _record_playback_depth(self) -> None:
+        """Estimate and record the queued-but-undelivered playback depth (ms).
+
+        Depth is the queue depth in windows scaled by the most recent window's
+        duration; a fixed linear estimate over a typical window duration would
+        guess at window size, so the last window actually put is the closest
+        deterministic size signal available at the drain loop. No-op until the
+        first window is put; no-op without a collector (neutral hints).
+        """
+        if self._telemetry is None or self._last_window_duration_ms is None:
+            return
+        depth_ms = self._queue.qsize() * self._last_window_duration_ms
+        self._telemetry.record_playback_buffer(depth_ms)
+
+    def _record_tts_timing(self, elapsed_s: float, audio_duration_ms: int) -> None:
+        """Record one synthesis call's timing (no-op without a collector).
+
+        ``elapsed_s`` spans the whole lazy stream consumption, so the
+        first-audio latency equals the synthesis wall time on this
+        non-streaming seam (synthesize once, then split windows).
+        """
+        if self._telemetry is not None:
+            self._telemetry.record_tts_timing(elapsed_s * 1000.0, audio_duration_ms)
+
+    def _deliver_audio_window(
+        self,
+        audio_window: AudioWindow,
+        *,
+        is_final: bool,
+        text_span: str | None,
+        session_id: str,
+        bridge: queue.Queue[VideoWindow | object],
+    ) -> None:
+        """Deliver one AudioWindow to the callback + backend with given finality.
+
+        A frozen dataclass cannot be mutated, so the finality/span stamping
+        reconstructs the window (same id, same PCM). ``decision_reason``
+        lives on the TextChunk, not the audio window, so no reason is lost.
+        """
+        if is_final != audio_window.is_final or text_span != audio_window.text_span:
+            audio_window = AudioWindow(
+                session_id=audio_window.session_id,
+                utterance_id=audio_window.utterance_id,
+                seq=audio_window.seq,
+                sample_rate=audio_window.sample_rate,
+                duration_ms=audio_window.duration_ms,
+                pcm=audio_window.pcm,
+                audio_path=audio_window.audio_path,
+                text_span=text_span,
+                is_final=is_final,
+                id=audio_window.id,
+            )
+        if self._cancel_event.is_set():
+            return
+        if self._audio_window_callback is not None:
+            loop = self._loop
+            if loop is None:
+                raise RuntimeError("orchestrator event loop is unavailable")
+            asyncio.run_coroutine_threadsafe(
+                self._audio_window_callback(audio_window), loop
+            ).result()
+        for video_window in self._backend.stream_audio(session_id, audio_window):
+            if self._cancel_event.is_set():
+                return
+            bridge.put(video_window)
+
+    def _remaining_deadline(self, chunker: TextChunker) -> float | None:
+        """Seconds until the buffer latency deadline, or None when no deadline.
+
+        The deadline is measured from ``buffer_started_at`` only: an empty
+        buffer (long LLM TTFT, flushed remainder, or a sub-min buffer below
+        the quality floor) waits without a fake deadline. ``flush_timeout_ms``
+        of 0 is honored as an immediate flush once text is buffered.
+
+        Min-quality guard: a non-empty buffer below ``min_chars`` returns
+        None — the latency deadline never forces a sub-min flush. The
+        acceptance contract is that sub-min timeout continues buffering until
+        min is reached (or finalization/cancellation/hard cap), so the
+        timeout only fires once the buffer has at least ``min_chars``.
+        """
+        started = chunker.buffer_started_at
+        if started is None:
+            return None
+        if len(chunker.buffered_text) < self._min_chars:
+            return None
+        remaining = self._flush_timeout_s - chunker.buffer_age_ms / 1000.0
+        return max(0.0, remaining)
 
 
 __all__ = ["StreamOrchestrator"]
