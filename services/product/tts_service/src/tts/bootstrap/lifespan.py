@@ -26,10 +26,14 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     engine = _build_engine()
     app.state.engine = engine
     app.state.engine_ready = True
+    # With no provider runtime wired yet, the engine alone satisfies
+    # readiness; the runtime cluster additionally gates runtime_ready.
+    app.state.runtime_ready = True
     try:
         yield {"engine": engine}
     finally:
         app.state.engine_ready = False
+        app.state.runtime_ready = False
         try:
             engine.unload()
         finally:

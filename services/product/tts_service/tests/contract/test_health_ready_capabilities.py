@@ -91,3 +91,25 @@ def test_ready_returns_503_when_engine_not_ready() -> None:
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == "engine_unavailable"
     assert resp.json()["error"]["message"]
+
+
+def test_ready_503_when_runtime_not_ready_despite_engine() -> None:
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.engine = ToneEngine.from_config({})
+        app.state.engine_ready = True
+        app.state.runtime_ready = False
+        resp = client.get("/ready")
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "engine_unavailable"
+
+
+def test_ready_200_when_engine_and_runtime_ready() -> None:
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.engine = ToneEngine.from_config({})
+        app.state.engine_ready = True
+        app.state.runtime_ready = True
+        resp = client.get("/ready")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ready"}

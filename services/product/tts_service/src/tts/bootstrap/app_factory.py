@@ -39,6 +39,10 @@ def create_app(
     app.state.security_config = sec
     app.state.engine = None
     app.state.engine_ready = False
+    # Runtime subsystem readiness (provider/voice store/scheduler) — the
+    # runtime cluster flips this after provider startup; compatibility flag
+    # `engine_ready` alone no longer means /ready.
+    app.state.runtime_ready = False
 
     register_middleware(app, cfg)
     exception_handlers.register(app)
