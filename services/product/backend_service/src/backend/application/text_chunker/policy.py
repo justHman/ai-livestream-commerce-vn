@@ -558,10 +558,7 @@ def soft_target_duration_ms(
         and runtime_hints.playback_buffer_ms < starvation_watermark
     ):
         target = min(target, starvation_target)
-    if (
-        not _hint_neutral(runtime_hints.tts_rtf_ewma)
-        and runtime_hints.tts_rtf_ewma >= rtf_degraded
-    ):
+    if not _hint_neutral(runtime_hints.tts_rtf_ewma) and runtime_hints.tts_rtf_ewma >= rtf_degraded:
         target = min(target, starvation_target)
     if (
         not _hint_neutral(runtime_hints.tts_first_audio_ewma_ms)
