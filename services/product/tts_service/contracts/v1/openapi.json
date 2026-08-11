@@ -452,7 +452,7 @@
   "paths": {
     "/v1/audio/capabilities": {
       "get": {
-        "description": "Return provider-neutral capability facts.\n\nCluster 1 serves a static capability stub (provider defaults from config);\nthe runtime cluster replaces it with the active provider's capabilities.\nNo speaker embeddings or reference codes ever appear here.",
+        "description": "Return provider-neutral capability facts from the active provider.\n\nFalls back to the static config-derived stub when the provider is not\nwired (runtime_ready false). No speaker embeddings or reference codes\never appear here.",
         "operationId": "audio_capabilities_v1_audio_capabilities_get",
         "responses": {
           "200": {

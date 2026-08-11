@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from tts.api.dependencies import (
     get_engine,
     get_gpu_concurrency_limiter,
+    get_provider,
 )
 from tts.api.security.authorization import require_scope
 from tts.api.security.rate_limit import GPUConcurrencyLimiter
@@ -134,27 +135,30 @@ router.add_api_route(
 
 
 @router.get("/audio/capabilities", response_model=CapabilityResponse)
-def audio_capabilities() -> CapabilityResponse:
-    """Return provider-neutral capability facts.
+def audio_capabilities(provider=Depends(get_provider)) -> CapabilityResponse:
+    """Return provider-neutral capability facts from the active provider.
 
-    Cluster 1 serves a static capability stub (provider defaults from config);
-    the runtime cluster replaces it with the active provider's capabilities.
-    No speaker embeddings or reference codes ever appear here.
+    Falls back to the static config-derived stub when the provider is not
+    wired (runtime_ready false). No speaker embeddings or reference codes
+    ever appear here.
     """
-    from tts.config import load_runtime_config
+    if provider is None:
+        from tts.config import load_runtime_config
 
-    cfg = load_runtime_config()
-    caps = ProviderCapabilities(
-        provider_name=cfg.provider,
-        model_revision=cfg.model_revision,
-        sample_rate_hz=48_000,
-        supports_native_batch=False,
-        max_batch_size=1,
-        supports_voice_cloning=False,
-        supports_mixed_voice_batch=False,
-        supported_styles=("natural",),
-        supported_response_formats=("pcm", "wav"),
-    )
+        cfg = load_runtime_config()
+        caps = ProviderCapabilities(
+            provider_name=cfg.provider,
+            model_revision=cfg.model_revision,
+            sample_rate_hz=48_000,
+            supports_native_batch=False,
+            max_batch_size=1,
+            supports_voice_cloning=False,
+            supports_mixed_voice_batch=False,
+            supported_styles=("natural",),
+            supported_response_formats=("pcm", "wav"),
+        )
+    else:
+        caps = provider.capabilities()
     return CapabilityResponse(
         provider_name=caps.provider_name,
         model_revision=caps.model_revision,

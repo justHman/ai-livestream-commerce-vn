@@ -39,6 +39,28 @@ def get_voice_service(request: Request) -> VoiceProfileService:
     return service
 
 
+def get_provider(request: Request):
+    """Return the active runtime provider, or None when not started.
+
+    The provider is owned by the lifespan and gated behind ``runtime_ready``.
+    Optional by design: read-only routes (capabilities) fall back to their
+    config stub; routes that require synthesis use ``get_ready_provider``.
+    """
+    if not getattr(request.app.state, "runtime_ready", False):
+        return None
+    return getattr(request.app.state, "provider", None)
+
+
+def get_ready_provider(request: Request):
+    """Return the active runtime provider, or raise 503 when not ready."""
+    from tts.providers.errors import ProviderUnavailableError
+
+    provider = get_provider(request)
+    if provider is None:
+        raise ProviderUnavailableError("TTS provider not started")
+    return provider
+
+
 def get_concurrency_limiter(request: Request) -> ConcurrencyLimiter:
     config = get_security_config(request)
     return ConcurrencyLimiter(max_concurrent=config.max_concurrent_requests)
