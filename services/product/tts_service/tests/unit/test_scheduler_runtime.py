@@ -29,7 +29,6 @@ from tts.providers.errors import (
 )
 from tts.providers.models import (
     AudioResult,
-    GenerationConfig,
     Priority,
     ProviderRequest,
     ProviderResult,
@@ -176,14 +175,10 @@ def _make_runtime(
 ) -> SchedulerRuntime:
     return SchedulerRuntime(
         population=PendingPopulation(),
-        admission=AdmissionController(
-            global_pending_limit, per_session_pending_limit
-        ),
+        admission=AdmissionController(global_pending_limit, per_session_pending_limit),
         selector=FairnessSelector(),
         provider=provider,
-        config=_config(
-            max_batch_size=max_batch_size, coalesce_window_ms=coalesce_window_ms
-        ),
+        config=_config(max_batch_size=max_batch_size, coalesce_window_ms=coalesce_window_ms),
         clock=clock.now,
     )
 
@@ -322,9 +317,7 @@ async def test_cancelled_in_flight_result_discarded_sibling_resolves() -> None:
     await asyncio.sleep(0.02)  # both dispatched together, batch in flight
     tasks[0].cancel()  # caller disconnect
     await asyncio.sleep(0.01)
-    results = await asyncio.wait_for(
-        asyncio.gather(*tasks, return_exceptions=True), timeout=5
-    )
+    results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
     assert isinstance(results[0], asyncio.CancelledError)
     assert results[1].request_id == "r2"
     assert [call[1] for call in provider.batch_calls] == [("r1", "r2")]
