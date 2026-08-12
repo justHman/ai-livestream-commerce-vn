@@ -14,6 +14,7 @@ back to sequential single-path synthesis.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Callable, Optional
@@ -188,13 +189,14 @@ class VieNeuV3TurboProvider:
             _MAX_NEW_FRAMES,
         )
 
-    def synthesize(self, request: ProviderRequest) -> AudioResult:
+    async def synthesize(self, request: ProviderRequest) -> AudioResult:
         """Synthesize one request via the SDK single-inference path."""
         self._validate_style(request.style)
         self._validate_cues(request.input_text)
         payload = self._resolve_profile(request)
         try:
-            wav = self._tts.infer(
+            wav = await asyncio.to_thread(
+                self._tts.infer,
                 request.input_text,
                 voice=payload,
                 style=_VIENEU_STYLES[request.style],
@@ -210,7 +212,7 @@ class VieNeuV3TurboProvider:
             ) from exc
         return self._to_result(request, np.asarray(wav, dtype=np.float32).reshape(-1))
 
-    def synthesize_batch(self, requests: list[ProviderRequest]) -> list[ProviderResult]:
+    async def synthesize_batch(self, requests: list[ProviderRequest]) -> list[ProviderResult]:
         """Mixed-voice static batch via the SDK batch engine; order preserved.
 
         The scheduler coalesces on ``batch_key``, but the provider re-checks so
@@ -221,7 +223,8 @@ class VieNeuV3TurboProvider:
         if not requests:
             return []
         if self._backend != "pytorch":
-            return [self.synthesize(request) for request in requests]
+            results = [await self.synthesize(request) for request in requests]
+            return results
         first_key = self.batch_key(requests[0])
         for request in requests[1:]:
             if self.batch_key(request) != first_key:
@@ -232,7 +235,9 @@ class VieNeuV3TurboProvider:
         engine_dicts = [self._build_engine_request(request) for request in requests]
         params = self._batch_scalar_params(requests[0])
         try:
-            waveforms = self._batch_engine.generate_batch(engine_dicts, **params)
+            waveforms = await asyncio.to_thread(
+                self._batch_engine.generate_batch, engine_dicts, **params
+            )
         except Exception as exc:
             raise ProviderInferenceError(
                 f"VieNeu batch inference failed for {len(requests)} requests "
@@ -284,7 +289,7 @@ class VieNeuV3TurboProvider:
             raise ProfileNotFoundError(
                 f"voice profile {voice_profile_id!r} not found (profile service not wired)"
             )
-        profile, payload = self._profile_loader(voice_profile_id, request.session_id)
+        profile, payload = self._profile_loader(voice_profile_id, request.tenant_id)
         if profile.provider_payload_location.startswith("preset://"):
             name = profile.provider_payload_location[len("preset://") :]
             try:

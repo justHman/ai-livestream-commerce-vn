@@ -47,6 +47,7 @@ class SynthesisRequest:
     utterance_id: str
     chunk_seq: int
     input_text: str
+    tenant_id: str = "default"
     voice_profile_id: str = "default"
     style: str = "natural"
     priority: Priority = Priority.NORMAL

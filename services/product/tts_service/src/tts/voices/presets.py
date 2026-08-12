@@ -16,20 +16,20 @@ from tts.voices.store import DEFAULT_TENANT_ID
 # The names are the payload location keys; the SDK payload itself resolves at
 # provider init (cluster 4).
 PRESET_VOICE_NAMES: tuple[str, ...] = (
+    "Minh Đức",
     "Phạm Tuyên",
-    "Lan Phương",
-    "Minh Quân",
-    "Thu Hà",
-    "Hồng Đào",
-    "Quang Huy",
-    "Thu Minh",
-    "Tuấn Anh",
-    "Khánh Linh",
-    "Ngọc Mai",
-    "Bảo Châu",
-    "Hải Yến",
-    "Đức Thịnh",
-    "Hà My",
+    "Thái Sơn",
+    "Xuân Vĩnh",
+    "Thanh Bình",
+    "Trúc Ly",
+    "Ngọc Linh",
+    "Đoan Trang",
+    "Mai Anh",
+    "Thục Đoan",
+    "Minh Triết",
+    "Thùy Dung",
+    "Quang Sơn",
+    "Ngọc Trân",
 )
 
 

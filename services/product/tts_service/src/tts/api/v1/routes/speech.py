@@ -30,6 +30,7 @@ from tts.api.dependencies import (
     get_gpu_concurrency_limiter,
     get_provider,
     get_runtime,
+    get_tenant_id,
 )
 from tts.api.security.authorization import require_scope
 from tts.api.security.rate_limit import GPUConcurrencyLimiter
@@ -95,7 +96,7 @@ def _tracing_headers(body: SpeechRequest) -> dict[str, str]:
     }
 
 
-def _build_synthesis_request(body: SpeechRequest, runtime) -> SynthesisRequest:
+def _build_synthesis_request(body: SpeechRequest, runtime, request: Request) -> SynthesisRequest:
     """Build the immutable scheduler identity for this HTTP request.
 
     A fresh request id is generated for every request; session/utterance/
@@ -111,6 +112,7 @@ def _build_synthesis_request(body: SpeechRequest, runtime) -> SynthesisRequest:
     return SynthesisRequest(
         request_id=uuid4().hex,
         session_id=body.session_id or "anonymous",
+        tenant_id=get_tenant_id(request),
         utterance_id=body.utterance_id or "anonymous",
         chunk_seq=body.chunk_seq,
         input_text=body.text,
@@ -166,6 +168,7 @@ def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
     },
 )
 async def synthesize(
+    request: Request,
     body: SpeechRequest,
     _scope: str = Depends(require_scope("tts.synthesis")),
     engine: TTSEngine = Depends(get_engine),
@@ -183,7 +186,7 @@ async def synthesize(
     if runtime is not None:
         started = time.monotonic()
         with limiter:
-            sr = _build_synthesis_request(body, runtime)
+            sr = _build_synthesis_request(body, runtime, request)
             result = await runtime.submit(sr)
         payload, media_type = _encode_result(result)
         sample_rate = result.sample_rate

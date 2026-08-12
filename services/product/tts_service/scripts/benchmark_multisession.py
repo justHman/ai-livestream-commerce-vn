@@ -82,7 +82,9 @@ SCENARIOS = (
 # Fake provider voice ids seeded into the voice store per run; sessions
 # reference them the same way real callers reference profile ids.
 FAKE_PRESET_IDS = ("preset-0", "preset-1", "preset-2")
-FAKE_PRESET_NAMES = ("Phạm Tuyên", "Lan Phương", "Minh Quân")
+# Real SDK v3 Turbo preset voices (voices_v3_turbo.json) — fake mode may use
+# any names, but real mode MUST seed names the pinned SDK actually resolves.
+FAKE_PRESET_NAMES = ("Phạm Tuyên", "Trúc Ly", "Xuân Vĩnh")
 FAKE_CLONED_IDS = ("clone-0", "clone-1", "clone-2")
 STYLES = ("natural", "news", "storytelling")
 FAKE_SAMPLE_RATE = 48_000
@@ -494,6 +496,26 @@ def _baseline_throughput(path: Path) -> float:
     return audio / wall if wall else 0.0
 
 
+def _seed_real_profiles(base_url: str) -> list[str]:
+    """Enroll the benchmark preset voices on a real service via the public API.
+
+    The service owns opaque ``vp_*`` ids; the benchmark must use the ids the
+    service actually issued or every request 404s (profiles are tenant-scoped).
+    Uses the preset enrollment path (``POST /v1/voices?preset=true``) which
+    needs no reference audio. Idempotent: seeding the same display name twice
+    creates a second profile, so callers should seed once per run.
+    """
+    import httpx
+
+    ids: list[str] = []
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        for name in FAKE_PRESET_NAMES:
+            resp = client.post("/v1/voices", params={"preset": "true", "display_name": name})
+            resp.raise_for_status()
+            ids.append(resp.json()["voice_profile_id"])
+    return ids
+
+
 def _run(
     *,
     scenarios: tuple[str, ...],
@@ -505,6 +527,10 @@ def _run(
     base_url: str,
 ) -> int:
     results: list[dict] = []
+    profile_ids: list[str] = list(FAKE_PRESET_IDS)
+    if not local:
+        profile_ids = _seed_real_profiles(base_url)
+        print(f"seeded {len(profile_ids)} preset profiles: {profile_ids}", file=sys.stderr)
     for scenario in scenarios:
         for count in sessions:
             print(f"scenario={scenario} sessions={count} ...", file=sys.stderr, flush=True)
@@ -516,7 +542,7 @@ def _run(
                         chunks=chunks,
                         base_url=base_url,
                         local=local,
-                        profile_ids=list(FAKE_PRESET_IDS),
+                        profile_ids=profile_ids,
                         styles=list(STYLES),
                         priorities=["normal", "high"],
                     )

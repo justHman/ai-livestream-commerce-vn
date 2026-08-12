@@ -202,16 +202,16 @@ def test_capabilities_onnx_backend_single_batch(fake_tts) -> None:
 
 
 # ── 6.4/6.5: profile resolution and synthesis ──────────────────────────────
-def test_synthesize_preset_voice_returns_waveform(fake_tts) -> None:
+async def test_synthesize_preset_voice_returns_waveform(fake_tts) -> None:
     provider = make_provider(fake_tts)
-    result = provider.synthesize(make_request(voice_profile_id="default"))
+    result = await provider.synthesize(make_request(voice_profile_id="default"))
     assert result.sample_rate == SAMPLE_RATE_HZ
     assert result.response_format == "wav"
     assert result.duration_ms == 100
     assert result.waveform is not None
 
 
-def test_synthesize_cloned_profile_via_loader(fake_tts) -> None:
+async def test_synthesize_cloned_profile_via_loader(fake_tts) -> None:
     from tts.voices.models import VoiceProfile
     from tts.voices.payloads import encode_vieneu_payload
 
@@ -230,11 +230,11 @@ def test_synthesize_cloned_profile_via_loader(fake_tts) -> None:
 
     def loader(voice_profile_id: str, tenant_id: str):
         assert voice_profile_id == "vp-1"
-        assert tenant_id == "sess-1"
+        assert tenant_id == "default"  # SynthesisRequest.tenant_id (not session)
         return profile, payload
 
     provider = make_provider(fake_tts, profile_loader=loader)
-    result = provider.synthesize(make_request(voice_profile_id="vp-1"))
+    result = await provider.synthesize(make_request(voice_profile_id="vp-1"))
     assert result.sample_rate == SAMPLE_RATE_HZ
     assert result.duration_ms == 100
     call = fake_tts.infer_calls[-1]
@@ -242,7 +242,7 @@ def test_synthesize_cloned_profile_via_loader(fake_tts) -> None:
     assert call["voice"]["codes"].shape == (62,)
 
 
-def test_synthesize_preset_profile_via_loader(fake_tts) -> None:
+async def test_synthesize_preset_profile_via_loader(fake_tts) -> None:
     from tts.voices.models import VoiceProfile
 
     profile = VoiceProfile(
@@ -259,20 +259,20 @@ def test_synthesize_preset_profile_via_loader(fake_tts) -> None:
         return profile, {}
 
     provider = make_provider(fake_tts, profile_loader=loader)
-    provider.synthesize(make_request(voice_profile_id="vp-preset"))
+    await provider.synthesize(make_request(voice_profile_id="vp-preset"))
     assert fake_tts.infer_calls[-1]["voice"] is not None
 
 
-def test_synthesize_profile_not_found(fake_tts) -> None:
+async def test_synthesize_profile_not_found(fake_tts) -> None:
     def loader(voice_profile_id: str, tenant_id: str):
         raise ProfileNotFoundError("nope")
 
     provider = make_provider(fake_tts, profile_loader=loader)
     with pytest.raises(ProfileNotFoundError):
-        provider.synthesize(make_request(voice_profile_id="vp-missing"))
+        await provider.synthesize(make_request(voice_profile_id="vp-missing"))
 
 
-def test_synthesize_unknown_preset_raises_not_found(fake_tts) -> None:
+async def test_synthesize_unknown_preset_raises_not_found(fake_tts) -> None:
     from tts.voices.models import VoiceProfile
 
     profile = VoiceProfile(
@@ -290,10 +290,10 @@ def test_synthesize_unknown_preset_raises_not_found(fake_tts) -> None:
 
     provider = make_provider(fake_tts, profile_loader=loader)
     with pytest.raises(ProfileNotFoundError):
-        provider.synthesize(make_request(voice_profile_id="vp-ghost"))
+        await provider.synthesize(make_request(voice_profile_id="vp-ghost"))
 
 
-def test_synthesize_inference_error_maps(monkeypatch) -> None:
+async def test_synthesize_inference_error_maps(monkeypatch) -> None:
     class BrokenTTS(FakeTTS):
         def infer(self, text: str, **kwargs):
             raise RuntimeError("engine exploded")
@@ -301,7 +301,7 @@ def test_synthesize_inference_error_maps(monkeypatch) -> None:
     monkeypatch.setattr("vieneu.Vieneu", lambda mode, **kw: BrokenTTS())
     provider = make_provider(None)
     with pytest.raises(ProviderInferenceError):
-        provider.synthesize(make_request())
+        await provider.synthesize(make_request())
 
 
 # ── 6.6: style and expressive cue validation ───────────────────────────────
@@ -319,27 +319,27 @@ def test_style_aliases_map_to_vieneu(fake_tts, style, expected) -> None:
     assert _VIENEU_STYLES[style] == expected
 
 
-def test_unsupported_style_raises_capability_error(fake_tts) -> None:
+async def test_unsupported_style_raises_capability_error(fake_tts) -> None:
     provider = make_provider(fake_tts)
     with pytest.raises(CapabilityError):
-        provider.synthesize(make_request(style="vui_ve"))
+        await provider.synthesize(make_request(style="vui_ve"))
 
 
-def test_supported_cue_passes(fake_tts) -> None:
+async def test_supported_cue_passes(fake_tts) -> None:
     provider = make_provider(fake_tts)
-    result = provider.synthesize(make_request(input_text="Xin chào [cười]"))
+    result = await provider.synthesize(make_request(input_text="Xin chào [cười]"))
     assert result.duration_ms == 100
 
 
-def test_unsupported_cue_raises_capability_error(fake_tts) -> None:
+async def test_unsupported_cue_raises_capability_error(fake_tts) -> None:
     provider = make_provider(fake_tts)
     with pytest.raises(CapabilityError):
-        provider.synthesize(make_request(input_text="Xin chào [hát]"))
+        await provider.synthesize(make_request(input_text="Xin chào [hát]"))
 
 
-def test_text_without_brackets_passes(fake_tts) -> None:
+async def test_text_without_brackets_passes(fake_tts) -> None:
     provider = make_provider(fake_tts)
-    result = provider.synthesize(make_request(input_text="Xin chào mọi người"))
+    result = await provider.synthesize(make_request(input_text="Xin chào mọi người"))
     assert result.duration_ms == 100
 
 
@@ -396,7 +396,7 @@ def test_batch_key_is_hashable(fake_tts) -> None:
 
 
 # ── 7.4/7.5: mixed-voice batch synthesis ─────────────────────────────────────
-def test_batch_mixed_presets_per_row_voice_and_result_ids(fake_tts) -> None:
+async def test_batch_mixed_presets_per_row_voice_and_result_ids(fake_tts) -> None:
     from tts.voices.models import VoiceProfile
 
     fake_tts.preset_voices["Minh Anh"] = {
@@ -417,7 +417,7 @@ def test_batch_mixed_presets_per_row_voice_and_result_ids(fake_tts) -> None:
         return profile_b, {}
 
     provider = make_provider(fake_tts, profile_loader=loader)
-    results = provider.synthesize_batch(
+    results = await provider.synthesize_batch(
         [
             make_request(request_id="req-1", voice_profile_id="default"),
             make_request(
@@ -437,7 +437,7 @@ def test_batch_mixed_presets_per_row_voice_and_result_ids(fake_tts) -> None:
     assert rows[1]["speaker_emb"].shape == (192,)
 
 
-def test_batch_mixed_cloned_profiles_per_row_anchor(fake_tts) -> None:
+async def test_batch_mixed_cloned_profiles_per_row_anchor(fake_tts) -> None:
     profiles = {
         "vp-a": make_cloned_profile("vp-a", "sess-1", 0.1),
         "vp-b": make_cloned_profile("vp-b", "sess-2", 0.9),
@@ -447,7 +447,7 @@ def test_batch_mixed_cloned_profiles_per_row_anchor(fake_tts) -> None:
         return profiles[voice_profile_id]
 
     provider = make_provider(fake_tts, profile_loader=loader)
-    results = provider.synthesize_batch(
+    results = await provider.synthesize_batch(
         [
             make_request(request_id="req-1", voice_profile_id="vp-a"),
             make_request(request_id="req-2", voice_profile_id="vp-b"),
@@ -463,7 +463,7 @@ def test_batch_mixed_cloned_profiles_per_row_anchor(fake_tts) -> None:
     assert rows[1]["use_ref_codes"] is True
 
 
-def test_batch_mixed_preset_and_cloned(fake_tts) -> None:
+async def test_batch_mixed_preset_and_cloned(fake_tts) -> None:
     from tts.voices.models import VoiceProfile
 
     profile_b, payload_b = make_cloned_profile("vp-b", "sess-2", 0.9)
@@ -487,7 +487,7 @@ def test_batch_mixed_preset_and_cloned(fake_tts) -> None:
         return profile_preset, {}
 
     provider = make_provider(fake_tts, profile_loader=loader)
-    results = provider.synthesize_batch(
+    results = await provider.synthesize_batch(
         [
             make_request(request_id="req-1", voice_profile_id="vp-preset"),
             make_request(request_id="req-2", voice_profile_id="vp-b"),
@@ -499,9 +499,9 @@ def test_batch_mixed_preset_and_cloned(fake_tts) -> None:
     assert rows[1]["speaker_emb"][0] == pytest.approx(0.9)
 
 
-def test_batch_mixed_styles_per_row(fake_tts) -> None:
+async def test_batch_mixed_styles_per_row(fake_tts) -> None:
     provider = make_provider(fake_tts)
-    provider.synthesize_batch(
+    await provider.synthesize_batch(
         [
             make_request(request_id="req-1", style="natural"),
             make_request(request_id="req-2", style="storytelling"),
@@ -512,9 +512,9 @@ def test_batch_mixed_styles_per_row(fake_tts) -> None:
     assert rows[1]["style"] == "doc_truyen"
 
 
-def test_batch_cue_phonemes_do_not_leak(fake_tts) -> None:
+async def test_batch_cue_phonemes_do_not_leak(fake_tts) -> None:
     provider = make_provider(fake_tts)
-    provider.synthesize_batch(
+    await provider.synthesize_batch(
         [
             make_request(request_id="req-1", input_text="Xin chào [cười]"),
             make_request(request_id="req-2", input_text="Xin chào mọi người"),
@@ -525,7 +525,7 @@ def test_batch_cue_phonemes_do_not_leak(fake_tts) -> None:
     assert "<|emotion_1|>" not in rows[1]["phonemes"]
 
 
-def test_batch_cardinality_mismatch_raises(fake_tts) -> None:
+async def test_batch_cardinality_mismatch_raises(fake_tts) -> None:
     class ShortEngine(FakeBatchEngine):
         def generate_batch(
             self,
@@ -543,13 +543,13 @@ def test_batch_cardinality_mismatch_raises(fake_tts) -> None:
     fake_tts.batch_engine = ShortEngine()
     provider = make_provider(fake_tts)
     with pytest.raises(ProviderInferenceError):
-        provider.synthesize_batch([make_request(), make_request()])
+        await provider.synthesize_batch([make_request(), make_request()])
 
 
-def test_batch_mixed_batch_key_raises(fake_tts) -> None:
+async def test_batch_mixed_batch_key_raises(fake_tts) -> None:
     provider = make_provider(fake_tts)
     with pytest.raises(ProviderInferenceError):
-        provider.synthesize_batch(
+        await provider.synthesize_batch(
             [
                 make_request(generation_config=GenerationConfig(temperature=0.8)),
                 make_request(generation_config=GenerationConfig(temperature=0.5)),
@@ -557,11 +557,11 @@ def test_batch_mixed_batch_key_raises(fake_tts) -> None:
         )
 
 
-def test_batch_onnx_falls_back_to_single_path(fake_tts) -> None:
+async def test_batch_onnx_falls_back_to_single_path(fake_tts) -> None:
     fake_tts.backend = "onnx"
     fake_tts.batch_engine = None
     provider = make_provider(fake_tts)
-    results = provider.synthesize_batch(
+    results = await provider.synthesize_batch(
         [
             make_request(request_id="req-1"),
             make_request(request_id="req-2"),
@@ -572,6 +572,6 @@ def test_batch_onnx_falls_back_to_single_path(fake_tts) -> None:
     assert fake_tts.batch_engine is None
 
 
-def test_batch_empty_returns_no_results(fake_tts) -> None:
+async def test_batch_empty_returns_no_results(fake_tts) -> None:
     provider = make_provider(fake_tts)
-    assert provider.synthesize_batch([]) == []
+    assert await provider.synthesize_batch([]) == []

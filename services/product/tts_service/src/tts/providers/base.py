@@ -23,10 +23,10 @@ class TTSProvider(Protocol):
     def batch_key(self, request: ProviderRequest) -> Hashable:
         """Compatibility key: requests sharing a key may share one provider batch."""
 
-    def synthesize(self, request: ProviderRequest) -> AudioResult:
+    async def synthesize(self, request: ProviderRequest) -> AudioResult:
         """Synthesize one request (used for CPU/non-batch providers too)."""
 
-    def synthesize_batch(self, requests: Sequence[ProviderRequest]) -> Sequence[ProviderResult]:
+    async def synthesize_batch(self, requests: Sequence[ProviderRequest]) -> Sequence[ProviderResult]:
         """Synthesize compatible requests in one provider batch, order preserved."""
 
     def enroll_voice(self, reference_audio: bytes, options: dict) -> object:
