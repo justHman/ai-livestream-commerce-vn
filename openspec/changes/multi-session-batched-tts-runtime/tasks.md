@@ -125,23 +125,23 @@
 
 ## 12. Observability and operational controls
 
-- [ ] 12.1 Add counters for admitted/completed/rejected/deadline/cancelled/provider-failed requests by bounded provider/backend/priority/outcome labels.
-- [ ] 12.2 Add gauges/histograms for global pending depth, priority depth, active-session count, queue wait, and coalescing wait.
-- [ ] 12.3 Add batch metrics for size, fill ratio, provider inference wall time, generated audio seconds, RTF/realtime factor, and audio-seconds-per-wall-second.
-- [ ] 12.4 Add voice-profile enrollment/cache metrics without profile IDs as unbounded metric labels.
-- [ ] 12.5 Expose selected provider/model/backend and scheduler limits through readiness/capabilities and startup logs.
-- [ ] 12.6 Add optional GPU utilization/VRAM collection when the deployment exposes metrics; absence of GPU metrics must not break synthesis.
-- [ ] 12.7 Add structured sampled tracing with request/session IDs while keeping normal logs free of full text, reference audio, embeddings, and reference codes.
-- [ ] 12.8 Add tests scanning normal logs/metrics payloads for accidental raw synthesis text or provider voice payload leakage.
+- [x] 12.1 Add counters for admitted/completed/rejected/deadline/cancelled/provider-failed requests by bounded provider/backend/priority/outcome labels.
+- [x] 12.2 Add gauges/histograms for global pending depth, priority depth, active-session count, queue wait, and coalescing wait.
+- [x] 12.3 Add batch metrics for size, fill ratio, provider inference wall time, generated audio seconds, RTF/realtime factor, and audio-seconds-per-wall-second.
+- [x] 12.4 Add voice-profile enrollment/cache metrics without profile IDs as unbounded metric labels.
+- [x] 12.5 Expose selected provider/model/backend and scheduler limits through readiness/capabilities and startup logs.
+- [x] 12.6 Add optional GPU utilization/VRAM collection when the deployment exposes metrics; absence of GPU metrics must not break synthesis.
+- [x] 12.7 Add structured sampled tracing with request/session IDs while keeping normal logs free of full text, reference audio, embeddings, and reference codes.
+- [x] 12.8 Add tests scanning normal logs/metrics payloads for accidental raw synthesis text or provider voice payload leakage.
 
 ## 13. Docker/runtime migration away from vLLM-Omni
 
-- [ ] 13.1 Rewrite TTS Docker dependencies/entrypoint to start the Python `tts_service` application with pinned VieNeu v3 Turbo runtime instead of `vllm serve`/Omni.
-- [ ] 13.2 Remove active `MODEL_ID=pnnbao-ump/VieNeu-TTS-v2` defaults and other v2-only startup assumptions; document current v3 Turbo model/provider configuration.
-- [ ] 13.3 Remove active `GPU_MEMORY_UTILIZATION`/Omni-specific options that have no meaning in the new provider runtime, or rename/redefine resource controls explicitly for the new service.
-- [ ] 13.4 Keep NVIDIA device exposure/container requirements needed by VieNeu GPU/PyTorch and verify the service also boots in CPU-only local/test mode.
-- [ ] 13.5 Update `services/product/tts_service/README.md` to describe provider-neutral serving, port/health/readiness, VieNeu v3 Turbo default provider, voice profiles, scheduler, and benchmark commands.
-- [ ] 13.6 Run repository-wide search for active TTS `vllm-omni`, `vllm serve`, VieNeu-v2 model ID, and stale serving-entrypoint notes; retain only genuinely historical documentation where clearly labeled.
+- [x] 13.1 Rewrite TTS Docker dependencies/entrypoint to start the Python `tts_service` application with pinned VieNeu v3 Turbo runtime instead of `vllm serve`/Omni.
+- [x] 13.2 Remove active `MODEL_ID=pnnbao-ump/VieNeu-TTS-v2` defaults and other v2-only startup assumptions; document current v3 Turbo model/provider configuration.
+- [x] 13.3 Remove active `GPU_MEMORY_UTILIZATION`/Omni-specific options that have no meaning in the new provider runtime, or rename/redefine resource controls explicitly for the new service.
+- [x] 13.4 Keep NVIDIA device exposure/container requirements needed by VieNeu GPU/PyTorch and verify the service also boots in CPU-only local/test mode.
+- [x] 13.5 Update `services/product/tts_service/README.md` to describe provider-neutral serving, port/health/readiness, VieNeu v3 Turbo default provider, voice profiles, scheduler, and benchmark commands.
+- [x] 13.6 Run repository-wide search for active TTS `vllm-omni`, `vllm serve`, VieNeu-v2 model ID, and stale serving-entrypoint notes; retain only genuinely historical documentation where clearly labeled.
 
 ## 14. Direct provider benchmark
 
