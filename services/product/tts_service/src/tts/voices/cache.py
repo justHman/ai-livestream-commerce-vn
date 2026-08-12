@@ -5,22 +5,28 @@ payload on hot synthesis paths. Bounded by ``maxsize``; keys are
 ``(tenant_id, voice_profile_id)`` so tenants never share cache entries.
 The FastAPI single event loop owns these caches (scheduler access stays on
 one loop), so a plain ``OrderedDict`` is enough — no lock.
+
+Metrics (task 12.4): hit/miss/eviction counters via an optional
+``MetricsRegistry``; profile ids never become metric labels.
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
+from typing import Optional
 
+from tts.observability.metrics import MetricsRegistry
 from tts.voices.models import VoiceProfile
 
 
 class VoiceProfileCache:
     """LRU cache keyed by ``(tenant_id, voice_profile_id)``."""
 
-    def __init__(self, maxsize: int = 256) -> None:
+    def __init__(self, maxsize: int = 256, metrics: Optional[MetricsRegistry] = None) -> None:
         if maxsize < 1:
             raise ValueError("maxsize must be >= 1")
         self._maxsize = maxsize
+        self._metrics = metrics
         self._entries: OrderedDict[tuple[str, str], tuple[VoiceProfile, dict]] = OrderedDict()
 
     def _key(self, tenant_id: str, voice_profile_id: str) -> tuple[str, str]:
@@ -30,7 +36,11 @@ class VoiceProfileCache:
         key = self._key(tenant_id, voice_profile_id)
         entry = self._entries.get(key)
         if entry is None:
+            if self._metrics is not None:
+                self._metrics.incr("voice_cache_miss_total")
             return None
+        if self._metrics is not None:
+            self._metrics.incr("voice_cache_hit_total")
         self._entries.move_to_end(key)
         return entry
 
@@ -42,6 +52,8 @@ class VoiceProfileCache:
         self._entries.move_to_end(key)
         while len(self._entries) > self._maxsize:
             self._entries.popitem(last=False)
+            if self._metrics is not None:
+                self._metrics.incr("voice_cache_eviction_total")
 
     def evict(self, tenant_id: str, voice_profile_id: str) -> None:
         self._entries.pop(self._key(tenant_id, voice_profile_id), None)
@@ -62,9 +74,11 @@ class CachedVoiceProfileStore:
     visible; the persistent store stays authoritative across restarts.
     """
 
-    def __init__(self, store: object, maxsize: int = 256) -> None:
+    def __init__(
+        self, store: object, maxsize: int = 256, metrics: Optional[MetricsRegistry] = None
+    ) -> None:
         self._store = store
-        self._cache = VoiceProfileCache(maxsize=maxsize)
+        self._cache = VoiceProfileCache(maxsize=maxsize, metrics=metrics)
 
     def save_profile(self, profile: VoiceProfile, payload: dict) -> None:
         self._store.save_profile(profile, payload)

@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 import wave
 from datetime import timedelta
 from uuid import uuid4
 
 import numpy as np
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from tts.api.dependencies import (
@@ -41,6 +42,33 @@ from tts.providers.models import GenerationConfig, Priority, SynthesisRequest
 logger = logging.getLogger("tts.api.v1.routes.speech")
 
 router = APIRouter()
+
+
+def _log_request_completion(
+    body: SpeechRequest,
+    request_id: str,
+    outcome: str,
+    started: float,
+    duration_ms: int,
+) -> None:
+    """Structured per-request trace line (task 12.7) — bounded fields only.
+
+    request/session/utterance ids and chunk seq are bounded identifiers; the
+    raw text is deliberately absent. The context manager binds correlation
+    ids so the ContextFilter surfaces them as sid/rid on the log line.
+    """
+    elapsed = round((time.monotonic() - started) * 1000, 2)
+    logger.info(
+        "synthesis_outcome outcome=%s queue_wait_ms=%s inference_ms=%s audio_seconds=%s",
+        outcome,
+        elapsed,
+        elapsed,
+        round(duration_ms / 1000, 3),
+        extra={
+            "request_id": request_id,
+            "event": "synthesis_outcome",
+        },
+    )
 
 
 def _to_tts_request(body: SpeechRequest) -> TTSRequest:
@@ -153,6 +181,7 @@ async def synthesize(
     contract never changes shape.
     """
     if runtime is not None:
+        started = time.monotonic()
         with limiter:
             sr = _build_synthesis_request(body, runtime)
             result = await runtime.submit(sr)
@@ -165,11 +194,13 @@ async def synthesize(
             "X-Audio-Duration-Ms": str(duration_ms),
             **_tracing_headers(body),
         }
+        _log_request_completion(body, sr.request_id, "completed", started, duration_ms)
         return StreamingResponse(io.BytesIO(payload), media_type=media_type, headers=headers)
 
     logger.warning(
         "runtime not ready; falling back to legacy engine for session=%s",
         body.session_id or "anonymous",
+        extra={"event": "runtime_fallback"},
     )
     with limiter:
         chunk = engine.synthesize(_to_tts_request(body))
@@ -256,3 +287,20 @@ def list_formats(
 ) -> JSONResponse:
     """Return supported output formats."""
     return JSONResponse({"formats": ["pcm", "wav"]})
+
+
+@router.get("/audio/metrics")
+def audio_metrics(
+    request: Request,
+    _scope: str = Depends(require_scope("tts.synthesis")),
+) -> JSONResponse:
+    """Return the process metrics snapshot (tasks 12.1-12.6).
+
+    JSON payload: counters, bounded-label request counts, gauges, and
+    fixed-bucket histograms. No unbounded identity values (session/request/
+    voice-profile ids, raw text) ever appear — task 12.8 asserts this.
+    """
+    from tts.observability.metrics import get_metrics_registry
+
+    registry = getattr(request.app.state, "metrics", None) or get_metrics_registry()
+    return JSONResponse(registry.snapshot())

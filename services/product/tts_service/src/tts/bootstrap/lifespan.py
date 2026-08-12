@@ -85,6 +85,7 @@ def _build_runtime(app: FastAPI, provider) -> object | None:
         selector=FairnessSelector(),
         provider=provider,
         config=cfg,
+        metrics=app.state.metrics,
     )
 
 
@@ -94,6 +95,13 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     engine = _build_engine()
     app.state.engine = engine
     app.state.engine_ready = True
+    # Process metrics registry (tasks 12.1-12.6) — always wired; endpoints
+    # expose its JSON snapshot even when the provider is not up.
+    from tts.observability.metrics import get_metrics_registry
+
+    metrics = get_metrics_registry()
+    app.state.metrics = metrics
+    _record_gpu_metrics(metrics)
     # Voice-profile service over the configured store URI (runtime cluster
     # replaces the injected enrollment fn with the real provider).
     _wire_voice_service(app)
@@ -105,6 +113,7 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     runtime = _build_runtime(app, provider)
     app.state.runtime = runtime
     app.state.runtime_ready = provider is not None or app.state.runtime_config.provider == "none"
+    _log_runtime_startup(app, provider, runtime)
     try:
         yield {"engine": engine}
     finally:
@@ -120,12 +129,65 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
             app.state.runtime = None
 
 
+def _record_gpu_metrics(metrics) -> None:
+    """Optionally record GPU/VRAM gauges (task 12.6); never breaks startup.
+
+    torch is not a base dependency — absence means no GPU metrics, which is
+    fine for CPU-only and ONNX deployments. Any failure inside this probe
+    (no CUDA runtime, driver mismatch) is swallowed: synthesis must not
+    depend on metrics.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        device_count = torch.cuda.device_count()
+        metrics.gauge("gpu_device_count", device_count)
+        for index in range(device_count):
+            total = torch.cuda.get_device_properties(index).total_memory
+            allocated = torch.cuda.memory_allocated(index)
+            metrics.gauge(f"gpu_memory_total_bytes_{index}", total)
+            metrics.gauge(f"gpu_memory_allocated_bytes_{index}", allocated)
+            metrics.gauge(
+                f"gpu_memory_utilization_{index}",
+                allocated / total if total else 0.0,
+            )
+    except Exception:
+        logger.info("GPU metrics unavailable; skipping", exc_info=True)
+
+
+def _log_runtime_startup(app: FastAPI, provider, runtime) -> None:
+    """Startup log with provider/model/backend + scheduler limits (12.5)."""
+    cfg = app.state.runtime_config
+    backend = getattr(provider, "backend", "none")
+    ready = bool(app.state.runtime_ready)
+    logger.info(
+        "tts runtime provider=%s model=%s backend=%s accelerator=%s ready=%s "
+        "limits={global_pending=%d, per_session_pending=%d, deadline_ms=%d, "
+        "max_batch_size=%d, coalesce_window_ms=%d, aging_threshold_ms=%d}",
+        cfg.provider,
+        cfg.model_revision,
+        backend,
+        cfg.accelerator,
+        ready,
+        cfg.global_pending_limit,
+        cfg.per_session_pending_limit,
+        cfg.request_deadline_ms,
+        cfg.max_batch_size,
+        cfg.coalesce_window_ms,
+        cfg.aging_threshold_ms,
+    )
+
+
 def _wire_voice_service(app: FastAPI) -> None:
     """Build the VoiceProfileService from the app's validated config."""
+    from tts.voices.cache import CachedVoiceProfileStore
     from tts.voices.service import VoiceProfileService
     from tts.voices.store import get_store
 
     server = app.state.server_config
     runtime = app.state.runtime_config
     store = get_store(runtime.voice_store_uri, server.runtime_root)
-    app.state.voice_service = VoiceProfileService(store, runtime)
+    cached = CachedVoiceProfileStore(store, maxsize=256, metrics=app.state.metrics)
+    app.state.voice_service = VoiceProfileService(cached, runtime, metrics=app.state.metrics)

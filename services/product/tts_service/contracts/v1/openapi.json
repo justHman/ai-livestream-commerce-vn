@@ -469,6 +469,51 @@
         "summary": "Audio Capabilities"
       }
     },
+    "/v1/audio/metrics": {
+      "get": {
+        "description": "Return the process metrics snapshot (tasks 12.1-12.6).\n\nJSON payload: counters, bounded-label request counts, gauges, and\nfixed-bucket histograms. No unbounded identity values (session/request/\nvoice-profile ids, raw text) ever appear \u2014 task 12.8 asserts this.",
+        "operationId": "audio_metrics_v1_audio_metrics_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Audio Metrics"
+      }
+    },
     "/v1/audio/speech": {
       "post": {
         "description": "Synthesize speech from text.\n\nRuntime path (Change T): builds one scheduler request, waits for exactly\nthat request's result, and encodes it. Runtime errors surface as stable\ndomain codes (429/408/422/502/503). Fallback: when the runtime is not\nready, the legacy engine path serves with a warning so the backend-facing\ncontract never changes shape.",

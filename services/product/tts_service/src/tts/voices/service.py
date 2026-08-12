@@ -5,13 +5,18 @@ Enrollment deliberately depends on an injected ``enroll_voice_fn`` callable
 ``ProviderUnavailableError`` and cluster 4 wires the real VieNeu provider.
 Preset seeding (task 5.5) is provider-free and resolves its payload at
 synthesis time, so it never needs the callable.
+
+Metrics (task 12.4): enrollment duration + success/failure counters via an
+optional ``MetricsRegistry`` — profile ids never become metric labels.
 """
 
 from __future__ import annotations
 
-from typing import Callable
+import time
+from typing import Callable, Optional
 
 from tts.config import RuntimeConfig
+from tts.observability.metrics import MetricsRegistry, record_enrollment
 from tts.providers.errors import ProviderUnavailableError
 from tts.voices.enrollment import validate_reference_audio
 from tts.voices.models import VoiceProfile, new_voice_profile_id
@@ -34,10 +39,12 @@ class VoiceProfileService:
         store: object,
         runtime_config: RuntimeConfig,
         enroll_voice_fn: EnrollFn = _enroll_unavailable,
+        metrics: Optional[MetricsRegistry] = None,
     ) -> None:
         self._store = store
         self._config = runtime_config
         self._enroll_voice_fn = enroll_voice_fn
+        self._metrics = metrics
 
     def enroll_cloned(
         self,
@@ -69,7 +76,12 @@ class VoiceProfileService:
             "denoise": denoise,
             "voice_profile_id": profile.voice_profile_id,
         }
-        provider_result = self._enroll_voice_fn(reference_audio, options)
+        started = time.monotonic()
+        try:
+            provider_result = self._enroll_voice_fn(reference_audio, options)
+        except Exception:
+            record_enrollment(self._metrics, started, succeeded=False)
+            raise
         payload = encode_vieneu_payload(
             model_revision=self._config.model_revision,
             speaker_emb=provider_result["speaker_emb"],
@@ -78,6 +90,7 @@ class VoiceProfileService:
             denoise=denoise,
         )
         self._store.save_profile(profile, payload)
+        record_enrollment(self._metrics, started, succeeded=True)
         return profile
 
     def get_profile(self, voice_profile_id: str, tenant_id: str) -> VoiceProfile:

@@ -8,6 +8,10 @@ dispatch on fill/backlog/deadline-urgency, batch-size-one without coalescing
 on CPU/non-native providers, exactly-once completion resolution, and
 cancelled-after-dispatch result discard.
 
+Metrics (cluster 8, tasks 12.1-12.3): an optional ``MetricsRegistry`` is
+injected; every hook is a no-op when it is None so tests and wiring without
+metrics keep the runtime byte-identical in behavior.
+
 Two deadline notions are deliberately distinct:
 - ``dispatch_deadline`` (admission's deadline minus the dispatch margin) is
   the URGENCY trigger (rule 10.8): once passed, the request dispatches early
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Hashable, Optional
@@ -36,6 +41,12 @@ from tts.providers.errors import (
     DeadlineExceededError,
     ProviderError,
     ProviderInferenceError,
+)
+from tts.observability.metrics import (
+    MetricsRegistry,
+    record_batch,
+    record_coalescing_wait,
+    record_queue_wait,
 )
 from tts.providers.models import AudioResult, ProviderResult, SynthesisRequest
 from tts.scheduler.admission import AdmissionController
@@ -78,6 +89,7 @@ class SchedulerRuntime:
         provider: TTSProvider,
         config: RuntimeConfig,
         clock: Optional[Callable[[], datetime]] = None,
+        metrics: Optional[MetricsRegistry] = None,
     ) -> None:
         self._population = population
         self._admission = admission
@@ -85,6 +97,7 @@ class SchedulerRuntime:
         self._provider = provider
         self._config = config
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._metrics = metrics
 
         caps = provider.capabilities()
         # 10.2/10.9: effective batch bound and coalescing are provider-shaped.
@@ -108,6 +121,8 @@ class SchedulerRuntime:
             "deadline_exceeded": 0,
             "overload": 0,
         }
+        # Optional metric hooks (tasks 12.1-12.3); None disables all recording.
+        self._metrics = metrics
         # The dispatcher starts lazily on first use: __init__ may run outside
         # an event loop (sync tests, wiring), and a task created here would
         # leak if the runtime is discarded without close().
@@ -139,6 +154,8 @@ class SchedulerRuntime:
         # dispatcher's next tick, so the window always expires on schedule.
         if self._open_window_at is None and self._coalesce_window > timedelta(0):
             self._open_window_at = now + self._coalesce_window
+        if self._metrics is not None:
+            self._metrics.incr_request("admitted", request.priority.value, self._provider_name())
         self._start_dispatcher()
         self._wake.set()
         try:
@@ -165,6 +182,7 @@ class SchedulerRuntime:
         self._admission.release(pending)
         pending.state = PendingState.CANCELLED
         self._counters["cancelled"] += 1
+        self._count_request_outcome(pending, "cancelled")
         self._fail_completion(
             pending, CancelledError(f"request {request_id!r} cancelled before dispatch")
         )
@@ -290,6 +308,18 @@ class SchedulerRuntime:
             self._in_flight[member.request_id] = member
         self._counters["dispatched_batches"] += 1
         self._counters["dispatched_requests"] += len(members)
+        metrics = self._metrics
+        now = time.monotonic()
+        now_dt = self._clock()
+        for member in members:
+            # 12.2: queue wait ends at dispatch (admission -> dispatch).
+            if member.admitted_at is not None:
+                record_queue_wait(metrics, now - (now_dt - member.admitted_at).total_seconds())
+        # 12.2: coalescing wait = window-opening arrival -> dispatch. Only
+        # meaningful when a coalescing window is actually in use.
+        if self._coalesce_window > timedelta(0) and self._open_window_at is not None:
+            window_opened_at = self._open_window_at - self._coalesce_window
+            record_coalescing_wait(metrics, now - (now_dt - window_opened_at).total_seconds())
         try:
             results = await self._provider.synthesize_batch(
                 [member.synthesis_request for member in members]
@@ -306,6 +336,16 @@ class SchedulerRuntime:
                 ),
             )
             return
+        # 12.3: batch size/fill/wall-time/audio-seconds/RTF on success.
+        record_batch(
+            metrics,
+            batch_size=len(members),
+            max_batch_size=self._max_batch_size,
+            inference_started=now,
+            audio_seconds=sum(
+                (result.duration_ms / 1000.0 if result.duration_ms else 0.0) for result in results
+            ),
+        )
         for member, result in zip(members, results):
             self._resolve_one(member, result)
 
@@ -320,10 +360,12 @@ class SchedulerRuntime:
         if result.error is not None:
             member.state = PendingState.FAILED
             self._counters["failed"] += 1
+            self._count_request_outcome(member, "provider_failed")
             self._fail_completion(member, result.error)
             return
         member.state = PendingState.DONE
         self._counters["completed"] += 1
+        self._count_request_outcome(member, "completed")
         if not member.completion.done():
             member.completion.set_result(result)
 
@@ -335,6 +377,7 @@ class SchedulerRuntime:
             self._admission.release(member)
             member.state = PendingState.FAILED
             self._counters["failed"] += 1
+            self._count_request_outcome(member, "provider_failed")
             if not member.cancelled:
                 self._fail_completion(member, error)
 
@@ -359,12 +402,25 @@ class SchedulerRuntime:
                 self._admission.release(pending)
                 pending.state = PendingState.FAILED
                 self._counters["deadline_exceeded"] += 1
+                self._count_request_outcome(pending, "deadline")
                 self._fail_completion(
                     pending,
                     DeadlineExceededError(
                         f"request {pending.request_id!r} missed its dispatch deadline"
                     ),
                 )
+
+    # ── metrics helpers ───────────────────────────────────────────────────────
+    def _provider_name(self) -> str:
+        """Bounded provider label; fakes may lack the attribute."""
+        return getattr(self._provider, "provider_name", "unknown")
+
+    def _count_request_outcome(self, member: PendingRequest, outcome: str) -> None:
+        """Bounded-label request counter (12.1); no-op without a registry."""
+        if self._metrics is None:
+            return
+        request = member.synthesis_request
+        self._metrics.incr_request(outcome, request.priority.value, self._provider_name())
 
     # ── helpers ───────────────────────────────────────────────────────────────
     def _find_pending(self, request_id: str) -> Optional[PendingRequest]:
