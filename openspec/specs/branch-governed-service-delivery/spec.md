@@ -643,7 +643,7 @@ Event entry workflows SHALL own branch, pull-request, dispatch, or tag triggers.
 - **THEN** it calls the appropriate reusable CI workflow while retaining ownership of the GitHub event trigger and required gate
 
 ### Requirement: Service-scoped Docker build cache
-Container builds SHALL use Docker Buildx with GitHub Actions cache import and `mode=max` cache export. Each service MUST use a stable, independent cache scope that does not include a branch name or commit SHA. Pull-request verification MUST NOT push an image, and untrusted fork runs MUST NOT write to the shared cache.
+Container builds SHALL use Docker Buildx with GitHub Actions cache import and `mode=min` cache export (final-layer export; `mode=max` costs 10+ min on heavy dependency layers). Each service MUST use a stable, independent cache scope that does not include a branch name or commit SHA. Pull-request verification MUST NOT push an image, but SHALL export its per-service cache (`export_cache: true`) so later develop/main merge builds reuse the layers; untrusted fork runs MUST NOT write to the shared cache. Changes that affect no product service (docs-only, `services_json == '[]'`) SHALL skip `container-build` entirely. Affected-area detection SHALL NOT fail when `github.event.before` has no parent commit (first push of a branch).
 
 #### Scenario: Reuse a service cache
 - **WHEN** a trusted build runs again for a service whose unchanged layers were previously cached
@@ -655,7 +655,11 @@ Container builds SHALL use Docker Buildx with GitHub Actions cache import and `m
 
 #### Scenario: Verify a pull request image
 - **WHEN** a pull request runs container verification
-- **THEN** the image is built with `push: false` and an untrusted fork cannot export entries to the shared cache
+- **THEN** the image is built with `push: false`, its per-service cache is exported for downstream merge builds, and an untrusted fork cannot export entries to the shared cache
+
+#### Scenario: Skip container build for a docs-only change
+- **WHEN** a pull request or push changes no product service (`services_json == '[]'`)
+- **THEN** the `container-build` job is skipped and `CI / gate` remains success
 
 ### Requirement: Service-specific production release
 Production deployment SHALL be triggered only by an eligible service-specific version tag. The release workflow MUST verify that the tagged commit belongs to `main`, that the tagged service passed staging smoke and E2E verification for that commit, and that the production deployment uses the exact staging-verified image digest. The promotion job MUST target a protected `production` environment and MUST wait for an authorized approval before receiving production credentials or changing production. Self-approval and protection-rule bypass MUST be disabled when supported; if required approval cannot be enforced, production promotion MUST remain disabled.

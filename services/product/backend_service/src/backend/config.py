@@ -252,6 +252,71 @@ class TTSConfig:
         return cfg
 
 
+@dataclass
+class ScriptAuthoringConfig:
+    """Change B-owned authoring configuration (env-driven).
+
+    Only concerns owned by ``script_authoring`` live here (task 14.3 /
+    design Decision 21): product concurrency, provider transport attempts,
+    generation duration bounds, the ``GenerationBudgetCalibration`` /
+    output safety factor used by the no-LLM call preview (task 7.2), the
+    packaged skill path/version expectation (task 5.x), and the SSE
+    retention/replay window (task 11.10).
+
+    Deliberately NOT here (owned by Change A or runtime): ``min_chars`` /
+    fixed ``target_chars`` / hard-cap policy defaults, ``flush_timeout_ms``,
+    ``check_timeout``, adaptive policy configuration, and policy-mode
+    selection. The authoring pipeline never configures Change A's chunking
+    policy (tasks 12.7-12.9).
+    """
+
+    # Batch scheduler (task 10.2): maximum concurrent active product workflows.
+    max_concurrent_products: int = 3
+    # Transport/provider retry bound (task 10.5): same immutable input,
+    # distinct from the semantic call count.
+    provider_max_attempts: int = 3
+    # Generation duration bounds (task 7.1): 10-60 minute targets.
+    min_target_duration_s: int = 600
+    max_target_duration_s: int = 3600
+    # GenerationBudgetCalibration / conservative output safety factor
+    # (task 7.1): previews divide provider max output by the safety factor.
+    budget_max_output_tokens: int = 4096
+    budget_output_safety_factor: float = 0.8
+    # Packaged skill expectation (task 5.x/5.6): version is pinned so a
+    # skill drift is visible in fingerprints rather than silent.
+    skill_path: str = "resources/skills/livestream-sales-script/SKILL.md"
+    expected_skill_version: str = ""
+    # SSE retention/replay window (task 11.10): how long a batch event
+    # stream is retained and how far back a reconnect replay may reach.
+    sse_retention_seconds: int = 3600
+    sse_replay_window_seconds: int = 300
+
+    @classmethod
+    def from_env(cls) -> "ScriptAuthoringConfig":
+        return cls(
+            max_concurrent_products=int(
+                os.environ.get("SA_MAX_CONCURRENT_PRODUCTS", "3")
+            ),
+            provider_max_attempts=int(os.environ.get("SA_PROVIDER_MAX_ATTEMPTS", "3")),
+            min_target_duration_s=int(os.environ.get("SA_MIN_TARGET_DURATION_S", "600")),
+            max_target_duration_s=int(os.environ.get("SA_MAX_TARGET_DURATION_S", "3600")),
+            budget_max_output_tokens=int(
+                os.environ.get("SA_BUDGET_MAX_OUTPUT_TOKENS", "4096")
+            ),
+            budget_output_safety_factor=float(
+                os.environ.get("SA_BUDGET_OUTPUT_SAFETY_FACTOR", "0.8")
+            ),
+            skill_path=os.environ.get(
+                "SA_SKILL_PATH", "resources/skills/livestream-sales-script/SKILL.md"
+            ),
+            expected_skill_version=os.environ.get("SA_EXPECTED_SKILL_VERSION", ""),
+            sse_retention_seconds=int(os.environ.get("SA_SSE_RETENTION_SECONDS", "3600")),
+            sse_replay_window_seconds=int(
+                os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class PublishingConfig:
     """LiveKit publishing settings — credentials stay server-side."""
@@ -346,6 +411,13 @@ class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
 
+    # Script authoring (Change B, tasks 14.3): concurrency, provider
+    # attempts, generation bounds, GenerationBudgetCalibration, skill
+    # expectation, SSE retention/replay.
+    script_authoring: ScriptAuthoringConfig = field(
+        default_factory=ScriptAuthoringConfig
+    )
+
     @classmethod
     def from_env(cls) -> "AppConfig":
         return cls(
@@ -394,6 +466,7 @@ class AppConfig:
             in ("1", "true", "on", "yes"),
             llm=LLMConfig.from_env(),
             tts=TTSConfig.from_env(),
+            script_authoring=ScriptAuthoringConfig.from_env(),
         )
 
     def cors_list(self) -> list[str]:
@@ -488,4 +561,11 @@ class AppConfig:
         return load_engine(self.tts.to_engine_cfg())
 
 
-__all__ = ["AppConfig", "LLMConfig", "TTSConfig", "BASE_SALE_PERSONA", "_build_persona"]
+__all__ = [
+    "AppConfig",
+    "LLMConfig",
+    "ScriptAuthoringConfig",
+    "TTSConfig",
+    "BASE_SALE_PERSONA",
+    "_build_persona",
+]

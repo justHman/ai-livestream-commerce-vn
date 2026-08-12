@@ -56,6 +56,12 @@ class BootstrapContainer:
     pg_store: Any = None  # PostgresRuntimeStore or None
     livekit_publishers: LiveKitPublisherRegistry | None = None
 
+    # -- Change B script authoring (approved-script-authoring-pipeline) --
+    # Container-scoped authoring capability consumed by ``api/v1/scripts``
+    # and the session binding endpoint (task 12.2). When None, the
+    # /script-sets and session binding surfaces return 501.
+    script_authoring_service: Any = None
+
     # -- Per-session state (owned by this container, not global) --
     hub: ControlHub | None = None
     locks: SessionLockRegistry | None = None
@@ -77,6 +83,7 @@ def create_container(
     hub: ControlHub | None = None,
     locks: SessionLockRegistry | None = None,
     avatars: Any = None,
+    script_authoring_service: Any = None,
 ) -> BootstrapContainer:
     """Construct a BootstrapContainer with the given resources.
 
@@ -98,4 +105,5 @@ def create_container(
         hub=hub or ControlHub(),
         locks=locks or SessionLockRegistry(),
         avatars=avatars or AvatarStore(),
+        script_authoring_service=script_authoring_service,
     )

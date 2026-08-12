@@ -189,6 +189,7 @@ def create_app(
             locks=deps.locks,
             orchestrators=deps.orchestrators,
             avatars=deps.avatars,
+            script_authoring_service=getattr(deps, "script_authoring_service", None),
         )
     else:
         resolved_container = _build_container(config, container=None)

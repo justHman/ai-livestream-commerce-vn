@@ -1,6 +1,61 @@
 {
   "components": {
     "schemas": {
+      "ApproveBatchReq": {
+        "description": "Approve multiple products; each approval is a separate immutable record.",
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "product_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Product Ids",
+            "type": "array"
+          },
+          "version_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 200,
+            "title": "Version Ids",
+            "type": "object"
+          }
+        },
+        "required": [
+          "actor"
+        ],
+        "title": "ApproveBatchReq",
+        "type": "object"
+      },
+      "ApproveReq": {
+        "description": "Human approval of the exact current compiled version (Decision 14).",
+        "properties": {
+          "actor": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor",
+            "type": "string"
+          },
+          "version_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version_id",
+          "actor"
+        ],
+        "title": "ApproveReq",
+        "type": "object"
+      },
       "AvatarCreateReq": {
         "properties": {
           "ref_photo_url": {
@@ -85,6 +140,43 @@
         "title": "AvatarUpdateReq",
         "type": "object"
       },
+      "BatchGenerateReq": {
+        "description": "One-click multi-product generation = per-product workflows (Decision 10).",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "product_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Product Ids",
+            "type": "array"
+          },
+          "target_duration_s": {
+            "maximum": 7200.0,
+            "minimum": 60.0,
+            "title": "Target Duration S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_duration_s"
+        ],
+        "title": "BatchGenerateReq",
+        "type": "object"
+      },
       "CommentIn": {
         "properties": {
           "t": {
@@ -109,6 +201,46 @@
           "text"
         ],
         "title": "CommentIn",
+        "type": "object"
+      },
+      "DraftIn": {
+        "description": "PUT draft: full replacement of the product's draft text (display+spoken).\n\n``display_text`` is the user-facing form; ``spoken_text`` is the exact TTS\nform the gate and later approval hash bind to (Decision 4). When only\n``display_text`` is supplied, the service's deterministic normalization\nderives ``spoken_text``.",
+        "properties": {
+          "display_text": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Display Text",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "spoken_text": {
+            "anyOf": [
+              {
+                "maxLength": 200000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spoken Text"
+          }
+        },
+        "required": [
+          "display_text"
+        ],
+        "title": "DraftIn",
         "type": "object"
       },
       "EngineSwapReq": {
@@ -197,6 +329,85 @@
         "title": "EngineSwapReq",
         "type": "object"
       },
+      "FixReq": {
+        "description": "Constrained AI repair for a gate-failed version (Decision 5, Fix contract).",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          }
+        },
+        "title": "FixReq",
+        "type": "object"
+      },
+      "GenerateReq": {
+        "description": "Start bounded plan + fixed-K segment generation for one product.",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "intent": {
+            "default": "selling",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Intent",
+            "type": "string"
+          },
+          "target_duration_s": {
+            "maximum": 7200.0,
+            "minimum": 60.0,
+            "title": "Target Duration S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_duration_s"
+        ],
+        "title": "GenerateReq",
+        "type": "object"
+      },
+      "GenerationPreviewReq": {
+        "description": "No-LLM preview of planned work (Decision 11).",
+        "properties": {
+          "product_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Product Id",
+            "type": "string"
+          },
+          "target_duration_s": {
+            "maximum": 7200.0,
+            "minimum": 60.0,
+            "title": "Target Duration S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "product_id",
+          "target_duration_s"
+        ],
+        "title": "GenerationPreviewReq",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -208,6 +419,40 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LiveSessionBriefIn": {
+        "description": "Lightweight pre-live brief; no runtime session is created.",
+        "properties": {
+          "host_name": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Host Name",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Note",
+            "type": "string"
+          },
+          "shop_name": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Shop Name",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "LiveSessionBriefIn",
         "type": "object"
       },
       "PathAttachReq": {
@@ -691,6 +936,26 @@
         "title": "ProductIn",
         "type": "object"
       },
+      "RegenerateReq": {
+        "description": "Explicit human action: regenerate one segment as a new immutable version.",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          }
+        },
+        "title": "RegenerateReq",
+        "type": "object"
+      },
       "RuntimeConfigReq": {
         "properties": {
           "answer_cache_variants": {
@@ -850,6 +1115,137 @@
           }
         },
         "title": "RuntimeConfigReq",
+        "type": "object"
+      },
+      "ScriptSetBindReq": {
+        "description": "Bind a pre-live ScriptSet to a runtime session (Decision 17).",
+        "properties": {
+          "script_set_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Script Set Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "script_set_id"
+        ],
+        "title": "ScriptSetBindReq",
+        "type": "object"
+      },
+      "ScriptSetCreateIn": {
+        "description": "Create a ScriptSet aggregate (Decision 1).",
+        "properties": {
+          "brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LiveSessionBriefIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "product_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Product Ids",
+            "type": "array"
+          },
+          "transition_policy": {
+            "default": "ORDER_AGNOSTIC",
+            "enum": [
+              "ORDER_AWARE",
+              "ORDER_AGNOSTIC"
+            ],
+            "title": "Transition Policy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ScriptSetCreateIn",
+        "type": "object"
+      },
+      "ScriptSetPatchIn": {
+        "description": "PATCH a ScriptSet; any change bumps ``revision`` (optimistic locking).",
+        "properties": {
+          "brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LiveSessionBriefIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "product_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Ids"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "transition_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ORDER_AWARE",
+                  "ORDER_AGNOSTIC"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition Policy"
+          }
+        },
+        "title": "ScriptSetPatchIn",
         "type": "object"
       },
       "ShopProfileIn": {
@@ -1497,6 +1893,818 @@
         "summary": "Media Livekit Room"
       }
     },
+    "/api/v1/script-sets": {
+      "post": {
+        "description": "Create a pre-live ScriptSet aggregate (task 11.2).",
+        "operationId": "create_script_set_api_v1_script_sets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScriptSetCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Script Set Api V1 Script Sets Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Script Set"
+      }
+    },
+    "/api/v1/script-sets/{set_id}": {
+      "get": {
+        "description": "Read one ScriptSet aggregate (task 11.2).",
+        "operationId": "get_script_set_api_v1_script_sets__set_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Script Set Api V1 Script Sets  Set Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Script Set"
+      },
+      "patch": {
+        "description": "Update ScriptSet metadata with revision/conflict handling (task 11.2).\n\n``revision`` is the optimistic-lock token: a mismatch returns 409\n``stale_revision`` so concurrent edits never silently clobber each other.",
+        "operationId": "patch_script_set_api_v1_script_sets__set_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScriptSetPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Patch Script Set Api V1 Script Sets  Set Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Script Set"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/approve-batch": {
+      "post": {
+        "description": "Approve multiple products; each approval is a separate immutable record\n(task 11.7). ``version_ids`` maps product_id -> exact version to approve.",
+        "operationId": "approve_batch_api_v1_script_sets__set_id__approve_batch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveBatchReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Approve Batch Api V1 Script Sets  Set Id  Approve Batch Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Batch"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/generate-batch": {
+      "post": {
+        "description": "One-click multi-product generation (task 11.8).\n\nIdempotency identity: ``Idempotency-Key`` header or body\n``idempotency_key``. Returns 202 with the batch id, per-product planned\nworkflow summary, and total estimated semantic calls.",
+        "operationId": "generate_batch_api_v1_script_sets__set_id__generate_batch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchGenerateReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Generate Batch Api V1 Script Sets  Set Id  Generate Batch Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Batch"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/generation-batches/{batch_id}": {
+      "get": {
+        "description": "Current snapshot of one generation batch (task 11.9).",
+        "operationId": "get_generation_batch_api_v1_script_sets__set_id__generation_batches__batch_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "title": "Batch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Generation Batch Api V1 Script Sets  Set Id  Generation Batches  Batch Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Generation Batch"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/generation-batches/{batch_id}/cancel": {
+      "post": {
+        "description": "Cancel a batch: stop scheduling new semantic calls, preserve completed\nartifacts, emit a terminal event (task 11.9).",
+        "operationId": "cancel_generation_batch_api_v1_script_sets__set_id__generation_batches__batch_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "title": "Batch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Cancel Generation Batch Api V1 Script Sets  Set Id  Generation Batches  Batch Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Generation Batch"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/generation-batches/{batch_id}/events": {
+      "get": {
+        "description": "SSE stream of generation progress for one batch (task 11.10).\n\nReconnect-safe: the first event is always ``batch.snapshot`` with the\ncurrent state and revision; replaying the snapshot never creates new jobs.\n\nUnknown batches fail with a JSON 404 BEFORE the stream starts (the\nsnapshot is resolved here, outside the streaming response).",
+        "operationId": "generation_batch_events_api_v1_script_sets__set_id__generation_batches__batch_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "title": "Batch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generation Batch Events"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/products/{product_id}/approve": {
+      "post": {
+        "description": "Human-only approval of the exact current version (task 11.7).\n\nRequires an authenticated human actor; approval binds the exact version\n(gate PASS never approves).",
+        "operationId": "approve_product_api_v1_script_sets__set_id__products__product_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Approve Product Api V1 Script Sets  Set Id  Products  Product Id  Approve Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Product"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/products/{product_id}/draft": {
+      "put": {
+        "description": "Create a new DRAFT version from manual text (task 11.3).\n\nThe draft version is immutable; repeated PUTs create newer versions.",
+        "operationId": "put_draft_api_v1_script_sets__set_id__products__product_id__draft_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Draft Api V1 Script Sets  Set Id  Products  Product Id  Draft Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Draft"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/products/{product_id}/fix": {
+      "post": {
+        "description": "Constrained AI repair for a gate-failed version (task 11.6).\n\nEligible only for gate-failed immutable versions; otherwise 409\n``fix_not_eligible``. The fixed result is a new DRAFT that must be\nsubmitted again \u2014 never auto-approved.",
+        "operationId": "fix_product_api_v1_script_sets__set_id__products__product_id__fix_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FixReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Fix Product Api V1 Script Sets  Set Id  Products  Product Id  Fix Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fix Product"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/products/{product_id}/generate": {
+      "post": {
+        "description": "Start planning + fixed-K segment generation for one product (task 11.5).\n\nReturns 202 with the workflow id; repeated equivalent requests under the\nsame idempotency key return the existing workflow (Decision 12).",
+        "operationId": "generate_product_api_v1_script_sets__set_id__products__product_id__generate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Generate Product Api V1 Script Sets  Set Id  Products  Product Id  Generate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Product"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/products/{product_id}/generation-preview": {
+      "post": {
+        "description": "No-LLM preview of planned K and semantic-call budget (task 11.4).",
+        "operationId": "product_generation_preview_api_v1_script_sets__set_id__products__product_id__generation_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationPreviewReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Product Generation Preview Api V1 Script Sets  Set Id  Products  Product Id  Generation Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Product Generation Preview"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/products/{product_id}/segments/{segment_index}/regenerate": {
+      "post": {
+        "description": "Explicit human regeneration of one segment (task 11.6).\n\nOnly the named segment gets a new immutable version; eligibility and\nconflict guards return 409 for ineligible states.",
+        "operationId": "regenerate_segment_api_v1_script_sets__set_id__products__product_id__segments__segment_index__regenerate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "segment_index",
+            "required": true,
+            "schema": {
+              "title": "Segment Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegenerateReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Regenerate Segment Api V1 Script Sets  Set Id  Products  Product Id  Segments  Segment Index  Regenerate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Segment"
+      }
+    },
+    "/api/v1/script-sets/{set_id}/products/{product_id}/submit": {
+      "post": {
+        "description": "Submit the current DRAFT to the deterministic ScriptGate (task 11.3).\n\nGate completion with violations is HTTP 200 with domain state\n``gate_failed`` (Decision 16); PASS becomes ``REVIEWABLE``.",
+        "operationId": "submit_for_gate_api_v1_script_sets__set_id__products__product_id__submit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Submit For Gate Api V1 Script Sets  Set Id  Products  Product Id  Submit Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit For Gate"
+      }
+    },
     "/api/v1/sessions": {
       "post": {
         "operationId": "sessions_start_api_v1_sessions_post",
@@ -1894,6 +3102,58 @@
           }
         },
         "summary": "Sessions Say"
+      }
+    },
+    "/api/v1/sessions/{session_id}/script-set": {
+      "put": {
+        "description": "Bind a ScriptSet to a live session when its scripts are ready.\n\nValidates existence, required products, approved versions, dependency\nfreshness, transition/order compatibility, and runtime catalog\ncompatibility. On success stores the binding snapshot (script_set_id +\nproduct -> approved version + exact spoken_text) in session state\nWITHOUT mutating authoring artifacts (task 12.3).\n\nNot-ready sets return HTTP 409 with structured ``missing``/``stale``/\n``incompatible``/``unapproved`` product details (Decision 16).",
+        "operationId": "sessions_bind_script_set_api_v1_sessions__session_id__script_set_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScriptSetBindReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sessions Bind Script Set Api V1 Sessions  Session Id  Script Set Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions Bind Script Set"
       }
     },
     "/api/v1/sessions/{session_id}/stop": {
