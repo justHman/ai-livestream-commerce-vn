@@ -171,13 +171,13 @@
 
 ## 16. Soak, Change A integration, and Change B contract freeze
 
-- [ ] 16.1 Add a long-running multi-session soak scenario with continuous arrival, mixed sessions/voices, cancellations, and bounded queues.
-- [ ] 16.2 Assert queue depth returns to baseline after soak and RAM/VRAM do not show unexplained unbounded growth.
-- [ ] 16.3 Add Change A integration smoke: canonical `TextChunk[]` -> bounded concurrent ordinary TTS requests -> Change T -> audio; do not modify TextChunker acceptance or create a client batch API.
-- [ ] 16.4 Verify backend integration contains no VieNeu imports, speaker embedding/reference code handling, or provider batch construction.
-- [ ] 16.5 Freeze/document the provider-neutral Change T contract consumed by Change B: `voice_profile_id`, capabilities, priority, per-chunk synthesis, readiness/error semantics.
-- [ ] 16.6 Update Change B dependency/reference docs if needed so production integration is blocked on Change T runtime acceptance but authoring logic remains provider-neutral.
-- [ ] 16.7 Verify `/ws/platform`, viewer Q&A, Director interruption, and semantic priority policy remain absent from Change T implementation/spec scope.
+- [x] 16.1 Add a long-running multi-session soak scenario with continuous arrival, mixed sessions/voices, cancellations, and bounded queues.
+- [x] 16.2 Assert queue depth returns to baseline after soak and RAM/VRAM do not show unexplained unbounded growth.
+- [x] 16.3 Add Change A integration smoke: canonical `TextChunk[]` -> bounded concurrent ordinary TTS requests -> Change T -> audio; do not modify TextChunker acceptance or create a client batch API.
+- [x] 16.4 Verify backend integration contains no VieNeu imports, speaker embedding/reference code handling, or provider batch construction.
+- [x] 16.5 Freeze/document the provider-neutral Change T contract consumed by Change B: `voice_profile_id`, capabilities, priority, per-chunk synthesis, readiness/error semantics.
+- [x] 16.6 Update Change B dependency/reference docs if needed so production integration is blocked on Change T runtime acceptance but authoring logic remains provider-neutral.
+- [x] 16.7 Verify `/ws/platform`, viewer Q&A, Director interruption, and semantic priority policy remain absent from Change T implementation/spec scope.
 
 ## 17. Final verification and closeout
 
