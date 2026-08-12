@@ -145,29 +145,29 @@
 
 ## 14. Direct provider benchmark
 
-- [ ] 14.1 Add `scripts/benchmark_provider.py` with fixed corpus/config recording backend, batch size, items, wall seconds, audio seconds, RTF, realtime factor, and items/sec.
-- [ ] 14.2 Run GPU direct baseline for batch sizes 1, 4, 8, 16, and 32 where supported on the target benchmark GPU.
-- [ ] 14.3 Add same-voice direct provider corpus and mixed-voice/mixed-cloned provider corpus using the adapter path actually used by service scheduling.
-- [ ] 14.4 Record the user-provided Tesla T4 benchmark as historical/reference evidence alongside new reproducible runs, without turning its exact numbers into a hardware-independent SLA.
-- [ ] 14.5 Run CPU ONNX single/compatibility smoke and record fallback RTF; do not spend time on a CPU batch-size sweep unless upstream capability changes.
-- [ ] 14.6 Store benchmark config/provider revision/hardware metadata with results so runs are comparable.
+- [x] 14.1 Add `scripts/benchmark_provider.py` with fixed corpus/config recording backend, batch size, items, wall seconds, audio seconds, RTF, realtime factor, and items/sec.
+- [x] 14.2 Run GPU direct baseline for batch sizes 1, 4, 8, 16, and 32 where supported on the target benchmark GPU.
+- [x] 14.3 Add same-voice direct provider corpus and mixed-voice/mixed-cloned provider corpus using the adapter path actually used by service scheduling.
+- [x] 14.4 Record the user-provided Tesla T4 benchmark as historical/reference evidence alongside new reproducible runs, without turning its exact numbers into a hardware-independent SLA.
+- [x] 14.5 Run CPU ONNX single/compatibility smoke and record fallback RTF; do not spend time on a CPU batch-size sweep unless upstream capability changes.
+- [x] 14.6 Store benchmark config/provider revision/hardware metadata with results so runs are comparable.
 
 ## 15. Multi-session service benchmark and load tests
 
-- [ ] 15.1 Add `scripts/benchmark_multisession.py` that uses only ordinary concurrent `/v1/audio/speech` calls rather than a client batch endpoint.
-- [ ] 15.2 Implement session-count sweep for 1, 2, 4, 8, 16, and 32 concurrent sessions when supported by the host.
-- [ ] 15.3 Benchmark same preset voice across many sessions to measure ideal batch fill/service overhead.
-- [ ] 15.4 Benchmark mixed preset voices across sessions and verify no profile routing errors.
-- [ ] 15.5 Benchmark mixed cloned voices across tenants/sessions and verify they share provider batches when generation settings are compatible.
-- [ ] 15.6 Benchmark mixed reading styles where the pinned VieNeu engine supports per-request style.
-- [ ] 15.7 Benchmark burst arrival where many sessions submit nearly simultaneously.
-- [ ] 15.8 Benchmark continuous staggered arrival while provider batches remain active; verify pending backlog immediately feeds successive batches.
-- [ ] 15.9 Benchmark a dominant long-script session plus newly arriving sessions; record fairness wait and assert no indefinite starvation.
-- [ ] 15.10 Benchmark high/normal priority mix without introducing `/ws/platform` semantics.
-- [ ] 15.11 Benchmark per-session/global backpressure and verify deterministic overload rather than memory growth.
-- [ ] 15.12 Benchmark pending cancellation and cancelled-after-dispatch behavior.
-- [ ] 15.13 Compare saturated service audio-seconds-per-wall-second with direct-provider baseline on identical host/corpus/config and enforce the 80% relative-throughput gate.
-- [ ] 15.14 Record queue wait p50/p95/p99, batch size/fill distribution, inference latency, aggregate RTF, errors, cancellations, GPU/VRAM when available, and active session count.
+- [x] 15.1 Add `scripts/benchmark_multisession.py` that uses only ordinary concurrent `/v1/audio/speech` calls rather than a client batch endpoint.
+- [x] 15.2 Implement session-count sweep for 1, 2, 4, 8, 16, and 32 concurrent sessions when supported by the host.
+- [x] 15.3 Benchmark same preset voice across many sessions to measure ideal batch fill/service overhead.
+- [x] 15.4 Benchmark mixed preset voices across sessions and verify no profile routing errors.
+- [x] 15.5 Benchmark mixed cloned voices across tenants/sessions and verify they share provider batches when generation settings are compatible.
+- [x] 15.6 Benchmark mixed reading styles where the pinned VieNeu engine supports per-request style.
+- [x] 15.7 Benchmark burst arrival where many sessions submit nearly simultaneously.
+- [x] 15.8 Benchmark continuous staggered arrival while provider batches remain active; verify pending backlog immediately feeds successive batches.
+- [x] 15.9 Benchmark a dominant long-script session plus newly arriving sessions; record fairness wait and assert no indefinite starvation.
+- [x] 15.10 Benchmark high/normal priority mix without introducing `/ws/platform` semantics.
+- [x] 15.11 Benchmark per-session/global backpressure and verify deterministic overload rather than memory growth.
+- [x] 15.12 Benchmark pending cancellation and cancelled-after-dispatch behavior.
+- [x] 15.13 Compare saturated service audio-seconds-per-wall-second with direct-provider baseline on identical host/corpus/config and enforce the 80% relative-throughput gate.
+- [x] 15.14 Record queue wait p50/p95/p99, batch size/fill distribution, inference latency, aggregate RTF, errors, cancellations, GPU/VRAM when available, and active session count.
 
 ## 16. Soak, Change A integration, and Change B contract freeze
 
