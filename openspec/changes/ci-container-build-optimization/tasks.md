@@ -24,6 +24,6 @@
 - [x] 3.1 Run `uv run python -m pytest tests/ci -q` (repo-tools CI) — workflow-input validation tests pass.
 - [x] 3.2 Run `uvx ruff check scripts/ci` — no lint regressions.
 - [x] 3.3 Docs-only PR: `container-build` is SKIPPED and `CI / gate` passes. (PR #33 = docs/ci-only; cả 2 runs push+PR: affected-area pass, container-build skipping, gate pass.)
-- [ ] 3.4 Create a real-code PR (e.g. touch `services/product/tts_service/`) and confirm `container-build` runs, exports cache, and `CI / gate` passes.
-- [ ] 3.5 Confirm a follow-up develop/main PR for the same service reuses cached layers (build duration noticeably shorter / cache hit in buildx logs).
+- [x] 3.4 Create a real-code PR (e.g. touch `services/product/tts_service/`) and confirm `container-build` runs, exports cache, and `CI / gate` passes. (PR #35: container-build (tts) pass, log `preparing build cache for export 28.8s` + `sending cache export 36.9s`; gate pass.)
+- [x] 3.5 Confirm a follow-up develop/main PR for the same service reuses cached layers (build duration noticeably shorter / cache hit in buildx logs). (PR #36: tts runtime layers `#17/#18 CACHED`, steps DONE 0.0-0.9s; gate pass.)
 - [x] 3.6 Run `openspec validate ci-container-build-optimization` — change is valid.
