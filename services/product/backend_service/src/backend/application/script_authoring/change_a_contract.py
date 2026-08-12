@@ -110,7 +110,7 @@ def verify_change_a_readiness() -> None:
 
     from backend.application.text_chunker.policy import AdaptiveViPolicyConfig
 
-    if "target_chars" in AdaptiveViPolicyConfig.model_fields:
+    if hasattr(AdaptiveViPolicyConfig, "target_chars"):
         raise RuntimeError(
             "AdaptiveViPolicyConfig must not carry fixed-policy target_chars"
         )
