@@ -33,18 +33,18 @@ resource "aws_ecs_task_definition" "tts" {
         { name = "ENV", value = var.env },
         # Service-local engine selector; adapters live on the backend.
         { name = "TTS_ENGINE", value = var.tts_engine },
+        { name = "TTS_PROVIDER", value = "vieneu_v3" },
+        { name = "TTS_MODEL_REVISION", value = "pnnbao-ump/VieNeu-TTS-v3-Turbo" },
+        { name = "TTS_ACCELERATOR", value = "auto" },
         { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}tts/" },
-        # Local dir (vLLM 0.22 supports --model <local-dir> via Path.exists()).
         # fetch_weights.sh syncs S3 weights/tts/vieneu/* -> /models/vieneu/
-        # (atomic, validated, .ready) before vllm-omni starts.
-        { name = "MODEL_ID", value = "/models/vieneu" },
+        # (atomic, validated, .ready) before the uvicorn service starts.
         { name = "MODEL_SUBDIR", value = "vieneu" },
         { name = "ROLE", value = "tts" },
         # Air-gapped + HF cache separated from model dir.
         { name = "HF_HUB_OFFLINE", value = "1" },
         { name = "TRANSFORMERS_OFFLINE", value = "1" },
         { name = "HF_HUB_DISABLE_TELEMETRY", value = "1" },
-        { name = "VLLM_NO_USAGE_STATS", value = "1" },
         { name = "DO_NOT_TRACK", value = "1" },
         { name = "HF_HOME", value = "/var/cache/huggingface" },
         { name = "HF_HUB_CACHE", value = "/var/cache/huggingface/hub" },

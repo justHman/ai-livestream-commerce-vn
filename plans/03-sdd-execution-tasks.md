@@ -154,7 +154,7 @@ For each of backend, llm, tts (or llm-tts), avatar, livekit, lmcache:
 - `Dockerfile` multi-stage
 - `entrypoint.sh` for GPU services: `aws s3 sync` weights then exec
 - backend: python slim, canonical entrypoint `uvicorn backend.main:app --host 0.0.0.0 --port 8800`
-- llm/tts: placeholder CMD that documents vllm serve (may use sleep/health stub if full vllm too heavy for CI — but structure real)
+- llm: placeholder CMD that documents vllm serve (may use sleep/health stub if full vllm too heavy for CI — but structure real); tts: uvicorn `tts.main:app` (provider runtime)
 - livekit: based on livekit/livekit-server or document
 - `.dockerignore` at root or per service
 

@@ -24,7 +24,7 @@ for the mandatory loop and the money-safe boot procedure.
 | Stage | Profile (committed example) | Engines | Capacity | LiveKit |
 |---|---|---|---|---|
 | 1 Mock | `terraform.tier-s.tfvars.example` | `mock` / `none` / `tone` | backend=1, GPU/optional=0 | off |
-| 2 LiveAvatar cloud | `terraform.stage-2-liveavatar.tfvars.example` (to create) | `cloud_liveavatar` + real LLM (vLLM Qwen3.5-4B-AWQ) + real TTS (vllm-omni VieNeu) | backend=1; `desired_llm/desired_tts=1` Spot g6.xlarge (L4 24GB, LLM gpu_mem 0.55 / TTS 0.35 / buffer 0.10); avatar=0 | **off** (`desired_livekit=0`) |
+| 2 LiveAvatar cloud | `terraform.stage-2-liveavatar.tfvars.example` (to create) | `cloud_liveavatar` + real LLM (vLLM Qwen3.5-4B-AWQ) + real TTS (provider runtime, VieNeu v3 Turbo) | backend=1; `desired_llm/desired_tts=1` Spot g6.xlarge (L4 24GB); avatar=0 | **off** (`desired_livekit=0`) |
 | 3 Self-host avatar | `terraform.stage-3-selfhost.tfvars.example` (to create) | `self_host_avatarforcing_half` + same LLM/TTS as Stage 2 | backend=1; `desired_llm/desired_tts=1` Spot g6; `desired_avatar=1` Spot g4dn.xlarge; `create_ec2_capacity=true` | **on** (`desired_livekit=1`, `LIVEKIT_PUBLISH=1`) |
 
 Stage 2 avatar is LiveAvatar cloud → video flows cloud → browser directly, no
@@ -82,7 +82,7 @@ real credit-charged avatar only for the formal benchmark.
 |---|---|---|
 | Renderer | `mock` | `cloud_liveavatar` (Stage 2) / `self_host_avatarforcing_half` (Stage 3) |
 | LLM | `none` | `vllm` serving `cyankiwi/Qwen3.5-4B-AWQ-4bit` (Stage 2/3) |
-| TTS | `tone` | `vllm-omni` fork `feat/vieneu-tts-v0.22` serving VieNeu-TTS (Stage 2/3) |
+| TTS | `tone` | provider runtime — VieNeu v3 Turbo default (`TTS_PROVIDER=vieneu_v3`) (Stage 2/3) |
 | Session metadata | `memory` | `redis` after its deployment is tested |
 | Runtime Postgres | omitted unless SSM DSN ARN configured | `DATABASE_URL` from SSM |
 | LiveKit publisher | `0` | `1` only in Stage 3 (self-host avatar through SFU) |

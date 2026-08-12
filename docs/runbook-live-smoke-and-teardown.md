@@ -196,7 +196,7 @@ verification after destroy.
 > teardown verification before any Stage 2 plan.
 
 Profile: `infra/environments/dev/terraform.stage-2-liveavatar.tfvars.example`
-(`render_backend=cloud_liveavatar`, `llm_engine=vllm`, `tts_engine=vllm-omni`,
+(`render_backend=cloud_liveavatar`, `llm_engine=vllm`, `tts_engine=vieneu`,
 `desired_llm/desired_tts=1` Spot g6, `desired_livekit=0`, `desired_avatar=0`,
 `desired_lmcache=0`/`LMCACHE_ENABLED=false`). Money-safe boot: Phase 0 with
 `desired_llm/desired_tts=0`, then build+push SHA images, seed Qwen3.5-4B-AWQ +
@@ -207,7 +207,7 @@ Smoke (sandbox-first): use `LIVEAVATAR_SANDBOX_AVATAR_ID`
 (`dd73ea75-1218-4ef3-92ce-606d5f7fbc0a`, free ~1-min, no credits) for the
 first smoke to prove LLM → TTS → LiveAvatar cloud avatar; switch to a real
 credit-charged avatar only for the formal benchmark. Pass criteria: engines
-endpoint reports real LLM (vLLM Qwen3.5-4B-AWQ) + real TTS (vllm-omni VieNeu);
+endpoint reports real LLM (vLLM Qwen3.5-4B-AWQ) + real TTS (provider runtime, VieNeu v3 Turbo);
 one session completes the LLM → TTS → LiveAvatar cloud speak path; LiveAvatar
 API key never in logs; `desired_livekit=0` verified; bounded latency sample
 recorded. No LiveKit in Stage 2. On FAIL/PASS follow the mandatory loop.

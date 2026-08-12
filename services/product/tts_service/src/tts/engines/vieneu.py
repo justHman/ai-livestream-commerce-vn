@@ -82,7 +82,7 @@ class VieNeuAdapter(TTSEngine):
     @classmethod
     def from_config(cls, cfg: dict) -> "VieNeuAdapter":
         e = cls()
-        model_id = cfg.get("model") or cfg.get("weights_path", "pnnbao-ump/VieNeu-TTS-v2")
+        model_id = cfg.get("model") or cfg.get("weights_path", "pnnbao-ump/VieNeu-TTS-v3-Turbo")
         e.sample_rate = _infer_sample_rate(model_id, cfg.get("sample_rate"))
         e._default_ref = cfg.get("ref_audio")
         device = cfg.get("device", "auto")

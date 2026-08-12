@@ -28,10 +28,9 @@ Move from monolithic backend (LLM/TTS in-process) to **3-instance + 3-support-se
 - llama.cpp/GGUF: removed from active use, file kept as deprecated stub.
 
 ### B. TTS
-- **Engine**: vLLM-Omni v0.22.0 serve.
-- **Fork**: `justHman/vllm-omni@feat/vieneu-tts-v0.22` (branched upstream v0.22.0). VieNeu-TTS-v2 integrated (verified Colab T4 cu13).
-- **Default**: `pnnbao-ump/VieNeu-TTS-v2` (streaming, crossfade `codec_chunk_frames=25`, TTFB ~0.5s).
-- **Alts**: `g-group-ai-lab/gwen-tts-0.6B`, `openbmb/VoxCPM2` (selectable via `/engines/tts`).
+- **Engine**: provider-neutral FastAPI service (`services/product/tts_service/`, port 8002) — scheduler-driven batching over a `TTSProvider` seam.
+- **Default**: `TTS_PROVIDER=vieneu_v3` — `pnnbao-ump/VieNeu-TTS-v3-Turbo` (PyTorch/GPU batched; ONNX/CPU fallback).
+- **Historical (pre-Change T)**: the vLLM-Omni fork (`justHman/vllm-omni@feat/vieneu-tts-v0.22`) serving VieNeu-TTS-v2 is superseded.
 - **Voice clone**: requires `ref_audio_url` + `ref_text` + `language` + `sample_rate` (per-avatar).
 
 ### C. Avatar â€” half/full-body ONLY (drop head-only/lip-sync per user decision)
@@ -192,8 +191,8 @@ REST = default (no `rest/` prefix). WS + media prefixed (different protocol, dif
 ## 3. Risks / assumptions
 
 1. `cyankiwi/Qwen3.5-4B-AWQ-4bit` must load in vLLM base text-only (`--language-model-only`).
-2. vLLM-Omni fork + VieNeu-TTS-v2 must build + run on L4 24GB (Seoul g6) â€” currently verified only Colab T4 cu13.
-3. Pre-bake weights vs mount/cache runtime (image size vs startup). `VieNeu-TTS-v2` + `neuphonic/neucodec` pre-download to avoid 600s orchestrator timeout.
+2. VieNeu-TTS-v3-Turbo provider runtime must run on L4 24GB (Seoul g6) with the pinned torch CUDA wheels.
+3. Pre-bake weights vs mount/cache runtime (image size vs startup). `VieNeu-TTS-v3-Turbo` + `neuphonic/neucodec` pre-download to avoid 600s orchestrator timeout.
 4. VRAM budget: LLM 0.6 / TTS 0.25 / buffer 0.15 â€” measure VieNeu footprint.
 5. Benchmark EchoMimicV3-Flash on T4 â€” fps real-time or need g6/Tensor Parallelism (task #49).
 6. Benchmark AWQ INT4 vs INT8-INT4 before locking prod (task #48).
