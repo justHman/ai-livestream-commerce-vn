@@ -294,15 +294,11 @@ class ScriptAuthoringConfig:
     @classmethod
     def from_env(cls) -> "ScriptAuthoringConfig":
         return cls(
-            max_concurrent_products=int(
-                os.environ.get("SA_MAX_CONCURRENT_PRODUCTS", "3")
-            ),
+            max_concurrent_products=int(os.environ.get("SA_MAX_CONCURRENT_PRODUCTS", "3")),
             provider_max_attempts=int(os.environ.get("SA_PROVIDER_MAX_ATTEMPTS", "3")),
             min_target_duration_s=int(os.environ.get("SA_MIN_TARGET_DURATION_S", "600")),
             max_target_duration_s=int(os.environ.get("SA_MAX_TARGET_DURATION_S", "3600")),
-            budget_max_output_tokens=int(
-                os.environ.get("SA_BUDGET_MAX_OUTPUT_TOKENS", "4096")
-            ),
+            budget_max_output_tokens=int(os.environ.get("SA_BUDGET_MAX_OUTPUT_TOKENS", "4096")),
             budget_output_safety_factor=float(
                 os.environ.get("SA_BUDGET_OUTPUT_SAFETY_FACTOR", "0.8")
             ),
@@ -311,9 +307,7 @@ class ScriptAuthoringConfig:
             ),
             expected_skill_version=os.environ.get("SA_EXPECTED_SKILL_VERSION", ""),
             sse_retention_seconds=int(os.environ.get("SA_SSE_RETENTION_SECONDS", "3600")),
-            sse_replay_window_seconds=int(
-                os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")
-            ),
+            sse_replay_window_seconds=int(os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")),
         )
 
 
@@ -414,9 +408,7 @@ class AppConfig:
     # Script authoring (Change B, tasks 14.3): concurrency, provider
     # attempts, generation bounds, GenerationBudgetCalibration, skill
     # expectation, SSE retention/replay.
-    script_authoring: ScriptAuthoringConfig = field(
-        default_factory=ScriptAuthoringConfig
-    )
+    script_authoring: ScriptAuthoringConfig = field(default_factory=ScriptAuthoringConfig)
 
     @classmethod
     def from_env(cls) -> "AppConfig":

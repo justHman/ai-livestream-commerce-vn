@@ -73,9 +73,7 @@ class FakeScriptAuthoringService:
             self._raise_not_found("product script", product_id)
         return item
 
-    def _enqueue(
-        self, set_id: str, batch_id: str, event: str, data: dict[str, Any]
-    ) -> None:
+    def _enqueue(self, set_id: str, batch_id: str, event: str, data: dict[str, Any]) -> None:
         queue = self._event_queues.setdefault(batch_id, [])
         queue.append({"event": event, "data": json.dumps(data)})
 
@@ -217,9 +215,7 @@ class FakeScriptAuthoringService:
             item["current_version_id"] = "v1"
         return {"ok": True, "product_id": product_id, "state": item["state"]}
 
-    async def submit_for_gate(
-        self, *, set_id: str, product_id: str
-    ) -> dict[str, Any] | None:
+    async def submit_for_gate(self, *, set_id: str, product_id: str) -> dict[str, Any] | None:
         item = self._item(set_id, product_id)
         if item.get("current_version_id") is None:
             raise ScriptAuthoringError("illegal_transition", "cannot submit without a draft")
@@ -519,8 +515,7 @@ class FakeScriptAuthoringService:
                 consumed += 1
                 yield event
             if any(
-                e["event"] in ("batch.completed", "batch.cancelled", "batch.error")
-                for e in queue
+                e["event"] in ("batch.completed", "batch.cancelled", "batch.error") for e in queue
             ):
                 return
             await asyncio.sleep(0.02)
@@ -646,13 +641,9 @@ def test_create_get_patch_script_set(client: TestClient) -> None:
 
 def test_patch_stale_revision_409(client: TestClient) -> None:
     set_id = _new_set(client)
-    first = client.patch(
-        f"/api/v1/script-sets/{set_id}", json={"name": "v2", "revision": 0}
-    )
+    first = client.patch(f"/api/v1/script-sets/{set_id}", json={"name": "v2", "revision": 0})
     assert first.status_code == 200, first.text
-    stale = client.patch(
-        f"/api/v1/script-sets/{set_id}", json={"name": "v3", "revision": 0}
-    )
+    stale = client.patch(f"/api/v1/script-sets/{set_id}", json={"name": "v3", "revision": 0})
     assert stale.status_code == 409, stale.text
     body = stale.json()["error"]
     assert body["code"] == "stale_revision"
@@ -667,9 +658,7 @@ def test_get_unknown_script_set_404(client: TestClient) -> None:
 def test_script_set_422_malformed(client: TestClient) -> None:
     resp = client.post("/api/v1/script-sets", json={"name": ""})
     assert resp.status_code == 422, resp.text
-    resp2 = client.post(
-        "/api/v1/script-sets", json={"name": "x", "transition_policy": "SOMETIMES"}
-    )
+    resp2 = client.post("/api/v1/script-sets", json={"name": "x", "transition_policy": "SOMETIMES"})
     assert resp2.status_code == 422, resp2.text
 
 
@@ -777,9 +766,7 @@ def test_generate_idempotent_duplicate_returns_same_workflow(client: TestClient)
 def test_regenerate_segment_202_and_guard(client: TestClient) -> None:
     set_id = _new_set(client)
     # illegal in EMPTY state -> 409
-    bad = client.post(
-        f"/api/v1/script-sets/{set_id}/products/P001/segments/0/regenerate", json={}
-    )
+    bad = client.post(f"/api/v1/script-sets/{set_id}/products/P001/segments/0/regenerate", json={})
     assert bad.status_code == 409, bad.text
     assert bad.json()["error"]["code"] == "illegal_transition"
     # after a failed gate the segment becomes eligible -> 202
@@ -788,9 +775,7 @@ def test_regenerate_segment_202_and_guard(client: TestClient) -> None:
         json={"display_text": "kém chất lượng"},
     )
     client.post(f"/api/v1/script-sets/{set_id}/products/P001/submit")
-    ok = client.post(
-        f"/api/v1/script-sets/{set_id}/products/P001/segments/0/regenerate", json={}
-    )
+    ok = client.post(f"/api/v1/script-sets/{set_id}/products/P001/segments/0/regenerate", json={})
     assert ok.status_code == 202, ok.text
     assert ok.json()["segment_index"] == 0
 
@@ -922,9 +907,7 @@ def test_generation_batch_snapshot_and_cancel(client: TestClient) -> None:
     snap = client.get(f"/api/v1/script-sets/{set_id}/generation-batches/{batch_id}")
     assert snap.status_code == 200, snap.text
     assert snap.json()["status"] in ("running", "queued")
-    cancelled = client.post(
-        f"/api/v1/script-sets/{set_id}/generation-batches/{batch_id}/cancel"
-    )
+    cancelled = client.post(f"/api/v1/script-sets/{set_id}/generation-batches/{batch_id}/cancel")
     assert cancelled.status_code == 200, cancelled.text
     assert cancelled.json()["status"] == "cancelling"
 
