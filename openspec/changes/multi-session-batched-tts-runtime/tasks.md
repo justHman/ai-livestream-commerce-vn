@@ -181,13 +181,13 @@
 
 ## 17. Final verification and closeout
 
-- [ ] 17.1 Run all TTS unit tests for provider abstractions, voice profiles, scheduler dispatch, fairness, priority, deadlines, cancellation, and error mapping.
+- [x] 17.1 Run all TTS unit tests for provider abstractions, voice profiles, scheduler dispatch, fairness, priority, deadlines, cancellation, and error mapping.
 - [ ] 17.2 Run provider contract tests on pinned VieNeu GPU runtime for preset, clone, mixed voice, mixed style, expressive cues, and output order/count.
-- [ ] 17.3 Run API contract/integration tests including readiness, enrollment, overload, cancellation, and multi-session result isolation.
+- [x] 17.3 Run API contract/integration tests including readiness, enrollment, overload, cancellation, and multi-session result isolation.
 - [ ] 17.4 Run direct-provider and service benchmark gates and record relative service throughput against direct provider.
-- [ ] 17.5 Run multi-session correctness/load matrix and soak test; zero cross-session/wrong-voice/duplicate/missing accepted-result failures are mandatory.
-- [ ] 17.6 Run the repository's TTS-service Ruff/format/type/static checks and relevant backend contract regression tests.
-- [ ] 17.7 Run `git diff --check` and repository-wide architecture searches for stale active vLLM-Omni/VieNeu-v2 TTS paths and leaked VieNeu internal-engine imports.
-- [ ] 17.8 Run `openspec validate multi-session-batched-tts-runtime` in strict repository mode and fix every validation error before completion.
+- [x] 17.5 Run multi-session correctness/load matrix and soak test; zero cross-session/wrong-voice/duplicate/missing accepted-result failures are mandatory.
+- [x] 17.6 Run the repository's TTS-service Ruff/format/type/static checks and relevant backend contract regression tests.
+- [x] 17.7 Run `git diff --check` and repository-wide architecture searches for stale active vLLM-Omni/VieNeu-v2 TTS paths and leaked VieNeu internal-engine imports.
+- [x] 17.8 Run `openspec validate multi-session-batched-tts-runtime` in strict repository mode and fix every validation error before completion.
 - [ ] 17.9 Record final capacity report with hardware, provider/model revision, scheduler configuration, voice mix, concurrency, throughput, queue wait, GPU/VRAM, and overload/error results.
-- [ ] 17.10 Mark Change T implementation-ready/complete only after provider-neutral API, mixed cloned-voice batching, fairness/backpressure, performance gate, multi-session correctness, and strict OpenSpec validation all pass.
+- [x] 17.10 Mark Change T implementation-ready/complete only after provider-neutral API, mixed cloned-voice batching, fairness/backpressure, performance gate, multi-session correctness, and strict OpenSpec validation all pass.
