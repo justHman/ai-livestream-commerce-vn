@@ -34,7 +34,6 @@ from tts.providers.base import TTSProvider
 from tts.providers.errors import (
     CancelledError,
     DeadlineExceededError,
-    OverloadError,
     ProviderError,
     ProviderInferenceError,
 )
@@ -109,9 +108,16 @@ class SchedulerRuntime:
             "deadline_exceeded": 0,
             "overload": 0,
         }
-        self._dispatcher_task = asyncio.create_task(self._run_dispatcher())
+        # The dispatcher starts lazily on first use: __init__ may run outside
+        # an event loop (sync tests, wiring), and a task created here would
+        # leak if the runtime is discarded without close().
+        self._dispatcher_task: Optional[asyncio.Task] = None
 
     # ── public API (task 10.1) ────────────────────────────────────────────────
+    def now(self) -> datetime:
+        """The runtime's clock (injected; deterministic in tests)."""
+        return self._clock()
+
     async def submit(self, request: SynthesisRequest) -> AudioResult:
         """Admit, queue, and await exactly this request's result.
 
@@ -128,6 +134,7 @@ class SchedulerRuntime:
         # dispatcher's next tick, so the window always expires on schedule.
         if self._open_window_at is None and self._coalesce_window > timedelta(0):
             self._open_window_at = now + self._coalesce_window
+        self._start_dispatcher()
         self._wake.set()
         try:
             return await pending.completion
@@ -177,6 +184,8 @@ class SchedulerRuntime:
 
     async def close(self) -> None:
         """Stop the dispatcher background task."""
+        if self._dispatcher_task is None:
+            return
         self._dispatcher_task.cancel()
         try:
             await self._dispatcher_task
@@ -184,6 +193,11 @@ class SchedulerRuntime:
             pass
 
     # ── dispatcher loop (rules 10.3-10.8) ─────────────────────────────────────
+    def _start_dispatcher(self) -> None:
+        """Start the background dispatcher on first use (idempotent)."""
+        if self._dispatcher_task is None:
+            self._dispatcher_task = asyncio.create_task(self._run_dispatcher())
+
     async def _run_dispatcher(self) -> None:
         while True:
             timeout = self._wake_timeout()
@@ -217,9 +231,7 @@ class SchedulerRuntime:
         """
         now = self._clock()
         self._expire_overdue(now)
-        candidates = self._selector.select_candidates(
-            self._population, self._max_batch_size, now
-        )
+        candidates = self._selector.select_candidates(self._population, self._max_batch_size, now)
         candidates = [candidate for candidate in candidates if not candidate.cancelled]
         if not candidates:
             self._open_window_at = None
@@ -258,12 +270,15 @@ class SchedulerRuntime:
         return True
 
     def _population_has_candidates(self) -> bool:
-        return any(not pending.cancelled for queue in self._population._queues.values() for pending in queue)
+        return any(
+            not pending.cancelled
+            for queue in self._population._queues.values()
+            for pending in queue
+        )
 
     # ── dispatch + resolve (tasks 10.7/10.10) ─────────────────────────────────
     async def _dispatch_group(self, members: list[PendingRequest]) -> None:
         """Dispatch one immutable provider batch; membership never mutates."""
-        now = self._clock()
         for member in members:
             member.state = PendingState.IN_FLIGHT
             self._population.remove(member)

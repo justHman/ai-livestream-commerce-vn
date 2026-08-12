@@ -61,6 +61,18 @@ def get_ready_provider(request: Request):
     return provider
 
 
+def get_runtime(request: Request):
+    """Return the scheduler runtime, or None when it is not wired.
+
+    Optional by design (task 11.1): the speech route falls back to the legacy
+    engine path when the runtime has not started, so the backend-facing
+    contract stays stable while the provider subsystem boots.
+    """
+    if not getattr(request.app.state, "runtime_ready", False):
+        return None
+    return getattr(request.app.state, "runtime", None)
+
+
 def get_concurrency_limiter(request: Request) -> ConcurrencyLimiter:
     config = get_security_config(request)
     return ConcurrencyLimiter(max_concurrent=config.max_concurrent_requests)

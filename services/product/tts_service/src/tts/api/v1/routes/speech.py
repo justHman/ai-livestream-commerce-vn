@@ -1,28 +1,34 @@
 """TTS synthesis route.
 
-Routes resolve the active engine from a dependency and invoke the typed
-base interface directly — no pass-through delegation (Task 1.31).
-Validates text/voice/output bounds; safe streaming/chunk semantics.
+Change T (tasks 3.2/11.1): `POST /v1/speech` is the canonical backend-facing
+path; `POST /v1/audio/speech` is an alias to the SAME handler. When the
+scheduler runtime is ready the handler builds one `SynthesisRequest`, submits
+it to the runtime, awaits exactly that request's result, and encodes it.
+When the runtime is NOT ready the route falls back to the legacy engine path
+with a warning — the backend-facing contract stays stable across both states.
 
-Change T: `POST /v1/speech` stays the canonical backend-facing path (the
-backend caller uses it); `POST /v1/audio/speech` is an alias to the SAME
-handler per the Change T spec. The scheduler integration in the runtime
-cluster replaces the engine call; request/response shape stays provider-neutral.
+Fallback policy (11.1): runtime_ready=False -> legacy engine; ready -> runtime.
+The runtime raises provider domain errors (429/408/422/502/503) which the
+central exception handlers map to the stable envelope.
 """
 
 from __future__ import annotations
 
 import io
+import logging
 import wave
+from datetime import timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends
+import numpy as np
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from tts.api.dependencies import (
     get_engine,
     get_gpu_concurrency_limiter,
     get_provider,
+    get_runtime,
 )
 from tts.api.security.authorization import require_scope
 from tts.api.security.rate_limit import GPUConcurrencyLimiter
@@ -30,6 +36,9 @@ from tts.api.v1.schemas.common import ErrorResponse
 from tts.api.v1.schemas.speech import CapabilityResponse, SpeechRequest, SpeechResponse
 from tts.engines.base import TTSEngine, TTSRequest
 from tts.providers.capabilities import ProviderCapabilities
+from tts.providers.models import GenerationConfig, Priority, SynthesisRequest
+
+logger = logging.getLogger("tts.api.v1.routes.speech")
 
 router = APIRouter()
 
@@ -47,8 +56,8 @@ def _tracing_headers(body: SpeechRequest) -> dict[str, str]:
     """Correlate responses to scheduling context.
 
     Request/session/utterance identifiers echo what the caller supplied and
-    default to a fresh request id or "anonymous" — the scheduler cluster
-    consumes these. Raw text is never placed in headers or logs.
+    default to a fresh request id or "anonymous" — the scheduler consumes
+    these. Raw text is never placed in headers or logs.
     """
     return {
         "X-Request-Id": body.session_id or uuid4().hex,
@@ -56,6 +65,52 @@ def _tracing_headers(body: SpeechRequest) -> dict[str, str]:
         "X-Utterance-Id": body.utterance_id or "anonymous",
         "X-Chunk-Seq": str(body.chunk_seq),
     }
+
+
+def _build_synthesis_request(body: SpeechRequest, request: Request, runtime) -> SynthesisRequest:
+    """Build the immutable scheduler identity for this HTTP request.
+
+    A fresh request id is generated when the body omits one; session/
+    utterance/chunk identity and the voice profile travel through unchanged.
+    The deadline is stamped at arrival (now + service request deadline) so
+    the runtime's urgency/sweep logic has a real bound.
+    """
+    cfg = runtime._config
+    now = runtime.now()
+    # request_id is a FRESH unique id per HTTP request — it is the admission
+    # identity (duplicates are rejected), so it can never be the session id,
+    # which repeats across chunks. Session/utterance/chunk stay as metadata.
+    return SynthesisRequest(
+        request_id=uuid4().hex,
+        session_id=body.session_id or "anonymous",
+        utterance_id=body.utterance_id or "anonymous",
+        chunk_seq=body.chunk_seq,
+        input_text=body.text,
+        voice_profile_id=body.voice_profile_id or "default",
+        style=body.style,
+        priority=Priority(body.priority),
+        response_format=body.response_format,
+        generation_config=GenerationConfig(speed=body.speed),
+        submitted_at=now,
+        deadline_at=now + timedelta(milliseconds=cfg.request_deadline_ms),
+    )
+
+
+def _encode_result(result) -> tuple[bytes, str]:
+    """Encode an AudioResult to (payload bytes, media type).
+
+    Reuses the same WAV/PCM encoding as the legacy path; the provider's
+    canonical float32 waveform is converted to int16 PCM first.
+    """
+    if result.audio_bytes is not None:
+        return result.audio_bytes, "audio/wav"
+    waveform = result.waveform
+    if waveform is None:
+        raise RuntimeError("audio result carries neither waveform nor bytes")
+    pcm = (np.clip(waveform, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+    if result.response_format == "wav":
+        return _wav_bytes(pcm, result.sample_rate), "audio/wav"
+    return pcm, "audio/pcm"
 
 
 def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
@@ -84,16 +139,39 @@ def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
 )
 async def synthesize(
     body: SpeechRequest,
+    request: Request,
     _scope: str = Depends(require_scope("tts.synthesis")),
     engine: TTSEngine = Depends(get_engine),
     limiter: GPUConcurrencyLimiter = Depends(get_gpu_concurrency_limiter),
+    runtime=Depends(get_runtime),
 ):
     """Synthesize speech from text.
 
-    Returns raw PCM (int16 mono) by default, or a WAV container when
-    `response_format=wav`. Auth, body limit, and GPU concurrency gates run
-    before any engine work.
+    Runtime path (Change T): builds one scheduler request, waits for exactly
+    that request's result, and encodes it. Runtime errors surface as stable
+    domain codes (429/408/422/502/503). Fallback: when the runtime is not
+    ready, the legacy engine path serves with a warning so the backend-facing
+    contract never changes shape.
     """
+    if runtime is not None:
+        with limiter:
+            sr = _build_synthesis_request(body, request, runtime)
+            result = await runtime.submit(sr)
+        payload, media_type = _encode_result(result)
+        sample_rate = result.sample_rate
+        duration_ms = result.duration_ms
+        headers = {
+            "X-Audio-Engine": "scheduler",
+            "X-Audio-Sample-Rate": str(sample_rate),
+            "X-Audio-Duration-Ms": str(duration_ms),
+            **_tracing_headers(body),
+        }
+        return StreamingResponse(io.BytesIO(payload), media_type=media_type, headers=headers)
+
+    logger.warning(
+        "runtime not ready; falling back to legacy engine for session=%s",
+        body.session_id or "anonymous",
+    )
     with limiter:
         chunk = engine.synthesize(_to_tts_request(body))
     pcm = chunk.to_pcm16_bytes()

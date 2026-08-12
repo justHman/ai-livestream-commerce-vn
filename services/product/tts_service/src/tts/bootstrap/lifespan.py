@@ -65,6 +65,29 @@ def _build_provider(app: FastAPI):
     return provider
 
 
+def _build_runtime(app: FastAPI, provider) -> object | None:
+    """Construct the scheduler runtime over the ready provider (task 10.1).
+
+    One lane per provider — Change T has exactly one provider, so a single
+    ``SchedulerRuntime`` is sufficient; a future multi-provider deployment
+    runs one runtime per provider lane.
+    """
+    from tts.scheduler.admission import AdmissionController
+    from tts.scheduler.fairness import FairnessSelector, PendingPopulation
+    from tts.scheduler.runtime import SchedulerRuntime
+
+    if provider is None:
+        return None
+    cfg = app.state.runtime_config
+    return SchedulerRuntime(
+        population=PendingPopulation(),
+        admission=AdmissionController(cfg.global_pending_limit, cfg.per_session_pending_limit),
+        selector=FairnessSelector(),
+        provider=provider,
+        config=cfg,
+    )
+
+
 @asynccontextmanager
 async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     """Run one configured TTS engine, bounded to the application lifetime."""
@@ -79,6 +102,8 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     # ("none") the legacy engine alone satisfies runtime readiness.
     provider = _build_provider(app)
     app.state.provider = provider
+    runtime = _build_runtime(app, provider)
+    app.state.runtime = runtime
     app.state.runtime_ready = provider is not None or app.state.runtime_config.provider == "none"
     try:
         yield {"engine": engine}
@@ -90,6 +115,9 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
             engine.unload()
         finally:
             app.state.engine = None
+        if runtime is not None:
+            await runtime.close()
+            app.state.runtime = None
 
 
 def _wire_voice_service(app: FastAPI) -> None:
