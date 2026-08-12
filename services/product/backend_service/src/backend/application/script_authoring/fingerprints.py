@@ -22,9 +22,6 @@ from dataclasses import dataclass
 from backend.application.script_authoring.gate.results import (
     RuleSetFingerprint,
 )
-from backend.application.script_authoring.models import (
-    GenerationFingerprint,
-)
 
 __all__ = [
     "approval_dependency_hash",
@@ -53,9 +50,7 @@ def rule_set_version_key(
     if fingerprint is None:
         return ""
     pairs = (
-        fingerprint.rule_ids
-        if isinstance(fingerprint, RuleSetFingerprint)
-        else tuple(fingerprint)
+        fingerprint.rule_ids if isinstance(fingerprint, RuleSetFingerprint) else tuple(fingerprint)
     )
     return ",".join(f"{rid}:{ver}" for rid, ver in sorted(pairs))
 

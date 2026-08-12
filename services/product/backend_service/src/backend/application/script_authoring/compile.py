@@ -88,7 +88,9 @@ _GROUPS = ("", "nghìn", "triệu", "tỷ")
 _GROUPED_PRICE_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+\s*(?:đồng|VND|vnđ|₫|đ|k|K)?")
 
 # A compact price with a currency suffix: "299.000đ", "50k", "99đ".
-_COMPACT_CURRENCY_RE = re.compile(r"(?<![\w.])(\d{1,3}(?:[.,]\d{1,3})+|[1-9]\d*)\s*(đ|₫|đồng|k|K)(?!\w)")
+_COMPACT_CURRENCY_RE = re.compile(
+    r"(?<![\w.])(\d{1,3}(?:[.,]\d{1,3})+|[1-9]\d*)\s*(đ|₫|đồng|k|K)(?!\w)"
+)
 
 # Percentages: "20%", "12,5%", "20 %".
 _PERCENT_RE = re.compile(r"(?<!\w)(\d{1,3}(?:[.,]\d{1,3})?)\s*%(?!\w)")
@@ -105,7 +107,9 @@ _ACRONYM_RE = re.compile(r"\b[A-Z]{2,}(?:-\d+)?\b")
 # The control range covers C0/C1 controls plus the common invisible
 # Unicode chars that corrupt spoken output: soft hyphen (U+00AD), zero-width
 # space (U+200B), bidi embeddings, word joiner (U+2060), BOM (U+FEFF).
-_MARKUP_RE = re.compile(r"<[^>]+>|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|^#{1,6}\s", re.MULTILINE)
+_MARKUP_RE = re.compile(
+    r"<[^>]+>|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|^#{1,6}\s", re.MULTILINE
+)
 # C0/C1 controls are removed; invisible space chars (soft hyphen, zero-width
 # space, word joiner, BOM) become a space so adjacent words do not merge.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
@@ -325,7 +329,5 @@ class CompiledScriptVersion(BaseModel):
     def compiled_spoken_text(self) -> str:
         """Join the segment spoken texts in exact order (task 4.3)."""
         return " ".join(
-            seg.strip().rstrip(".!?…") + "."
-            for seg in self.segment_spoken_texts
-            if seg.strip()
+            seg.strip().rstrip(".!?…") + "." for seg in self.segment_spoken_texts if seg.strip()
         )

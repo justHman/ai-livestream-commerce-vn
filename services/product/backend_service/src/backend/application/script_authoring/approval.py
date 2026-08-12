@@ -105,13 +105,10 @@ def approve_script(
 
     gate_result = gate_checker.check_full_script(request.compiled_spoken_text)
     if gate_result.scope != "full_script":
-        raise ApprovalError(
-            f"expected a full_script gate run, got scope {gate_result.scope!r}"
-        )
+        raise ApprovalError(f"expected a full_script gate run, got scope {gate_result.scope!r}")
     if not gate_result.passed:
         raise ApprovalError(
-            "latest Full Script Gate for this exact version did not pass; "
-            "approval refused"
+            "latest Full Script Gate for this exact version did not pass; approval refused"
         )
 
     dependencies = ApprovalDependencies(

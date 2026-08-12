@@ -123,9 +123,7 @@ def test_idempotent_normalization(display: str) -> None:
 
 def test_expand_vietnamese_number() -> None:
     assert expand_vietnamese_number("299") == "hai trăm chín mươi chín"
-    assert expand_vietnamese_number("1299000") == (
-        "một triệu hai trăm chín mươi chín nghìn"
-    )
+    assert expand_vietnamese_number("1299000") == ("một triệu hai trăm chín mươi chín nghìn")
     assert expand_vietnamese_number("12,5") == "mười hai phẩy năm"
     assert expand_vietnamese_number("0") == "không"
     assert expand_vietnamese_number("101") == "một trăm lẻ một"
@@ -142,8 +140,7 @@ def test_compiled_script_version_joins_segments_in_order() -> None:
         plan_version=3,
     )
     assert version.compiled_spoken_text() == (
-        "Kem ABC chỉ hai trăm chín mươi chín nghìn đồng. "
-        "Giảm hai mươi phần trăm hôm nay."
+        "Kem ABC chỉ hai trăm chín mươi chín nghìn đồng. Giảm hai mươi phần trăm hôm nay."
     )
 
 
