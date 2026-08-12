@@ -46,3 +46,12 @@ The container cache key SHALL remain stable per service and SHALL NOT include br
 - **WHEN** each build runs
 - **THEN** they SHALL share the same per-service cache scope
 - **AND** unchanged layers SHALL be reused across branches
+
+### Requirement: First-push affected-area detection
+The affected-area detection SHALL NOT fail for the first push of a branch, where `github.event.before` has no parent commit.
+
+#### Scenario: First push of a new branch
+- **GIVEN** a CI run for the first push of a branch with `base == 0000...0`
+- **WHEN** affected-area detection evaluates the commit range
+- **THEN** it SHALL classify the files of the initial commit instead of failing
+- **AND** downstream jobs SHALL evaluate as usual
