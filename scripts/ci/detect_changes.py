@@ -36,8 +36,14 @@ from scripts.ci.detect_affected_areas import PRODUCT_AREAS, detect_affected_area
 
 def changed_paths(repo_root: Path, base: str, head: str) -> List[str]:
     """Names of files changed between base..head (name-only, no status)."""
+    # First push of a branch reports before=0000...0 (no parent commit): list
+    # the initial commit's files directly instead of a parentless diff.
+    if base == "0" * 40:
+        cmd = ["git", "show", "--name-only", "--format=", head]
+    else:
+        cmd = ["git", "diff", "--name-only", f"{base}..{head}"]
     proc = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}..{head}"],
+        cmd,
         cwd=repo_root,
         capture_output=True,
         text=True,
