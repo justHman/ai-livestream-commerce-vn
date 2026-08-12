@@ -21,7 +21,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import numpy as np
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from tts.api.dependencies import (
@@ -67,15 +67,15 @@ def _tracing_headers(body: SpeechRequest) -> dict[str, str]:
     }
 
 
-def _build_synthesis_request(body: SpeechRequest, request: Request, runtime) -> SynthesisRequest:
+def _build_synthesis_request(body: SpeechRequest, runtime) -> SynthesisRequest:
     """Build the immutable scheduler identity for this HTTP request.
 
-    A fresh request id is generated when the body omits one; session/
-    utterance/chunk identity and the voice profile travel through unchanged.
-    The deadline is stamped at arrival (now + service request deadline) so
-    the runtime's urgency/sweep logic has a real bound.
+    A fresh request id is generated for every request; session/utterance/
+    chunk identity and the voice profile travel through unchanged. The
+    deadline is stamped at arrival (runtime clock + service request
+    deadline) so the runtime's urgency/sweep logic has a real bound.
     """
-    cfg = runtime._config
+    cfg = runtime.config
     now = runtime.now()
     # request_id is a FRESH unique id per HTTP request — it is the admission
     # identity (duplicates are rejected), so it can never be the session id,
@@ -139,7 +139,6 @@ def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
 )
 async def synthesize(
     body: SpeechRequest,
-    request: Request,
     _scope: str = Depends(require_scope("tts.synthesis")),
     engine: TTSEngine = Depends(get_engine),
     limiter: GPUConcurrencyLimiter = Depends(get_gpu_concurrency_limiter),
@@ -155,7 +154,7 @@ async def synthesize(
     """
     if runtime is not None:
         with limiter:
-            sr = _build_synthesis_request(body, request, runtime)
+            sr = _build_synthesis_request(body, runtime)
             result = await runtime.submit(sr)
         payload, media_type = _encode_result(result)
         sample_rate = result.sample_rate

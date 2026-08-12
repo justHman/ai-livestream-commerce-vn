@@ -114,6 +114,11 @@ class SchedulerRuntime:
         self._dispatcher_task: Optional[asyncio.Task] = None
 
     # ── public API (task 10.1) ────────────────────────────────────────────────
+    @property
+    def config(self) -> RuntimeConfig:
+        """The service config the runtime runs under."""
+        return self._config
+
     def now(self) -> datetime:
         """The runtime's clock (injected; deterministic in tests)."""
         return self._clock()
