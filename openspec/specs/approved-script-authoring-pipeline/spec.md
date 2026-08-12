@@ -1,5 +1,13 @@
 # Approved Script Authoring Pipeline Specification
 
+# Approved Script Authoring Pipeline Specification
+
+## Purpose
+
+Pre-live multi-product script authoring for VN AI livestream: deterministic ScriptGate validation, optional bounded AI generation/repair, immutable versioning, human-only approval, REST+SSE workflow APIs, workbench UX, and runtime binding of approved spoken_text through the canonical Change A source-agnostic TextChunker path. Gate-first and AI-optional; the backend owns the finite workflow and no general agent loop exists.
+
+## Requirements
+
 ### Requirement: Change A final-architecture and benchmark readiness gate
 The system SHALL keep `approved-script-authoring-pipeline` blocked until `adaptive-speech-text-chunking` has completed its mandatory final-architecture correction, required verification/strict OpenSpec validation, and VieNeu benchmark PASS evidence.
 
