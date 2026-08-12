@@ -23,7 +23,7 @@
 ## 3. Stable HTTP API and readiness
 
 - [x] 3.1 Update/add `src/tts/api/schemas.py` for provider-neutral speech, capability, and voice-profile API shapes.
-- [ ] 3.2 Update/add `src/tts/api/routes.py` so `POST /v1/audio/speech` creates one scheduler request and waits for exactly that request's result.
+- [x] 3.2 Update/add `src/tts/api/routes.py` so `POST /v1/audio/speech` creates one scheduler request and waits for exactly that request's result.
 - [x] 3.3 Add response metadata/headers or structured tracing needed to preserve request/session/utterance/chunk identity without embedding raw text.
 - [x] 3.4 Implement `GET /health` as process liveness only.
 - [x] 3.5 Implement `GET /ready` so it is false while provider/model/profile store/scheduler startup is incomplete or adapter compatibility checks fail.
@@ -101,27 +101,27 @@
 
 ## 10. Continuous dynamic micro-batch runtime
 
-- [ ] 10.1 Create `src/tts/scheduler/runtime.py` owning pending populations, one provider execution slot/runtime lane per compatible active provider as designed, batch dispatch, and result resolution.
-- [ ] 10.2 Implement native-batch dispatch bound as `min(service_max_batch_size, provider.max_batch_size)` with default service ceiling 32.
-- [ ] 10.3 Implement default `coalesce_window_ms=10` for native-batch GPU providers as a benchmark-tunable configuration value.
-- [ ] 10.4 Implement idle/empty first-arrival coalescing and dispatch on window expiry.
-- [ ] 10.5 Dispatch immediately when the candidate batch fills before the coalescing deadline.
-- [ ] 10.6 When an in-flight batch completes and backlog exists, dispatch the next eligible batch immediately without an additional idle coalescing wait.
-- [ ] 10.7 Keep requests arriving during provider inference pending for the next batch; never mutate membership of an in-flight static VieNeu batch.
-- [ ] 10.8 Dispatch early when waiting the full coalescing window would violate an accepted request deadline and capacity is available.
-- [ ] 10.9 On CPU/non-native-batch providers, force effective batch size one and zero throughput coalescing delay.
-- [ ] 10.10 Resolve each completion future exactly once and discard a cancelled-after-dispatch result without affecting sibling batch members.
-- [ ] 10.11 Add fake-provider deterministic-clock tests for every dispatch rule, deadline edge, backlog transition, and result mapping.
+- [x] 10.1 Create `src/tts/scheduler/runtime.py` owning pending populations, one provider execution slot/runtime lane per compatible active provider as designed, batch dispatch, and result resolution.
+- [x] 10.2 Implement native-batch dispatch bound as `min(service_max_batch_size, provider.max_batch_size)` with default service ceiling 32.
+- [x] 10.3 Implement default `coalesce_window_ms=10` for native-batch GPU providers as a benchmark-tunable configuration value.
+- [x] 10.4 Implement idle/empty first-arrival coalescing and dispatch on window expiry.
+- [x] 10.5 Dispatch immediately when the candidate batch fills before the coalescing deadline.
+- [x] 10.6 When an in-flight batch completes and backlog exists, dispatch the next eligible batch immediately without an additional idle coalescing wait.
+- [x] 10.7 Keep requests arriving during provider inference pending for the next batch; never mutate membership of an in-flight static VieNeu batch.
+- [x] 10.8 Dispatch early when waiting the full coalescing window would violate an accepted request deadline and capacity is available.
+- [x] 10.9 On CPU/non-native-batch providers, force effective batch size one and zero throughput coalescing delay.
+- [x] 10.10 Resolve each completion future exactly once and discard a cancelled-after-dispatch result without affecting sibling batch members.
+- [x] 10.11 Add fake-provider deterministic-clock tests for every dispatch rule, deadline edge, backlog transition, and result mapping.
 
 ## 11. API-to-scheduler integration and failure isolation
 
-- [ ] 11.1 Wire speech HTTP route -> admission -> scheduler -> provider -> audio encoder -> same request response.
-- [ ] 11.2 Add request-context propagation for trace/log correlation without using raw text or high-cardinality IDs as metric labels.
-- [ ] 11.3 Implement provider batch failure mapping so affected requests fail deterministically and later queued work can continue if provider readiness remains healthy.
-- [ ] 11.4 Ensure one invalid request is rejected before batch construction rather than poisoning valid compatible siblings.
-- [ ] 11.5 Ensure caller disconnect after dispatch only marks/discards that caller's result and does not cancel sibling requests in the static provider batch.
-- [ ] 11.6 Add mixed-session integration tests where provider completion order/batch membership differs from submission groups; assert zero cross-route, duplicate, or missing successful results.
-- [ ] 11.7 Add same-session concurrent-chunk tests proving response identity retains `utterance_id/chunk_seq` even when chunks land in different batches.
+- [x] 11.1 Wire speech HTTP route -> admission -> scheduler -> provider -> audio encoder -> same request response.
+- [x] 11.2 Add request-context propagation for trace/log correlation without using raw text or high-cardinality IDs as metric labels.
+- [x] 11.3 Implement provider batch failure mapping so affected requests fail deterministically and later queued work can continue if provider readiness remains healthy.
+- [x] 11.4 Ensure one invalid request is rejected before batch construction rather than poisoning valid compatible siblings.
+- [x] 11.5 Ensure caller disconnect after dispatch only marks/discards that caller's result and does not cancel sibling requests in the static provider batch.
+- [x] 11.6 Add mixed-session integration tests where provider completion order/batch membership differs from submission groups; assert zero cross-route, duplicate, or missing successful results.
+- [x] 11.7 Add same-session concurrent-chunk tests proving response identity retains `utterance_id/chunk_seq` even when chunks land in different batches.
 
 ## 12. Observability and operational controls
 
