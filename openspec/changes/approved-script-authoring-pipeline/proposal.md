@@ -4,7 +4,7 @@ A commerce livestream commonly sells multiple products, and a human host may spe
 
 The desired product direction is **gate-first, AI-optional, human-final**. A human-written draft that already satisfies deterministic policy should pass directly to review without paying for an LLM call. AI is invoked only when the user explicitly asks to generate missing content or fix a failed draft. Long-form generation must not depend on a general agentic loop: the backend must know and bound the number of semantic model calls before generation starts, retain control of retries and traversal, and prevent hidden tool-calling or unbounded loops.
 
-This authoring pipeline also needs to work across many products in one planned live. The UX should support one-click batch generation while inference remains isolated per product and per preplanned segment, so each product retains sufficient detail and output budget. Every generated or manually edited artifact must pass deterministic ScriptGate checks and a human approval step before its `spoken_text` may reach Change A `adaptive-speech-text-chunking`, VieNeu TTS, and the avatar.
+This authoring pipeline also needs to work across many products in one planned live. The UX should support one-click batch generation while inference remains isolated per product and per preplanned segment, so each product retains sufficient detail and output budget. Every generated or manually edited artifact must pass deterministic ScriptGate checks and a human approval step before its `spoken_text` may reach Change A `adaptive-speech-text-chunking`, the provider-neutral Change T runtime contract, and the avatar.
 
 ## What Changes
 

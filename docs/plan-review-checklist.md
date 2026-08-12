@@ -34,7 +34,7 @@
 - [ ] REJECT if `desired_livekit>0` (LiveKit is Stage 3 only).
 - [ ] `LIVEAVATAR_API_KEY` present in SSM (`liveavatar/api_key`) before Phase 1 scale-up.
 - [ ] Sandbox-first: first smoke uses `LIVEAVATAR_SANDBOX_AVATAR_ID` (`dd73ea75-1218-4ef3-92ce-606d5f7fbc0a`); real avatar only for formal bench.
-- [ ] TTS image build pins vllm-omni fork commit `e3d48e0a` (branch `feat/vieneu-tts-v0.22`).
+- [ ] TTS image builds from `services/product/tts_service/Dockerfile` (provider runtime; `--build-arg WITH_CUDA=1` for GPU torch wheels).
 - [ ] Qwen3.5-4B-AWQ + VieNeu-TTS weights seeded to S3 offline (VieNeu from local `.git`, not HF cold pull).
 
 ## Stage 3 — self-host avatar + LiveKit full media

@@ -48,7 +48,7 @@ variable "image_llm" {
 }
 
 variable "image_tts" {
-  description = "TTS image URI (vllm-omni + VieNeu-TTS-v2) (immutable digest only: registry/repo@sha256:...)"
+  description = "TTS image URI (provider-neutral FastAPI + VieNeu-TTS-v3-Turbo) (immutable digest only: registry/repo@sha256:...)"
   type        = string
 
   validation {

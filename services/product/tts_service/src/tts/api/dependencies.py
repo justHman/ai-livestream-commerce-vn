@@ -1,4 +1,4 @@
-"""API dependencies: expose the active TTS engine and concurrency gates."""
+"""API dependencies: engine, voice service, and tenant resolution."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from tts.api.security.authentication import get_security_config
 from tts.api.security.rate_limit import ConcurrencyLimiter, GPUConcurrencyLimiter
 from tts.config import ServerConfig
 from tts.engines.base import EngineUnavailable, TTSEngine
+from tts.voices.service import VoiceProfileService
 
 
 def get_engine(request: Request) -> TTSEngine:
@@ -18,8 +19,58 @@ def get_engine(request: Request) -> TTSEngine:
     return engine
 
 
-def get_server_config(request: Request) -> ServerConfig:
-    return getattr(request.app.state, "server_config")
+def get_tenant_id(request: Request) -> str:
+    """Resolve the tenant from the ``X-Tenant-Id`` header (default "default")."""
+    tenant = request.headers.get("x-tenant-id")
+    return tenant.strip() if tenant and tenant.strip() else "default"
+
+
+def get_voice_service(request: Request) -> VoiceProfileService:
+    """Return the voice-profile service owned by the app state.
+
+    Raises 503 when the runtime has not wired the service yet — the same
+    boundary the provider readiness gate uses (cluster 4 wires the provider).
+    """
+    service: VoiceProfileService | None = getattr(request.app.state, "voice_service", None)
+    if service is None:
+        from tts.providers.errors import ProviderUnavailableError
+
+        raise ProviderUnavailableError("voice service not started")
+    return service
+
+
+def get_provider(request: Request):
+    """Return the active runtime provider, or None when not started.
+
+    The provider is owned by the lifespan and gated behind ``runtime_ready``.
+    Optional by design: read-only routes (capabilities) fall back to their
+    config stub; routes that require synthesis use ``get_ready_provider``.
+    """
+    if not getattr(request.app.state, "runtime_ready", False):
+        return None
+    return getattr(request.app.state, "provider", None)
+
+
+def get_ready_provider(request: Request):
+    """Return the active runtime provider, or raise 503 when not ready."""
+    from tts.providers.errors import ProviderUnavailableError
+
+    provider = get_provider(request)
+    if provider is None:
+        raise ProviderUnavailableError("TTS provider not started")
+    return provider
+
+
+def get_runtime(request: Request):
+    """Return the scheduler runtime, or None when it is not wired.
+
+    Optional by design (task 11.1): the speech route falls back to the legacy
+    engine path when the runtime has not started, so the backend-facing
+    contract stays stable while the provider subsystem boots.
+    """
+    if not getattr(request.app.state, "runtime_ready", False):
+        return None
+    return getattr(request.app.state, "runtime", None)
 
 
 def get_concurrency_limiter(request: Request) -> ConcurrencyLimiter:

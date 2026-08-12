@@ -4,12 +4,16 @@ version = "0.1.0"
 description = "Self-host text-to-speech service package"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy", "fastapi"]
+dependencies = [
+    "numpy",
+    "fastapi",
+    "numba>=0.60",
+]
 
 [project.optional-dependencies]
 cosyvoice = ["torch"]
 transformers = ["torch", "transformers"]
-vieneu = ["vieneu"]
+vieneu = ["vieneu==3.2.4"]
 test = ["pytest"]
 
 [dependency-groups]
