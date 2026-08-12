@@ -1,5 +1,8 @@
 # Multi-Session Batched TTS Runtime Specification
 
+## ADDED Requirements
+
+
 ### Requirement: Provider-neutral external synthesis contract
 The TTS service SHALL expose a provider-neutral single-request synthesis contract that does not require callers to know VieNeu, CUDA, model-internal tensors, or GPU batch construction.
 
@@ -403,7 +406,7 @@ Change T SHALL include a reproducible direct-provider benchmark on the same hard
 - **THEN** single/compatibility smoke SHALL be sufficient for Change T performance acceptance because upstream CPU batch execution is sequential.
 
 ### Requirement: Service throughput acceptance relative to direct provider
-At saturated compatible GPU load, the full HTTP scheduler/service path SHOULD preserve at least 80% of direct-provider audio-seconds-per-wall-second on the same host, provider revision, corpus, and effective generation configuration.
+At saturated compatible GPU load, the full HTTP scheduler/service path SHALL preserve at least 80% of direct-provider audio-seconds-per-wall-second on the same host, provider revision, corpus, and effective generation configuration.
 
 #### Scenario: Saturated multi-session benchmark
 - **GIVEN** a direct provider throughput baseline
