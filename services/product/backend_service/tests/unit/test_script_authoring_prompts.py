@@ -191,9 +191,7 @@ class TestTransitionContext:
 
 class TestGeneratePrompt:
     def test_include_skill_constraints_context_duration_assignment(self) -> None:
-        parts = _build_generate(
-            build_transition_context("ORDER_AGNOSTIC")
-        )
+        parts = _build_generate(build_transition_context("ORDER_AGNOSTIC"))
         assert "SKILL_MARKER_PRESENT" in parts.system
         assert "CLAIM_PRICE" in parts.system
         assert "Authoritative context" in parts.context
@@ -400,7 +398,9 @@ _ITERATION_PATTERNS: tuple[str, ...] = (
 
 
 class TestNoToolsContract:
-    @pytest.mark.parametrize("name", ["context_builder.py", "prompt_builder.py", "intent.py", "continuity.py"])
+    @pytest.mark.parametrize(
+        "name", ["context_builder.py", "prompt_builder.py", "intent.py", "continuity.py"]
+    )
     def test_no_forbidden_tool_patterns(self, name: str) -> None:
         _, source = next(item for item in _module_sources() if item[0] == name)
         hits: list[str] = []
@@ -415,9 +415,7 @@ class TestNoToolsContract:
         assert not hits, f"{name} exposes forbidden patterns: {hits}"
 
     def test_no_llm_engine_imports_in_context_builder(self) -> None:
-        _, source = next(
-            item for item in _module_sources() if item[0] == "context_builder.py"
-        )
+        _, source = next(item for item in _module_sources() if item[0] == "context_builder.py")
         assert "LLMEngine" not in source
         assert "llm_engines" not in source
 

@@ -68,8 +68,7 @@ def test_plan_30_minute_target() -> None:
         1800.0,
         AUTHORITATIVE,
         candidate_sections=[
-            {"topic": f"Chủ đề {i}", "allowed_fact_ids": [f"fact-{i}"]}
-            for i in range(1, 5)
+            {"topic": f"Chủ đề {i}", "allowed_fact_ids": [f"fact-{i}"]} for i in range(1, 5)
         ],
     )
     assert len(plan.segments) == 8
@@ -216,9 +215,7 @@ def test_plan_truncates_overlong_candidate() -> None:
         "P001",
         600.0,
         AUTHORITATIVE,
-        candidate_sections=[
-            {"topic": f"Chủ đề {i}"} for i in range(1, 30)
-        ],
+        candidate_sections=[{"topic": f"Chủ đề {i}"} for i in range(1, 30)],
     )
     assert len(plan.segments) == 3  # K stays fixed at 3
 

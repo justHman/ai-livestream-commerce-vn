@@ -169,7 +169,6 @@ def test_job_tracks_finite_generation_position() -> None:
     job = GenerationJob(
         id="job:ffffffffffffffffffffffffffffffff",
         batch_id="batch:11111111111111111111111111111111",
-
         script_item_id=ITEM_ID,
         product_id="P001",
         target_duration_s=600,

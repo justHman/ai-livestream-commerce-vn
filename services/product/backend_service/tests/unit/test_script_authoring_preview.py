@@ -29,7 +29,14 @@ from backend.application.script_authoring.generation.preview import (
 DEFAULT = GenerationBudgetCalibration()
 """Default conservative calibration (values frozen by the pydantic model)."""
 
-_GENERATION_DIR = Path(__file__).resolve().parents[2] / "src" / "backend" / "application" / "script_authoring" / "generation"
+_GENERATION_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "backend"
+    / "application"
+    / "script_authoring"
+    / "generation"
+)
 
 
 def _module_sources() -> str:
@@ -52,12 +59,8 @@ def test_preview_makes_zero_llm_calls() -> None:
 
 def test_preview_is_deterministic() -> None:
     """Identical calibration/targets produce identical previews."""
-    assert preview_product("P001", 1800.0, DEFAULT) == preview_product(
-        "P001", 1800.0, DEFAULT
-    )
-    assert preview_batch([("P001", 1800.0)], DEFAULT) == preview_batch(
-        [("P001", 1800.0)], DEFAULT
-    )
+    assert preview_product("P001", 1800.0, DEFAULT) == preview_product("P001", 1800.0, DEFAULT)
+    assert preview_batch([("P001", 1800.0)], DEFAULT) == preview_batch([("P001", 1800.0)], DEFAULT)
 
 
 def test_k_formula_default_calibration() -> None:
