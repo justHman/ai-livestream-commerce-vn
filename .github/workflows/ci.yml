@@ -11,8 +11,11 @@
 #                              services. No integration/contract/coverage/
 #                              container/deploy.
 #   PR into develop         -> affected unit+integration+contract+coverage,
-#                              cached container build push:false, conditional
-#                              workbench/platform/Terraform checks.
+#                              cached container build push:false (exports its
+#                              per-service cache for downstream merge reuse),
+#                              conditional workbench/platform/Terraform checks.
+#                              Docs-only PRs (services_json == '[]') skip
+#                              container-build entirely.
 #   merge into develop      -> full affected-area integration CI + cached
 #                              affected-image validation push:false against the
 #                              exact merge commit.
@@ -186,7 +189,7 @@ jobs:
 
   container-build:
     needs: [mode, affected-area, service-ci]
-    if: ${{ always() && needs.mode.result == 'success' && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
+    if: ${{ always() && needs.mode.result == 'success' && needs.affected-area.outputs.services_json != '[]' && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
     uses: ./.github/workflows/_container-build.yml
     with:
       image: ${{ matrix.image }}
@@ -195,6 +198,7 @@ jobs:
       dockerfile: ${{ matrix.dockerfile }}
       platforms: ${{ matrix.platforms }}
       push: false
+      export_cache: true
     strategy:
       fail-fast: false
       matrix:

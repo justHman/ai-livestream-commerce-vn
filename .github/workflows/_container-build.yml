@@ -7,10 +7,12 @@
 # invalidates changed layers and those values would prevent cross-branch
 # cache reuse (OpenSpec design §2).
 #
-# Cache export (cache-to) is governed by `push`: PR verification builds use
-# push:false (import-only), trusted dev/staging deployment builds use
-# push:true (import + export). Untrusted fork runs never reach a deployment
-# build, so they cannot write the shared cache.
+# Cache export (cache-to) runs when `export_cache` or `push` is true. PR
+# verification builds (push:false) pass export_cache:true so their layers feed
+# the shared per-service cache for downstream develop/main merge builds;
+# trusted dev/staging deployment builds use push:true (import + export) as
+# before. Untrusted fork runs never reach a deployment build, so they cannot
+# write the shared cache.
 #
 # Production never calls this workflow: release promotes the staging-tested
 # image digest and never rebuilds (design §5).
@@ -43,6 +45,10 @@ on:
         description: "true only for trusted dev/staging deployment builds; PR builds are false"
         type: boolean
         required: true
+      export_cache:
+        description: "export per-service gha cache even when push is false (PR verification builds)"
+        type: boolean
+        required: true
 
 permissions:
   contents: read
@@ -70,4 +76,5 @@ jobs:
           # intermediate layer — backend deps (torch ~2GB via --extra director)
           # made mode=max exports take 10+ min. max is only worth it for
           # frequently-rebuilt dev loops; PR builds want fast feedback.
-          cache-to: type=gha,mode=min,scope=${{ inputs.scope }}
+          # Empty cache-to is ignored by buildx (import-only).
+          cache-to: ${{ (inputs.export_cache || inputs.push) && format('type=gha,mode=min,scope={0}', inputs.scope) || '' }}
