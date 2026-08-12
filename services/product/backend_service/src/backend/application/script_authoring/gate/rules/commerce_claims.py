@@ -43,7 +43,7 @@ _BARE_PERCENT_RE = re.compile(r"\d+(?:[.,]\d+)?\s*%")
 
 # SKU/product identity: alphanumeric codes with optional dashes, e.g.
 # "SKU123", "ABC-X1", "SP-299". Also catches quoted product names.
-_SKU_RE = re.compile(r"\b[A-Z]{2,}\d{2,}[A-Z0-9-]*\b")
+_SKU_RE = re.compile(r"\b[A-Z]{2,}(?:-[A-Z0-9]+)?\d{2,}[A-Z0-9-]*\b")
 
 
 def _span_of(match: re.Match[str]) -> TextSpan:
@@ -160,8 +160,17 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
     # looks like a factual claim (contains a known claim verb) but is not in
     # the allowed set.
     claim_verbs = (
-        "giúp", "làm", "chứa", "có", "tăng", "giảm", "an toàn", "hiệu quả",
-        "thành phần", "nguyên liệu", "không chứa",
+        "giúp",
+        "làm",
+        "chứa",
+        "có",
+        "tăng",
+        "giảm",
+        "an toàn",
+        "hiệu quả",
+        "thành phần",
+        "nguyên liệu",
+        "không chứa",
     )
     for sentence in re.split(r"[.!?]+", text):
         stripped = sentence.strip()
@@ -169,21 +178,27 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
             continue
         # Sentences that only carry price/discount/SKU forms are covered by
         # the dedicated claim rules; do not re-flag them here.
-        if _PRICE_RE.search(stripped) and not re.search(r"giúp|làm|chứa|tăng|an toàn|hiệu quả|thành phần|nguyên liệu", stripped, re.IGNORECASE):
+        if _PRICE_RE.search(stripped) and not re.search(
+            r"giúp|làm|chứa|tăng|an toàn|hiệu quả|thành phần|nguyên liệu", stripped, re.IGNORECASE
+        ):
             continue
-        if any(verb in stripped.lower() for verb in claim_verbs):
-            normalized = re.sub(r"\s+", " ", stripped.lower()).strip(" .")
-            if normalized not in allowed:
-                violations.append(
-                    RuleViolation(
-                        rule_id=RULE_CLAIM_FACTUAL,
-                        severity=Severity.ERROR,
-                        message=(
-                            f"Claim {stripped!r} is not among the authoritative "
-                            "allowed claims; do not state it."
-                        ),
-                    )
+        lowered_sentence = stripped.lower()
+        if any(verb in lowered_sentence for verb in claim_verbs):
+            # The sentence is allowed when it carries an authorized claim
+            # (substring match: "Kem này có kem dưỡng ẩm sâu" is authorized
+            # when "kem dưỡng ẩm sâu" is an allowed claim).
+            if any(claim in lowered_sentence for claim in allowed):
+                continue
+            violations.append(
+                RuleViolation(
+                    rule_id=RULE_CLAIM_FACTUAL,
+                    severity=Severity.ERROR,
+                    message=(
+                        f"Claim {stripped!r} is not among the authoritative "
+                        "allowed claims; do not state it."
+                    ),
                 )
+            )
     return violations
 
 

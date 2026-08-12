@@ -28,9 +28,7 @@ __all__ = [
 # zero-width space (U+200B), word joiner (U+2060), and zero-width no-break
 # space (U+FEFF, a.k.a. BOM). All escapes are explicit so the source file
 # holds no raw control bytes.
-_CONTROL_RE = re.compile(
-    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\xad​‪-‮⁠﻿]"
-)
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\xad​‪-‮⁠﻿]")
 
 _CONTROL_NAMES = {
     "\xad": "soft hyphen",

@@ -30,9 +30,7 @@ __all__ = [
 # actually uses: precomposed Latin-1 (à á ã è é ì í ò ó õ ù ú ý) and the
 # U+1EAx/U+01Ax precomposed forms (ả ạ ắ …). Building the class from one
 # source string keeps the two spellings in sync.
-_TONE_VOWELS = (
-    "àáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ"
-)
+_TONE_VOWELS = "àáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ"
 _TONE_CLASS = f"[{_TONE_VOWELS}]"
 
 # Tone marks sit on the LAST vowel of a syllable, EXCEPT when that final
@@ -43,9 +41,7 @@ _TONE_CLASS = f"[{_TONE_VOWELS}]"
 # TONED vowel + untoned NON-semivowel vowel (a, ă, â, e, ê, ơ). Legit
 # "toàn" and "thời" never match.
 _NON_SEMIVOWELS = "aăâeêơ"
-_WRONG_TONE_RE = re.compile(
-    r"[bcdđghklmnpqrstvx]" + _TONE_CLASS + f"[{_NON_SEMIVOWELS}]"
-)
+_WRONG_TONE_RE = re.compile(r"[bcdđghklmnpqrstvx]" + _TONE_CLASS + f"[{_NON_SEMIVOWELS}]")
 
 # Adjacent tone marks on one syllable ("tròang") — never legitimate.
 _DOUBLE_TONE_RE = re.compile(_TONE_CLASS + _TONE_CLASS)

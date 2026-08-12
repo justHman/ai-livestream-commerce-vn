@@ -35,10 +35,7 @@ RULE_PROFANITY_OFFENSIVE = "PROFANITY_OFFENSIVE"
 # (mirrors the repository's resource convention). Resolved relative to the
 # package so it works from a source checkout.
 _DEFAULT_RESOURCE = (
-    Path(__file__).resolve().parents[6]
-    / "resources"
-    / "profanity"
-    / "curated_lexicon_v1.json"
+    Path(__file__).resolve().parents[6] / "resources" / "profanity" / "curated_lexicon_v1.json"
 )
 
 # Bounded obfuscation patterns: teencode digit/symbol-for-letter swaps
@@ -95,14 +92,10 @@ class ProfanityLexicon:
         """Build from the curated resource dict (validates provenance, task 3.6)."""
         provenance = resource.get("provenance", {})
         missing = [
-            key
-            for key in ("version", "source", "license", "curated_by")
-            if not provenance.get(key)
+            key for key in ("version", "source", "license", "curated_by") if not provenance.get(key)
         ]
         if missing:
-            raise ValueError(
-                f"profanity lexicon provenance incomplete; missing {missing}"
-            )
+            raise ValueError(f"profanity lexicon provenance incomplete; missing {missing}")
         return cls(
             resource.get("words", []),
             version=str(provenance["version"]),
@@ -127,19 +120,73 @@ class ProfanityLexicon:
         # Deterministic Vietnamese diacritic folding for lexicon keys only.
         # Source text is never rewritten; this is purely a lookup key.
         replacements = {
-            "à": "a", "á": "a", "ả": "a", "ã": "a", "ạ": "a",
-            "ă": "a", "ằ": "a", "ắ": "a", "ẳ": "a", "ẵ": "a", "ặ": "a",
-            "â": "a", "ầ": "a", "ấ": "a", "ẩ": "a", "ẫ": "a", "ậ": "a",
+            "à": "a",
+            "á": "a",
+            "ả": "a",
+            "ã": "a",
+            "ạ": "a",
+            "ă": "a",
+            "ằ": "a",
+            "ắ": "a",
+            "ẳ": "a",
+            "ẵ": "a",
+            "ặ": "a",
+            "â": "a",
+            "ầ": "a",
+            "ấ": "a",
+            "ẩ": "a",
+            "ẫ": "a",
+            "ậ": "a",
             "đ": "d",
-            "è": "e", "é": "e", "ẻ": "e", "ẽ": "e", "ẹ": "e",
-            "ê": "e", "ề": "e", "ế": "e", "ể": "e", "ễ": "e", "ệ": "e",
-            "ì": "i", "í": "i", "ỉ": "i", "ĩ": "i", "ị": "i",
-            "ò": "o", "ó": "o", "ỏ": "o", "õ": "o", "ọ": "o",
-            "ô": "o", "ồ": "o", "ố": "o", "ổ": "o", "ỗ": "o", "ộ": "o",
-            "ơ": "o", "ờ": "o", "ớ": "o", "ở": "o", "ỡ": "o", "ợ": "o",
-            "ù": "u", "ú": "u", "ủ": "u", "ũ": "u", "ụ": "u",
-            "ư": "u", "ừ": "u", "ứ": "u", "ử": "u", "ữ": "u", "ự": "u",
-            "ỳ": "y", "ý": "y", "ỷ": "y", "ỹ": "y", "ỵ": "y",
+            "è": "e",
+            "é": "e",
+            "ẻ": "e",
+            "ẽ": "e",
+            "ẹ": "e",
+            "ê": "e",
+            "ề": "e",
+            "ế": "e",
+            "ể": "e",
+            "ễ": "e",
+            "ệ": "e",
+            "ì": "i",
+            "í": "i",
+            "ỉ": "i",
+            "ĩ": "i",
+            "ị": "i",
+            "ò": "o",
+            "ó": "o",
+            "ỏ": "o",
+            "õ": "o",
+            "ọ": "o",
+            "ô": "o",
+            "ồ": "o",
+            "ố": "o",
+            "ổ": "o",
+            "ỗ": "o",
+            "ộ": "o",
+            "ơ": "o",
+            "ờ": "o",
+            "ớ": "o",
+            "ở": "o",
+            "ỡ": "o",
+            "ợ": "o",
+            "ù": "u",
+            "ú": "u",
+            "ủ": "u",
+            "ũ": "u",
+            "ụ": "u",
+            "ư": "u",
+            "ừ": "u",
+            "ứ": "u",
+            "ử": "u",
+            "ữ": "u",
+            "ự": "u",
+            "ỳ": "y",
+            "ý": "y",
+            "ỷ": "y",
+            "ỹ": "y",
+            "ỵ": "y",
         }
         return "".join(replacements.get(c, c) for c in text)
 
@@ -170,9 +217,7 @@ def check_profanity(
     violations: list[RuleViolation] = []
     for match in _CANDIDATE_RE.finditer(text):
         token = match.group()
-        if any(
-            allowed.lower() in token.lower() for allowed in context.brand_allowlist
-        ):
+        if any(allowed.lower() in token.lower() for allowed in context.brand_allowlist):
             continue
         if lexicon.is_offensive(token):
             violations.append(

@@ -30,7 +30,9 @@ __all__ = [
 ]
 
 # Markdown/HTML markup that a TTS engine may speak literally or choke on.
-_MARKUP_RE = re.compile(r"<[^>]+>|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|^#{1,6}\s", re.MULTILINE)
+_MARKUP_RE = re.compile(
+    r"<[^>]+>|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|^#{1,6}\s", re.MULTILINE
+)
 
 # URLs and emails.
 _URL_RE = re.compile(r"\b(?:https?://|www\.)\S+|\b[\w.+-]+@[\w-]+\.[\w.]+")
@@ -96,8 +98,7 @@ def check_tts_acronyms(text: str, context) -> list[RuleViolation]:
                 rule_id=RULE_TTS_ACRONYM,
                 severity=Severity.WARNING,
                 message=(
-                    f"Acronym/code {token!r} may be mispronounced by TTS; "
-                    "confirm the spoken form."
+                    f"Acronym/code {token!r} may be mispronounced by TTS; confirm the spoken form."
                 ),
                 text_span=_span_of(match),
             )
@@ -113,9 +114,14 @@ def check_tts_numbers(text: str, context) -> list[RuleViolation]:
     commerce-claim rules' concern).
     """
     violations: list[RuleViolation] = []
-    grouped_spans = [(m.start(), m.end()) for m in _GROUPED_PRICE_RE.finditer(text)]
+    # Skip digits inside grouped prices (commerce rule's concern) and inside
+    # acronym/product-code tokens (their spoken form is the acronym rule's
+    # concern).
+    excluded_spans = [(m.start(), m.end()) for m in _GROUPED_PRICE_RE.finditer(text)] + [
+        (m.start(), m.end()) for m in _ACRONYM_RE.finditer(text)
+    ]
     for match in _NUMBER_RE.finditer(text):
-        if any(start <= match.start() and match.end() <= end for start, end in grouped_spans):
+        if any(start <= match.start() and match.end() <= end for start, end in excluded_spans):
             continue
         violations.append(
             RuleViolation(

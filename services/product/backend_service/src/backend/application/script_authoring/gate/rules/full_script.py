@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 
-from ..results import RuleViolation, Severity, TextSpan
+from ..results import RuleViolation, Severity
 
 __all__ = [
     "check_cross_segment_repetition",
@@ -110,13 +110,8 @@ def check_contradictory_claims(segments: list[str], context) -> list[RuleViolati
     """
     violations: list[RuleViolation] = []
     for claim, negation in _CONTRADICTIONS:
-        claim_indexes = [
-            i for i, seg in enumerate(segments) if claim in seg.lower()
-        ]
-        negated_indexes = [
-            i for i, seg in enumerate(segments)
-            if negation in seg.lower() and claim in seg.lower()
-        ]
+        claim_indexes = [i for i, seg in enumerate(segments) if claim in seg.lower()]
+        negated_indexes = [i for i, seg in enumerate(segments) if negation in seg.lower()]
         if claim_indexes and negated_indexes:
             violations.append(
                 RuleViolation(

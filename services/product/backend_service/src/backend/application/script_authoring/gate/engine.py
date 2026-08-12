@@ -140,7 +140,9 @@ class ScriptGate:
         fingerprint = RuleSetFingerprint.from_rule_versions(
             [(rule.id, rule.version) for rule in self._full_rules]
         )
-        return GateRunResult(scope="full_script", violations=tuple(violations), fingerprint=fingerprint)
+        return GateRunResult(
+            scope="full_script", violations=tuple(violations), fingerprint=fingerprint
+        )
 
     # -- registry access for prompt builders -------------------------------
 
