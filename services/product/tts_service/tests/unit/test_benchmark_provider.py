@@ -49,8 +49,19 @@ def test_output_file_written() -> None:
     tmp = Path(__file__).parent / "benchmark_provider_out.json"
     try:
         subprocess.run(
-            [sys.executable, str(_SCRIPT), "--mode", "fake", "--batch-sizes", "1",
-             "--samples", "4", "--no-sleep", "--output", str(tmp)],
+            [
+                sys.executable,
+                str(_SCRIPT),
+                "--mode",
+                "fake",
+                "--batch-sizes",
+                "1",
+                "--samples",
+                "4",
+                "--no-sleep",
+                "--output",
+                str(tmp),
+            ],
             capture_output=True,
             text=True,
             check=True,
