@@ -1,5 +1,7 @@
 # Approved Script Authoring Pipeline Specification
 
+## ADDED Requirements
+
 ### Requirement: Change A final-architecture and benchmark readiness gate
 The system SHALL keep `approved-script-authoring-pipeline` blocked until `adaptive-speech-text-chunking` has completed its mandatory final-architecture correction, required verification/strict OpenSpec validation, and VieNeu benchmark PASS evidence.
 
