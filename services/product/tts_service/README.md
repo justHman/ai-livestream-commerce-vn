@@ -29,6 +29,11 @@ docker build -f services/product/tts_service/Dockerfile -t imjusthman/ai-live-tt
 docker build --build-arg WITH_CUDA=1 -f services/product/tts_service/Dockerfile -t imjusthman/ai-live-tts:dev .
 ```
 
+CI builds (`container-build`) use a per-service gha cache scope (`tts`) so
+develop/main merge builds reuse layers from the feature-PR build instead of
+rebuilding from scratch. Dockerfile layer edits invalidate only the changed
+layers onward.
+
 NVIDIA runtime requirements (GPU mode):
 
 - Host must run `nvidia-container-toolkit` (the image carries no CUDA base).
