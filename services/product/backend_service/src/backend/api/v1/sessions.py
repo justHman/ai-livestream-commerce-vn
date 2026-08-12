@@ -13,6 +13,7 @@ import asyncio
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
 
@@ -520,3 +521,96 @@ async def sessions_plan_create(
         except Exception:
             pass
     return {"ok": True, "session_id": session_id, "plan": plan_dict}
+
+
+# ── ScriptSet binding (Change B, task 12.2) ─────────────────────────
+
+
+class ScriptSetBindReq(BaseModel):
+    """Bind a pre-live ScriptSet to a runtime session (Decision 17)."""
+
+    script_set_id: str = Field(min_length=1, max_length=128)
+
+
+@_router.put("/sessions/{session_id}/script-set")
+async def sessions_bind_script_set(
+    session_id: str,
+    req: ScriptSetBindReq,
+    request: Request,
+    _: None = Depends(router.viewer_auth),
+) -> dict[str, Any]:
+    """Bind a ScriptSet to a live session when its scripts are ready.
+
+    Validates existence, required products, approved versions, dependency
+    freshness, transition/order compatibility, and runtime catalog
+    compatibility. On success stores the binding snapshot (script_set_id +
+    product -> approved version + exact spoken_text) in session state
+    WITHOUT mutating authoring artifacts (task 12.3).
+
+    Not-ready sets return HTTP 409 with structured ``missing``/``stale``/
+    ``incompatible``/``unapproved`` product details (Decision 16).
+    """
+    d = _container(request)
+    meta = await d.store.get(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="unknown session_id")
+
+    from backend.application.script_authoring.runtime_handoff import (
+        RuntimeCatalogProxy,
+        RuntimePlan,
+        build_binding_snapshot,
+        resolve_approved_script,
+        validate_binding,
+    )
+
+    # The authoring service is the source of truth for the aggregate and its
+    # approvals. When no authoring service is wired the capability is
+    # unavailable (501), matching the /script-sets surface. The service
+    # satisfies the BindingSource protocol structurally; recorded dependency
+    # fingerprints come from the service's approval records (task 4.4) and
+    # are absent (no staleness signal) until that cluster lands.
+    source = getattr(request.app.state.container, "script_authoring_service", None)
+    if source is None:
+        raise HTTPException(status_code=501, detail="script authoring not enabled")
+    recorded_dependencies = getattr(source, "recorded_dependencies_by_item", None)
+
+    check = await validate_binding(
+        script_set_id=req.script_set_id,
+        source=source,
+        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_catalog=RuntimeCatalogProxy(
+            getattr(d, "director", None),
+            getattr(d, "coordinator", None),
+        ),
+        requested_products=None,
+        recorded_dependencies_by_item=recorded_dependencies,
+    )
+    if not check.ok:
+        # Stable domain error code + structured missing/stale details
+        # (Decision 16); the shared handler renders them in the envelope.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "missing_or_stale_script",
+                "message": "script set is not ready for binding",
+                "details": check.as_dict(),
+            },
+        )
+
+    # Persist the binding snapshot into session state (task 12.3). The
+    # snapshot is derived from approved artifacts; authoring rows are never
+    # mutated.
+    entries = []
+    for product_id in check.script_set.product_ids:
+        entry = await resolve_approved_script(
+            source,
+            script_set_id=req.script_set_id,
+            product_id=product_id,
+        )
+        if entry is not None:
+            entries.append(entry)
+    snapshot = build_binding_snapshot(script_set_id=req.script_set_id, entries=entries)
+    meta = dict(meta)
+    meta["script_set_binding"] = snapshot.as_dict()
+    await d.store.set(session_id, meta)
+    return {"ok": True, "session_id": session_id, "binding": snapshot.as_dict()}
