@@ -125,6 +125,42 @@
         <h2 id="eventHeading">8. Event log</h2>
         <div id="eventLog" aria-live="polite"></div>
       </section>
+
+      <section class="panel" id="scriptAuthoringPanel" aria-labelledby="authoringHeading">
+        <h2 id="authoringHeading">9. Script authoring (ScriptSet)</h2>
+        <p class="hint">Tạo kịch bản trước livestream: draft thủ công không tốn token; AI generation là hành động tùy chọn có chủ đích. Approve chỉ do con người.</p>
+
+        <div id="scriptSetCreateForm">
+          <h3>Brief phiên</h3>
+          <div class="grid-2">
+            <div class="field"><label for="briefShopName">Tên shop</label><input id="briefShopName" maxlength="256"></div>
+            <div class="field"><label for="briefHostName">Tên MC</label><input id="briefHostName" maxlength="128"></div>
+            <div class="field wide"><label for="briefPersona">Persona</label><input id="briefPersona" maxlength="1000"></div>
+            <div class="field wide"><label for="briefSellingStyle">Phong cách bán hàng</label><textarea id="briefSellingStyle" maxlength="1000"></textarea></div>
+            <div class="field"><label for="briefTransition">Transition policy</label><select id="briefTransition"><option value="ORDER_AGNOSTIC">ORDER_AGNOSTIC</option><option value="ORDER_AWARE">ORDER_AWARE</option></select></div>
+          </div>
+          <div class="field"><label for="scriptSetProductIds">Product IDs (phân cách bằng dấu phẩy)</label><input id="scriptSetProductIds" placeholder="P001, P002, P003"></div>
+          <div id="scriptSetProductList" class="script-product-picks"></div>
+          <div class="actions"><button id="createScriptSetBtn" type="button">Tạo ScriptSet</button></div>
+        </div>
+
+        <div class="actions">
+          <div class="field"><label for="scriptSetIdInput" class="sr-only">ScriptSet ID</label><input id="scriptSetIdInput" placeholder="sets-..."></div>
+          <button id="loadScriptSetBtn" type="button" class="secondary">Tải ScriptSet</button>
+          <button id="scriptPreviewBtn" type="button" class="secondary">Generation preview (0 token)</button>
+          <button id="generateAllBtn" type="button" class="warning">Generate All</button>
+          <button id="cancelBatchBtn" type="button" class="danger" disabled>Hủy batch</button>
+          <button id="approveBatchBtn" type="button">Approve các bản REVIEWABLE đã chọn</button>
+        </div>
+
+        <div id="scriptPreviewResults" class="script-preview" aria-live="polite"></div>
+        <div id="scriptBatchStatus" class="status" aria-live="polite">Chưa có batch.</div>
+        <div id="batchLastError" class="status" data-tone="danger" aria-live="polite"></div>
+        <div id="scriptSetSummary" class="status" aria-live="polite">Chưa có ScriptSet.</div>
+        <div id="scriptItemList"></div>
+        <div id="scriptSetStatus" class="status" aria-live="polite"></div>
+        <div id="scriptSetErrors" class="script-errors" role="alert" aria-live="polite"></div>
+      </section>
     </div>
   </main>
 

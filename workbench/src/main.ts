@@ -16,6 +16,7 @@ import { ViewerSimulator, validateSimulatorInput } from "./simulator";
 import type { LifecycleEvent, Product } from "./api_types";
 import { validateProductCatalog, validateShopLimits, productJson } from "./validation";
 import { clearDiagnostics } from "./diagnostics";
+import { mountAuthoring } from "./authoringView";
 
 import "./styles.css";
 
@@ -756,6 +757,12 @@ function boot(): void {
     onStatus: addEvent,
   });
   hydrateLocalDraft();
+  mountAuthoring({
+    backendUrl: () => backendUrl(),
+    adminToken: getAdminToken,
+    api: store,
+    onEvent: addEvent,
+  });
   // Prefill dev token fixtures into page-memory form state (never persisted).
   ($("apiToken") as HTMLInputElement).value = DEV_TOKENS.viewerToken;
   ($("adminToken") as HTMLInputElement).value = DEV_TOKENS.adminToken;
