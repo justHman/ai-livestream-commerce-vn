@@ -21,11 +21,31 @@ def test_contract_excludes_health() -> None:
     assert not any(p.startswith("/health") for p in spec["paths"])
 
 
+# Mirrors the generator's health-path set (scripts/contracts/generate.py):
+# operational health lives outside the v1 artifact, including the Change T
+# `GET /ready` alias.
+HEALTH_PATHS = frozenset(
+    {
+        "/health",
+        "/health/live",
+        "/health/ready",
+        "/ready",
+    }
+)
+
+
+def _without_health(spec: dict) -> dict:
+    spec["paths"] = {
+        path: operations
+        for path, operations in spec.get("paths", {}).items()
+        if path not in HEALTH_PATHS
+    }
+    return spec
+
+
 def test_contract_matches_built_app() -> None:
     app = create_app()
-    spec = app.openapi()
-    for path in [p for p in list(spec.get("paths", {})) if p.startswith("/health")]:
-        del spec["paths"][path]
+    spec = _without_health(app.openapi())
     committed = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     assert json.dumps(spec, sort_keys=True) == json.dumps(committed, sort_keys=True)
 

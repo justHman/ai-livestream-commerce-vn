@@ -11,6 +11,19 @@ SELF_HOST_ENGINES = frozenset({"vieneu", "cosyvoice"})
 SERVICE_NAME = "tts"
 DEFAULT_PORT = 8002
 
+# Change T: provider-neutral runtime defaults (cluster 1.5). These configure
+# the scheduler/provider runtime introduced by Change T; the legacy EngineConfig
+# below keeps driving the current engines/ path until the runtime lands.
+DEFAULT_TTS_PROVIDER = "vieneu_v3"
+DEFAULT_TTS_MODEL_REVISION = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+DEFAULT_TTS_RESPONSE_FORMAT = "wav"
+ACCELERATORS = ("auto", "cpu", "gpu")
+RESPONSE_FORMATS = ("pcm", "wav")
+# Voice enrollment bounds (task 5.1): reference WAVs are bounded before the
+# provider encodes them. 10 MB / 30 s match the SDK's prepare_reference trim.
+DEFAULT_VOICE_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_VOICE_MAX_SECONDS = 30
+
 
 @dataclass(frozen=True)
 class EngineConfig:
@@ -47,6 +60,59 @@ class EngineConfig:
             "device": self.device,
             "sample_rate": self.sample_rate,
         }
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    """Provider-neutral TTS runtime settings for the Change T scheduler.
+
+    Declares the provider, accelerator, model revision, response format,
+    scheduler admission bounds, and voice-profile store location. Validation
+    fails fast on bad env so misconfiguration surfaces at startup, not under
+    load.
+    """
+
+    provider: str = DEFAULT_TTS_PROVIDER
+    accelerator: str = "auto"
+    model_revision: str = DEFAULT_TTS_MODEL_REVISION
+    response_format: str = DEFAULT_TTS_RESPONSE_FORMAT
+    global_pending_limit: int = 512
+    per_session_pending_limit: int = 64
+    request_deadline_ms: int = 30_000
+    max_batch_size: int = 32
+    coalesce_window_ms: int = 10
+    aging_threshold_ms: int = 5_000
+    voice_store_uri: str = ""
+    voice_max_bytes: int = DEFAULT_VOICE_MAX_BYTES
+    voice_max_seconds: int = DEFAULT_VOICE_MAX_SECONDS
+
+    def __post_init__(self) -> None:
+        if not self.provider:
+            raise ValueError("TTS_PROVIDER must not be empty")
+        if self.accelerator not in ACCELERATORS:
+            raise ValueError(
+                f"TTS_ACCELERATOR={self.accelerator!r} is not valid; "
+                f"expected one of {sorted(ACCELERATORS)}"
+            )
+        if not self.model_revision:
+            raise ValueError("TTS_MODEL_REVISION must not be empty")
+        if self.response_format not in RESPONSE_FORMATS:
+            raise ValueError(
+                f"TTS_RESPONSE_FORMAT={self.response_format!r} is not valid; "
+                f"expected one of {sorted(RESPONSE_FORMATS)}"
+            )
+        for name, value in (
+            ("TTS_GLOBAL_PENDING_LIMIT", self.global_pending_limit),
+            ("TTS_PER_SESSION_PENDING_LIMIT", self.per_session_pending_limit),
+            ("TTS_REQUEST_DEADLINE_MS", self.request_deadline_ms),
+            ("TTS_MAX_BATCH_SIZE", self.max_batch_size),
+            ("TTS_COALESCE_WINDOW_MS", self.coalesce_window_ms),
+            ("TTS_AGING_THRESHOLD_MS", self.aging_threshold_ms),
+            ("TTS_VOICE_MAX_BYTES", self.voice_max_bytes),
+            ("TTS_VOICE_MAX_SECONDS", self.voice_max_seconds),
+        ):
+            if value < 1:
+                raise ValueError(f"{name} must be >= 1")
 
 
 @dataclass(frozen=True)
@@ -136,4 +202,31 @@ def load_security_config() -> SecurityConfig:
         admin_token=os.environ.get("TTS_ADMIN_TOKEN", "").strip(),
         max_concurrent_requests=_parse_int(os.environ.get("TTS_MAX_CONCURRENT"), 4),
         max_gpu_concurrent_requests=_parse_int(os.environ.get("TTS_MAX_GPU_CONCURRENT"), 1),
+    )
+
+
+def load_runtime_config() -> RuntimeConfig:
+    """Build and validate runtime config from environment variables."""
+    voice_store = os.environ.get("TTS_VOICE_STORE_URI", "").strip()
+    if not voice_store:
+        runtime_root = Path(os.environ.get("RUNTIME_ROOT", ".runtime"))
+        voice_store = f"file://{(runtime_root / 'voice_profiles').as_posix()}"
+    return RuntimeConfig(
+        provider=os.environ.get("TTS_PROVIDER", DEFAULT_TTS_PROVIDER).strip().lower(),
+        accelerator=os.environ.get("TTS_ACCELERATOR", "auto").strip().lower(),
+        model_revision=os.environ.get("TTS_MODEL_REVISION", DEFAULT_TTS_MODEL_REVISION).strip(),
+        response_format=os.environ.get("TTS_RESPONSE_FORMAT", DEFAULT_TTS_RESPONSE_FORMAT)
+        .strip()
+        .lower(),
+        global_pending_limit=_parse_int(os.environ.get("TTS_GLOBAL_PENDING_LIMIT"), 512),
+        per_session_pending_limit=_parse_int(os.environ.get("TTS_PER_SESSION_PENDING_LIMIT"), 64),
+        request_deadline_ms=_parse_int(os.environ.get("TTS_REQUEST_DEADLINE_MS"), 30_000),
+        max_batch_size=_parse_int(os.environ.get("TTS_MAX_BATCH_SIZE"), 32),
+        coalesce_window_ms=_parse_int(os.environ.get("TTS_COALESCE_WINDOW_MS"), 10),
+        aging_threshold_ms=_parse_int(os.environ.get("TTS_AGING_THRESHOLD_MS"), 5_000),
+        voice_store_uri=voice_store,
+        voice_max_bytes=_parse_int(os.environ.get("TTS_VOICE_MAX_BYTES"), DEFAULT_VOICE_MAX_BYTES),
+        voice_max_seconds=_parse_int(
+            os.environ.get("TTS_VOICE_MAX_SECONDS"), DEFAULT_VOICE_MAX_SECONDS
+        ),
     )

@@ -143,7 +143,7 @@ AVAILABLE_TTS_PRESETS = [
         "weights_path": "pnnbao-ump/VieNeu-TTS-v2",
         "sample_rate": 24000,
         "device": "auto",
-        "notes": "VN-native baseline. Lower-bandwidth fallback.",
+        "notes": "VN-native baseline. Lower-bandwidth fallback. Historical (pre-Change T): vLLM-Omni served this model; the provider runtime default is vieneu-v3-turbo.",
     },
     {
         "id": "cosyvoice2",

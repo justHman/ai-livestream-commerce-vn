@@ -26,28 +26,22 @@
 
 ## 2. TTS engine
 
-**Runtime**: vLLM-Omni v0.22.0 serve (single TTS server).
+**Runtime**: provider-neutral FastAPI service (`services/product/tts_service/`,
+port 8002) — scheduler-driven batching over a `TTSProvider` seam. Default
+provider: VieNeu-TTS-v3-Turbo (`TTS_PROVIDER=vieneu_v3`,
+`TTS_MODEL_REVISION=pnnbao-ump/VieNeu-TTS-v3-Turbo`, `TTS_ACCELERATOR=auto`;
+PyTorch/GPU batched, ONNX/CPU single-path fallback).
 
-**Integration**: VieNeu-TTS-v2 integrated into fork `justHman/vllm-omni@feat/vieneu-tts-v0.22` (branched from upstream tag `v0.22.0`). Adds:
-- `vllm_omni/transformers_utils/configs/vieneu.py`
-- `vllm_omni/model_executor/stage_input_processors/vieneu.py`
-- `vllm_omni/model_executor/models/vieneu/pipeline.yaml` (talker stage 0 + codec stage 1, crossfade streaming `codec_chunk_frames=25`, `codec_left_context_frames=25`, TTFB ~0.5s, no boundary clicks)
-
-Launch (verified on Colab T4 cu13):
-```bash
-vllm serve pnnbao-ump/VieNeu-TTS-v2 \
-  --omni --port 8002 --dtype half --trust-remote-code
-```
+**Historical (pre-Change T)**: the earlier vLLM-Omni fork integration
+(`justHman/vllm-omni@feat/vieneu-tts-v0.22` serving VieNeu-TTS-v2 via
+`vllm serve --omni`) is superseded; see git history and
+`openspec/changes/multi-session-batched-tts-runtime/`.
 
 **Presets** (selectable via `POST /api/v1/engines/tts`):
 
 | Priority | id | Model | Params | Weight | VN | Notes |
-|---|---|---|---|---:|:---:|---|
-| 1 (default) | vieneu-v2-omni | `pnnbao-ump/VieNeu-TTS-v2` | 294M | ~0.5-1GB | ✅ native | Already integrated, streaming |
-| 2 | gwen-tts-omni | `g-group-ai-lab/gwen-tts-0.6B` | 0.9B | ~0.6-1GB | ✅ finetune | Streaming |
-| 3 | voxcpm2-omni | `openbmb/VoxCPM2` | 0.6B | ~1.2GB | ✅ 600+ langs | RTF 0.025 |
-
-**Runtime swap**: API calls `POST /api/v1/engines/tts` → backend restarts Omni container with new `--model` (hot-swap not supported). Frontend just calls endpoint, backend abstracts.
+|---|---|---:|---:|:---:|---|
+| 1 (default) | vieneu-v3-turbo | `pnnbao-ump/VieNeu-TTS-v3-Turbo` | — | — | ✅ native | Provider runtime, batched |
 
 **Voice clone**: requires `ref_audio_url` + `ref_text` (transcript exact match) + `language` + `sample_rate`. Per-avatar (see §3).
 
@@ -239,7 +233,7 @@ Support services (no GPU, CPU-only):
 ECS technique (spec-03 §2.2):
 - Only LLM container declares `resourceRequirements: {type: GPU, value: 1}`.
 - TTS container does NOT declare GPU resource — uses `NVIDIA_VISIBLE_DEVICES` env var pointing to same GPU UUID.
-- `--gpu-memory-utilization` NOT split evenly: **LLM ~0.6 / TTS ~0.25** (LLM KV-cache heavier than TTS), ~0.15 buffer. Verify via VRAM footprint of VieNeu-TTS-v2 (backlog).
+- GPU sharing: the LLM container declares the GPU resource; the TTS provider runtime uses `NVIDIA_VISIBLE_DEVICES` to share the same device. VRAM budget is workload-dependent — measure the VieNeu v3 Turbo footprint (backlog).
 
 ### 5.3 ECS structure
 
@@ -271,7 +265,7 @@ Service: lmcache-server (4th Service, **EC2 c7g.2xlarge Spot** test / c7g.4xlarg
        port 5555 (ZMQ, vLLM connect) + port 8080 (HTTP metrics)
        desired_count=1 (single, NO scale — shared by all LLM replicas)
 
-Service: llm/tts (N replicas when autoscale)
+Service: llm (N replicas when autoscale)
   └─ each vLLM container:
        PYTHONHASHSEED=0  # MANDATORY — else hash key mismatch → always miss
        LMCACHE_CONFIG_FILE=/app/lmcache_config.yaml
@@ -440,7 +434,7 @@ No MJPEG. LiveKit from day 1. Idle loop = pre-rendered frames pushed into LiveKi
 - LLM: vLLM 0.22.0 + `cyankiwi/Qwen3.5-4B-AWQ-4bit` (INT4 thuần). INT8-INT4 benchmark before prod.
 - LLM prefix caching: 2 layers — `--enable-prefix-caching` (built-in, always on, 0 cost) + LMCache MP mode (env-togglable `LMCACHE_ENABLED`, cross-replica, P4 scale).
 - KV-cache bounds: within-seq = `max_model_len` 262,144 (NOT vocab); cross-seq = `--max-num-seqs` + VRAM pool you allocate (NOT natural cap). `gpu_cache_usage_perc` = % of YOUR allocated pool.
-- TTS: vLLM-Omni serve, default `pnnbao-ump/VieNeu-TTS-v2`, alternatives gwen-tts-0.6B + VoxCPM2. Voice needs ref_audio + ref_text + language + sample_rate.
+- TTS: provider-neutral FastAPI runtime, default `vieneu_v3` / `pnnbao-ump/VieNeu-TTS-v3-Turbo` (vLLM-Omni serve superseded). Voice needs ref_audio + ref_text + language + sample_rate.
 - Avatar: half/full-body ONLY (drop head-only MuseTalk/Ditto/AsymTalker). Phase F benchmark 3: AvatarForcing (Apache-2.0) + EchoMimicV3-Flash (Apache-2.0, RTF 12 offline) + EchoAvatar (full-body, weights released, license TBD — test first ask later). Pre-render optional: InfiniteTalk/LongCat (batch). Rejected: StreamAvatar/JoyStreamer/HunyuanVideo (no code or license risk).
 - Orchestration: Pipecat (BSD-2, Option A) replaces StreamOrchestrator in API backend. LiveKit transport + interruption built-in. Custom vLLM-Omni TTS wrapper ~150 lines.
 - Structured output: Outlines (`--guided-decoding-backend outlines`) from P1. Utterance schema → avatar action deterministic, 0% parse fail.

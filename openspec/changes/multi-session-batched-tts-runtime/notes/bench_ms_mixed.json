@@ -1,0 +1,98 @@
+{
+  "config": {
+    "mode": "real",
+    "provider": "remote",
+    "base_url": "http://127.0.0.1:8011",
+    "hardware": {
+      "python": "3.14.2",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "machine": "AMD64",
+      "torch": "2.13.0+cu126",
+      "cuda_available": true,
+      "cuda_device_count": 1,
+      "cuda_device": "NVIDIA GeForce RTX 3050 Laptop GPU"
+    }
+  },
+  "results": [
+    {
+      "scenario": "mixed-voices",
+      "sessions": 2,
+      "requests": 4,
+      "ok": 4,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 4.5109,
+      "audio_seconds": 5.36,
+      "rtf": 1.1882,
+      "throughput": 1.1882,
+      "queue_wait_seconds": {
+        "p50": 2.1944,
+        "p95": 2.6741,
+        "p99": 2.6741
+      },
+      "active_sessions": 2
+    },
+    {
+      "scenario": "mixed-voices",
+      "sessions": 4,
+      "requests": 8,
+      "ok": 8,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 7.915,
+      "audio_seconds": 11.2,
+      "rtf": 1.415,
+      "throughput": 1.415,
+      "queue_wait_seconds": {
+        "p50": 3.8961,
+        "p95": 4.7893,
+        "p99": 4.7893
+      },
+      "active_sessions": 4
+    },
+    {
+      "scenario": "mixed-styles",
+      "sessions": 2,
+      "requests": 4,
+      "ok": 4,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 6.6646,
+      "audio_seconds": 6.16,
+      "rtf": 0.9243,
+      "throughput": 0.9243,
+      "queue_wait_seconds": {
+        "p50": 2.4589,
+        "p95": 5.1451,
+        "p99": 5.1451
+      },
+      "active_sessions": 2
+    },
+    {
+      "scenario": "mixed-styles",
+      "sessions": 4,
+      "requests": 8,
+      "ok": 8,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 7.4696,
+      "audio_seconds": 11.04,
+      "rtf": 1.478,
+      "throughput": 1.478,
+      "queue_wait_seconds": {
+        "p50": 2.2217,
+        "p95": 5.471,
+        "p99": 5.471
+      },
+      "active_sessions": 4
+    }
+  ]
+}
