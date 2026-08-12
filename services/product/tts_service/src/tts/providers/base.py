@@ -26,7 +26,9 @@ class TTSProvider(Protocol):
     async def synthesize(self, request: ProviderRequest) -> AudioResult:
         """Synthesize one request (used for CPU/non-batch providers too)."""
 
-    async def synthesize_batch(self, requests: Sequence[ProviderRequest]) -> Sequence[ProviderResult]:
+    async def synthesize_batch(
+        self, requests: Sequence[ProviderRequest]
+    ) -> Sequence[ProviderResult]:
         """Synthesize compatible requests in one provider batch, order preserved."""
 
     def enroll_voice(self, reference_audio: bytes, options: dict) -> object:
