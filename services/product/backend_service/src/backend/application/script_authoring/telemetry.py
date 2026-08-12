@@ -14,7 +14,7 @@ no LLM, no network, no mutable global state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from enum import StrEnum
 from typing import Callable, Optional
 
@@ -139,9 +139,7 @@ class AuthoringTelemetryRecorder:
 
     def segment_started(self, *, segment_index: int) -> AuthoringTelemetry:
         """A fixed-index segment generation begins."""
-        return self._record(
-            TelemetryEventKind.SEGMENT_STARTED, segment_index=segment_index
-        )
+        return self._record(TelemetryEventKind.SEGMENT_STARTED, segment_index=segment_index)
 
     def segment_succeeded(
         self,
@@ -189,9 +187,7 @@ class AuthoringTelemetryRecorder:
             workflow_duration_ms=workflow_duration_ms,
         )
 
-    def workflow_cancelled(
-        self, *, actual_semantic_calls: int = 0
-    ) -> AuthoringTelemetry:
+    def workflow_cancelled(self, *, actual_semantic_calls: int = 0) -> AuthoringTelemetry:
         return self._record(
             TelemetryEventKind.WORKFLOW_CANCELLED,
             actual_semantic_calls=actual_semantic_calls,
@@ -216,6 +212,4 @@ class AuthoringTelemetryRecorder:
         )
 
     def staleness_transitioned(self, *, version_id: str) -> AuthoringTelemetry:
-        return self._record(
-            TelemetryEventKind.STALENESS_TRANSITIONED, version_id=version_id
-        )
+        return self._record(TelemetryEventKind.STALENESS_TRANSITIONED, version_id=version_id)

@@ -81,12 +81,9 @@ def preview_batch(
     preview rows keep that order deterministically.
     """
     products = [
-        preview_product(product_id, duration, calibration)
-        for product_id, duration in targets
+        preview_product(product_id, duration, calibration) for product_id, duration in targets
     ]
     return BatchGenerationPreview(
         products=products,
-        estimated_semantic_calls_total=sum(
-            p.estimated_semantic_calls for p in products
-        ),
+        estimated_semantic_calls_total=sum(p.estimated_semantic_calls for p in products),
     )

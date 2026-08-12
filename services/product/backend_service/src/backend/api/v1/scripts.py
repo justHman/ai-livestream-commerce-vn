@@ -30,26 +30,23 @@ by default.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.api.dependencies import container_from_request
 from backend.application.script_authoring.service import (
     ScriptAuthoringError,
     ScriptAuthoringService,
 )
 
-from . import router as router_module
 from .router import router as _router, viewer_auth
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["router"]
+__all__ = ["_router"]
 
 
 def _service(request: Request) -> ScriptAuthoringService:
@@ -85,7 +82,12 @@ def _domain_error(status_code: int, code: str, message: str) -> HTTPException:
 def _raise_domain(service_error: ScriptAuthoringError) -> HTTPException:
     if service_error.code == "not_found":
         return _domain_error(404, "not_found", service_error.message)
-    if service_error.code in ("illegal_transition", "stale_revision", "fix_not_eligible", "missing_or_stale_script"):
+    if service_error.code in (
+        "illegal_transition",
+        "stale_revision",
+        "fix_not_eligible",
+        "missing_or_stale_script",
+    ):
         return _domain_error(409, service_error.code, service_error.message)
     # Unknown/authoring-unavailable codes surface as 400 by default.
     return _domain_error(400, service_error.code, service_error.message)
@@ -559,9 +561,7 @@ async def cancel_generation_batch(
     return result
 
 
-async def _event_stream(
-    service: ScriptAuthoringService, set_id: str, batch_id: str
-) -> Any:
+async def _event_stream(service: ScriptAuthoringService, set_id: str, batch_id: str) -> Any:
     """Yield ``text/event-stream`` frames: snapshot first, then live events.
 
     The snapshot carries the batch state plus ``revision``; every event is
@@ -579,8 +579,8 @@ async def _event_stream(
         # than an untyped error mid-stream.
         yield (
             "event: batch.error\n"
-            f"data: {{\"set_id\": \"{set_id}\", \"batch_id\": \"{batch_id}\", "
-            f"\"code\": \"{exc.code}\"}}\n\n"
+            f'data: {{"set_id": "{set_id}", "batch_id": "{batch_id}", '
+            f'"code": "{exc.code}"}}\n\n'
         )
 
 

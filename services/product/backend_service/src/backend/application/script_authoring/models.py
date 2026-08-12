@@ -202,9 +202,7 @@ class ProductScriptPlan(BaseModel):
     def _align_segments(cls, v: list[ScriptSegment]) -> list[ScriptSegment]:
         for idx, segment in enumerate(v):
             if segment.segment_index != idx:
-                raise ValueError(
-                    f"segment index {segment.segment_index} != position {idx}"
-                )
+                raise ValueError(f"segment index {segment.segment_index} != position {idx}")
         return v
 
 

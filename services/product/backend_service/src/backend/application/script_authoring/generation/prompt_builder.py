@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .context_builder import AuthoritativeContext
 from .continuity import ContinuityState
@@ -52,9 +52,7 @@ class OversizedContextError(ValueError):
     """
 
     def __init__(self, actual_tokens: int, max_tokens: int) -> None:
-        super().__init__(
-            f"prompt parts exceed token budget: {actual_tokens} > {max_tokens}"
-        )
+        super().__init__(f"prompt parts exceed token budget: {actual_tokens} > {max_tokens}")
         self.actual_tokens = actual_tokens
         self.max_tokens = max_tokens
 
@@ -90,35 +88,21 @@ def _render_authoritative_context(ctx: AuthoritativeContext) -> str:
     """
     lines: list[str] = []
     if ctx.shop:
-        lines.append(
-            "Shop: " + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.shop.items()))
-        )
+        lines.append("Shop: " + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.shop.items())))
     if ctx.persona:
-        lines.append(
-            "Persona: " + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.persona.items()))
-        )
+        lines.append("Persona: " + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.persona.items())))
     if ctx.campaign:
-        lines.append(
-            "Campaign: "
-            + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.campaign.items()))
-        )
+        lines.append("Campaign: " + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.campaign.items())))
     if ctx.product:
-        lines.append(
-            "Product: "
-            + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.product.items()))
-        )
+        lines.append("Product: " + "; ".join(f"{k}: {v}" for k, v in sorted(ctx.product.items())))
     if ctx.promotions:
         lines.append("Promotions:")
         for promo in ctx.promotions:
-            lines.append(
-                " - " + "; ".join(f"{k}: {v}" for k, v in sorted(promo.items()))
-            )
+            lines.append(" - " + "; ".join(f"{k}: {v}" for k, v in sorted(promo.items())))
     if ctx.facts:
         lines.append("Authoritative facts (may be claimed):")
         for fact in ctx.facts:
-            lines.append(
-                " - " + "; ".join(f"{k}: {v}" for k, v in sorted(fact.items()))
-            )
+            lines.append(" - " + "; ".join(f"{k}: {v}" for k, v in sorted(fact.items())))
     return "\n".join(lines)
 
 
@@ -132,16 +116,10 @@ def _render_continuity(state: ContinuityState) -> str:
     if state.covered_fact_ids:
         lines.append("Covered fact IDs: " + ", ".join(sorted(state.covered_fact_ids)))
     if state.handled_objection_ids:
-        lines.append(
-            "Handled objection IDs: "
-            + ", ".join(sorted(state.handled_objection_ids))
-        )
+        lines.append("Handled objection IDs: " + ", ".join(sorted(state.handled_objection_ids)))
     lines.append(f"CTA count so far: {state.cta_count}")
     if state.opening_fingerprints:
-        lines.append(
-            "Used opening fingerprints: "
-            + ", ".join(sorted(state.opening_fingerprints))
-        )
+        lines.append("Used opening fingerprints: " + ", ".join(sorted(state.opening_fingerprints)))
     if state.last_topic:
         lines.append(f"Last topic: {state.last_topic}")
     if state.next_topic:
@@ -159,16 +137,12 @@ def _render_transition(ctx: TransitionContext) -> str:
     return "\n".join(lines)
 
 
-def _segment_assignment_text(
-    plan: Optional[dict], segment_index: Optional[int]
-) -> str:
+def _segment_assignment_text(plan: Optional[dict], segment_index: Optional[int]) -> str:
     """Render the plan/segment assignment block (used by Generate only)."""
     parts: list[str] = []
     if plan:
         parts.append("## Plan assignment")
-        parts.append(
-            "; ".join(f"{k}: {v}" for k, v in sorted(plan.items()))
-        )
+        parts.append("; ".join(f"{k}: {v}" for k, v in sorted(plan.items())))
     if segment_index is not None:
         parts.append(
             f"## Segment assignment\n"
@@ -207,15 +181,12 @@ def build_generate_prompt(
         _quote_section("Authoritative context", _render_authoritative_context(context)),
         _quote_section(
             "Requested duration and intent",
-            f"Requested spoken duration: {duration_s} seconds\n"
-            f"Intent: {intent.intent}",
+            f"Requested spoken duration: {duration_s} seconds\nIntent: {intent.intent}",
         ),
         _quote_section("Transition policy", _render_transition(transition)),
     ]
     if continuity is not None:
-        context_blocks.append(
-            _quote_section("Continuity state", _render_continuity(continuity))
-        )
+        context_blocks.append(_quote_section("Continuity state", _render_continuity(continuity)))
 
     assignment = _segment_assignment_text(plan, segment_index)
     user_parts: list[str] = [
@@ -228,8 +199,7 @@ def build_generate_prompt(
         user_parts.append(assignment)
     if continuity is not None:
         user_parts.append(
-            "Do not recap the whole product; bridge only from the "
-            "continuity state above."
+            "Do not recap the whole product; bridge only from the continuity state above."
         )
     return PromptParts(
         system="\n\n".join(block for block in system_blocks if block),
@@ -251,16 +221,15 @@ def build_repair_prompt(
     repair instructions for exactly those rules, plus ONLY the authoritative
     facts needed to prevent claim drift. The prompt explicitly forbids broad
     rewrites, new claims, and new CTAs unless a failed rule requires them.
-    No sales skill and no repair-unrelated rules are ever included.
+    The repair prompt never includes the sales guidance and never includes
+    repair-unrelated rules.
     """
     if not source_text.strip():
         raise PromptBuildError("repair source text is empty")
     if not failed_rule_ids:
         raise PromptBuildError("repair requires at least one failed rule id")
     if len(failed_rule_ids) != len(rule_repair_instructions):
-        raise PromptBuildError(
-            "repair instructions must match failed rule ids one-to-one"
-        )
+        raise PromptBuildError("repair instructions must match failed rule ids one-to-one")
 
     system_blocks: list[str] = [
         "You are repairing a gate-failed script version with MINIMAL changes.",
@@ -277,9 +246,7 @@ def build_repair_prompt(
             "Failed rules",
             "\n".join(
                 f"- {rule_id}: {instruction}"
-                for rule_id, instruction in zip(
-                    failed_rule_ids, rule_repair_instructions
-                )
+                for rule_id, instruction in zip(failed_rule_ids, rule_repair_instructions)
                 if instruction
             ),
         ),
@@ -290,8 +257,7 @@ def build_repair_prompt(
     ]
     user_parts: list[str] = [
         "REPAIR_SCRIPT_SEGMENT",
-        "Apply the minimum edits to the source text below that satisfy the "
-        "failed rules.",
+        "Apply the minimum edits to the source text below that satisfy the failed rules.",
         f"## Immutable source text\n{source_text.strip()}",
         "Return the repaired full text.",
     ]
@@ -311,7 +277,9 @@ def guard_budget(parts: PromptParts, max_tokens: int) -> PromptParts:
             Never truncates — critical constraints must not be silently
             dropped.
     """
-    total = estimate_tokens(parts.system) + estimate_tokens(parts.context) + estimate_tokens(parts.user)
+    total = (
+        estimate_tokens(parts.system) + estimate_tokens(parts.context) + estimate_tokens(parts.user)
+    )
     if total > max_tokens:
         raise OversizedContextError(total, max_tokens)
     return parts

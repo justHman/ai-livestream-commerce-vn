@@ -59,15 +59,11 @@ class TransitionContext(BaseModel):
 
 
 _ORDER_AGNOSTIC_GUIDANCE: tuple[str, ...] = (
-    "Product order is NOT locked: the livestream host may reorder products "
-    "at runtime.",
+    "Product order is NOT locked: the livestream host may reorder products at runtime.",
     "Do NOT reference any previous or next product, by name or by summary.",
-    "Open with a generic entry line that works as a standalone product "
-    "segment.",
-    "Close with a generic exit line that works regardless of what product "
-    "(if any) follows.",
-    "Core sales content must stay usable independently of any baked "
-    "transition.",
+    "Open with a generic entry line that works as a standalone product segment.",
+    "Close with a generic exit line that works regardless of what product (if any) follows.",
+    "Core sales content must stay usable independently of any baked transition.",
 )
 
 

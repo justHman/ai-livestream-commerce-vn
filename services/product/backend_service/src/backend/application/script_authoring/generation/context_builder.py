@@ -47,9 +47,7 @@ class MissingContextKeyError(KeyError):
 _REQUIRED_TOP_KEYS: tuple[str, ...] = ("shop", "persona", "campaign", "product")
 
 
-def _extract_str_section(
-    source: dict, key: str
-) -> dict[str, str]:
+def _extract_str_section(source: dict, key: str) -> dict[str, str]:
     """Extract one string-valued context section; reject non-dict values."""
     raw = source.get(key, {})
     if not isinstance(raw, dict):
@@ -59,9 +57,7 @@ def _extract_str_section(
     return {k: str(v) for k, v in raw.items()}
 
 
-def _extract_record_sections(
-    source: dict, key: str
-) -> tuple[dict[str, str], ...]:
+def _extract_record_sections(source: dict, key: str) -> tuple[dict[str, str], ...]:
     """Extract a list of record sections (promotions/facts); reject garbage."""
     raw = source.get(key, [])
     if not isinstance(raw, list):

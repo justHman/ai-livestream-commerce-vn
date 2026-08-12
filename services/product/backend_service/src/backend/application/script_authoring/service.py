@@ -77,9 +77,7 @@ class ScriptAuthoringService(Protocol):
         revision: int | None,
     ) -> dict[str, Any] | None: ...
 
-    async def submit_for_gate(
-        self, *, set_id: str, product_id: str
-    ) -> dict[str, Any] | None: ...
+    async def submit_for_gate(self, *, set_id: str, product_id: str) -> dict[str, Any] | None: ...
 
     async def preview_product(
         self, *, set_id: str, product_id: str, target_duration_s: int
@@ -141,19 +139,13 @@ class ScriptAuthoringService(Protocol):
         idempotency_key: str,
     ) -> dict[str, Any] | None: ...
 
-    async def get_batch(
-        self, *, set_id: str, batch_id: str
-    ) -> dict[str, Any] | None: ...
+    async def get_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None: ...
 
-    async def cancel_batch(
-        self, *, set_id: str, batch_id: str
-    ) -> dict[str, Any] | None: ...
+    async def cancel_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None: ...
 
     # ── SSE (task 11.10) ─────────────────────────────────────────────
 
-    async def get_batch_events_snapshot(
-        self, *, set_id: str, batch_id: str
-    ) -> str | None:
+    async def get_batch_events_snapshot(self, *, set_id: str, batch_id: str) -> str | None:
         """JSON payload of the reconnect snapshot (first SSE event).
 
         Carries the batch state plus a monotonic ``revision``; the snapshot

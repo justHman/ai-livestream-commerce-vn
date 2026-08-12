@@ -24,7 +24,6 @@ persist the outcome of ``transition``.
 
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import Literal
 
 from backend.application.script_authoring.models import ScriptState

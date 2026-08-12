@@ -104,28 +104,22 @@ def verify_change_a_readiness() -> None:
 
     if hasattr(windows, "TextChunk"):
         raise RuntimeError(
-            "render.windows must not define or re-export TextChunk; Change A cleanup "
-            "incomplete"
+            "render.windows must not define or re-export TextChunk; Change A cleanup incomplete"
         )
 
     from backend.application.text_chunker.policy import AdaptiveViPolicyConfig
 
     if hasattr(AdaptiveViPolicyConfig, "target_chars"):
-        raise RuntimeError(
-            "AdaptiveViPolicyConfig must not carry fixed-policy target_chars"
-        )
+        raise RuntimeError("AdaptiveViPolicyConfig must not carry fixed-policy target_chars")
 
     tasks = _ARCHIVE_TASKS
     if not tasks.is_file():
-        raise RuntimeError(
-            f"Change A readiness evidence missing: {tasks} (archive tasks.md)"
-        )
+        raise RuntimeError(f"Change A readiness evidence missing: {tasks} (archive tasks.md)")
     text = tasks.read_text(encoding="utf-8")
     missing = [marker for marker in _EVIDENCE_MARKERS if marker not in text]
     if missing:
         raise RuntimeError(
-            "Change A readiness evidence incomplete; missing markers: "
-            + "; ".join(missing)
+            "Change A readiness evidence incomplete; missing markers: " + "; ".join(missing)
         )
 
 
@@ -159,6 +153,4 @@ def assert_no_legacy_chunker_imports(root: Path) -> None:
                 offenders.append(f"{path.relative_to(root.parent.parent.parent)}")
                 break
     if offenders:
-        raise RuntimeError(
-            "Legacy chunker imports found: " + ", ".join(sorted(set(offenders)))
-        )
+        raise RuntimeError("Legacy chunker imports found: " + ", ".join(sorted(set(offenders))))

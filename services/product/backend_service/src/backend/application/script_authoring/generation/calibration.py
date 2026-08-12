@@ -2,10 +2,10 @@
 
 ``GenerationBudgetCalibration`` converts a provider's max output-token limit
 into a conservative safe amount of segment work BEFORE any prose exists. It
-is authoring cost/call planning only — it is NOT the Change A
-``SpeechDurationEstimator`` (which estimates how long existing text will
-take to speak). This module never imports the estimator or anything from
-``text_chunker``; see ``change_a_contract`` for the boundary.
+is authoring cost/call planning only — it is NOT the Change A speech-duration
+estimator (which estimates how long existing text will take to speak). This
+module never imports the estimator or anything from the Change A chunker
+package; see ``change_a_contract`` for the boundary.
 
 K formula (design Decision 7):
 
@@ -54,9 +54,7 @@ class GenerationBudgetCalibration(BaseModel):
     @model_validator(mode="after")
     def _check_limits(self) -> "GenerationBudgetCalibration":
         if self.min_target_duration_s > self.max_target_duration_s:
-            raise ValueError(
-                "min_target_duration_s must be <= max_target_duration_s"
-            )
+            raise ValueError("min_target_duration_s must be <= max_target_duration_s")
         if self.min_segment_count > self.max_segment_count:
             raise ValueError("min_segment_count must be <= max_segment_count")
         return self
@@ -82,8 +80,7 @@ class GenerationBudgetCalibration(BaseModel):
         """
         if not math.isfinite(target_duration_s) or target_duration_s <= 0:
             raise GenerationBudgetError(
-                f"target_duration_s must be a finite positive number, "
-                f"got {target_duration_s!r}"
+                f"target_duration_s must be a finite positive number, got {target_duration_s!r}"
             )
         if not self.min_target_duration_s <= target_duration_s <= self.max_target_duration_s:
             raise GenerationBudgetError(

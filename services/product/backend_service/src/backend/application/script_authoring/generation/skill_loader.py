@@ -21,7 +21,7 @@ from pathlib import Path
 
 SKILL_FILENAME = "SKILL.md"
 _SKILL_NAME = "livestream-sales-script"
-_VERSION_RE = re.compile(r'^version:\s*(\S+)\s*$', re.MULTILINE)
+_VERSION_RE = re.compile(r"^version:\s*(\S+)\s*$", re.MULTILINE)
 _DEFAULT_VERSION = "1.0.0"
 _MAX_SKILL_BYTES = 256 * 1024  # bounded reasonable size for a markdown skill
 
@@ -30,11 +30,7 @@ _MAX_SKILL_BYTES = 256 * 1024  # bounded reasonable size for a markdown skill
 # src -> backend_service), so it works from a source checkout and inside
 # the Docker image, where ``resources/`` ships alongside ``src/backend/``.
 _DEFAULT_SKILL = (
-    Path(__file__).resolve().parents[6]
-    / "resources"
-    / "skills"
-    / _SKILL_NAME
-    / SKILL_FILENAME
+    Path(__file__).resolve().parents[6] / "resources" / "skills" / _SKILL_NAME / SKILL_FILENAME
 )
 # If the package is relocated deeper (e.g. an installed wheel), fall back
 # to locating the service-level resources directory by name.
@@ -56,9 +52,7 @@ class SkillNotFoundError(RuntimeError):
 def _read_skill(path: Path) -> str:
     """Read and validate the skill file at ``path`` (pure file I/O)."""
     if not path.is_file():
-        raise SkillNotFoundError(
-            f"packaged skill not found: {_SKILL_NAME} (tried {path})"
-        )
+        raise SkillNotFoundError(f"packaged skill not found: {_SKILL_NAME} (tried {path})")
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -66,9 +60,7 @@ def _read_skill(path: Path) -> str:
             f"cannot read packaged skill {_SKILL_NAME}: {path} ({exc})"
         ) from exc
     if len(raw) > _MAX_SKILL_BYTES:
-        raise SkillNotFoundError(
-            f"packaged skill {_SKILL_NAME} exceeds size limit: {path}"
-        )
+        raise SkillNotFoundError(f"packaged skill {_SKILL_NAME} exceeds size limit: {path}")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
