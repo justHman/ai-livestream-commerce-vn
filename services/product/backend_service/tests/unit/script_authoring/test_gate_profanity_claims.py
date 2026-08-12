@@ -66,15 +66,106 @@ def test_profanity_brand_allowlist() -> None:
 
 
 def test_profanity_lexicon_provenance() -> None:
-    assert _LEXICON.version == "1"
+    # Task 3.6 completion: the curated resource carries the full provenance
+    # block (version, source, license, curation) and every field is recorded.
+    assert _LEXICON.version == "2"
     assert _LEXICON.license
     assert _LEXICON.source
     assert _LEXICON.curated_by
 
 
-def test_profanity_lexicon_rejects_incomplete_provenance() -> None:
+def test_profanity_lexicon_activation_guard() -> None:
+    # Task 3.6 activation guard: a lexicon resource whose provenance is
+    # incomplete OR not marked active is refused for runtime use — an
+    # external dataset-derived lexicon can only be activated after human
+    # curation + false-positive review are recorded.
     with pytest.raises(ValueError, match="provenance"):
         ProfanityLexicon.from_resource({"words": ["x"]})
+    inactive = {
+        "provenance": {
+            "version": "9",
+            "source": "s",
+            "license": "l",
+            "curated_by": "c",
+            "activation_status": "draft",
+        },
+        "words": ["dmm"],
+    }
+    with pytest.raises(ValueError, match="not activated"):
+        ProfanityLexicon.from_resource(inactive)
+
+
+def test_profanity_lexicon_false_positive_review() -> None:
+    # Task 3.6: the activated resource records where the false-positive
+    # review lives, and the review actually passes — common Vietnamese
+    # market/beauty words must never trip the curated lexicon, while the
+    # curated entries (including diacritic forms) still match.
+    from backend.application.script_authoring.gate.rules.profanity import load_curated_lexicon
+
+    import json
+    from pathlib import Path
+
+    resource_path = Path(
+        Path(__file__).resolve().parents[3] / "resources" / "profanity" / "curated_lexicon_v2.json"
+    )
+    resource = json.loads(resource_path.read_text(encoding="utf-8"))
+    review = resource["provenance"].get("false_positive_review", "")
+    assert "test_gate_profanity" in review, "false-positive review must be recorded in provenance"
+
+    lexicon = load_curated_lexicon(resource_path)
+    clean_words = [
+        "kem",
+        "dưỡng",
+        "mềm",
+        "mại",
+        "trắng",
+        "da",
+        "sáng",
+        "đều",
+        "màu",
+        "các",
+        "đi",
+        "điểm",
+        "buổi",
+        "dẻo",
+        "lon",
+        "cá",
+        "má",
+        "con",
+        "mua",
+        "ngay",
+        "chị",
+        "em",
+        "đẹp",
+        "xinh",
+        "thơm",
+    ]
+    for word in clean_words:
+        assert not lexicon.is_offensive(word), f"false positive: {word!r}"
+
+    offensive = [
+        "dmm",
+        "d.m.m",
+        "sh1t",
+        "b1tch",
+        "vcl",
+        "loz",
+        "đm",
+        "lồn",
+        "địt",
+        "cặc",
+        "cặk",
+        "chịch",
+        "đéo",
+        "đụ",
+        "đĩ",
+        "điếm",
+        "buồi",
+        "fuck",
+        "địt mẹ",
+    ]
+    for word in offensive:
+        assert lexicon.is_offensive(word), f"missed offensive word: {word!r}"
 
 
 # -- commerce claims -------------------------------------------------------

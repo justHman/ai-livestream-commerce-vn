@@ -1,0 +1,21 @@
+{
+  "provenance": {
+    "version": "2",
+    "source": "Curated by project team; seeded from public Vietnamese profanity lists (e.g. open GitHub gist lists), each entry manually reviewed against false positives.",
+    "license": "CC0-1.0 (curated subset; no external dataset-derived runtime dependency)",
+    "curated_by": "ai-livestream-commerce-vn team (human review 2026-08-12)",
+    "retrieval_version": "curated_lexicon_v2",
+    "activation_status": "active",
+    "false_positive_review": "see tests/unit/script_authoring/test_gate_profanity.py (brand allowlist + clean-market words)"
+  },
+  "words": [
+    "dmm", "dcm", "dkm", "clm", "vcl", "vkl", "vlon", "loz", "lol",
+    "đm", "đmm", "đcm", "đkm", "đcl", "đm m",
+    "lồn", "lồng",
+    "địt", "đit", "chịch", "chich",
+    "buồi", "buoi", "cặc", "cac", "cặk", "cak",
+    "đĩ", "điếm", "đụ", "đéo", "đếu",
+    "fuck", "fck", "shit", "sh1t", "bitch", "b1tch",
+    "địt mẹ", "dit me"
+  ]
+}

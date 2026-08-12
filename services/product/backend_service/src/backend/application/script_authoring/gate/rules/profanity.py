@@ -1,15 +1,20 @@
 """Profanity/offensive lexicon and teencode/obfuscation patterns (task 3.5).
 
 The lexicon is a CURATED, VERSIONED runtime resource shipped with the
-backend (``resources/profanity/curated_lexicon_v1.json``) — never a raw
+backend (``resources/profanity/curated_lexicon_v2.json``) — never a raw
 downloaded dataset. Provenance and license metadata live in the resource
 itself (task 3.6); before any external dataset-derived lexicon can be
 activated, that resource's provenance section MUST be complete and its
 false-positive tests MUST pass (see tests/unit/script_authoring/).
 
-Matching is deterministic: normalized token lookup plus bounded
-obfuscation patterns (teencode substitutions, separators inside a word,
-run-together punctuation) with a brand/product allowlist checked FIRST so
+Matching is deterministic and diacritic-aware. Query tokens that carry
+Vietnamese diacritics are matched EXACTLY against diacritic entries
+(``lồn`` matches ``lồn`` but never the common word ``lon``-folded
+``các``/``đi``); bare-ASCII tokens are matched against ASCII entries after
+bounded teencode substitution (``c4c`` -> ``cac``, ``sh1t`` -> ``shit``)
+and separator stripping (``d.m.m`` -> ``dmm``). The curated word set is
+curated so that no ASCII entry collides with a common standalone
+Vietnamese word; the brand/product allowlist is consulted FIRST so
 authorized terms never trigger a false positive.
 """
 
@@ -35,7 +40,7 @@ RULE_PROFANITY_OFFENSIVE = "PROFANITY_OFFENSIVE"
 # (mirrors the repository's resource convention). Resolved relative to the
 # package so it works from a source checkout.
 _DEFAULT_RESOURCE = (
-    Path(__file__).resolve().parents[6] / "resources" / "profanity" / "curated_lexicon_v1.json"
+    Path(__file__).resolve().parents[6] / "resources" / "profanity" / "curated_lexicon_v2.json"
 )
 
 # Bounded obfuscation patterns: teencode digit/symbol-for-letter swaps
@@ -66,10 +71,20 @@ _CANDIDATE_RE = re.compile(r"[\w$@]+(?:[._-][\w$@]+)*", re.UNICODE)
 class ProfanityLexicon:
     """Versioned curated lexicon with provenance and deterministic lookup.
 
-    ``is_offensive(token)`` normalizes Vietnamese diacritics away and strips
-    obfuscation before checking the curated word set, so both "dmm" and
-    "d.m.m" match the same curated entry. The allowlist is consulted before
-    normalization so brand terms never trip a variant.
+    Diacritic-aware two-set matching (task 3.6 activation guard):
+
+    - A query token that carries Vietnamese diacritics is matched EXACTLY
+      against the diacritic entry set, so ``lồn`` matches the curated
+      ``lồn`` entry while the common words ``lon``, ``các``, ``đi`` never
+      match anything. Diacritics are never folded away on either side.
+    - A bare-ASCII token is teencode-translated (``c4c`` -> ``cac``,
+      ``sh1t`` -> ``shit``), separators stripped (``d.m.m`` -> ``dmm``),
+      then matched against the ASCII entry set. The curated word set is
+      curated so no ASCII entry collides with a common standalone
+      Vietnamese word.
+
+    The allowlist is consulted before normalization so brand terms never
+    trip a variant.
     """
 
     def __init__(
@@ -86,6 +101,15 @@ class ProfanityLexicon:
         self.source = source
         self.license = license
         self.curated_by = curated_by
+        # Two lookup sets: diacritic entries (exact) and ASCII entries
+        # (teencode/separator-normalized). A word is "ASCII" iff it has no
+        # Vietnamese diacritic — the two sets are disjoint by construction.
+        self._ascii_entries: frozenset[str] = frozenset(
+            self._normalize_ascii(w) for w in self.words if not _has_diacritics(w)
+        )
+        self._diacritic_entries: frozenset[str] = frozenset(
+            w for w in self.words if _has_diacritics(w)
+        )
 
     @classmethod
     def from_resource(cls, resource: dict[str, Any]) -> ProfanityLexicon:
@@ -96,6 +120,13 @@ class ProfanityLexicon:
         ]
         if missing:
             raise ValueError(f"profanity lexicon provenance incomplete; missing {missing}")
+        activation = provenance.get("activation_status")
+        if activation != "active":
+            raise ValueError(
+                "profanity lexicon is not activated for runtime use "
+                f"(activation_status={activation!r}); complete provenance and "
+                "false-positive review before activation"
+            )
         return cls(
             resource.get("words", []),
             version=str(provenance["version"]),
@@ -105,96 +136,35 @@ class ProfanityLexicon:
         )
 
     def is_offensive(self, token: str) -> bool:
-        return self._normalize(token) in self.words
-
-    def _normalize(self, token: str) -> str:
         lowered = token.lower()
-        # Strip teencode substitutions first, then separators, then
-        # diacritics so "d.m.m", "dmm", "4mm" all collapse to the same key.
-        transliterated = lowered.translate(_TEENCODE_MAP)
-        stripped = _SEPARATOR_RE.sub("", transliterated)
-        return self._strip_diacritics(stripped)
+        if _has_diacritics(lowered):
+            # Diacritic token: exact match against diacritic entries only.
+            # Never fold; folding would collide with common words
+            # ("lồn" -> "lon" is a train station).
+            return lowered in self._diacritic_entries
+        return self._normalize_ascii(lowered) in self._ascii_entries
 
     @staticmethod
-    def _strip_diacritics(text: str) -> str:
-        # Deterministic Vietnamese diacritic folding for lexicon keys only.
+    def _normalize_ascii(token: str) -> str:
+        # Bounded teencode + separator normalization for ASCII tokens only.
         # Source text is never rewritten; this is purely a lookup key.
-        replacements = {
-            "à": "a",
-            "á": "a",
-            "ả": "a",
-            "ã": "a",
-            "ạ": "a",
-            "ă": "a",
-            "ằ": "a",
-            "ắ": "a",
-            "ẳ": "a",
-            "ẵ": "a",
-            "ặ": "a",
-            "â": "a",
-            "ầ": "a",
-            "ấ": "a",
-            "ẩ": "a",
-            "ẫ": "a",
-            "ậ": "a",
-            "đ": "d",
-            "è": "e",
-            "é": "e",
-            "ẻ": "e",
-            "ẽ": "e",
-            "ẹ": "e",
-            "ê": "e",
-            "ề": "e",
-            "ế": "e",
-            "ể": "e",
-            "ễ": "e",
-            "ệ": "e",
-            "ì": "i",
-            "í": "i",
-            "ỉ": "i",
-            "ĩ": "i",
-            "ị": "i",
-            "ò": "o",
-            "ó": "o",
-            "ỏ": "o",
-            "õ": "o",
-            "ọ": "o",
-            "ô": "o",
-            "ồ": "o",
-            "ố": "o",
-            "ổ": "o",
-            "ỗ": "o",
-            "ộ": "o",
-            "ơ": "o",
-            "ờ": "o",
-            "ớ": "o",
-            "ở": "o",
-            "ỡ": "o",
-            "ợ": "o",
-            "ù": "u",
-            "ú": "u",
-            "ủ": "u",
-            "ũ": "u",
-            "ụ": "u",
-            "ư": "u",
-            "ừ": "u",
-            "ứ": "u",
-            "ử": "u",
-            "ữ": "u",
-            "ự": "u",
-            "ỳ": "y",
-            "ý": "y",
-            "ỷ": "y",
-            "ỹ": "y",
-            "ỵ": "y",
-        }
-        return "".join(replacements.get(c, c) for c in text)
+        return _SEPARATOR_RE.sub("", token.translate(_TEENCODE_MAP))
+
+
+# Vietnamese diacritic chars that distinguish diacritic (exact-match) entries
+# from ASCII (normalized-match) entries. "đ" (U+0111) is included: it is a
+# separate Vietnamese letter, so "đm" is a diacritic entry matched exactly.
+_DIACRITIC_CHARS = frozenset("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
+
+
+def _has_diacritics(text: str) -> bool:
+    return any(char in _DIACRITIC_CHARS for char in text)
 
 
 def load_curated_lexicon(
     resource: Path | None = None,
 ) -> ProfanityLexicon:
-    """Load the curated lexicon resource (default: packaged v1)."""
+    """Load the curated lexicon resource (default: packaged v2)."""
     path = resource if resource is not None else _DEFAULT_RESOURCE
     with path.open(encoding="utf-8") as handle:
         data = json.load(handle)
