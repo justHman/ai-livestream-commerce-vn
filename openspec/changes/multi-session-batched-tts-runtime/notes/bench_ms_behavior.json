@@ -1,0 +1,146 @@
+{
+  "config": {
+    "mode": "real",
+    "provider": "remote",
+    "base_url": "http://127.0.0.1:8011",
+    "hardware": {
+      "python": "3.14.2",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "machine": "AMD64",
+      "torch": "2.13.0+cu126",
+      "cuda_available": true,
+      "cuda_device_count": 1,
+      "cuda_device": "NVIDIA GeForce RTX 3050 Laptop GPU"
+    }
+  },
+  "results": [
+    {
+      "scenario": "burst",
+      "sessions": 2,
+      "requests": 4,
+      "ok": 4,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 3.2227,
+      "audio_seconds": 3.76,
+      "rtf": 1.1667,
+      "throughput": 1.1667,
+      "queue_wait_seconds": {
+        "p50": 1.1317,
+        "p95": 2.0838,
+        "p99": 2.0838
+      },
+      "active_sessions": 2
+    },
+    {
+      "scenario": "burst",
+      "sessions": 4,
+      "requests": 8,
+      "ok": 8,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 4.7728,
+      "audio_seconds": 9.44,
+      "rtf": 1.9779,
+      "throughput": 1.9779,
+      "queue_wait_seconds": {
+        "p50": 2.0578,
+        "p95": 2.8082,
+        "p99": 2.8082
+      },
+      "active_sessions": 4
+    },
+    {
+      "scenario": "dominant-session",
+      "sessions": 2,
+      "requests": 4,
+      "ok": 4,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 4.1845,
+      "audio_seconds": 3.92,
+      "rtf": 0.9368,
+      "throughput": 0.9368,
+      "queue_wait_seconds": {
+        "p50": 2.2987,
+        "p95": 2.3312,
+        "p99": 2.3312
+      },
+      "active_sessions": 2,
+      "dominant_session": "bench-0",
+      "sessions_total": 2,
+      "non_dominant_ok": 2,
+      "note": "no indefinite starvation: every non-dominant request resolves"
+    },
+    {
+      "scenario": "dominant-session",
+      "sessions": 4,
+      "requests": 8,
+      "ok": 8,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 6.5344,
+      "audio_seconds": 8.96,
+      "rtf": 1.3712,
+      "throughput": 1.3712,
+      "queue_wait_seconds": {
+        "p50": 3.2352,
+        "p95": 3.5763,
+        "p99": 3.5763
+      },
+      "active_sessions": 4,
+      "dominant_session": "bench-0",
+      "sessions_total": 4,
+      "non_dominant_ok": 6,
+      "note": "no indefinite starvation: every non-dominant request resolves"
+    },
+    {
+      "scenario": "priority-mix",
+      "sessions": 2,
+      "requests": 4,
+      "ok": 4,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 5.8178,
+      "audio_seconds": 6.08,
+      "rtf": 1.0451,
+      "throughput": 1.0451,
+      "queue_wait_seconds": {
+        "p50": 1.619,
+        "p95": 4.3847,
+        "p99": 4.3847
+      },
+      "active_sessions": 2
+    },
+    {
+      "scenario": "priority-mix",
+      "sessions": 4,
+      "requests": 8,
+      "ok": 8,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 8.626,
+      "audio_seconds": 12.88,
+      "rtf": 1.4932,
+      "throughput": 1.4932,
+      "queue_wait_seconds": {
+        "p50": 3.4796,
+        "p95": 5.1445,
+        "p99": 5.1445
+      },
+      "active_sessions": 4
+    }
+  ]
+}

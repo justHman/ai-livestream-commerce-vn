@@ -1,0 +1,44 @@
+{
+  "config": {
+    "mode": "real",
+    "provider": "remote",
+    "base_url": "http://127.0.0.1:8011",
+    "hardware": {
+      "python": "3.14.2",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "machine": "AMD64",
+      "torch": "2.13.0+cu126",
+      "cuda_available": true,
+      "cuda_device_count": 1,
+      "cuda_device": "NVIDIA GeForce RTX 3050 Laptop GPU"
+    }
+  },
+  "results": [
+    {
+      "scenario": "same-voice",
+      "sessions": 8,
+      "requests": 16,
+      "ok": 16,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 8.7951,
+      "audio_seconds": 22.4,
+      "rtf": 2.5469,
+      "throughput": 2.5469,
+      "queue_wait_seconds": {
+        "p50": 4.1619,
+        "p95": 5.1094,
+        "p99": 5.1094
+      },
+      "active_sessions": 8
+    }
+  ],
+  "gate": {
+    "baseline": ".runtime\\bench_provider_gpu.json",
+    "direct_audio_sec_per_wall_sec": 0.6025724933188956,
+    "service_audio_sec_per_wall_sec": 2.5469,
+    "ratio": 4.2267
+  }
+}

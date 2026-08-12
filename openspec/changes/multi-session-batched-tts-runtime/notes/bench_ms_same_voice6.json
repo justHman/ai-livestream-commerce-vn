@@ -1,0 +1,78 @@
+{
+  "config": {
+    "mode": "real",
+    "provider": "remote",
+    "base_url": "http://127.0.0.1:8011",
+    "hardware": {
+      "python": "3.14.2",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "machine": "AMD64",
+      "torch": "2.13.0+cu126",
+      "cuda_available": true,
+      "cuda_device_count": 1,
+      "cuda_device": "NVIDIA GeForce RTX 3050 Laptop GPU"
+    }
+  },
+  "results": [
+    {
+      "scenario": "same-voice",
+      "sessions": 1,
+      "requests": 2,
+      "ok": 2,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 4.3261,
+      "audio_seconds": 2.16,
+      "rtf": 0.4993,
+      "throughput": 0.4993,
+      "queue_wait_seconds": {
+        "p50": 2.8972,
+        "p95": 2.8972,
+        "p99": 2.8972
+      },
+      "active_sessions": 1
+    },
+    {
+      "scenario": "same-voice",
+      "sessions": 2,
+      "requests": 4,
+      "ok": 4,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 3.3743,
+      "audio_seconds": 3.84,
+      "rtf": 1.138,
+      "throughput": 1.138,
+      "queue_wait_seconds": {
+        "p50": 1.3401,
+        "p95": 2.0321,
+        "p99": 2.0321
+      },
+      "active_sessions": 2
+    },
+    {
+      "scenario": "same-voice",
+      "sessions": 4,
+      "requests": 8,
+      "ok": 8,
+      "errors": 0,
+      "error_types": {},
+      "cancellations": 0,
+      "missing_tracing_headers": 0,
+      "wall_seconds": 4.9743,
+      "audio_seconds": 8.72,
+      "rtf": 1.753,
+      "throughput": 1.753,
+      "queue_wait_seconds": {
+        "p50": 1.8537,
+        "p95": 3.2808,
+        "p99": 3.2808
+      },
+      "active_sessions": 4
+    }
+  ]
+}

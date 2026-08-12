@@ -1,0 +1,41 @@
+{
+  "config": {
+    "mode": "real",
+    "provider": "vieneu_v3",
+    "model_revision": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+    "accelerator": "gpu",
+    "backend": "pytorch",
+    "corpus": "fixed",
+    "hardware": {
+      "python": "3.14.2",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "machine": "AMD64",
+      "torch": "2.13.0+cu126",
+      "cuda_available": true,
+      "cuda_device_count": 1,
+      "cuda_device": "NVIDIA GeForce RTX 3050 Laptop GPU"
+    }
+  },
+  "results": [
+    {
+      "backend": "pytorch",
+      "batch_size": 16,
+      "items": 4,
+      "wall_seconds": 10.726104,
+      "audio_seconds": 3.52,
+      "rtf": 0.328171,
+      "realtime_x": 0.328171,
+      "items_per_second": 0.373
+    },
+    {
+      "backend": "pytorch",
+      "batch_size": 32,
+      "items": 4,
+      "wall_seconds": 1.391211,
+      "audio_seconds": 3.36,
+      "rtf": 2.415162,
+      "realtime_x": 2.415162,
+      "items_per_second": 2.875
+    }
+  ]
+}
