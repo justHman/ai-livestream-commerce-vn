@@ -14,7 +14,6 @@ import pytest
 
 from backend.application.script_authoring.models import (
     ScriptItem,
-    ScriptSource,
     ScriptState,
 )
 from backend.application.script_authoring.state import (
@@ -158,7 +157,9 @@ def test_illegal_transitions_raise_deterministically(state: ScriptState, verb: s
 
 
 def test_illegal_transition_message_is_stable() -> None:
-    with pytest.raises(IllegalTransitionError, match=r"illegal transition 'approve' from state 'draft'"):
+    with pytest.raises(
+        IllegalTransitionError, match=r"illegal transition 'approve' from state 'draft'"
+    ):
         transition(DRAFT, "approve")
 
 
