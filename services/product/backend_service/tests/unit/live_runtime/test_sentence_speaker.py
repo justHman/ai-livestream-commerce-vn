@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import subprocess
 import sys
+from pathlib import Path
 from typing import Iterator, Optional
 
 import pytest
@@ -45,7 +47,7 @@ from tts.engines.base import ToneEngine
 SRC_ROOT = "backend.application.live_runtime.sentence_speaker"
 
 # The chunker API is imported lazily (inside tests) on purpose: the 13.7
-# sys.modules proof must see the speaker imported WITHOUT the chunker package.
+# subprocess proof must see the speaker imported WITHOUT the chunker package.
 _CHUNKER_ROOT = "backend.application.text_chunker"
 
 
@@ -310,14 +312,24 @@ def test_production_module_never_imports_text_chunker() -> None:
     boundary — not through the sentence speaker. The speaker module must be
     importable in a process where the chunker has never been imported.
     """
-    for name in list(sys.modules):
-        if name == _CHUNKER_ROOT or name.startswith(_CHUNKER_ROOT + "."):
-            del sys.modules[name]
-
-    module = importlib.import_module(SRC_ROOT)
-
-    assert _CHUNKER_ROOT not in sys.modules
-    assert module.__name__ == SRC_ROOT
+    # Run the proof in a FRESH interpreter: deleting the chunker from the
+    # shared sys.modules mid-session would re-import it under a second module
+    # object, breaking isinstance identity for every later test in this
+    # process. The child has no pytest pythonpath, so prepend src explicitly.
+    src_dir = Path(__file__).resolve().parents[3] / "src"
+    child = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(src_dir)!r})\n"
+        f"import {SRC_ROOT}\n"
+        f"assert {_CHUNKER_ROOT!r} not in sys.modules, "
+        f"'speaker must not import {_CHUNKER_ROOT}'\n"
+        f"assert {SRC_ROOT}.__name__ == {SRC_ROOT!r}\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", child], capture_output=True, check=True, text=True
+    )
+    assert "OK" in result.stdout
 
 
 class _StrictSpeech:
