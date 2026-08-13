@@ -25,17 +25,36 @@ of conversation turns (cluster C10).
 from __future__ import annotations
 
 from .bounded_memory import EvictionPolicy, MemoryStore, estimate_tokens
+from .pending_qa import PendingQaCandidate, PendingQaStore, QaHysteresisConfig
+from .qa_resolver import (
+    BoundaryQaResolver,
+    QaResolution,
+    QaResolutionService,
+    VolatileEvidenceSource,
+)
 from .script_state import ScriptPosition, ScriptState
 from .session_memory import SessionMemory
+from .speech_arbiter import ArbiterConfig, ArbiterState, SpeechArbiter, SpeechTextLike
 from .topic_memory import TopicMemory, resolve_reference
 
 __all__ = [
+    "ArbiterConfig",
+    "ArbiterState",
+    "BoundaryQaResolver",
     "EvictionPolicy",
     "MemoryStore",
+    "PendingQaCandidate",
+    "PendingQaStore",
+    "QaHysteresisConfig",
+    "QaResolution",
+    "QaResolutionService",
     "ScriptPosition",
     "ScriptState",
     "SessionMemory",
+    "SpeechArbiter",
+    "SpeechTextLike",
     "TopicMemory",
+    "VolatileEvidenceSource",
     "estimate_tokens",
     "resolve_reference",
 ]
