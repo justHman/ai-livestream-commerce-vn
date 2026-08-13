@@ -34,12 +34,12 @@
 
 ## 4. Event-driven fast reducer
 
-- [ ] 4.1 Introduce event/condition-driven reducer wakeup instead of unconditional fixed polling.
-- [ ] 4.2 Add typed `microbatch_max_wait_ms` config and batch new accepted comments for embedding.
-- [ ] 4.3 Preserve one embedding per accepted comment identity/revision.
-- [ ] 4.4 Separate rolling-demand horizon config from microbatch timing.
-- [ ] 4.5 Add deterministic fast-lane latency benchmark from accepted event to updated ranked demand.
-- [ ] 4.6 Prove idle sessions do not wake at the old fixed polling cadence when no work/deadline exists.
+- [x] 4.1 Introduce event/condition-driven reducer wakeup instead of unconditional fixed polling.
+- [x] 4.2 Add typed `microbatch_max_wait_ms` config and batch new accepted comments for embedding.
+- [x] 4.3 Preserve one embedding per accepted comment identity/revision.
+- [x] 4.4 Separate rolling-demand horizon config from microbatch timing.
+- [x] 4.5 Add deterministic fast-lane latency benchmark from accepted event to updated ranked demand.
+- [x] 4.6 Prove idle sessions do not wake at the old fixed polling cadence when no work/deadline exists.
 
 ## 5. Stable ClusterStore and reconciliation
 
