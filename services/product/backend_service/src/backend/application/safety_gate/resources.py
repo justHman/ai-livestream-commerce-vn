@@ -17,6 +17,7 @@ __all__ = [
     "CuratedPatternSet",
     "load_all_curated_patterns",
     "load_curated_patterns",
+    "match_curated",
 ]
 
 # Default curated resources: service-level ``resources/safety/`` directory
@@ -88,3 +89,20 @@ def load_curated_patterns(
 def load_all_curated_patterns() -> dict[str, CuratedPatternSet]:
     """Load every curated safety pattern set, keyed by kind."""
     return {kind: load_curated_patterns(kind=kind) for kind in _CURATED_KINDS}
+
+
+def match_curated(text: str, sets: dict[str, CuratedPatternSet]) -> list[str]:
+    """Return the kinds whose curated sets contain a pattern in ``text``.
+
+    Deterministic, case-insensitive, substring-based: a pattern matches when
+    it appears in the lowered text. Patterns are multi-word phrases, so
+    substring matching does not split single words and cannot hit the "da
+    trong cua" class of false positives; word-boundary tightening belongs to
+    the consuming check once the gate wires this matcher in. Never raises.
+    """
+    lowered = text.lower()
+    return [
+        kind
+        for kind, pattern_set in sets.items()
+        if any(pattern in lowered for pattern in pattern_set.patterns)
+    ]
