@@ -56,10 +56,10 @@
 
 ## 6. Soft routing, multi-product resolution, and ranking
 
-- [ ] 6.1 Replace hard single-product pre-cluster routing with `RoutingHints`.
-- [ ] 6.2 Preserve strong explicit product-id/alias matches as high-confidence candidates.
-- [ ] 6.3 Add cluster-level product resolver with confidence threshold and top-candidate margin.
-- [ ] 6.4 Represent zero/one/many resolved product IDs.
+- [x] 6.1 Replace hard single-product pre-cluster routing with `RoutingHints`.
+- [x] 6.2 Preserve strong explicit product-id/alias matches as high-confidence candidates.
+- [x] 6.3 Add cluster-level product resolver with confidence threshold and top-candidate margin.
+- [x] 6.4 Represent zero/one/many resolved product IDs.
 - [ ] 6.5 Add deterministic comparison-question fixtures that resolve multiple products without accidental merge rejection.
 - [ ] 6.6 Add unique-viewer count to cluster state and make it the primary demand popularity signal.
 - [ ] 6.7 Add repeated-single-viewer anti-inflation tests.
