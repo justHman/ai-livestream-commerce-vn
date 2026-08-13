@@ -89,7 +89,11 @@ export interface ShopProfile {
   selling_style: string;
 }
 
-export interface Product {
+/** Flat product input — the wire view of the backend `ProductEntityIn`
+ * (contracts/v1/openapi.json). The backend converts this to an
+ * `EntityDocument` (facts + registry) server-side; this TS shape mirrors the
+ * flat JSON body, not the entity graph. */
+export interface ProductEntity {
   id: string;
   name: string;
   description: string;
@@ -110,7 +114,7 @@ export interface Product {
 export interface AttachRequest {
   session_id: string;
   shop_profile: ShopProfile;
-  products: Product[];
+  products: ProductEntity[];
   runtime_config?: Partial<RuntimeConfig>;
 }
 
@@ -300,7 +304,7 @@ export interface TestPreferences {
 
 export interface Draft {
   shop: ShopProfile;
-  products: Product[];
+  products: ProductEntity[];
   selectedProductIds: string[];
   productOrder: string[];
   jsonText: string;
@@ -309,7 +313,7 @@ export interface Draft {
   testPreferences?: TestPreferences;
 }
 
-export const EMPTY_PRODUCT: Product = {
+export const EMPTY_PRODUCT: ProductEntity = {
   id: "", name: "", description: "", price: null, original_price: null, promotion: "",
   colors: [], sizes: [], material: "", shipping: "", warranty: "", in_stock: true,
   stock_total: null, ref_image: "", features: [],

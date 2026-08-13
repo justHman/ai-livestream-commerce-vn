@@ -1,12 +1,12 @@
-/** Product/draft validation — mirrors backend ProductIn constraints. */
+/** Product/draft validation — mirrors backend ProductEntityIn constraints. */
 
-import type { Product } from "./api_types";
+import type { ProductEntity } from "./api_types";
 
 const stringLimits: Record<string, number> = {
   id: 128, name: 256, description: 2000, promotion: 500, material: 256, shipping: 500, warranty: 500, ref_image: 2048,
 };
 
-export function validateProductCatalog(products: Product[]): string[] {
+export function validateProductCatalog(products: ProductEntity[]): string[] {
   const errors: string[] = [];
   if (!Array.isArray(products)) return ["products: phải là JSON array."];
   if (products.length > 100) errors.push("products: tối đa 100 sản phẩm.");
@@ -57,7 +57,7 @@ export function validateProductCatalog(products: Product[]): string[] {
   return errors;
 }
 
-export function productJson(products: Product[]): string {
+export function productJson(products: ProductEntity[]): string {
   return JSON.stringify(products, null, 2);
 }
 
