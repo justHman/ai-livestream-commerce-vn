@@ -158,8 +158,10 @@ class _FakeDirectorRuntime:
     """
 
     def __init__(self, product_ids: set[str]) -> None:
+        # Task 8.7: the runtime catalog holds EntityDocument values; the
+        # binding proxy reads the entity ``id`` as the product id.
         session = type(
-            "S", (), {"catalog": [type("P", (), {"product_id": pid})() for pid in product_ids]}
+            "S", (), {"catalog": [type("P", (), {"id": pid})() for pid in product_ids]}
         )()
         self._sessions = {"sess": session}
 

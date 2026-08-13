@@ -314,11 +314,10 @@ async def sessions_attach(
     d = _container(request)
     if d.director is None:
         raise HTTPException(status_code=501, detail="Director not enabled")
-    from backend.application.director.catalog import Product
 
     if await d.store.get(session_id) is None:
         raise HTTPException(status_code=404, detail="unknown session_id")
-    products = [Product(**p.model_dump()) for p in req.products]
+    products = [p.to_entity() for p in req.products]
     shop_profile = req.shop_profile_text()
     # Re-attach updates the existing runtime/coordinator atomically. Stopping
     # the coordinator here would erase the active checkpoint and rolling window.
@@ -340,10 +339,12 @@ async def sessions_attach(
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # M3: freeze the product snapshot into the runtime DB (fire-and-forget).
+    # The snapshot stores the entity document JSON so persisted rows and the
+    # accepted snapshot share one shape (id/name/price columns + full payload).
     if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
         try:
             await d.pg_store.insert_product_snapshot(
-                session_id, [p.model_dump() for p in req.products]
+                session_id, [p.model_dump(mode="json") for p in products]
             )
         except asyncio.CancelledError:
             raise
