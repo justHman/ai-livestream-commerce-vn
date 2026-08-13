@@ -59,7 +59,7 @@ async def test_long_session_keeps_rolling_history_bounded(
     session_id = "test-bounded-history"
     session, clock = _make_session()
     _inject_session(runtime, session_id, session)
-    coordinator.start(session_id, [Product(id="p1", name="Product 1")])
+    coordinator.start(session_id, [_entity()])
     try:
         for offset in range(30):
             clock.set(60.0 + offset * 10.0)
