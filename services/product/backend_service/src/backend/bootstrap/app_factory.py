@@ -182,6 +182,8 @@ def create_app(
     if container is not None:
         resolved_container = container
     elif deps is not None:
+        from backend.application.entity.repository import InMemoryEntityRepository
+
         resolved_container = BootstrapContainer(
             backend=deps.backend,
             store=deps.store,
@@ -197,6 +199,7 @@ def create_app(
             avatars=deps.avatars,
             script_authoring_service=getattr(deps, "script_authoring_service", None),
             event_ingestion=getattr(deps, "event_ingestion", None),
+            entity_repo=getattr(deps, "entity_repo", None) or InMemoryEntityRepository(),
         )
     else:
         resolved_container = _build_container(config, container=None)
