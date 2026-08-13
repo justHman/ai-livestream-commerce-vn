@@ -78,19 +78,19 @@
 
 ## 8. Universal commerce entity context
 
-- [ ] 8.1 Define `EntityDocument`, `Fact`, `KnowledgeBlock`, and `Relation`.
-- [ ] 8.2 Define Common Fact Registry with canonical commerce/identity keys, aliases, types, and freshness policy.
-- [ ] 8.3 Support arbitrary custom facts without Python/TypeScript schema changes.
-- [ ] 8.4 Implement revisioned entity repository using the existing persistence stack's document/JSON semantics unless design evidence proves a separate datastore is required.
-- [ ] 8.5 Implement entity search by id/name/alias/tags and fact selectors.
-- [ ] 8.6 Implement query-relevant context rendering rather than full-document serialization.
-- [ ] 8.7 Migrate Director catalog/retrieval/fact answering.
-- [ ] 8.8 Migrate session attach/snapshots/run-plan inputs.
-- [ ] 8.9 Migrate script-authoring authoritative context/fingerprints without weakening approval freshness.
-- [ ] 8.10 Migrate backend API models and generated OpenAPI.
-- [ ] 8.11 Migrate Workbench TypeScript types/fixtures/UI.
-- [ ] 8.12 Remove rigid product/shop compatibility adapters after all consumers migrate.
-- [ ] 8.13 Add cross-domain fixtures for fashion, cosmetics, food, electronics, household goods, and at least one custom vertical.
+- [x] 8.1 Define `EntityDocument`, `Fact`, `KnowledgeBlock`, and `Relation`.
+- [x] 8.2 Define Common Fact Registry with canonical commerce/identity keys, aliases, types, and freshness policy.
+- [x] 8.3 Support arbitrary custom facts without Python/TypeScript schema changes.
+- [x] 8.4 Implement revisioned entity repository using the existing persistence stack's document/JSON semantics unless design evidence proves a separate datastore is required.
+- [x] 8.5 Implement entity search by id/name/alias/tags and fact selectors.
+- [x] 8.6 Implement query-relevant context rendering rather than full-document serialization.
+- [x] 8.7 Migrate Director catalog/retrieval/fact answering.
+- [x] 8.8 Migrate session attach/snapshots/run-plan inputs.
+- [x] 8.9 Migrate script-authoring authoritative context/fingerprints without weakening approval freshness.
+- [x] 8.10 Migrate backend API models and generated OpenAPI.
+- [x] 8.11 Migrate Workbench TypeScript types/fixtures/UI.
+- [x] 8.12 Remove rigid product/shop compatibility adapters after all consumers migrate.
+- [x] 8.13 Add cross-domain fixtures for fashion, cosmetics, food, electronics, household goods, and at least one custom vertical.
 
 ## 9. Shop/Product Data Studio
 

@@ -10,12 +10,18 @@ silently dropped. Pure selection — no network, no filesystem, no LLM.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import BaseModel, Field
+
+from backend.application.entity.models import EntityDocument
+from backend.application.entity.registry import is_volatile
 
 __all__ = [
     "AuthoritativeContext",
     "MissingContextKeyError",
     "build_authoritative_context",
+    "build_authoritative_context_from_entity",
 ]
 
 
@@ -98,4 +104,44 @@ def build_authoritative_context(source: dict) -> AuthoritativeContext:
         product=_extract_str_section(source, "product"),
         promotions=_extract_record_sections(source, "promotions"),
         facts=_extract_record_sections(source, "facts"),
+    )
+
+
+def build_authoritative_context_from_entity(
+    entity: EntityDocument,
+    shop: Optional[EntityDocument] = None,
+    persona_text: str = "",
+    campaign: Optional[EntityDocument] = None,
+) -> AuthoritativeContext:
+    """Build authoritative context from EntityDocuments (task 8.9).
+
+    The entity's facts render into the ``product`` dict; the full facts list
+    becomes the ``facts`` records (the planner's authoritative fact IDs —
+    each record carries its ``id``); promotion facts become ``promotions``
+    records. Shop/persona are required, campaign is optional (in the
+    ``_REQUIRED_TOP_KEYS`` spirit — the strict-dict builder keeps them
+    required because the dict shape has no notion of absent entities).
+    """
+    persona = {"text": persona_text} if persona_text else {}
+    if shop is None:
+        raise MissingContextKeyError("missing required shop entity for authoritative context")
+    if entity is None:
+        raise MissingContextKeyError("missing required product entity for authoritative context")
+    facts = tuple(
+        {
+            "id": f"{entity.id}:{fact.key}",
+            "key": fact.key,
+            "value": f"{fact.value} {fact.unit}".rstrip() if fact.unit else str(fact.value),
+            "updated_at": fact.updated_at if is_volatile(fact.key) else "",
+        }
+        for fact in sorted(entity.facts, key=lambda f: f.key)
+    )
+    promotions = tuple(dict(record) for record in facts if record["key"] == "commerce.promotion")
+    return AuthoritativeContext(
+        shop={"name": shop.name},
+        persona=persona,
+        campaign={"name": campaign.name} if campaign is not None else {},
+        product={"id": entity.id, "name": entity.name},
+        promotions=promotions,
+        facts=facts,
     )

@@ -10,8 +10,9 @@ import pytest
 from backend.engine_manager import EngineManager
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 
-from .fixtures import MOCK_PRODUCTS
-from backend.application.director.catalog import Product
+from backend.api.v1 import ProductEntityIn
+
+from .fixtures import MOCK_ENTITIES
 from backend.application.director.clustering import Comment
 from backend.application.director.config import StreamConfig
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
@@ -105,7 +106,7 @@ def test_global_opening_has_three_grounded_turns_before_product_lifecycle(
 
 def test_product_sales_are_split_into_short_stage_turns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
-    product = Product(**MOCK_PRODUCTS[0])
+    product = MOCK_ENTITIES[0]
     state = StreamState(
         phase=Phase.SELLING,
         products=[ProductState(product_id=product.id, name=product.name)],
@@ -167,8 +168,8 @@ def _cross_product_director() -> Director:
 
     run_plan = build_run_plan(
         [
-            {"id": "P004", "name": "Áo hoodie", "features": ["ấm và nhẹ"]},
-            {"id": "P002", "name": "Serum", "features": ["dưỡng ẩm"]},
+            ProductEntityIn(id="P004", name="Áo hoodie", features=["ấm và nhẹ"]),
+            ProductEntityIn(id="P002", name="Serum", features=["dưỡng ẩm"]),
         ]
     )
     return Director(
@@ -431,7 +432,7 @@ def test_cluster_answer_prompt_requests_one_clause_paraphrase_and_short_grounded
 
 def test_mock_catalog_starts_with_heygen_hoodie(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
-    assert MOCK_PRODUCTS[0]["id"] == "P004"
+    assert MOCK_ENTITIES[0].id == "P004"
 
 
 def test_runtime_has_no_sync_ingest_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -440,8 +441,9 @@ def test_runtime_has_no_sync_ingest_path(monkeypatch: pytest.MonkeyPatch) -> Non
 
     backend = _CloudBackend()
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
-    session_id = "runtime-no-sync-ingest"
-    runtime.attach(session_id, [Product(**MOCK_PRODUCTS[0])])
+    session_id = "sync-runtime-commit"
+    runtime.attach(session_id, [MOCK_ENTITIES[0]])
+    session = runtime.get_session(session_id)
 
     assert not hasattr(runtime, "ingest")
 
@@ -471,7 +473,7 @@ def test_attach_ticks_remain_silent_until_first_ingest(monkeypatch: pytest.Monke
         )
         coordinator.start(
             session_id,
-            [Product(**MOCK_PRODUCTS[0])],
+            [MOCK_ENTITIES[0]],
             activated=False,
         )
 
@@ -516,13 +518,13 @@ def test_unanswered_clusters_do_not_skip_all_product_sales_stages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
-    product = Product(**MOCK_PRODUCTS[0])
+    product = MOCK_ENTITIES[0]
     from backend.api.v1.router import build_run_plan
 
     state = StreamState(
         phase=Phase.SELLING,
         products=[ProductState(product_id=product.id, name=product.name)],
-        run_plan=build_run_plan([MOCK_PRODUCTS[0]]),
+        run_plan=build_run_plan([product]),
     )
     state.traffic.viewer_count = 100
     state.traffic.msg_rate = 2.0
@@ -644,7 +646,7 @@ def test_speech_plan_shows_current_product_and_next_product(
     backend = MockRenderBackend()
     runtime = DirectorRuntime(backend=backend)
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
-    products = [Product(**MOCK_PRODUCTS[0]), Product(**MOCK_PRODUCTS[1])]
+    products = [MOCK_ENTITIES[0], MOCK_ENTITIES[1]]
     runtime.attach(session_id, products)
     coordinator._current_speech[session_id] = director_decision(
         "introduce_product", "P004", "Giới thiệu P004"
@@ -692,7 +694,7 @@ def test_coordinator_updates_live_traffic_before_first_decision(
     backend = MockRenderBackend()
     runtime = DirectorRuntime(backend=backend)
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
-    runtime.attach(session_id, [Product(**MOCK_PRODUCTS[0])])
+    runtime.attach(session_id, [MOCK_ENTITIES[0]])
 
     coordinator.update_traffic(session_id, viewer_count=1010, msg_rate=2.0)
 
@@ -721,7 +723,7 @@ def test_locked_intro_prevents_director_from_consuming_comments(
             lock_registry=locks,
             cfg=CoordinatorConfig(tick_ms=50, window_sec=75.0),
         )
-        products = [Product(**MOCK_PRODUCTS[0]), Product(**MOCK_PRODUCTS[1])]
+        products = [MOCK_ENTITIES[0], MOCK_ENTITIES[1]]
         coordinator.start(session_id, products)
         coordinator.ingest(session_id, "áo hoodie giá bao nhiêu", "viewer", ts=time.time())
         assert locks.try_acquire(session_id)

@@ -1,4 +1,4 @@
-/** Product/draft validation tests — mirrors backend ProductIn constraints. */
+/** Product/draft validation tests — mirrors backend ProductEntityIn constraints. */
 
 import { describe, expect, it } from "vitest";
 

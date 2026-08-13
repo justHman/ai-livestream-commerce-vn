@@ -7,7 +7,8 @@ import time
 
 import pytest
 
-from backend.application.director.catalog import Product
+from backend.api.v1 import ProductEntityIn
+from backend.application.entity.models import EntityDocument
 from backend.application.director.clustering import Comment
 from backend.application.director.config import StreamConfig
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
@@ -54,12 +55,18 @@ async def _stop(coordinator: DirectorCoordinator, session_id: str) -> None:
         await asyncio.gather(task, return_exceptions=True)
 
 
+def _entity(**kwargs: object) -> EntityDocument:
+    """One minimal product entity (8.12: entity API model, no legacy dicts)."""
+    defaults: dict[str, object] = {"id": "p1", "name": "Product 1"}
+    return ProductEntityIn(**{**defaults, **kwargs}).to_entity()
+
+
 def _make_session(
-    products: list[Product] | None = None,
+    products: list[EntityDocument] | None = None,
     cfg: StreamConfig | None = None,
     clock: _FakeClock | None = None,
 ) -> tuple[DirectorSession, _FakeClock]:
-    products = products or [Product(id="p1", name="Product 1")]
+    products = products or [_entity()]
     cfg = cfg or StreamConfig()
     clock = clock or _FakeClock()
     catalog = {product.id: product for product in products}
@@ -67,7 +74,6 @@ def _make_session(
         ProductState(
             product_id=product.id,
             name=product.name,
-            embedding=product.embedding,
         )
         for product in products
     ]
@@ -112,7 +118,7 @@ class TestDirectorTimers:
         session_id = "test-advance"
         session, clock = _make_session()
         _inject_session(runtime, session_id, session)
-        products = [Product(id="p1", name="Product 1")]
+        products = [_entity()]
         coordinator.start(session_id, products)
         try:
             state = session.director.state
@@ -138,7 +144,7 @@ class TestDirectorTimers:
         session_id = "test-negative"
         session, clock = _make_session()
         _inject_session(runtime, session_id, session)
-        products = [Product(id="p1", name="Product 1")]
+        products = [_entity()]
         coordinator.start(session_id, products)
         try:
             state = session.director.state
@@ -162,7 +168,7 @@ class TestDirectorTimers:
         self, coordinator: DirectorCoordinator, runtime: DirectorRuntime
     ) -> None:
         session_id = "test-budget"
-        products = [Product(id="p1", name="P1"), Product(id="p2", name="P2")]
+        products = [_entity(id="p1", name="P1"), _entity(id="p2", name="P2")]
         cfg = StreamConfig(product_time_budget_sec=5.0)
         session, clock = _make_session(products=products, cfg=cfg)
         _inject_session(runtime, session_id, session)
@@ -190,7 +196,7 @@ class TestDirectorTimers:
         self, coordinator: DirectorCoordinator, runtime: DirectorRuntime
     ) -> None:
         session_id = "test-engagement-boundary"
-        products = [Product(id="p1", name="P1"), Product(id="p2", name="P2")]
+        products = [_entity(id="p1", name="P1"), _entity(id="p2", name="P2")]
         cfg = StreamConfig(engagement_decay_sec=5.0, product_time_budget_sec=100.0)
         session, clock = _make_session(products=products, cfg=cfg)
         _inject_session(runtime, session_id, session)
@@ -227,7 +233,7 @@ class TestDirectorTimers:
         session_id = "test-no-comment"
         session, clock = _make_session()
         _inject_session(runtime, session_id, session)
-        products = [Product(id="p1", name="Product 1")]
+        products = [_entity()]
         coordinator.start(session_id, products)
         try:
             state = session.director.state
@@ -243,7 +249,7 @@ class TestDirectorTimers:
             await _stop(coordinator, session_id)
 
     def test_fresh_relevant_comment_prevents_decay_switch(self) -> None:
-        product = Product(id="p1", name="P1", price=100, embedding=[1.0, 0.0])
+        product = _entity(id="p1", name="P1", price=100)
         state = StreamState(
             phase=Phase.SELLING,
             products=[
@@ -292,7 +298,7 @@ class TestDirectorTimers:
         )
 
     def test_relevant_cluster_resets_engagement_timer(self) -> None:
-        product = Product(id="p1", name="P1", price=100, embedding=[1.0, 0.0])
+        product = _entity(id="p1", name="P1", price=100)
         state = StreamState(
             phase=Phase.SELLING,
             products=[
@@ -327,7 +333,7 @@ class TestDirectorTimers:
         self, coordinator: DirectorCoordinator, runtime: DirectorRuntime
     ) -> None:
         session_id = "test-off-topic"
-        product = Product(id="p1", name="P1", embedding=[1.0, 0.0])
+        product = _entity(id="p1", name="P1")
         session, clock = _make_session(products=[product])
         _inject_session(runtime, session_id, session)
         coordinator._embedder = _VectorEmbedder([0.0, 1.0])
@@ -354,7 +360,7 @@ class TestDirectorTimers:
         session_id = "test-idempotent"
         session, clock = _make_session(clock=_FakeClock(initial=10.0))
         _inject_session(runtime, session_id, session)
-        products = [Product(id="p1", name="Product 1")]
+        products = [_entity()]
         coordinator.start(session_id, products)
         try:
             clock.set(12.0)
@@ -374,7 +380,7 @@ class TestDirectorTimers:
         session_id = "test-stop"
         session, _ = _make_session()
         _inject_session(runtime, session_id, session)
-        products = [Product(id="p1", name="Product 1")]
+        products = [_entity()]
         coordinator.start(session_id, products)
         task = coordinator._tasks[session_id]
         try:

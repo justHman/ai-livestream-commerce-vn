@@ -13,7 +13,7 @@ import { renderDiagnostics, type RenderSink } from "./diagnostics";
 import { reducer, initialState, type Action, type RootState } from "./state";
 import { ControlSocket, PlatformSocket } from "./websocket";
 import { ViewerSimulator, validateSimulatorInput } from "./simulator";
-import type { LifecycleEvent, Product } from "./api_types";
+import type { LifecycleEvent, ProductEntity } from "./api_types";
 import { validateProductCatalog, validateShopLimits, productJson } from "./validation";
 import { clearDiagnostics } from "./diagnostics";
 import { mountAuthoring } from "./authoringView";
@@ -170,10 +170,10 @@ function renderShop(): void {
   }
 }
 
-function orderedProducts(): Product[] {
+function orderedProducts(): ProductEntity[] {
   return state.draft.productOrder
     .map((id) => state.draft.products.find((p) => p.id === id))
-    .filter((p): p is Product => Boolean(p));
+    .filter((p): p is ProductEntity => Boolean(p));
 }
 
 function renderProducts(): void {
@@ -643,9 +643,9 @@ function bindEvents(): void {
   });
   ($("applyJsonBtn") as HTMLButtonElement).addEventListener("click", () => {
     const text = ($("productsJson") as HTMLTextAreaElement).value;
-    let products: Product[];
+    let products: ProductEntity[];
     try {
-      products = JSON.parse(text) as Product[];
+      products = JSON.parse(text) as ProductEntity[];
     } catch (error) {
       dispatch({ type: "DRAFT_PATCH", value: { jsonText: text, jsonDirty: true, errors: [`JSON: ${safeMessage(error)}`] } });
       return;
@@ -727,7 +727,7 @@ async function previewVoice(): Promise<void> {
   }
 }
 
-function emptyProduct(id: string, name: string): Product {
+function emptyProduct(id: string, name: string): ProductEntity {
   const colors: string[] = [];
   const sizes: string[] = [];
   const features: string[] = [];

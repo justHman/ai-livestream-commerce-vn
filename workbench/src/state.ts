@@ -6,7 +6,7 @@
 import type {
   Draft,
   LifecycleEvent,
-  Product,
+  ProductEntity,
   ShopProfile,
   TestPreferences,
 } from "./api_types";
@@ -68,7 +68,7 @@ export type Action =
   | { type: "EVENT_ADD"; value: { at: string; message: string; tone: string } }
   | { type: "EVENT_CLEAR" };
 
-export function emptyProduct(id: string, name: string): Product {
+export function emptyProduct(id: string, name: string): ProductEntity {
   return { ...EMPTY_PRODUCT, id, name };
 }
 

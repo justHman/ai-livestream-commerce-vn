@@ -178,7 +178,7 @@
         "type": "object"
       },
       "CommentPayload": {
-        "description": "Payload for ``viewer.comment`` \u2014 the only semantically reduced event.",
+        "description": "Payload for ``viewer.comment`` — the only semantically reduced event.",
         "properties": {
           "text": {
             "maxLength": 500,
@@ -1436,11 +1436,171 @@
         ],
         "title": "ViewerRef",
         "type": "object"
+      },
+      "ProductEntityIn": {
+        "description": "Flat product input (Decision 12: simple UX at the boundary).\n\nConverts to an ``EntityDocument`` (product) via ``to_entity()``: canonical\nkeys (registry.py) for price/stock/promotion/shipping/warranty facts,\n``custom.*`` keys for material/ref_image, and a description knowledge block\ncarrying colors/sizes/features as tags.",
+        "properties": {
+          "colors": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Colors",
+            "type": "array"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Description",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Features",
+            "type": "array"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "in_stock": {
+            "default": true,
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "material": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "original_price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Price"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "promotion": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion"
+          },
+          "ref_image": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Image"
+          },
+          "shipping": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipping"
+          },
+          "sizes": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Sizes",
+            "type": "array"
+          },
+          "stock_total": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Total"
+          },
+          "warranty": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ProductEntityIn",
+        "type": "object"
       }
     }
   },
   "info": {
-    "title": "VN Live-Commerce Host \u2014 core API",
+    "title": "VN Live-Commerce Host — core API",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
@@ -1468,7 +1628,7 @@
     },
     "/api/v1/admin/health": {
       "get": {
-        "description": "Deep health \u2014 same payload as /health/ready.",
+        "description": "Deep health — same payload as /health/ready.",
         "operationId": "admin_health_api_v1_admin_health_get",
         "responses": {
           "200": {
@@ -2448,7 +2608,7 @@
     },
     "/api/v1/script-sets/{set_id}/products/{product_id}/fix": {
       "post": {
-        "description": "Constrained AI repair for a gate-failed version (task 11.6).\n\nEligible only for gate-failed immutable versions; otherwise 409\n``fix_not_eligible``. The fixed result is a new DRAFT that must be\nsubmitted again \u2014 never auto-approved.",
+        "description": "Constrained AI repair for a gate-failed version (task 11.6).\n\nEligible only for gate-failed immutable versions; otherwise 409\n``fix_not_eligible``. The fixed result is a new DRAFT that must be\nsubmitted again — never auto-approved.",
         "operationId": "fix_product_api_v1_script_sets__set_id__products__product_id__fix_post",
         "parameters": [
           {

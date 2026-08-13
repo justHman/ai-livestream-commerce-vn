@@ -28,7 +28,7 @@ llm/engines/base.py:34 and tts/engines/base.py:20 (service-local fallbacks).
 | test_render_backend_enum.py | AppConfig.build_render_backend selector contract (mock local; cloud/self-host remote placeholder) | core/tests/test_render_backend_enum.py | unit |
 | test_run_plan.py | RunPlan schema, build_run_plan determinism, coverage cursor, Utterance schema | core/tests/test_run_plan.py | unit |
 | test_text_chunker.py | TextChunker punctuation/max/timeout/finalize flushes with fake clock | core/tests/test_text_chunker.py | unit |
-| fixtures.py | Shared MOCK_PRODUCTS fixture (replaces core/debug/mock_data.py for service tests) | new | unit |
+| fixtures.py | Shared MOCK_ENTITIES fixture (EntityDocument products, replaces core/debug/mock_data.py for service tests) | new | unit |
 
 ## integration/
 

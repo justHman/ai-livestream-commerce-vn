@@ -37,6 +37,18 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
+from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
+from backend.application.entity.registry import (
+    COMMERCE_PRICE_CURRENT,
+    COMMERCE_PRICE_ORIGINAL,
+    COMMERCE_PROMOTION,
+    COMMERCE_SHIPPING,
+    COMMERCE_STOCK_AVAILABLE,
+    COMMERCE_STOCK_QUANTITY,
+    COMMERCE_WARRANTY,
+    IDENTITY_BRAND,
+    IDENTITY_SKU,
+)
 from backend.application.schemas.run_plan import (
     ClosingPhase,
     OpeningPhase,
@@ -109,7 +121,15 @@ class SessionReq(BaseModel):
 ProductArrayItem = Annotated[str, Field(min_length=1, max_length=500)]
 
 
-class ProductIn(BaseModel):
+class ProductEntityIn(BaseModel):
+    """Flat product input (Decision 12: simple UX at the boundary).
+
+    Converts to an ``EntityDocument`` (product) via ``to_entity()``: canonical
+    keys (registry.py) for price/stock/promotion/shipping/warranty facts,
+    ``custom.*`` keys for material/ref_image, and a description knowledge block
+    carrying colors/sizes/features as tags.
+    """
+
     id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=256)
     description: str = Field(default="", max_length=2_000)
@@ -127,7 +147,7 @@ class ProductIn(BaseModel):
     features: list[ProductArrayItem] = Field(default_factory=list, max_length=32)
 
     @model_validator(mode="after")
-    def validate_prices(self) -> "ProductIn":
+    def validate_prices(self) -> "ProductEntityIn":
         if (
             self.price is not None
             and self.original_price is not None
@@ -135,6 +155,80 @@ class ProductIn(BaseModel):
         ):
             raise ValueError("original_price must be greater than or equal to price")
         return self
+
+    def to_entity(self) -> EntityDocument:
+        """Convert to the product ``EntityDocument`` (task 8.8).
+
+        Maps the flat wire fields directly: canonical fact keys from the
+        registry (price/stock/promotion/shipping/warranty) plus ``custom.*``
+        keys for material/origin/usage/how_to_buy/ref_image, and one
+        knowledge block per prose field (description/features/colors/sizes).
+        """
+        facts = [
+            Fact(key=key, type=type_, value=value)
+            for field_name, (key, type_) in (
+                ("brand", (IDENTITY_BRAND, "str")),
+                ("price", (COMMERCE_PRICE_CURRENT, "int")),
+                ("original_price", (COMMERCE_PRICE_ORIGINAL, "int")),
+                ("promotion", (COMMERCE_PROMOTION, "str")),
+                ("shipping", (COMMERCE_SHIPPING, "str")),
+                ("warranty", (COMMERCE_WARRANTY, "str")),
+                ("stock_total", (COMMERCE_STOCK_QUANTITY, "int")),
+                ("material", ("custom.material", "str")),
+                ("origin", ("custom.origin", "str")),
+                ("usage", ("custom.usage", "str")),
+                ("how_to_buy", ("custom.how_to_buy", "str")),
+                ("ref_image", ("custom.ref_image", "str")),
+            )
+            if (value := getattr(self, field_name, None)) is not None
+        ]
+        facts.append(Fact(key=COMMERCE_STOCK_AVAILABLE, type="bool", value=self.in_stock))
+        facts.append(
+            Fact(
+                key=IDENTITY_SKU,
+                type="str",
+                value=self.id,
+                labels=["Mã SKU"],
+            )
+        )
+        blocks = []
+        if self.description:
+            blocks.append(
+                KnowledgeBlock(
+                    id=f"desc:{self.id}",
+                    kind="description",
+                    title="Mô tả",
+                    content=self.description,
+                )
+            )
+        if self.features:
+            blocks.append(
+                KnowledgeBlock(
+                    id=f"custom:features:{self.id}",
+                    kind="custom",
+                    title="features",
+                    content=", ".join(self.features),
+                    tags=["features"],
+                )
+            )
+        for tag, items in (("color", self.colors), ("size", self.sizes)):
+            if items:
+                blocks.append(
+                    KnowledgeBlock(
+                        id=f"{tag}:{self.id}",
+                        kind="custom",
+                        title=tag,
+                        content=", ".join(str(item) for item in items),
+                        tags=[tag],
+                    )
+                )
+        return EntityDocument(
+            id=self.id,
+            entity_type="product",
+            name=self.name,
+            facts=facts,
+            knowledge_blocks=blocks,
+        )
 
 
 class ShopProfileIn(BaseModel):
@@ -184,7 +278,7 @@ class RuntimeConfigReq(BaseModel):
 
 class AttachReq(BaseModel):
     session_id: str = Field(max_length=128)
-    products: list[ProductIn] = Field(max_length=100)
+    products: list[ProductEntityIn] = Field(max_length=100)
     shop_profile: Optional[ShopProfileIn | str] = None
     runtime_config: Optional[RuntimeConfigReq] = None
 
@@ -246,7 +340,7 @@ class SandboxVerifyReq(BaseModel):
 class PlanCreateReq(BaseModel):
     """Optional products/persona for deterministic offline run-plan generation."""
 
-    products: list[ProductIn] = Field(default_factory=list, max_length=100)
+    products: list[ProductEntityIn] = Field(default_factory=list, max_length=100)
     persona: Optional[str] = Field(default=None, max_length=1_000)
 
 
@@ -256,7 +350,7 @@ class PathSayReq(BaseModel):
 
 
 class PathAttachReq(BaseModel):
-    products: list[ProductIn] = Field(max_length=100)
+    products: list[ProductEntityIn] = Field(max_length=100)
     shop_profile: Optional[ShopProfileIn | str] = None
     runtime_config: Optional[RuntimeConfigReq] = None
 
@@ -324,28 +418,55 @@ async def _allow_ws_message(ws: WebSocket, scope: str, session_id: str, connecti
 
 
 def build_run_plan(
-    products: list[ProductIn] | list[dict[str, Any]] | None = None,
+    products: list[EntityDocument] | list[dict[str, Any]] | None = None,
     persona: Optional[str] = None,
 ) -> RunPlan:
-    """Deterministic offline RunPlan from products (no LLM)."""
+    """Deterministic offline RunPlan from product entities (no LLM).
+
+    Accepts ``EntityDocument`` objects or inputs with ``to_entity()``
+    (``ProductEntityIn``); raw dicts are no longer supported. The RunPlan
+    shape itself stays unchanged: it is a structured plan, not an entity.
+    """
     items: list[ProductSellingPhase] = []
     for p in products or []:
-        if hasattr(p, "model_dump"):
-            data = p.model_dump()
-        else:
-            data = dict(p)
-        pid = str(data.get("id") or data.get("product_id") or "")
-        name = str(data.get("name") or "")
-        features = list(data.get("features") or [])
+        entity = _as_entity(p)
+        pid = entity.id
+        name = entity.name
+        price_fact = entity.get_fact(COMMERCE_PRICE_CURRENT)
+        price = price_fact.value if price_fact is not None else None
+        original_price_fact = entity.get_fact(COMMERCE_PRICE_ORIGINAL)
+        original_price = original_price_fact.value if original_price_fact is not None else None
+        promotion_fact = entity.get_fact(COMMERCE_PROMOTION)
+        promotion = promotion_fact.value if promotion_fact is not None else None
+        material_fact = entity.get_fact("custom.material")
+        material = material_fact.value if material_fact is not None else None
+        shipping_fact = entity.get_fact(COMMERCE_SHIPPING)
+        shipping = shipping_fact.value if shipping_fact is not None else None
+        warranty_fact = entity.get_fact(COMMERCE_WARRANTY)
+        warranty = warranty_fact.value if warranty_fact is not None else None
+
+        description = ""
+        colors: list[str] = []
+        sizes: list[str] = []
+        features: list[str] = []
+        for block in entity.knowledge_blocks:
+            if block.kind == "description":
+                description = block.content
+            if "features" in block.tags:
+                features.extend(part for part in block.content.split(", ") if part)
+            if "color" in block.tags:
+                colors.extend(part for part in block.content.split(", ") if part)
+            if "size" in block.tags:
+                sizes.extend(part for part in block.content.split(", ") if part)
         if not features:
             # Minimal selling points from description / promotion / name.
             features = []
-            if data.get("description"):
-                features.append(str(data["description"])[:120])
-            if data.get("promotion"):
-                features.append(f"Khuyến mãi: {data['promotion']}")
-            if data.get("price") is not None:
-                features.append(f"Giá chỉ {data['price']}")
+            if description:
+                features.append(str(description)[:120])
+            if promotion:
+                features.append(f"Khuyến mãi: {promotion}")
+            if price is not None:
+                features.append(f"Giá chỉ {price}")
             if not features:
                 features = [f"Ưu điểm nổi bật của {name or pid}"]
         tasks = [
@@ -363,15 +484,13 @@ def build_run_plan(
             )
             for index, feature in enumerate(features)
         )
-        if data.get("price") is not None or data.get("promotion"):
+        if price is not None or promotion:
             offer = ". ".join(
                 part
                 for part in (
-                    f"Giá bán {data.get('price')} đồng" if data.get("price") is not None else "",
-                    f"Giá gốc {data.get('original_price')} đồng"
-                    if data.get("original_price") is not None
-                    else "",
-                    str(data.get("promotion") or ""),
+                    f"Giá bán {price} đồng" if price is not None else "",
+                    f"Giá gốc {original_price} đồng" if original_price is not None else "",
+                    str(promotion or ""),
                 )
                 if part
             )
@@ -394,11 +513,11 @@ def build_run_plan(
         trust = ". ".join(
             part
             for part in (
-                f"Chất liệu {data.get('material')}" if data.get("material") else "",
-                f"Màu {', '.join(data.get('colors') or [])}" if data.get("colors") else "",
-                f"Size {', '.join(data.get('sizes') or [])}" if data.get("sizes") else "",
-                str(data.get("shipping") or ""),
-                str(data.get("warranty") or ""),
+                f"Chất liệu {material}" if material else "",
+                f"Màu {', '.join(colors)}" if colors else "",
+                f"Size {', '.join(sizes)}" if sizes else "",
+                str(shipping or ""),
+                str(warranty or ""),
             )
             if part
         )
@@ -453,6 +572,19 @@ def build_run_plan(
         closing=ClosingPhase(),
         persona=persona,
     )
+
+
+def _as_entity(p: Any) -> EntityDocument:
+    """Coerce a run-plan input to an ``EntityDocument``.
+
+    Entities pass through; inputs with ``to_entity()`` (``ProductEntityIn``)
+    convert. Raw dicts are no longer supported.
+    """
+    if isinstance(p, EntityDocument):
+        return p
+    if hasattr(p, "to_entity"):
+        return p.to_entity()
+    raise TypeError(f"unsupported product input: {type(p).__name__}")
 
 
 # ── Endpoints ───────────────────────────────────────────────────────

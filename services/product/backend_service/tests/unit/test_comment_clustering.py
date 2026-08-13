@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from backend.application.director.catalog import Product
+from backend.api.v1 import ProductEntityIn
+from backend.application.entity.models import EntityDocument
 from backend.application.director.clustering import Comment, cluster_comments
 from backend.application.director.embeddings import HashingEmbedder
 from backend.application.director.routing import route_comment
@@ -15,10 +16,18 @@ def _comment(text: str, vector: list[float], comment_id: str) -> Comment:
     return Comment(text=text, embedding=vector, t=10.0, id=comment_id)
 
 
-def _products() -> list[Product]:
+def _products() -> list[EntityDocument]:
     return [
-        Product(id="P004", name="Áo hoodie HeyGen màu trắng", features=["hoodie", "size XL"]),
-        Product(id="P002", name="Serum Vitamin C 20%", features=["serum", "vitamin C"]),
+        ProductEntityIn(
+            id="P004",
+            name="Áo hoodie HeyGen màu trắng",
+            features=["hoodie", "size XL"],
+        ).to_entity(),
+        ProductEntityIn(
+            id="P002",
+            name="Serum Vitamin C 20%",
+            features=["serum", "vitamin C"],
+        ).to_entity(),
     ]
 
 
@@ -43,7 +52,7 @@ def test_commerce_router_covers_required_categories_and_intents() -> None:
 def test_unknown_comment_requires_semantic_product_retrieval() -> None:
     routed = route_comment(
         _comment("unrelated topic", [0.0, 1.0], "unknown"),
-        [Product(id="P004", name="Áo hoodie", embedding=[1.0, 0.0])],
+        [ProductEntityIn(id="P004", name="Áo hoodie").to_entity()],
         "P004",
     )
 
@@ -52,8 +61,8 @@ def test_unknown_comment_requires_semantic_product_retrieval() -> None:
 
 def test_generic_product_noun_routes_away_from_current_product() -> None:
     products = [
-        Product(id="P004", name="Áo hoodie HeyGen màu trắng"),
-        Product(id="P001", name="Kem chống nắng La Roche-Posay SPF50+"),
+        ProductEntityIn(id="P004", name="Áo hoodie HeyGen màu trắng").to_entity(),
+        ProductEntityIn(id="P001", name="Kem chống nắng La Roche-Posay SPF50+").to_entity(),
     ]
 
     routed = route_comment(

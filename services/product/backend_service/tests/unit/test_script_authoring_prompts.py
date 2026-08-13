@@ -27,10 +27,12 @@ from pathlib import Path
 
 import pytest
 
+from backend.application.entity.models import EntityDocument, Fact, Relation
 from backend.application.script_authoring.generation.context_builder import (
     AuthoritativeContext,
     MissingContextKeyError,
     build_authoritative_context,
+    build_authoritative_context_from_entity,
 )
 from backend.application.script_authoring.generation.continuity import (
     ContinuityState,
@@ -147,6 +149,101 @@ class TestContextBuilder:
         source["product"] = "not-a-dict"
         with pytest.raises(MissingContextKeyError):
             build_authoritative_context(source)
+
+
+class TestContextBuilderFromEntity:
+    """Task 8.9: entity-document -> AuthoritativeContext boundary."""
+
+    def _entity(self) -> EntityDocument:
+        return EntityDocument(
+            id="product:P001",
+            entity_type="product",
+            revision=3,
+            name="Kem ABC",
+            facts=[
+                Fact(
+                    key="commerce.price.current",
+                    type="int",
+                    value=299000,
+                    unit="VND",
+                    revision=2,
+                    freshness="volatile",
+                    updated_at="2026-08-01T00:00:00+00:00",
+                ),
+                Fact(
+                    key="commerce.promotion",
+                    type="str",
+                    value="Giảm 20%",
+                    revision=1,
+                    freshness="volatile",
+                    updated_at="2026-08-01T00:00:00+00:00",
+                ),
+                Fact(
+                    key="identity.sku",
+                    type="str",
+                    value="KEM-ABC-01",
+                    revision=1,
+                    freshness="stable",
+                ),
+            ],
+            relations=[
+                Relation(target_entity_id="shop:S1", relation_type="belongs_to_shop"),
+            ],
+        )
+
+    def _shop(self) -> EntityDocument:
+        return EntityDocument(
+            id="shop:S1",
+            entity_type="shop",
+            revision=1,
+            name="LIVENTO",
+        )
+
+    def test_builds_context_from_entity_facts(self) -> None:
+        ctx = build_authoritative_context_from_entity(
+            entity=self._entity(),
+            shop=self._shop(),
+            persona_text="Minh, thân thiện",
+            campaign=EntityDocument(
+                id="campaign:C1",
+                entity_type="campaign",
+                revision=1,
+                name="Back to school",
+            ),
+        )
+
+        assert isinstance(ctx, AuthoritativeContext)
+        assert ctx.shop["name"] == "LIVENTO"
+        assert ctx.persona["text"] == "Minh, thân thiện"
+        assert ctx.campaign["name"] == "Back to school"
+        assert ctx.product["id"] == "product:P001"
+        assert ctx.product["name"] == "Kem ABC"
+        # Fact records carry a stable per-fact id: entity id + fact key.
+        assert {f["id"] for f in ctx.facts} == {
+            "product:P001:commerce.price.current",
+            "product:P001:commerce.promotion",
+            "product:P001:identity.sku",
+        }
+        assert any(promo["id"] == "product:P001:commerce.promotion" for promo in ctx.promotions)
+
+    def test_campaign_and_persona_optional(self) -> None:
+        ctx = build_authoritative_context_from_entity(
+            entity=self._entity(),
+            shop=self._shop(),
+            persona_text="",
+        )
+
+        assert ctx.persona == {}
+        assert ctx.campaign == {}
+        assert ctx.facts
+
+    def test_missing_shop_raises(self) -> None:
+        with pytest.raises(MissingContextKeyError):
+            build_authoritative_context_from_entity(
+                entity=self._entity(),
+                shop=None,
+                persona_text="",
+            )
 
 
 # ---------------------------------------------------------------------------
