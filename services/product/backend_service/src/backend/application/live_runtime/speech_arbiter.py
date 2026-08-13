@@ -185,10 +185,13 @@ class SpeechArbiter:
             return self._state
         if self._state == ArbiterState.RESUME_BRIDGE:
             if self._config.speak_resume_bridge and not self._cursor.finished:
-                product = "sản phẩm"
+                product = self._config.bridge_topic
                 position = self._cursor.position() if hasattr(self._cursor, "position") else None
-                if position is not None and getattr(position, "product_id", None):
-                    product = position.product_id
+                position_product = (
+                    getattr(position, "product_id", None) if position is not None else None
+                )
+                if position_product:
+                    product = position_product
                 bridge = self._config.resume_bridge_template.format(product=product)
                 await self._speak(session_id, bridge)
             self._transition(ArbiterState.SCRIPT_READY)
