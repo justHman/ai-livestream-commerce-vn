@@ -176,7 +176,16 @@ def is_fast_path_eligible(
     known = config.known_selectors if selectors is None else selectors
     if not envelope.intent or not envelope.intent.strip():
         return FastPathEligibility(False, reason="intent_unknown")
+    lowered_intent = envelope.intent.lower()
+    if any(marker in lowered_intent for marker in COMPARISON_MARKERS):
+        return FastPathEligibility(False, reason="comparison_signal")
     if not envelope.resolved_product_ids:
+        # A referential question is a plain factual one once the referent is
+        # resolved upstream (TopicMemory); without a resolution it needs the
+        # complex path to find the referent.
+        questions = " ".join(envelope.representative_questions).lower()
+        if any(marker in questions for marker in REFERENTIAL_MARKERS):
+            return FastPathEligibility(False, reason="referential_signal")
         return FastPathEligibility(False, reason="no_resolved_product")
     if len({*envelope.resolved_product_ids}) != 1:
         return FastPathEligibility(False, reason="multiple_entities")
@@ -185,13 +194,7 @@ def is_fast_path_eligible(
         return FastPathEligibility(False, reason="selector_unknown")
     if selector not in known:
         return FastPathEligibility(False, reason="selector_unknown")
-    lowered_intent = envelope.intent.lower()
-    if any(marker in lowered_intent for marker in COMPARISON_MARKERS):
-        return FastPathEligibility(False, reason="comparison_signal")
     if any(marker in lowered_intent for marker in REFERENTIAL_MARKERS):
-        return FastPathEligibility(False, reason="referential_signal")
-    questions = " ".join(envelope.representative_questions).lower()
-    if any(marker in questions for marker in REFERENTIAL_MARKERS):
         return FastPathEligibility(False, reason="referential_signal")
     entity_id = envelope.resolved_product_ids[0]
     confidence = _product_confidence(envelope, entity_id)

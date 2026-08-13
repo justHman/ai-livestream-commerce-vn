@@ -129,6 +129,7 @@ def test_ineligible_on_comparison_intent():
         make_envelope(intent="so sánh giá sp-001 và sp-002"), DEFAULT_CONFIG
     )
     assert result.eligible is False
+    assert result.reason == "comparison_signal"
 
 
 def test_ineligible_on_referential_question_without_resolved_product():
@@ -137,6 +138,27 @@ def test_ineligible_on_referential_question_without_resolved_product():
         DEFAULT_CONFIG,
     )
     assert result.eligible is False
+    assert result.reason == "referential_signal"
+
+
+def test_eligible_on_resolved_referential_question_answers_with_zero_llm_calls():
+    envelope = make_envelope(questions=("vậy cái đó giá bao nhiêu?",))
+    result = is_fast_path_eligible(envelope, DEFAULT_CONFIG)
+    assert result.eligible is True
+    assert result.selector == "commerce.price.current"
+    assert result.entity_id == "sp-001"
+    sink = CollectingSink()
+    plan_result = executor().run_plan(
+        FactualFastPlan("sp-001", "commerce.price.current"),
+        envelope,
+        FakeFactProvider(FactValue("299.000đ", fresh=True)),
+        None,
+        DEFAULT_CONFIG,
+        metric_sink=sink,
+    )
+    assert plan_result.kind == PlanKind.ANSWER
+    assert plan_result.answer.text == "Giá hiện tại của sp-001 là 299.000đ."
+    assert sink.records["llm_calls"] == 0
 
 
 def test_eligible_when_multiple_candidates_resolve_to_same_id():

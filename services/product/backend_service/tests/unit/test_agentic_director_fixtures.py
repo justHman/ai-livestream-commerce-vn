@@ -7,10 +7,10 @@ exact telemetry checks. Behavior, not implementation — the fakes here are the
 system boundaries (fact provider, planner, evidence executor, final
 generator, verbalizer) whose live implementations arrive in later clusters.
 
-NOTE on the referential gate: the committed eligibility check rejects a
-cluster whose representative questions carry a referential marker even when
-the product IS resolved (referential_signal), so the resolved referential
-follow-up is answered through the complex path today.
+NOTE on the referential gate: eligibility rejects a referential cluster only
+when the referent is NOT resolved (referential_signal); once the product IS
+resolved upstream, the follow-up is a plain factual question and is answered
+through the fast path with zero LLM calls.
 """
 
 from __future__ import annotations
@@ -25,10 +25,12 @@ from backend.application.agentic_director.complex_path import (
 from backend.application.agentic_director.contracts import (
     ComplexPlan,
     EvidenceRequest,
+    FactualFastPlan,
     PlanKind,
 )
 from backend.application.agentic_director.fast_path import (
     FastPathConfig,
+    FastPathExecutor,
     FactValue,
     is_fast_path_eligible,
 )
@@ -224,6 +226,7 @@ def test_comparative_intent_is_not_fast_path_eligible():
     envelope = build_envelope(intent="so sánh P001 và P002")
     eligibility = is_fast_path_eligible(envelope, FastPathConfig())
     assert eligibility.eligible is False
+    assert eligibility.reason == "comparison_signal"
 
 
 def test_comparative_answer_grounds_both_exact_price_values():
@@ -353,32 +356,39 @@ def test_open_ended_without_evidence_returns_unavailable_never_fabricates():
 # --- 12.11 REFERENTIAL ------------------------------------------------------
 
 
-def test_referential_question_with_resolved_product_is_not_fast_path_eligible():
+def test_referential_question_with_resolved_product_is_fast_path_eligible():
     envelope = build_envelope(
-        intent="sạc nhanh",
-        questions=("vậy cái đó có sạc nhanh không?",),
+        intent="giá",
+        questions=("vậy cái đó giá bao nhiêu?",),
         resolved=("P001",),
+        candidates=(("P001", 0.9),),
     )
     eligibility = is_fast_path_eligible(envelope, FastPathConfig())
-    assert eligibility.eligible is False
+    assert eligibility.eligible is True
+    assert eligibility.selector == "commerce.price.current"
+    assert eligibility.entity_id == "P001"
 
 
-def test_referential_resolved_runs_complex_path_with_grounded_answer():
+def test_referential_resolved_runs_fast_path_with_zero_llm_calls():
     sink = CollectingMetricSink()
-    plan = ComplexPlan(
-        intent="sạc nhanh",
-        entities=("P001",),
-        evidence_requests=(EvidenceRequest(selector="commerce.shipping", entity_id="P001"),),
+    envelope = build_envelope(
+        intent="giá",
+        questions=("vậy cái đó giá bao nhiêu?",),
+        resolved=("P001",),
+        candidates=(("P001", 0.9),),
     )
-    final_text = "P001 có sạc nhanh."
-    run_complex(
-        PlanningOutput(plan=plan, raw_text="referential follow-up"),
-        [[{"entity_id": "P001", "selector": "commerce.shipping", "value": "có sạc nhanh"}]],
-        final_text,
-        sink,
+    result = FastPathExecutor().run_plan(
+        FactualFastPlan("P001", "commerce.price.current"),
+        envelope,
+        FakeFactProvider({("P001", "commerce.price.current"): FactValue("299.000đ", fresh=True)}),
+        None,
+        FastPathConfig(),
+        metric_sink=sink,
     )
-    assert PRICE_PATTERN.search(final_text) is None
-    assert sink.records["llm_calls"] == 2
+    assert result.kind == PlanKind.ANSWER
+    assert result.answer is not None
+    assert result.answer.text == "Giá hiện tại của P001 là 299.000đ."
+    assert sink.records["llm_calls"] == 0
 
 
 def test_referential_question_without_resolved_product_is_not_eligible():
@@ -387,7 +397,7 @@ def test_referential_question_without_resolved_product_is_not_eligible():
     )
     eligibility = is_fast_path_eligible(envelope, FastPathConfig())
     assert eligibility.eligible is False
-    assert eligibility.reason == "no_resolved_product"
+    assert eligibility.reason == "referential_signal"
 
 
 def test_referential_without_resolved_product_runs_complex_path():
