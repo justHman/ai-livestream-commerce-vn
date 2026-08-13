@@ -3,9 +3,15 @@
 Mock product catalog for Director/run-plan tests. The legacy
 ``core/debug/mock_data.py`` moved to the workbench fixture files (1.45/1.48);
 service tests keep a minimal service-local copy so they stay self-contained.
+
+Task 8.7: ``MOCK_ENTITIES`` is the entity-document mirror of ``MOCK_PRODUCTS``
+(the same 3 products as ``EntityDocument``). ``MOCK_PRODUCTS`` stays only
+until task 8.12 removes the legacy shape.
 """
 
 from __future__ import annotations
+
+from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
 
 MOCK_PRODUCTS = [
     {
@@ -66,3 +72,70 @@ MOCK_PRODUCTS = [
         "features": ["vitamin C 20%", "mờ thâm", "sáng da", "HA dưỡng ẩm"],
     },
 ]
+
+
+def _entity_from_product(product: dict) -> EntityDocument:
+    """One EntityDocument mirroring a legacy MOCK_PRODUCTS entry (task 8.7)."""
+    facts = [
+        Fact(key="commerce.price.current", type="int", value=product["price"], unit="VND"),
+        Fact(
+            key="commerce.price.original",
+            type="int",
+            value=product["original_price"],
+            unit="VND",
+        ),
+        Fact(key="commerce.promotion", type="str", value=product["promotion"]),
+        Fact(key="commerce.shipping", type="str", value=product["shipping"]),
+        Fact(key="commerce.warranty", type="str", value=product["warranty"]),
+        Fact(key="commerce.stock.available", type="bool", value=product["in_stock"]),
+        Fact(key="commerce.stock.quantity", type="int", value=product["stock_total"]),
+    ]
+    blocks = [
+        KnowledgeBlock(
+            id=f"desc:{product['id']}",
+            kind="description",
+            title="Mô tả",
+            content=product["description"],
+        ),
+        KnowledgeBlock(
+            id=f"features:{product['id']}",
+            kind="custom",
+            title="features",
+            content=", ".join(product["features"]),
+            tags=["features"],
+        ),
+    ]
+    if product.get("material"):
+        facts.append(Fact(key="custom.material", type="str", value=product["material"]))
+    if product.get("ref_image"):
+        facts.append(Fact(key="custom.ref_image", type="str", value=product["ref_image"]))
+    if product.get("colors"):
+        blocks.append(
+            KnowledgeBlock(
+                id=f"color:{product['id']}",
+                kind="custom",
+                title="color",
+                content=", ".join(product["colors"]),
+                tags=["color"],
+            )
+        )
+    if product.get("sizes"):
+        blocks.append(
+            KnowledgeBlock(
+                id=f"size:{product['id']}",
+                kind="custom",
+                title="size",
+                content=", ".join(product["sizes"]),
+                tags=["size"],
+            )
+        )
+    return EntityDocument(
+        id=product["id"],
+        entity_type="product",
+        name=product["name"],
+        facts=facts,
+        knowledge_blocks=blocks,
+    )
+
+
+MOCK_ENTITIES: list[EntityDocument] = [_entity_from_product(product) for product in MOCK_PRODUCTS]

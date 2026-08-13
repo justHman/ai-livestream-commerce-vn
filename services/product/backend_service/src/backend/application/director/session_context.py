@@ -21,8 +21,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from backend.application.entity.models import EntityDocument
 from backend.application.render.engines_base import RenderBackend
-from .catalog import Product
+from .catalog import embedding_text
 from .clustering import Comment
 from .config import StreamConfig
 from .decision import Decision, Director
@@ -36,7 +37,7 @@ from .state import ProductState, StreamState
 class DirectorSession:
     director: Director
     embedder: object
-    catalog: list[Product] = field(default_factory=list)
+    catalog: list[EntityDocument] = field(default_factory=list)
     base_role: str = ""
     shop_profile: str = ""
     system_prompt: str = ""
@@ -79,7 +80,7 @@ class DirectorRuntime:
     def attach(
         self,
         session_id: str,
-        products: list[Product],
+        products: list[EntityDocument],
         cfg: Optional[StreamConfig] = None,
         hooks: Optional[HookPool] = None,
         shop_profile: Optional[str] = None,
@@ -97,15 +98,21 @@ class DirectorRuntime:
         candidate_cfg = type(base_cfg)(**{**base_cfg.__dict__, **director_values})
         candidate_cfg.validate_runtime()
         emb = self._embed()
-        texts = [p.embedding_text() for p in products]
+        texts = [embedding_text(p) for p in products]
         vecs = emb.encode(texts) if texts else []
-        for p, v in zip(products, vecs):
-            p.embedding = list(v)
-
         catalog = {p.id: p for p in products}
         prod_states = [
-            ProductState(product_id=p.id, name=p.name, ref_image=p.ref_image, embedding=p.embedding)
-            for p in products
+            ProductState(
+                product_id=p.id,
+                name=p.name,
+                ref_image=(
+                    str(p.get_fact("custom.ref_image").value)
+                    if p.get_fact("custom.ref_image") is not None
+                    else None
+                ),
+                embedding=list(v),
+            )
+            for p, v in zip(products, vecs)
         ]
         from backend.config import BASE_SALE_PERSONA, _build_persona
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .catalog import Product
+from backend.application.entity.models import EntityDocument
+
 from .clustering import Comment
 
 
@@ -48,18 +49,24 @@ _OFF_TOPIC = (
 
 
 def _route_product(
-    text: str, products: list[Product], current_product_id: str | None
+    text: str, products: list[EntityDocument], current_product_id: str | None
 ) -> str | None:
     normalized = text.lower()
     matches: list[tuple[int, str]] = []
     for product in products:
-        terms = [product.id.lower(), product.name.lower()]
+        terms = [product.id.lower(), product.name.lower(), *product.aliases]
         terms.extend(
             part.lower()
             for part in product.name.split()
             if len(part) >= 3 and part.lower() not in _PRODUCT_STOPWORDS
         )
-        terms.extend(feature.lower() for feature in product.features)
+        # Legacy product.features now live in knowledge-block content.
+        terms.extend(
+            part.lower()
+            for block in product.knowledge_blocks
+            for part in block.content.split()
+            if len(part) >= 3 and part.lower() not in _PRODUCT_STOPWORDS
+        )
         score = sum(term in normalized for term in set(terms) if term)
         if score:
             matches.append((score, product.id))
@@ -71,7 +78,7 @@ def _route_product(
 
 def route_comment(
     comment: Comment,
-    products: list[Product],
+    products: list[EntityDocument],
     current_product_id: str | None,
 ) -> Comment:
     """Classify one comment and bind its commerce partition."""

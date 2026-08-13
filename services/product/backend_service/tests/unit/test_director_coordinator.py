@@ -20,7 +20,8 @@ from typing import Iterator
 
 import pytest
 
-from backend.application.director.catalog import Product
+from backend.application.entity.models import EntityDocument
+from backend.application.director.catalog import product_to_entity
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
 from backend.application.director.decision import Decision
 from backend.application.director.session_context import DirectorRuntime
@@ -104,20 +105,24 @@ class _StubTTS(TTSEngine):
 # ---------- helpers ----------
 
 
-def _make_products() -> list[Product]:
+def _make_products() -> list[EntityDocument]:
     """Create a minimal product catalog for testing."""
     return [
-        Product(
-            id="P001",
-            name="Kem chong nang SPF50",
-            description="Kem chong nang SPF50 chong nuoc",
-            price=350000,
+        product_to_entity(
+            {
+                "id": "P001",
+                "name": "Kem chong nang SPF50",
+                "description": "Kem chong nang SPF50 chong nuoc",
+                "price": 350000,
+            }
         ),
-        Product(
-            id="P002",
-            name="Serum Vitamin C",
-            description="Serum Vitamin C lam sang da",
-            price=250000,
+        product_to_entity(
+            {
+                "id": "P002",
+                "name": "Serum Vitamin C",
+                "description": "Serum Vitamin C lam sang da",
+                "price": 250000,
+            }
         ),
     ]
 

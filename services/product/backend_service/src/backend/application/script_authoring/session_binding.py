@@ -130,9 +130,11 @@ class RuntimeCatalogProxy:
         if runtime is None:
             return False
         try:
-            # DirectorRuntime catalog: per-session product id set.
+            # DirectorRuntime catalog: per-session product id set. The
+            # catalog holds EntityDocument values (task 8.7); entity ids are
+            # the product ids.
             for session in runtime._sessions.values():
-                if any(p.product_id == product_id for p in session.catalog):
+                if any(getattr(p, "id", None) == product_id for p in session.catalog):
                     return True
             return False
         except AttributeError:
