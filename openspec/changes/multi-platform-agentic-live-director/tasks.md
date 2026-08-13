@@ -141,29 +141,29 @@
 
 ## 13. Approved-script sentence cursor
 
-- [ ] 13.1 Add deterministic sentence-map derivation from exact approved `spoken_text`.
-- [ ] 13.2 Prove sentence-span concatenation preserves the exact approved artifact.
-- [ ] 13.3 Persist/runtime-store script-set id, approved version, product id, current sentence index, last completed sentence, and exact next sentence.
-- [ ] 13.4 Speak each approved sentence through the existing canonical `speak_verbatim` path.
-- [ ] 13.5 Advance cursor only after normal sentence-level speech completion.
-- [ ] 13.6 Do not infer sentence completion from individual TextChunk boundaries.
-- [ ] 13.7 Preserve Change A ownership of chunk policy, deadlines, hints, and finality.
-- [ ] 13.8 Preserve Change B approval/version immutability and no post-approval rewrite.
+- [x] 13.1 Add deterministic sentence-map derivation from exact approved `spoken_text`.
+- [x] 13.2 Prove sentence-span concatenation preserves the exact approved artifact.
+- [x] 13.3 Persist/runtime-store script-set id, approved version, product id, current sentence index, last completed sentence, and exact next sentence.
+- [x] 13.4 Speak each approved sentence through the existing canonical `speak_verbatim` path.
+- [x] 13.5 Advance cursor only after normal sentence-level speech completion.
+- [x] 13.6 Do not infer sentence completion from individual TextChunk boundaries.
+- [x] 13.7 Preserve Change A ownership of chunk policy, deadlines, hints, and finality.
+- [x] 13.8 Preserve Change B approval/version immutability and no post-approval rewrite.
 
 ## 14. Speech Arbiter and pending Q&A
 
-- [ ] 14.1 Implement explicit arbiter state machine.
-- [ ] 14.2 Make active approved script sentence non-preemptible for normal Q&A.
-- [ ] 14.3 Continue reducer processing while the sentence is playing.
-- [ ] 14.4 Maintain bounded pending-Q&A candidates with score hysteresis/supersession.
-- [ ] 14.5 Revalidate winner at safe sentence boundary.
-- [ ] 14.6 Defer expensive final Agent generation until boundary revalidation by default.
-- [ ] 14.7 Allow stable evidence prefetch for high-confidence pending candidates.
-- [ ] 14.8 Revalidate volatile evidence just-in-time before speech.
-- [ ] 14.9 Speak Q&A, preserve checkpoint at exact next script sentence, then resume.
-- [ ] 14.10 Keep operator/emergency hard interrupt as a distinct control-plane path.
-- [ ] 14.11 Add P010-script/P020-Q&A fixture proving P010 current sentence completes, P020 Q&A speaks, and P010 resumes at exact next sentence.
-- [ ] 14.12 Add Q&A failure fixture proving script cursor remains valid and runtime resumes per policy.
+- [x] 14.1 Implement explicit arbiter state machine.
+- [x] 14.2 Make active approved script sentence non-preemptible for normal Q&A.
+- [x] 14.3 Continue reducer processing while the sentence is playing.
+- [x] 14.4 Maintain bounded pending-Q&A candidates with score hysteresis/supersession.
+- [x] 14.5 Revalidate winner at safe sentence boundary.
+- [x] 14.6 Defer expensive final Agent generation until boundary revalidation by default.
+- [x] 14.7 Allow stable evidence prefetch for high-confidence pending candidates.
+- [x] 14.8 Revalidate volatile evidence just-in-time before speech.
+- [x] 14.9 Speak Q&A, preserve checkpoint at exact next script sentence, then resume.
+- [x] 14.10 Keep operator/emergency hard interrupt as a distinct control-plane path.
+- [x] 14.11 Add P010-script/P020-Q&A fixture proving P010 current sentence completes, P020 Q&A speaks, and P010 resumes at exact next sentence.
+- [x] 14.12 Add Q&A failure fixture proving script cursor remains valid and runtime resumes per policy.
 
 ## 15. Natural lead-in and resume transitions
 
