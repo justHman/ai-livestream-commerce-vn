@@ -17,6 +17,7 @@ import type { LifecycleEvent, ProductEntity } from "./api_types";
 import { validateProductCatalog, validateShopLimits, productJson } from "./validation";
 import { clearDiagnostics } from "./diagnostics";
 import { mountAuthoring } from "./authoringView";
+import { mountDataStudio } from "./datastudioView";
 
 import "./styles.css";
 
@@ -760,6 +761,12 @@ function boot(): void {
   mountAuthoring({
     backendUrl: () => backendUrl(),
     adminToken: getAdminToken,
+    api: store,
+    onEvent: addEvent,
+  });
+  mountDataStudio({
+    backendUrl: () => backendUrl(),
+    viewerToken: getViewerToken,
     api: store,
     onEvent: addEvent,
   });

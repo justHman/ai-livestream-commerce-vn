@@ -322,3 +322,108 @@ export const EMPTY_PRODUCT: ProductEntity = {
 export const EMPTY_SHOP: ShopProfile = {
   shop_name: "", host_name: "", address: "", phone: "", selling_style: "",
 };
+
+// ---------------- Universal entity context (cluster C9, Entity Data Studio) ----------------
+
+export type EntityType = "product" | "shop" | "campaign";
+
+export interface Fact {
+  key: string;
+  type: "int" | "float" | "str" | "bool";
+  value: number | string | boolean;
+  unit?: string | null;
+  labels: string[];
+  revision: number;
+  freshness: "stable" | "volatile";
+  updated_at: string;
+  source?: string | null;
+}
+
+export type KnowledgeBlockKind = "description" | "usage" | "story" | "campaign" | "custom";
+
+export interface KnowledgeBlock {
+  id: string;
+  kind: KnowledgeBlockKind;
+  title: string;
+  content: string;
+  tags: string[];
+  revision: number;
+}
+
+export interface Relation {
+  target_entity_id: string;
+  relation_type: string;
+  metadata: Record<string, string>;
+}
+
+/** The universal entity envelope (backend `EntityDocument`): revisioned facts,
+ * knowledge blocks, aliases/tags/relations. Vertical-specific attributes live
+ * in facts (`custom.*` keys), never as new fields. */
+export interface EntityDocument {
+  id: string;
+  entity_type: EntityType;
+  revision: number;
+  name: string;
+  aliases: string[];
+  tags: string[];
+  facts: Fact[];
+  knowledge_blocks: KnowledgeBlock[];
+  relations: Relation[];
+}
+
+/** One arbitrary label/value row from the Data Studio form. Unknown labels are
+ * preserved verbatim — the backend maps them to `custom.*` keys. */
+export interface FactRowIn {
+  label: string;
+  value: string;
+  unit?: string;
+}
+
+export interface KnowledgeBlockIn {
+  kind: KnowledgeBlockKind;
+  title: string;
+  content: string;
+  tags: string[];
+}
+
+/** PUT /api/v1/entities/{id} body. `common` keys are limited to the canonical
+ * registry keys; `fact_rows` carry arbitrary user labels as-is. */
+export interface SimpleEntityUpsertReq {
+  id: string;
+  entity_type: EntityType;
+  name: string;
+  aliases: string[];
+  tags: string[];
+  common: Record<string, string>;
+  fact_rows: FactRowIn[];
+  knowledge_blocks: KnowledgeBlockIn[];
+}
+
+export interface SuggestedFact {
+  key: string;
+  label: string;
+  value: string;
+  unit?: string | null;
+  type: "int" | "float" | "str" | "bool";
+}
+
+export interface SuggestFactsRequest {
+  entity_type: EntityType;
+  text: string;
+  block_kind: KnowledgeBlockKind;
+  block_title: string;
+}
+
+/** POST /api/v1/entities/suggestions — extraction is optional; may return an
+ * empty list when the LLM is disabled. */
+export interface SuggestionResponse {
+  suggestions: SuggestedFact[];
+  source_block_id?: string;
+  note?: string;
+}
+
+export interface RenderPreviewResponse {
+  entity_id: string;
+  selectors: string[];
+  rendered: string;
+}
