@@ -8,12 +8,22 @@ Public surface:
 - ``fast_path``: deterministic factual fast path — eligibility evaluation,
   exact templated answers from authoritative evidence, and one bounded
   verbalization generation.
+- ``complex_path``: bounded complex path — one planning generation, batch
+  evidence rounds, one final generation, all under code-owned budgets
+  (``AgentBudgets`` / ``ComplexPathExecutor``).
 - ``telemetry``: content-safe execution telemetry (path, evidence cache,
   rounds, LLM calls, tokens, latency, terminal state).
 - ``runtime_authority``: backend-owned runtime operations and the gate that
   rejects model-requested scheduling/retry/cursor/job instructions.
 """
 
+from backend.application.agentic_director.complex_path import (
+    AgentBudgets,
+    ComplexPathExecutor,
+    FinalGenerator,
+    PlanPlanner,
+    PlanningOutput,
+)
 from backend.application.agentic_director.contracts import (
     AnswerText,
     BudgetExceeded,
@@ -60,9 +70,11 @@ from backend.application.agentic_director.fast_path import (
 )
 
 __all__ = [
+    "AgentBudgets",
     "AnswerText",
     "BudgetExceeded",
     "ClusterEnvelope",
+    "ComplexPathExecutor",
     "ComplexPlan",
     "EvidenceRequest",
     "EvidenceExecutor",
@@ -75,11 +87,14 @@ __all__ = [
     "FastPathConfig",
     "FastPathEligibility",
     "FastPathExecutor",
+    "FinalGenerator",
     "FORBIDDEN_MODEL_INSTRUCTIONS",
     "InMemoryMetricSink",
     "MetricSink",
     "PlanKind",
+    "PlanPlanner",
     "PlanResult",
+    "PlanningOutput",
     "RuntimeAuthority",
     "RuntimeInstructionRejected",
     "UnavailableAnswer",
