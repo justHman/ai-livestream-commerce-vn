@@ -78,6 +78,10 @@ class LiveCluster:
     _member_texts: dict[str, str] = field(default_factory=dict, repr=False)
     _member_ts: dict[str, float] = field(default_factory=dict, repr=False)
     _member_viewers: dict[str, Optional[str]] = field(default_factory=dict, repr=False)
+    # internal: resolution/representative knobs carried on direct adds (6.9)
+    _max_representatives: int = 5
+    _product_resolution_threshold: float = 1.5
+    _product_resolution_margin: float = 1.0
 
     def add_member(
         self,
@@ -90,8 +94,18 @@ class LiveCluster:
         product_candidates: list[ProductCandidate],
         product_resolution_threshold: float = 1.5,
         product_resolution_margin: float = 1.0,
+        max_representatives_default: int = 5,
     ) -> None:
-        """Add one member and refresh derived state."""
+        """Add one member and refresh derived state.
+
+        ``max_representatives_default`` seeds the rep bound on the FIRST add;
+        the store's per-assign calls pass their configured value so the knob
+        is honored on every path (6.9). Later adds reuse the bound.
+        """
+        if not self.member_ids:
+            self._max_representatives = max_representatives_default
+        self._product_resolution_threshold = product_resolution_threshold
+        self._product_resolution_margin = product_resolution_margin
         self.intent = intent
         self._member_embeddings[comment_id] = list(vector)
         self._member_texts[comment_id] = text
@@ -109,13 +123,21 @@ class LiveCluster:
         self.unique_viewer_count = len(self.viewer_ids)
         self.newest_t = max(self.newest_t, ts)
         self.updated_at = ts
-        self.recompute()
+        self.recompute(
+            max_representatives=self._max_representatives,
+            product_resolution_threshold=product_resolution_threshold,
+            product_resolution_margin=product_resolution_margin,
+        )
 
     def remove_member(self, comment_id: str) -> None:
         """Remove one member (eviction/expiry) and refresh derived state."""
         self._drop_member_with_ts(comment_id)
         self.newest_t = max((self._member_ts[cid] for cid in self.member_ids), default=0.0)
-        self.recompute()
+        self.recompute(
+            max_representatives=self._max_representatives,
+            product_resolution_threshold=self._product_resolution_threshold,
+            product_resolution_margin=self._product_resolution_margin,
+        )
 
     def resolve_products(
         self,
@@ -174,18 +196,24 @@ class LiveCluster:
         self.representative_comment_ids = self._pick_representatives(max_representatives)
 
     def _pick_representatives(self, max_representatives: int) -> list[str]:
-        """Medoid first, then members least similar to already-picked ones."""
-        picked = [self.medoid_comment_id] if self.medoid_comment_id else []
-        remaining = [cid for cid in self.member_ids if cid not in picked]
-        while picked and len(picked) < max_representatives and remaining:
-            picked_vecs = [self._member_embeddings[cid] for cid in picked]
-            best = min(
-                remaining,
-                key=lambda cid: max(cosine(self._member_embeddings[cid], pv) for pv in picked_vecs),
-            )
-            picked.append(best)
-            remaining.remove(best)
-        return [cid for cid in picked if cid is not None]
+        """Medoid first, then members least similar to already-picked ones.
+
+        Diversity is measured against the medoid ONLY (Decision 8: medoid
+        plus diversity representatives subject to cohesion) — the min-max
+        against the whole picked set collapses to the medoid comparison, so
+        the loop body is the plain per-member max-similarity to the medoid.
+        This keeps tie-breaks stable (arrival order in ``member_ids``) and
+        picks the farthest members from the topic center.
+        """
+        medoid = self.medoid_comment_id
+        if medoid is None:
+            return []
+        sims = sorted(
+            (cosine(self._member_embeddings[cid], self._member_embeddings[medoid]), cid)
+            for cid in self.member_ids
+            if cid != medoid
+        )
+        return [medoid, *[cid for _, cid in sims[: max_representatives - 1]]]
 
     def _merge_candidate(self, cand: ProductCandidate) -> None:
         for i, existing in enumerate(self.product_candidates):
@@ -387,6 +415,7 @@ class ClusterStore:
             candidates,
             product_resolution_threshold=self._config.product_resolution_threshold,
             product_resolution_margin=self._config.product_resolution_margin,
+            max_representatives_default=self._config.max_representatives,
         )
         self._total_members_assigned += 1
         # Every fast-lane assignment is an unreconciled comment; the first one
@@ -397,6 +426,9 @@ class ClusterStore:
         # Bounds run after the add so a fresh 0-member cluster never evicts itself.
         self._enforce_cluster_bound()
         self._enforce_member_bound(best)
+        # 6.10: the novelty fingerprint follows the member set — a revised
+        # comment (same id) keeps the fingerprint, a new member rotates it.
+        self.refresh_novelty(best.cluster_id)
         return best.cluster_id
 
     # ------------------------------------------------------------------
@@ -429,8 +461,60 @@ class ClusterStore:
                     product_resolution_threshold=self._config.product_resolution_threshold,
                     product_resolution_margin=self._config.product_resolution_margin,
                 )
+                # 6.9: representatives must track eviction (they were NOT
+                # recomputed when only an evicted member was the medoid).
+                self._refresh_representatives(cluster)
         self._evicted_members += evicted
         return evicted
+
+    # ------------------------------------------------------------------
+    # Lifecycle (6.11): skip/selection state persists on stable cluster ids.
+    # All three are idempotent no-ops for unknown ids (the fast lane never
+    # crashes on a cluster the bound evicted in the meantime).
+    # ------------------------------------------------------------------
+
+    def mark_selected(self, cluster_id: str, now: float) -> None:
+        """Record the cluster as selected by the Director at ``now``."""
+        cluster = self._clusters.get(cluster_id)
+        if cluster is not None:
+            cluster.last_selected_at = now
+
+    def mark_answered(self, cluster_id: str, now: float) -> None:
+        """Record the cluster as answered by the Agent at ``now``."""
+        cluster = self._clusters.get(cluster_id)
+        if cluster is not None:
+            cluster.last_answered_at = now
+
+    def increment_skip(self, cluster_id: str) -> None:
+        """Bump the skip counter for one stable cluster (no-op for unknown)."""
+        cluster = self._clusters.get(cluster_id)
+        if cluster is not None:
+            cluster.skip_count += 1
+
+    def refresh_novelty(self, cluster_id: str) -> None:
+        """Recompute the 6.10 semantic fingerprint as the cluster's novelty key.
+
+        Stable cluster ids make the fingerprint stable across fast-lane
+        updates; only member-set/identity changes rotate it, so semantically
+        distinct questions on the same product+intent get distinct keys.
+        """
+        from .demand import cluster_fingerprint
+
+        cluster = self._clusters.get(cluster_id)
+        if cluster is not None:
+            cluster.novelty_fingerprint = cluster_fingerprint(cluster)
+
+    def _refresh_representatives(self, cluster: LiveCluster) -> None:
+        """Recompute representatives ONLY when the medoid was evicted.
+
+        The medoid is the first representative; when it leaves the cluster the
+        greedy-diversity picks must be re-derived (they depend on it).
+        """
+        if cluster.medoid_comment_id not in cluster.member_ids:
+            cluster.recompute(
+                product_resolution_threshold=self._config.product_resolution_threshold,
+                product_resolution_margin=self._config.product_resolution_margin,
+            )
 
     # ------------------------------------------------------------------
     # Reconciliation (5.5-5.6) — NEVER called from the fast-lane hot path
@@ -520,12 +604,14 @@ class ClusterStore:
                         product_candidates=other.product_candidates,
                         product_resolution_threshold=self._config.product_resolution_threshold,
                         product_resolution_margin=self._config.product_resolution_margin,
+                        max_representatives_default=self._config.max_representatives,
                     )
                     other.remove_member(member_id)
                 self._clusters.pop(other.cluster_id, None)
                 merged_away.add(other.cluster_id)
                 result.merged += 1
                 survivor.recompute(
+                    max_representatives=self._config.max_representatives,
                     product_resolution_threshold=self._config.product_resolution_threshold,
                     product_resolution_margin=self._config.product_resolution_margin,
                 )
@@ -649,6 +735,7 @@ class ClusterStore:
                 product_candidates=cluster.product_candidates,
                 product_resolution_threshold=self._config.product_resolution_threshold,
                 product_resolution_margin=self._config.product_resolution_margin,
+                max_representatives_default=self._config.max_representatives,
             )
         if not cluster.member_ids:
             self._clusters.pop(cluster.cluster_id, None)
