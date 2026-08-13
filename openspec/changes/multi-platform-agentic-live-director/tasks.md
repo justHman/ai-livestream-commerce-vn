@@ -89,7 +89,7 @@
 - [x] 8.9 Migrate script-authoring authoritative context/fingerprints without weakening approval freshness.
 - [x] 8.10 Migrate backend API models and generated OpenAPI.
 - [x] 8.11 Migrate Workbench TypeScript types/fixtures/UI.
-- [ ] 8.12 Remove rigid product/shop compatibility adapters after all consumers migrate.
+- [x] 8.12 Remove rigid product/shop compatibility adapters after all consumers migrate.
 - [x] 8.13 Add cross-domain fixtures for fashion, cosmetics, food, electronics, household goods, and at least one custom vertical.
 
 ## 9. Shop/Product Data Studio
