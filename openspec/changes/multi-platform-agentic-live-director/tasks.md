@@ -49,7 +49,7 @@
 - [x] 5.4 Implement member/embedding expiry tied to active rolling horizon.
 - [x] 5.5 Implement reconciliation trigger state: `>=100` unreconciled comments OR `>=60s` since first unreconciled comment.
 - [x] 5.6 Implement bounded active-horizon reconciliation capable of compatible merge/split/centroid/medoid repair.
-- [ ] 5.7 Preserve last valid fast-lane state on reconciliation failure and emit typed diagnostics.
+- [x] 5.7 Preserve last valid fast-lane state on reconciliation failure and emit typed diagnostics.
 - [ ] 5.8 Add stable-ID and arrival-order benchmark fixtures.
 - [ ] 5.9 Add long-duration bounded-memory test proving state does not grow linearly with livestream duration.
 - [ ] 5.10 Remove parallel unbounded rolling-comment/embedding history no longer required by the new store.
