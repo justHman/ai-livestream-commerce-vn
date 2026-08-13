@@ -1,4 +1,4 @@
-"""Tasks 15.1/15.4: canonical transitions are pure and the normal path has ONE resolver call.
+"""Tasks 15.1/15.4/15.5: canonical transitions — pure, ONE resolver call, naturalness + facts.
 
 Proves: ``build_qa_lead_in`` and ``build_resume_bridge`` are pure sync
 functions of strings (not coroutines, no IO/model/clock — they take only
@@ -6,12 +6,13 @@ strings); the arbiter's normal Q&A path performs EXACTLY one resolver call
 (the final generation) across a full Q&A + bridge + resume cycle — no second
 resolver/LLM invocation exists between the Q&A turn and the next script
 sentence; the composed ``resolution.speech_text`` begins with the lead-in and
-contains the answer (single combined turn).
+contains the answer (single combined turn); Vietnamese naturalness (correct
+diacritics, byte-exact spec examples) and exact-fact preservation
+(interpolated product codes/prices survive composition byte-for-byte).
 """
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 
 from backend.application.live_runtime.transitions import (
@@ -22,7 +23,9 @@ from backend.application.live_runtime.transitions import (
 from unit.live_runtime.qa_fixtures import (
     P010_SENTENCES,
     P020_QA_ENVELOPE,
+    P020_ANSWER_TEXT,
     QNA_LEAD_IN,
+    RESUME_BRIDGE_P010,
     RecordingQaResolver,
     RecordingSpeechFake,
     build_p020_answer,
@@ -84,3 +87,46 @@ async def test_composed_turn_begins_with_lead_in_and_contains_answer() -> None:
     assert text.startswith(QNA_LEAD_IN)
     assert "P020 có sạc nhanh 65W nha." in text
     assert text == QNA_LEAD_IN + "P020 có sạc nhanh 65W nha."
+
+
+def test_lead_in_matches_spec_example_byte_exact() -> None:
+    # The spec's P020 lead-in, produced by the canonical template:
+    # "Em thấy nhiều anh chị đang hỏi P020 có hỗ trợ sạc nhanh không…"
+    assert build_qa_lead_in("P020", "có hỗ trợ sạc nhanh không") == QNA_LEAD_IN
+
+
+def test_vietnamese_diacritics_are_preserved() -> None:
+    lead_in = build_qa_lead_in("P020", "có hỗ trợ sạc nhanh không")
+    bridge = build_resume_bridge("P010")
+
+    # Correct diacritics, never ASCII-mangled (e.g. a,e,o stripped of marks).
+    assert "đang hỏi" in lead_in
+    assert "nhiều anh chị" in lead_in
+    assert "Rồi, em tiếp tục" in bridge
+    assert "nhé" in bridge
+
+
+def test_bridge_matches_fixture_byte_exact() -> None:
+    assert build_resume_bridge("P010") == RESUME_BRIDGE_P010
+
+
+def test_facts_survive_composition_byte_exact() -> None:
+    # Exact fact values survive the lead-in + answer composition byte-for-byte.
+    composed = build_p020_answer()
+
+    assert "P020" in composed
+    assert "65W" in composed
+
+
+def test_lead_in_never_contains_raw_question_text() -> None:
+    lead_in = build_qa_lead_in("P020", "có hỗ trợ sạc nhanh không")
+    raw_question = P020_QA_ENVELOPE.representative_questions[0]
+
+    assert raw_question not in lead_in
+
+
+def test_transitions_are_deterministic_across_calls() -> None:
+    assert build_qa_lead_in("P020", "có hỗ trợ sạc nhanh không") == build_qa_lead_in(
+        "P020", "có hỗ trợ sạc nhanh không"
+    )
+    assert build_resume_bridge("P010") == build_resume_bridge("P010")
