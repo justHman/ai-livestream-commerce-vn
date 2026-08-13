@@ -93,7 +93,8 @@ P020_QA_ENVELOPE: ClusterEnvelope = _P020Envelope()  # type: ignore[type-abstrac
 QNA_LEAD_IN = "Em thấy nhiều anh chị đang hỏi P020 có hỗ trợ sạc nhanh không. "
 P020_ANSWER_TEXT = "P020 có sạc nhanh 65W nha."
 # Deterministic resume bridge back to the script product (Decision 19).
-RESUME_BRIDGE_P010 = "Rồi, em tiếp tục với P010 nhé..."
+# Ends with "." matching the canonical DEFAULT_RESUME_BRIDGE_TEMPLATE.
+RESUME_BRIDGE_P010 = "Rồi, em tiếp tục với P010 nhé."
 
 
 def build_p020_answer() -> str:

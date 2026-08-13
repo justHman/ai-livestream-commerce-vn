@@ -181,6 +181,16 @@ async def test_lead_in_never_contains_raw_viewer_text() -> None:
     assert "giá bao nhiêu?" not in resolution.lead_in
 
 
+async def test_exact_facts_survive_composed_speech_byte_exact() -> None:
+    resolver = _resolver(fact=FactValue(value="1.2 triệu", fresh=True))
+
+    resolution = await resolver.resolve_qa(FastEnvelope())
+
+    # The lead-in prefix does not alter the grounded fact value or product code.
+    assert "1.2 triệu" in resolution.speech_text
+    assert resolution.lead_in + "Giá hiện tại của P001 là 1.2 triệu." == resolution.speech_text
+
+
 async def test_prefetch_stable_is_noop_hook() -> None:
     resolver = _resolver()
 

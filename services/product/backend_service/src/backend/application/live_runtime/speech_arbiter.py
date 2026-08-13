@@ -25,6 +25,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from backend.application.live_runtime.pending_qa import PendingQaStore
 from backend.application.live_runtime.qa_resolver import QaResolutionService
+from backend.application.live_runtime.resume_bridge import build_resume_bridge, should_speak_bridge
 from backend.application.live_runtime.sentence_speaker import SentenceCompletionError
 
 __all__ = [
@@ -106,6 +107,7 @@ class SpeechArbiter:
         self._now = now or (lambda: 0.0)
         self._state = ArbiterState.SCRIPT_READY
         self._qa_speech_text = ""
+        self._qa_product_id: str | None = None
         self._history: list[tuple[ArbiterState, float]] = [(self._state, self._now())]
 
     @property
@@ -176,6 +178,12 @@ class SpeechArbiter:
                 self._transition(ArbiterState.SCRIPT_READY)
                 return self._state
             self._qa_speech_text = resolution.speech_text
+            # The winner is a PendingQaCandidate wrapping the envelope; tests
+            # also pass raw envelopes, so unwrap defensively.
+            envelope = getattr(winner, "envelope", winner)
+            self._qa_product_id = (
+                envelope.resolved_product_ids[0] if envelope.resolved_product_ids else None
+            )
             self._transition(ArbiterState.QNA_PLAYING)
             return self._state
         if self._state == ArbiterState.QNA_PLAYING:
@@ -184,15 +192,20 @@ class SpeechArbiter:
             self._transition(ArbiterState.RESUME_BRIDGE)
             return self._state
         if self._state == ArbiterState.RESUME_BRIDGE:
-            if self._config.speak_resume_bridge and not self._cursor.finished:
-                product = self._config.bridge_topic
-                position = self._cursor.position() if hasattr(self._cursor, "position") else None
-                position_product = (
-                    getattr(position, "product_id", None) if position is not None else None
+            position = self._cursor.position() if hasattr(self._cursor, "position") else None
+            position_product = (
+                getattr(position, "product_id", None) if position is not None else None
+            )
+            current_product = position_product or self._config.bridge_topic
+            if should_speak_bridge(
+                config_enabled=self._config.speak_resume_bridge,
+                script_finished=self._cursor.finished,
+                previous_product=self._qa_product_id,
+                current_product=current_product,
+            ):
+                bridge = build_resume_bridge(
+                    current_product, template=self._config.resume_bridge_template
                 )
-                if position_product:
-                    product = position_product
-                bridge = self._config.resume_bridge_template.format(product=product)
                 await self._speak(session_id, bridge)
             self._transition(ArbiterState.SCRIPT_READY)
             return self._state

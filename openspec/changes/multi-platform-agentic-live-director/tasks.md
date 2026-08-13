@@ -167,11 +167,11 @@
 
 ## 15. Natural lead-in and resume transitions
 
-- [ ] 15.1 Add deterministic Vietnamese Q&A lead-in templates based on cluster/topic/product.
-- [ ] 15.2 Allow final answer generation to include the lead-in in the same call.
-- [ ] 15.3 Add deterministic resume templates using current script product and optional sentence metadata.
-- [ ] 15.4 Do not add a dedicated bridge-only LLM call to the normal path.
-- [ ] 15.5 Add Vietnamese naturalness fixtures and exact-fact preservation checks.
+- [x] 15.1 Add deterministic Vietnamese Q&A lead-in templates based on cluster/topic/product.
+- [x] 15.2 Allow final answer generation to include the lead-in in the same call.
+- [x] 15.3 Add deterministic resume templates using current script product and optional sentence metadata.
+- [x] 15.4 Do not add a dedicated bridge-only LLM call to the normal path.
+- [x] 15.5 Add Vietnamese naturalness fixtures and exact-fact preservation checks.
 
 ## 16. Workbench SE Adapter Simulator
 

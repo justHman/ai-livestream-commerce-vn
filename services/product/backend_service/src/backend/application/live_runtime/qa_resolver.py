@@ -38,6 +38,7 @@ from backend.application.agentic_director.fast_path import (
 )
 from backend.application.evidence.cache import CacheStatus, EvidenceCache
 from backend.application.evidence.models import VOLATILE_SELECTORS
+from backend.application.live_runtime.transitions import INTENT_TOPIC_PHRASES, build_qa_lead_in
 
 __all__ = ["BoundaryQaResolver", "QaResolution", "QaResolutionService", "VolatileEvidenceSource"]
 
@@ -90,10 +91,11 @@ class VolatileEvidenceSource(Protocol):
     def revalidate(self, entity_id: str, selector: str) -> bool: ...
 
 
-def _default_lead_in(candidate: Any) -> str:
-    """Deterministic natural lead-in (design Decision 19), never raw viewer text."""
-    topic = candidate.resolved_product_ids[0] if candidate.resolved_product_ids else ""
-    return f"Em thấy nhiều anh chị đang hỏi về {topic}... " if topic else ""
+def _canonical_lead_in(candidate: Any) -> str:
+    """Adapter over the canonical template (Decision 19), never raw viewer text."""
+    product = candidate.resolved_product_ids[0] if candidate.resolved_product_ids else ""
+    topic_phrase = INTENT_TOPIC_PHRASES.get(candidate.intent) if candidate.intent else None
+    return build_qa_lead_in(product, topic_phrase)
 
 
 class BoundaryQaResolver:
@@ -113,7 +115,7 @@ class BoundaryQaResolver:
         verbalizer: Verbalizer | None = None,
         make_complex_plan: Callable[[Any], ComplexPlan] | None = None,
         max_speech_length: int = 400,
-        lead_in_builder: Callable[[Any], str] = _default_lead_in,
+        lead_in_builder: Callable[[Any], str] = _canonical_lead_in,
     ) -> None:
         self._fact_provider = fact_provider
         self._planner = planner
@@ -168,8 +170,9 @@ class BoundaryQaResolver:
                 self._metric_sink,
             )
             if result.kind == PlanKind.ANSWER and result.answer is not None:
-                text = result.answer.text[: self._max_speech_length]
-                return QaResolution.answer(text, lead_in=self._lead_in_builder(candidate))
+                lead_in = self._lead_in_builder(candidate)
+                text = (lead_in + result.answer.text)[: self._max_speech_length]
+                return QaResolution.answer(text, lead_in=lead_in)
 
         if self._make_complex_plan is not None:
             plan = self._make_complex_plan(candidate)
@@ -183,8 +186,9 @@ class BoundaryQaResolver:
                 self._metric_sink,
             )
             if result.kind == PlanKind.ANSWER and result.answer is not None:
-                text = result.answer.text[: self._max_speech_length]
-                return QaResolution.answer(text, lead_in=self._lead_in_builder(candidate))
+                lead_in = self._lead_in_builder(candidate)
+                text = (lead_in + result.answer.text)[: self._max_speech_length]
+                return QaResolution.answer(text, lead_in=lead_in)
             if result.kind == PlanKind.BUDGET_EXCEEDED:
                 return QaResolution.budget_exceeded()
 

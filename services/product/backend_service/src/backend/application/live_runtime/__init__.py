@@ -35,6 +35,11 @@ from .qa_resolver import (
     QaResolutionService,
     VolatileEvidenceSource,
 )
+from .transitions import (
+    DEFAULT_QA_LEAD_IN_TEMPLATE,
+    INTENT_TOPIC_PHRASES,
+    build_qa_lead_in,
+)
 from .script_state import ScriptPosition, ScriptState
 from .session_memory import SessionMemory
 from .speech_arbiter import ArbiterConfig, ArbiterState, SpeechArbiter, SpeechTextLike
@@ -57,6 +62,7 @@ __all__ = [
     "SpeechArbiter",
     "SpeechTextLike",
     "TopicMemory",
+    "DEFAULT_QA_LEAD_IN_TEMPLATE",
     "DEFAULT_RESUME_BRIDGE_TEMPLATE",
     "EvidencePrefetcher",
     "HARD_INTERRUPT_OPERATION",
@@ -64,6 +70,8 @@ __all__ = [
     "PrefetchConfig",
     "VolatileEvidenceSource",
     "VolatileRevalidator",
+    "INTENT_TOPIC_PHRASES",
+    "build_qa_lead_in",
     "build_resume_bridge",
     "estimate_tokens",
     "is_hard_interrupt",
