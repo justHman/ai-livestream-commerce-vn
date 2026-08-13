@@ -105,14 +105,14 @@
 
 ## 10. Evidence Planner and cache
 
-- [ ] 10.1 Define typed `EvidenceRequest`, `EvidenceBundle`, and freshness metadata.
-- [ ] 10.2 Implement generic `search_entities`, `get_entities`, and batched `get_evidence` application operations.
-- [ ] 10.3 Implement `EvidenceCache` keyed by entity/selector/revision/freshness semantics.
-- [ ] 10.4 Implement cache-first planner that batches only misses.
-- [ ] 10.5 Execute independent evidence misses concurrently where safe.
-- [ ] 10.6 Define shorter freshness or explicit invalidation for price/stock/promotion/availability.
-- [ ] 10.7 Add cache-hit, partial-hit, stale, revision-change, and volatile-refresh tests.
-- [ ] 10.8 Add diagnostics for requested selectors, cache hit/miss counts, freshness state, and batch fan-in without leaking unnecessary private content.
+- [x] 10.1 Define typed `EvidenceRequest`, `EvidenceBundle`, and freshness metadata.
+- [x] 10.2 Implement generic `search_entities`, `get_entities`, and batched `get_evidence` application operations.
+- [x] 10.3 Implement `EvidenceCache` keyed by entity/selector/revision/freshness semantics.
+- [x] 10.4 Implement cache-first planner that batches only misses.
+- [x] 10.5 Execute independent evidence misses concurrently where safe.
+- [x] 10.6 Define shorter freshness or explicit invalidation for price/stock/promotion/availability.
+- [x] 10.7 Add cache-hit, partial-hit, stale, revision-change, and volatile-refresh tests.
+- [x] 10.8 Add diagnostics for requested selectors, cache hit/miss counts, freshness state, and batch fan-in without leaking unnecessary private content.
 
 ## 11. Structured Agent memory
 
