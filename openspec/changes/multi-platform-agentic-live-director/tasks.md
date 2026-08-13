@@ -126,18 +126,18 @@
 
 ## 12. Bounded Agentic Director
 
-- [ ] 12.1 Define typed Agent plan/result contracts above the existing model-agnostic LLM seam.
-- [ ] 12.2 Implement deterministic factual fast-path eligibility.
-- [ ] 12.3 Support zero-LLM exact templated factual answers where appropriate.
-- [ ] 12.4 Support one-generation grounded verbalization for factual answers requiring natural phrasing.
-- [ ] 12.5 Implement complex path with maximum one planning generation, one normal evidence round, and one final answer generation.
-- [ ] 12.6 Add configurable exceptional ceiling of a second evidence round; reject attempts beyond the budget.
-- [ ] 12.7 Validate all model-requested evidence operations against an allowlisted typed schema.
-- [ ] 12.8 Forbid arbitrary filesystem/web/job-management/tool execution.
-- [ ] 12.9 Ensure backend code, not model output, owns retries, candidate selection, pivot policy, script cursor state, and job creation.
-- [ ] 12.10 Add exact call/round/token/latency telemetry.
-- [ ] 12.11 Add ambiguous, comparative, multi-product, open-ended, and referential Q&A fixtures.
-- [ ] 12.12 Add hallucination regression proving unavailable authoritative evidence is never replaced by invented exact facts.
+- [x] 12.1 Define typed Agent plan/result contracts above the existing model-agnostic LLM seam.
+- [x] 12.2 Implement deterministic factual fast-path eligibility.
+- [x] 12.3 Support zero-LLM exact templated factual answers where appropriate.
+- [x] 12.4 Support one-generation grounded verbalization for factual answers requiring natural phrasing.
+- [x] 12.5 Implement complex path with maximum one planning generation, one normal evidence round, and one final answer generation.
+- [x] 12.6 Add configurable exceptional ceiling of a second evidence round; reject attempts beyond the budget.
+- [x] 12.7 Validate all model-requested evidence operations against an allowlisted typed schema.
+- [x] 12.8 Forbid arbitrary filesystem/web/job-management/tool execution.
+- [x] 12.9 Ensure backend code, not model output, owns retries, candidate selection, pivot policy, script cursor state, and job creation.
+- [x] 12.10 Add exact call/round/token/latency telemetry.
+- [x] 12.11 Add ambiguous, comparative, multi-product, open-ended, and referential Q&A fixtures.
+- [x] 12.12 Add hallucination regression proving unavailable authoritative evidence is never replaced by invented exact facts.
 
 ## 13. Approved-script sentence cursor
 
