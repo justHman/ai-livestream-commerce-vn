@@ -3,7 +3,7 @@
 - [x] 1.1 Record implementation baseline SHA and validate this change under the repository's `spec-driven` schema. (baseline: dd8672e)
 - [ ] 1.2 Add strict delta specs for all new/modified capabilities in this change.
 - [ ] 1.3 Add a contract migration test that fails while any removed viewer-ingress route remains mounted.
-- [ ] 1.4 Add a static test that fails if `websocket/platform.schema.json` remains generated after migration.
+- [x] 1.4 Add a static test that fails if `websocket/platform.schema.json` remains generated after migration.
 - [ ] 1.5 Add architecture guards preventing a second script-specific chunker or sentence=`TextChunk` coupling.
 
 ## 2. Canonical multi-platform event ingress
