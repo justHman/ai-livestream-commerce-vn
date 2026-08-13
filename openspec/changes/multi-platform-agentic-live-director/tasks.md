@@ -116,13 +116,13 @@
 
 ## 11. Structured Agent memory
 
-- [ ] 11.1 Implement bounded `ScriptState`.
-- [ ] 11.2 Implement bounded structured `SessionMemory`.
-- [ ] 11.3 Implement keyed `TopicMemory` for recent Q&A/reference resolution.
-- [ ] 11.4 Keep `EvidenceCache` independent from LLM conversation turns.
-- [ ] 11.5 Add deterministic eviction/token-budget policy.
-- [ ] 11.6 Prove full runtime transcript persistence is not automatically replayed into model context.
-- [ ] 11.7 Add follow-up fixture such as “vậy cái đó có sạc nhanh không?” resolving through bounded topic/entity memory.
+- [x] 11.1 Implement bounded `ScriptState`.
+- [x] 11.2 Implement bounded structured `SessionMemory`.
+- [x] 11.3 Implement keyed `TopicMemory` for recent Q&A/reference resolution.
+- [x] 11.4 Keep `EvidenceCache` independent from LLM conversation turns.
+- [x] 11.5 Add deterministic eviction/token-budget policy.
+- [x] 11.6 Prove full runtime transcript persistence is not automatically replayed into model context.
+- [x] 11.7 Add follow-up fixture such as “vậy cái đó có sạc nhanh không?” resolving through bounded topic/entity memory.
 
 ## 12. Bounded Agentic Director
 
