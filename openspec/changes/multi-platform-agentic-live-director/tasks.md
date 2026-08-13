@@ -84,8 +84,8 @@
 - [x] 8.4 Implement revisioned entity repository using the existing persistence stack's document/JSON semantics unless design evidence proves a separate datastore is required.
 - [x] 8.5 Implement entity search by id/name/alias/tags and fact selectors.
 - [x] 8.6 Implement query-relevant context rendering rather than full-document serialization.
-- [ ] 8.7 Migrate Director catalog/retrieval/fact answering.
-- [ ] 8.8 Migrate session attach/snapshots/run-plan inputs.
+- [x] 8.7 Migrate Director catalog/retrieval/fact answering.
+- [x] 8.8 Migrate session attach/snapshots/run-plan inputs.
 - [ ] 8.9 Migrate script-authoring authoritative context/fingerprints without weakening approval freshness.
 - [ ] 8.10 Migrate backend API models and generated OpenAPI.
 - [ ] 8.11 Migrate Workbench TypeScript types/fixtures/UI.
