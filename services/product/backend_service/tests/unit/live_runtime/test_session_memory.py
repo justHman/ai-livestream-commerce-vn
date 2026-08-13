@@ -86,6 +86,13 @@ def test_render_context_excludes_unbounded_content() -> None:
         assert line not in str(context)
 
 
+def test_is_within_budget_after_eviction() -> None:
+    memory = SessionMemory(policy=EvictionPolicy(max_entries=20, max_tokens=2_000))
+    for index in range(500):
+        memory.add(f"key-{index}", f"nội dung lặp lại {index} " * 20)
+    assert memory.is_within_budget()
+
+
 def test_rendered_context_respects_token_budget() -> None:
     memory = SessionMemory(policy=EvictionPolicy(max_entries=20, max_tokens=2_000))
     for index in range(500):

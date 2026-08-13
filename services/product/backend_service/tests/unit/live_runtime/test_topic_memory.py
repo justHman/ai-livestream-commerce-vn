@@ -86,6 +86,34 @@ def test_last_topic_is_most_recently_answered() -> None:
     assert memory.last_turn().resolved_product_ids == ("P020",)
 
 
+def test_reanswering_existing_topic_refreshes_recency() -> None:
+    """Re-answering P001 makes IT the last answered topic, not P020."""
+    memory = TopicMemory(policy=EvictionPolicy(max_entries=10, max_tokens=10_000))
+    memory.add(
+        topic_key="P001",
+        question="P001 giá bao nhiêu?",
+        answer="P001 giá 1 triệu.",
+        resolved_product_ids=("P001",),
+    )
+    memory.add(
+        topic_key="P020",
+        question="P020 sạc nhanh không?",
+        answer="P020 sạc nhanh 33W.",
+        resolved_product_ids=("P020",),
+    )
+    memory.add(
+        topic_key="P001",
+        question="P001 màu gì?",
+        answer="P001 màu đen.",
+        resolved_product_ids=("P001",),
+    )
+
+    assert memory.last_topic_key() == "P001"
+    turn = resolve_reference("vậy cái đó có sạc nhanh không?", memory)
+    assert turn is not None
+    assert "P001" in turn.resolved_product_ids
+
+
 def test_resolve_reference_maps_to_last_answered_topic() -> None:
     memory = TopicMemory(policy=EvictionPolicy(max_entries=10, max_tokens=10_000))
     memory.add(

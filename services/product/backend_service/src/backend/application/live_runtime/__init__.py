@@ -24,12 +24,7 @@ of conversation turns (cluster C10).
 
 from __future__ import annotations
 
-from .bounded_memory import (
-    EvictionPolicy,
-    MemoryStore,
-    estimate_tokens,
-    memory_context_ok,
-)
+from .bounded_memory import EvictionPolicy, MemoryStore, estimate_tokens
 from .script_state import ScriptPosition, ScriptState
 from .session_memory import SessionMemory
 from .topic_memory import TopicMemory, resolve_reference
@@ -42,6 +37,5 @@ __all__ = [
     "SessionMemory",
     "TopicMemory",
     "estimate_tokens",
-    "memory_context_ok",
     "resolve_reference",
 ]

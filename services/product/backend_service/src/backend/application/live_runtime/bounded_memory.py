@@ -1,8 +1,9 @@
 """Shared bounded-memory policy for the live-runtime stores (task 11.5).
 
 Deterministic eviction and token budget: every bounded collection evicts
-oldest-first (FIFO by insertion) and enforces ``max_entries`` and
-``max_tokens`` so a session stays bounded regardless of stream length.
+least-recently-updated first (inserts and keyed updates refresh recency)
+and enforces ``max_entries`` and ``max_tokens`` so a session stays bounded
+regardless of stream length.
 """
 
 from __future__ import annotations
@@ -30,7 +31,9 @@ class EvictionPolicy:
 
     The entry limit keeps the store structurally bounded; the token budget
     keeps its rendered context within the model-context allowance. Eviction
-    order is deterministic: oldest-inserted entry first (FIFO).
+    order is deterministic: least-recently-updated entry first — inserting
+    a new key appends it, updating an existing key refreshes its recency
+    (moves it to the back).
     """
 
     max_entries: int = 20
@@ -38,7 +41,7 @@ class EvictionPolicy:
 
 
 class _Bounded:
-    """Shared FIFO bounded store mechanics over a keyed insertion order."""
+    """Shared FIFO bounded store mechanics over a keyed recency order."""
 
     def __init__(self, policy: EvictionPolicy) -> None:
         self._policy = policy
@@ -47,6 +50,9 @@ class _Bounded:
 
     def _put(self, key: str, item: object) -> None:
         if key not in self._items:
+            self._order.append(key)
+        else:
+            self._order.remove(key)
             self._order.append(key)
         self._items[key] = item
 
@@ -109,6 +115,10 @@ class MemoryStore:
     def _tokens(self) -> int:
         return self._b._tokens()
 
+    def is_within_budget(self) -> bool:
+        """Whether the store's token total fits the policy's token budget."""
+        return self._tokens() <= self.policy.max_tokens
+
     def _drop_oldest(self) -> None:
         self._b._drop_oldest()
 
@@ -124,8 +134,3 @@ class MemoryStore:
         """
         while self._b._size() > self._b._policy.max_entries:
             self._drop_oldest()
-
-
-def memory_context_ok(total_tokens: int, policy: EvictionPolicy) -> bool:
-    """Whether a rendered memory context fits the policy's token budget."""
-    return total_tokens <= policy.max_tokens

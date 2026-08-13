@@ -32,10 +32,11 @@ class SessionEntry:
 class SessionMemory(MemoryStore):
     """Bounded structured continuity for one live session.
 
-    All collections are FIFO-bounded by the shared eviction policy, so a
-    long stream never grows the store. Budget eviction prefers the oldest
-    non-commitment entry; commitments survive while any evictable entry
-    exists.
+    All collections are bounded by the shared eviction policy (least-
+    recently-updated first: updating an existing key refreshes its recency),
+    so a long stream never grows the store. Budget eviction prefers the
+    oldest non-commitment entry; commitments survive while any evictable
+    entry exists.
     """
 
     def __init__(self, policy: EvictionPolicy = EvictionPolicy()) -> None:
