@@ -25,8 +25,8 @@ from typing import Iterator
 
 import pytest
 
+from backend.api.v1 import ProductEntityIn
 from backend.application.entity.models import EntityDocument
-from backend.application.director.catalog import product_to_entity
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
 from backend.application.director.session_context import DirectorRuntime
 from backend.application.render.locks import SessionLockRegistry
@@ -77,22 +77,18 @@ class _SlowStubLLM(LLMEngine):
 
 def _make_products() -> list[EntityDocument]:
     return [
-        product_to_entity(
-            {
-                "id": "P001",
-                "name": "Kem chong nang SPF50",
-                "description": "Kem chong nang SPF50 chong nuoc",
-                "price": 350000,
-            }
-        ),
-        product_to_entity(
-            {
-                "id": "P002",
-                "name": "Serum Vitamin C",
-                "description": "Serum Vitamin C lam sang da",
-                "price": 250000,
-            }
-        ),
+        ProductEntityIn(
+            id="P001",
+            name="Kem chong nang SPF50",
+            description="Kem chong nang SPF50 chong nuoc",
+            price=350000,
+        ).to_entity(),
+        ProductEntityIn(
+            id="P002",
+            name="Serum Vitamin C",
+            description="Serum Vitamin C lam sang da",
+            price=250000,
+        ).to_entity(),
     ]
 
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from backend.api.v1 import ProductEntityIn
 from backend.config import AppConfig
-from backend.application.director.catalog import product_to_entity
 from backend.application.director.embeddings import HashingEmbedder
 from backend.application.director.session_context import DirectorRuntime
 
@@ -104,14 +104,14 @@ def test_reattach_updates_remaining_opening_without_restarting_it() -> None:
     backend = MockRenderBackend()
     runtime = DirectorRuntime(backend, embedder=HashingEmbedder())
     session_id = "reattach-opening"
-    runtime.attach(session_id, [product_to_entity({"id": "P004", "name": "Áo hoodie"})])
+    runtime.attach(session_id, [ProductEntityIn(id="P004", name="Áo hoodie").to_entity()])
     session = runtime.get_session(session_id)
     first = session.director.decide([], now=0.0)
     session.director.mark_spoken(first)
     second = session.director.decide([], now=1.0)
     session.director.mark_spoken(second)
 
-    runtime.attach(session_id, [product_to_entity({"id": "P001", "name": "Kem chống nắng"})])
+    runtime.attach(session_id, [ProductEntityIn(id="P001", name="Kem chống nắng").to_entity()])
     third = session.director.decide([], now=2.0)
 
     assert third.task_id == "opening:3"

@@ -15,16 +15,14 @@ Two-tier retrieval (the design decision for challenge 4 + 5):
 So structured facts don't replace cosine; they remove LLM/cosine work for
 the common factual questions (price/ship/size/color/stock), which is the
 real speed win. The catalog is a dict of ``EntityDocument`` (task 8.7); the
-legacy rigid ``Product``/``ProductVariant`` dataclasses were removed — see
-``product_to_entity`` for the migration-time conversion from the legacy
-wire shape (deleted when the API layer constructs entities directly, 8.12).
+API layer constructs entities directly.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
+from backend.application.entity.models import EntityDocument
 from backend.application.entity.registry import (
     COMMERCE_PRICE_CURRENT,
     COMMERCE_PRICE_ORIGINAL,
@@ -42,7 +40,6 @@ __all__ = [
     "INTENT_TO_FIELD",
     "answer_field",
     "embedding_text",
-    "product_to_entity",
     "route_intent_to_field",
 ]
 
@@ -78,92 +75,6 @@ FACT_KEY_BY_INTENT: dict[str, str] = {
     "how_to_buy": "custom.how_to_buy",
     "warranty": COMMERCE_WARRANTY,
 }
-
-
-def _fact(key: str, value, type_: str, labels: Optional[list[str]] = None) -> Fact:
-    """One converted fact; ``value`` None is skipped by the caller."""
-    return Fact(key=key, type=type_, value=value, labels=labels or [])
-
-
-def product_to_entity(data: dict) -> EntityDocument:
-    """Migration-time conversion: legacy product wire shape -> EntityDocument.
-
-    The API layer (8.8) still posts the legacy product schema; this adapter
-    maps every known field into facts (canonical keys where the registry has
-    them, ``custom.*`` otherwise) plus one knowledge block per prose field.
-    Intended to be deleted in task 8.12 when the API constructs entities
-    directly — do not build new consumers on this shape.
-    """
-    facts = [
-        _fact(key, data[legacy], type_)
-        for legacy, (key, type_) in {
-            "brand": (IDENTITY_BRAND, "str"),
-            "price": (COMMERCE_PRICE_CURRENT, "int"),
-            "original_price": (COMMERCE_PRICE_ORIGINAL, "int"),
-            "promotion": (COMMERCE_PROMOTION, "str"),
-            "shipping": (COMMERCE_SHIPPING, "str"),
-            "warranty": (COMMERCE_WARRANTY, "str"),
-            "stock_total": (COMMERCE_STOCK_QUANTITY, "int"),
-            "material": ("custom.material", "str"),
-            "origin": ("custom.origin", "str"),
-            "usage": ("custom.usage", "str"),
-            "how_to_buy": ("custom.how_to_buy", "str"),
-            "ref_image": ("custom.ref_image", "str"),
-        }.items()
-        if legacy in data and data[legacy] is not None
-    ]
-    facts.append(
-        Fact(key=COMMERCE_STOCK_AVAILABLE, type="bool", value=bool(data.get("in_stock", True)))
-    )
-    facts.append(
-        Fact(
-            key=IDENTITY_SKU,
-            type="str",
-            value=data.get("id", ""),
-            labels=["Mã SKU"],
-        )
-    )
-    blocks = [
-        KnowledgeBlock(id=f"desc:{data['id']}", kind="description", title="Mô tả", content=desc)
-        for desc in (data.get("description"),)
-        if desc
-    ]
-    for kind, field_name in (
-        ("custom", "features"),
-        ("custom", "how_to_buy"),
-        ("usage", "usage"),
-    ):
-        value = data.get(field_name)
-        if not value:
-            continue
-        content = ", ".join(value) if isinstance(value, list) else str(value)
-        blocks.append(
-            KnowledgeBlock(
-                id=f"{kind}:{field_name}:{data['id']}",
-                kind="custom" if kind == "custom" else kind,
-                title=field_name,
-                content=content,
-                tags=[field_name],
-            )
-        )
-    for tag, items in (("color", data.get("colors")), ("size", data.get("sizes"))):
-        if items:
-            blocks.append(
-                KnowledgeBlock(
-                    id=f"{tag}:{data['id']}",
-                    kind="custom",
-                    title=tag,
-                    content=", ".join(str(item) for item in items),
-                    tags=[tag],
-                )
-            )
-    return EntityDocument(
-        id=str(data["id"]),
-        entity_type="product",
-        name=str(data["name"]),
-        facts=facts,
-        knowledge_blocks=blocks,
-    )
 
 
 def _format_vnd(value: int) -> str:

@@ -38,13 +38,17 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
-from backend.application.entity.models import EntityDocument
+from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
 from backend.application.entity.registry import (
     COMMERCE_PRICE_CURRENT,
     COMMERCE_PRICE_ORIGINAL,
     COMMERCE_PROMOTION,
     COMMERCE_SHIPPING,
+    COMMERCE_STOCK_AVAILABLE,
+    COMMERCE_STOCK_QUANTITY,
     COMMERCE_WARRANTY,
+    IDENTITY_BRAND,
+    IDENTITY_SKU,
 )
 from backend.application.schemas.run_plan import (
     ClosingPhase,
@@ -154,13 +158,76 @@ class ProductEntityIn(BaseModel):
     def to_entity(self) -> EntityDocument:
         """Convert to the product ``EntityDocument`` (task 8.8).
 
-        Delegates to the Director's migration-time converter (task 8.7) so the
-        API and the runtime share one wire mapping (canonical fact keys from
-        the registry + knowledge blocks for prose/features/colors/sizes).
+        Maps the flat wire fields directly: canonical fact keys from the
+        registry (price/stock/promotion/shipping/warranty) plus ``custom.*``
+        keys for material/origin/usage/how_to_buy/ref_image, and one
+        knowledge block per prose field (description/features/colors/sizes).
         """
-        from backend.application.director.catalog import product_to_entity
-
-        return product_to_entity(self.model_dump())
+        facts = [
+            Fact(key=key, type=type_, value=value)
+            for field_name, (key, type_) in (
+                ("brand", (IDENTITY_BRAND, "str")),
+                ("price", (COMMERCE_PRICE_CURRENT, "int")),
+                ("original_price", (COMMERCE_PRICE_ORIGINAL, "int")),
+                ("promotion", (COMMERCE_PROMOTION, "str")),
+                ("shipping", (COMMERCE_SHIPPING, "str")),
+                ("warranty", (COMMERCE_WARRANTY, "str")),
+                ("stock_total", (COMMERCE_STOCK_QUANTITY, "int")),
+                ("material", ("custom.material", "str")),
+                ("origin", ("custom.origin", "str")),
+                ("usage", ("custom.usage", "str")),
+                ("how_to_buy", ("custom.how_to_buy", "str")),
+                ("ref_image", ("custom.ref_image", "str")),
+            )
+            if (value := getattr(self, field_name, None)) is not None
+        ]
+        facts.append(Fact(key=COMMERCE_STOCK_AVAILABLE, type="bool", value=self.in_stock))
+        facts.append(
+            Fact(
+                key=IDENTITY_SKU,
+                type="str",
+                value=self.id,
+                labels=["Mã SKU"],
+            )
+        )
+        blocks = []
+        if self.description:
+            blocks.append(
+                KnowledgeBlock(
+                    id=f"desc:{self.id}",
+                    kind="description",
+                    title="Mô tả",
+                    content=self.description,
+                )
+            )
+        if self.features:
+            blocks.append(
+                KnowledgeBlock(
+                    id=f"custom:features:{self.id}",
+                    kind="custom",
+                    title="features",
+                    content=", ".join(self.features),
+                    tags=["features"],
+                )
+            )
+        for tag, items in (("color", self.colors), ("size", self.sizes)):
+            if items:
+                blocks.append(
+                    KnowledgeBlock(
+                        id=f"{tag}:{self.id}",
+                        kind="custom",
+                        title=tag,
+                        content=", ".join(str(item) for item in items),
+                        tags=[tag],
+                    )
+                )
+        return EntityDocument(
+            id=self.id,
+            entity_type="product",
+            name=self.name,
+            facts=facts,
+            knowledge_blocks=blocks,
+        )
 
 
 class ShopProfileIn(BaseModel):
@@ -419,10 +486,9 @@ def build_run_plan(
 ) -> RunPlan:
     """Deterministic offline RunPlan from product entities (no LLM).
 
-    Accepts ``EntityDocument`` objects (preferred) or legacy flat dicts
-    (used by offline unit fixtures; converted via the Director's
-    ``product_to_entity``). The RunPlan shape itself stays unchanged: it is a
-    structured plan, not an entity.
+    Accepts ``EntityDocument`` objects or inputs with ``to_entity()``
+    (``ProductEntityIn``); raw dicts are no longer supported. The RunPlan
+    shape itself stays unchanged: it is a structured plan, not an entity.
     """
     items: list[ProductSellingPhase] = []
     for p in products or []:
@@ -574,17 +640,13 @@ def build_run_plan(
 def _as_entity(p: Any) -> EntityDocument:
     """Coerce a run-plan input to an ``EntityDocument``.
 
-    Entities pass through; legacy flat dicts (offline fixtures) go through the
-    Director's migration converter so both shapes share one mapping.
+    Entities pass through; inputs with ``to_entity()`` (``ProductEntityIn``)
+    convert. Raw dicts are no longer supported.
     """
     if isinstance(p, EntityDocument):
         return p
     if hasattr(p, "to_entity"):
         return p.to_entity()
-    if isinstance(p, dict):
-        from backend.application.director.catalog import product_to_entity
-
-        return product_to_entity(p)
     raise TypeError(f"unsupported product input: {type(p).__name__}")
 
 

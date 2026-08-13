@@ -10,7 +10,9 @@ import pytest
 from backend.engine_manager import EngineManager
 from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 
-from .fixtures import MOCK_ENTITIES, MOCK_PRODUCTS
+from backend.api.v1 import ProductEntityIn
+
+from .fixtures import MOCK_ENTITIES
 from backend.application.director.clustering import Comment
 from backend.application.director.config import StreamConfig
 from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
@@ -166,8 +168,8 @@ def _cross_product_director() -> Director:
 
     run_plan = build_run_plan(
         [
-            {"id": "P004", "name": "Áo hoodie", "features": ["ấm và nhẹ"]},
-            {"id": "P002", "name": "Serum", "features": ["dưỡng ẩm"]},
+            ProductEntityIn(id="P004", name="Áo hoodie", features=["ấm và nhẹ"]),
+            ProductEntityIn(id="P002", name="Serum", features=["dưỡng ẩm"]),
         ]
     )
     return Director(
@@ -430,7 +432,7 @@ def test_cluster_answer_prompt_requests_one_clause_paraphrase_and_short_grounded
 
 def test_mock_catalog_starts_with_heygen_hoodie(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
-    assert MOCK_PRODUCTS[0]["id"] == "P004"
+    assert MOCK_ENTITIES[0].id == "P004"
 
 
 def test_sync_runtime_commits_opening_only_after_backend_success(
@@ -538,7 +540,7 @@ def test_unanswered_clusters_do_not_skip_all_product_sales_stages(
     state = StreamState(
         phase=Phase.SELLING,
         products=[ProductState(product_id=product.id, name=product.name)],
-        run_plan=build_run_plan([MOCK_PRODUCTS[0]]),
+        run_plan=build_run_plan([product]),
     )
     state.traffic.viewer_count = 100
     state.traffic.msg_rate = 2.0

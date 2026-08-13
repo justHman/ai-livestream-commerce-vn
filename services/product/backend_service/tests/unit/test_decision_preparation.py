@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from backend.application.director.catalog import product_to_entity
+from backend.api.v1 import ProductEntityIn
 from backend.application.director.coordinator import DirectorCoordinator, _SessionStats
 from backend.application.director.decision import Decision
 from backend.application.director.embeddings import HashingEmbedder
@@ -100,6 +100,12 @@ class _RecordingHub:
         self.events.append(dict(event))
 
 
+def _product(**kwargs: object) -> ProductEntityIn:
+    """One minimal product input (8.12: entity API model, no legacy dicts)."""
+    defaults: dict[str, object] = {"id": "P004", "name": "Áo hoodie"}
+    return ProductEntityIn(**{**defaults, **kwargs})
+
+
 def test_chat_queue_snapshot_has_canonical_counts() -> None:
     from backend.application.director.comment_buffer import ChatQueue
 
@@ -174,7 +180,7 @@ async def test_reattach_keeps_active_turn_committable() -> None:
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
     session_id = "reattach-active-turn"
-    original = product_to_entity({"id": "P004", "name": "Áo hoodie"})
+    original = _product().to_entity()
     runtime.attach(session_id, [original], shop_profile="Shop cũ")
     coordinator._stats[session_id] = _SessionStats()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
@@ -184,7 +190,7 @@ async def test_reattach_keeps_active_turn_committable() -> None:
 
     task = asyncio.create_task(coordinator._maybe_speak(session_id, decision))
     assert await asyncio.to_thread(backend.started.wait, 1)
-    revised = product_to_entity({"id": "P004", "name": "Áo hoodie bản mới"})
+    revised = _product(name="Áo hoodie bản mới").to_entity()
     runtime.attach(session_id, [revised], shop_profile="Shop mới")
     coordinator.update_catalog(session_id, [revised])
     backend.release.set()
@@ -210,7 +216,7 @@ async def test_transient_turn_retries_per_turn_and_advances_only_after_success()
     session_id = "retry-turn"
     runtime.attach(
         session_id,
-        [product_to_entity({"id": "P004", "name": "Áo hoodie"})],
+        [_product().to_entity()],
         cfg=__import__(
             "backend.application.director.config", fromlist=["StreamConfig"]
         ).StreamConfig(transient_retry_count=1),
@@ -236,7 +242,7 @@ async def test_transient_turn_exhaustion_does_not_advance_state() -> None:
     session_id = "retry-exhausted"
     runtime.attach(
         session_id,
-        [product_to_entity({"id": "P004", "name": "Áo hoodie"})],
+        [_product().to_entity()],
         cfg=__import__(
             "backend.application.director.config", fromlist=["StreamConfig"]
         ).StreamConfig(transient_retry_count=1),
@@ -260,7 +266,7 @@ async def test_pipeline_prepares_upcoming_turns_during_active_playback() -> None
     session_id = "prepared-pipeline"
     coordinator.start(
         session_id,
-        [product_to_entity({"id": "P004", "name": "Áo hoodie HeyGen"})],
+        [_product(name="Áo hoodie HeyGen").to_entity()],
         activated=True,
     )
     try:
@@ -286,7 +292,7 @@ async def test_interrupt_invalidates_prepared_turns_and_generation() -> None:
     session_id = "interrupt-pipeline"
     coordinator.start(
         session_id,
-        [product_to_entity({"id": "P004", "name": "Áo hoodie HeyGen"})],
+        [_product(name="Áo hoodie HeyGen").to_entity()],
         activated=True,
     )
     try:
@@ -312,7 +318,7 @@ async def test_stop_does_not_resurrect_history_from_cancelled_preparation() -> N
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
     session_id = "stop-late-preparation"
-    runtime.attach(session_id, [product_to_entity({"id": "P004", "name": "Áo hoodie"})])
+    runtime.attach(session_id, [_product().to_entity()])
     coordinator._stats[session_id] = _SessionStats()
     coordinator._decision_queue[session_id] = __import__("collections").deque()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
@@ -338,7 +344,7 @@ async def test_stop_during_active_playback_does_not_resurrect_history() -> None:
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
     session_id = "stop-active-playback"
-    runtime.attach(session_id, [product_to_entity({"id": "P004", "name": "Áo hoodie"})])
+    runtime.attach(session_id, [_product().to_entity()])
     coordinator._stats[session_id] = _SessionStats()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
     coordinator._completed_history[session_id] = __import__("collections").deque(maxlen=3)
@@ -371,7 +377,7 @@ async def test_failed_preparation_removes_head_decision() -> None:
         backend=backend,
     )
     session_id = "failed-preparation"
-    runtime.attach(session_id, [product_to_entity({"id": "P004", "name": "Áo hoodie"})])
+    runtime.attach(session_id, [_product().to_entity()])
     coordinator._stats[session_id] = _SessionStats()
     coordinator._decision_queue[session_id] = __import__("collections").deque()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
@@ -415,7 +421,7 @@ async def test_qna_preparation_populates_all_cache_variants() -> None:
     llm = _VariantLLM()
     coordinator = DirectorCoordinator(runtime=runtime, llm=llm, tts=None, backend=backend)
     session_id = "answer-variants"
-    runtime.attach(session_id, [product_to_entity({"id": "P004", "name": "Áo hoodie"})])
+    runtime.attach(session_id, [_product().to_entity()])
     coordinator._stats[session_id] = _SessionStats()
     coordinator._decision_queue[session_id] = __import__("collections").deque()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
@@ -452,7 +458,7 @@ async def test_cloud_preparation_uses_core_llm_then_verbatim_playback() -> None:
         backend=backend,
     )
     session_id = "cloud-preparation"
-    runtime.attach(session_id, [product_to_entity({"id": "P004", "name": "Áo hoodie"})])
+    runtime.attach(session_id, [_product().to_entity()])
     coordinator._stats[session_id] = _SessionStats()
     coordinator._decision_queue[session_id] = __import__("collections").deque()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
@@ -483,14 +489,14 @@ async def test_tick_keeps_prepared_next_product_transition() -> None:
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
     session_id = "prepared-transition"
     products = [
-        product_to_entity({"id": "P004", "name": "Áo hoodie", "features": ["ấm"]}),
-        product_to_entity({"id": "P001", "name": "Kem chống nắng", "features": ["nhẹ mặt"]}),
+        _product(id="P004", name="Áo hoodie", features=["ấm"]),
+        _product(id="P001", name="Kem chống nắng", features=["nhẹ mặt"]),
     ]
     runtime.attach(
         session_id,
-        products,
+        [p.to_entity() for p in products],
         cfg=StreamConfig(prepared_turn_depth=1),
-        run_plan=build_run_plan([{"id": p.id, "name": p.name} for p in products]),
+        run_plan=build_run_plan(products),
     )
     session = runtime.get_session(session_id)
     session.director.state.phase = __import__(
@@ -531,7 +537,7 @@ async def test_playback_loop_requeues_turn_while_manual_speech_holds_lock() -> N
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
     session_id = "manual-lock"
-    runtime.attach(session_id, [product_to_entity({"id": "P004", "name": "Áo hoodie"})])
+    runtime.attach(session_id, [_product().to_entity()])
     coordinator._stats[session_id] = _SessionStats()
     coordinator._speech_queue[session_id] = __import__("collections").deque()
     coordinator._playback_events[session_id] = asyncio.Event()
@@ -566,12 +572,12 @@ async def test_completed_close_commits_real_closing_phase() -> None:
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
     session_id = "prepared-close"
-    product = product_to_entity({"id": "P004", "name": "Áo hoodie", "features": ["ấm"]})
+    product = _product(features=["ấm"])
     runtime.attach(
         session_id,
-        [product],
+        [product.to_entity()],
         cfg=StreamConfig(prepared_turn_depth=1),
-        run_plan=build_run_plan([{"id": product.id, "name": product.name}]),
+        run_plan=build_run_plan([product]),
     )
     session = runtime.get_session(session_id)
     session.director.state.phase = Phase.SELLING
@@ -609,7 +615,7 @@ async def test_cluster_snapshot_reuses_runtime_embedder_cache_and_session_config
 
     coordinator.start(
         session_id,
-        [product_to_entity({"id": "P004", "name": "Áo hoodie HeyGen"})],
+        [_product(name="Áo hoodie HeyGen").to_entity()],
         cfg=StreamConfig(selection_window_sec=60, cluster_merge_threshold=0.91),
     )
     try:
