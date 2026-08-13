@@ -7,7 +7,13 @@ per-session cluster store (``ClusterStore`` / ``LiveCluster``) that consumes
 embedded comments (OpenSpec 5.1-5.2).
 """
 
-from .cluster_store import ClusterStore, ClusterStoreConfig, LiveCluster, ProductCandidate
+from .cluster_store import (
+    ClusterStore,
+    ClusterStoreConfig,
+    LiveCluster,
+    ProductCandidate,
+    ReconciliationResult,
+)
 from .fast_reducer import AcceptedComment, FastReducer, FastReducerConfig
 
 __all__ = [
@@ -18,4 +24,5 @@ __all__ = [
     "ClusterStore",
     "ClusterStoreConfig",
     "ProductCandidate",
+    "ReconciliationResult",
 ]

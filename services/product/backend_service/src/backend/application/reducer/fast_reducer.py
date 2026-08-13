@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .cluster_store import ClusterStore, ClusterStoreConfig
+from .cluster_store import ClusterStore, ClusterStoreConfig, ReconciliationResult
 
 __all__ = ["AcceptedComment", "FastReducer", "FastReducerConfig"]
 
@@ -63,9 +63,10 @@ class FastReducerConfig:
     max_active_clusters: int = 40
     max_members_per_cluster: int = 200
     max_representatives: int = 5
-    # Reconciliation knobs (OpenSpec 5.5) — declared now, logic lands later.
+    # Reconciliation knobs (OpenSpec 5.5) — mirror the ClusterStoreConfig knobs.
     reconcile_unreconciled_threshold: int = 100
     reconcile_age_sec: float = 60.0
+    cohesion_split_threshold: float = 0.15
 
     def validate_runtime(self) -> None:
         """Fail-fast on non-positive knobs (called by the reducer at init)."""
@@ -87,6 +88,8 @@ class FastReducerConfig:
             raise ValueError("reconcile_unreconciled_threshold must be > 0")
         if self.reconcile_age_sec <= 0:
             raise ValueError("reconcile_age_sec must be > 0")
+        if self.cohesion_split_threshold <= 0:
+            raise ValueError("cohesion_split_threshold must be > 0")
 
 
 @dataclass
@@ -126,6 +129,12 @@ class FastReducer:
         self._now = now_fn or time.time
         self._sessions: dict[str, _SessionState] = {}
         self._stores: dict[str, ClusterStore] = {}
+        # Reconciliation observability (OpenSpec 5.6): cumulative counters plus
+        # the last run's per-pass counters.
+        self._reconciles_run: dict[str, int] = {}
+        self._reconcile_merged_total: dict[str, int] = {}
+        self._reconcile_split_total: dict[str, int] = {}
+        self._last_reconcile: dict[str, ReconciliationResult] = {}
 
     # ------------------------------------------------------------------
     # Per-session cluster store (5.3)
@@ -143,6 +152,9 @@ class FastReducer:
                     max_active_clusters=self._config.max_active_clusters,
                     max_members_per_cluster=self._config.max_members_per_cluster,
                     max_representatives=self._config.max_representatives,
+                    reconcile_unreconciled_threshold=self._config.reconcile_unreconciled_threshold,
+                    reconcile_age_sec=self._config.reconcile_age_sec,
+                    cohesion_split_threshold=self._config.cohesion_split_threshold,
                 ),
                 now_fn=self._now,
             )
@@ -271,6 +283,38 @@ class FastReducer:
         return batch
 
     # ------------------------------------------------------------------
+    # Reconciliation (5.5-5.6) — invoked by the caller when due; never on the
+    # fast-lane hot path (run_once never calls it). Pure CPU on small bounded
+    # data, so it is called directly, not via asyncio.to_thread.
+    # ------------------------------------------------------------------
+
+    def reconciliation_due(self, session_id: str, now: float) -> bool:
+        """Delegate the count/age trigger check to the session's store."""
+        return self._get_store(session_id).reconcile_due(now)
+
+    async def reconcile(self, session_id: str, now: float) -> ReconciliationResult:
+        """Run the store's bounded reconciliation when due (no-op otherwise).
+
+        After a successful pass the trigger state resets (store-side) and the
+        per-session cumulative counters accumulate.
+        """
+        store = self._get_store(session_id)
+        if not store.reconcile_due(now):
+            return ReconciliationResult(
+                clusters_before=len(store._clusters), clusters_after=len(store._clusters)
+            )
+        result = store.reconcile(now)
+        self._reconciles_run[session_id] = self._reconciles_run.get(session_id, 0) + 1
+        self._reconcile_merged_total[session_id] = (
+            self._reconcile_merged_total.get(session_id, 0) + result.merged
+        )
+        self._reconcile_split_total[session_id] = (
+            self._reconcile_split_total.get(session_id, 0) + result.split
+        )
+        self._last_reconcile[session_id] = result
+        return result
+
+    # ------------------------------------------------------------------
     # Async waiter (used by the future fast-lane loop; 4.6 proof seam)
     # ------------------------------------------------------------------
 
@@ -335,7 +379,12 @@ class FastReducer:
                 "cache_hits": 0,
                 "demand_size": 0,
                 "wake_notifications": 0,
+                "reconciles_run": self._reconciles_run.get(session_id, 0),
+                "reconcile_merged_total": self._reconcile_merged_total.get(session_id, 0),
+                "reconcile_split_total": self._reconcile_split_total.get(session_id, 0),
+                "last_reconcile": None,
             }
+        last = self._last_reconcile.get(session_id)
         return {
             "pending": len(state.pending),
             "embedded_total": state.embedded_total,
@@ -343,4 +392,16 @@ class FastReducer:
             "cache_hits": state.cache_hits,
             "demand_size": len(state.demand),
             "wake_notifications": state.wake_notifications,
+            "reconciles_run": self._reconciles_run.get(session_id, 0),
+            "reconcile_merged_total": self._reconcile_merged_total.get(session_id, 0),
+            "reconcile_split_total": self._reconcile_split_total.get(session_id, 0),
+            "last_reconcile": None
+            if last is None
+            else {
+                "clusters_before": last.clusters_before,
+                "clusters_after": last.clusters_after,
+                "merged": last.merged,
+                "split": last.split,
+                "members_removed": last.members_removed,
+            },
         }

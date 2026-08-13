@@ -1,10 +1,12 @@
-"""Stable bounded per-session cluster store for the live-demand pipeline (OpenSpec 5.1-5.2).
+"""Stable bounded per-session cluster store for the live-demand pipeline (OpenSpec 5.1-5.6).
 
 Each session owns one ``ClusterStore``: incremental semantic assignment keeps a
 stable ``LiveCluster`` per topic (stable ids -> lifecycle state survives fast-lane
 updates), and every store is hard-bounded (max clusters / members per cluster) so
-reducer memory cannot grow linearly with total comments. Expiry/reconciliation
-are later tasks; per-member timestamps are kept so expiry is a plain filter.
+reducer memory cannot grow linearly with total comments. Per-member timestamps
+make expiry a plain filter (5.4). Reconciliation (5.5-5.6) is a count/age-triggered
+bounded repair of the active horizon — merge compatible clusters, split
+low-cohesion ones, recompute centroids — and NEVER runs on the fast-lane hot path.
 """
 
 from __future__ import annotations
@@ -16,7 +18,12 @@ from uuid import uuid4
 
 from ..director.embeddings import average, cosine
 
-__all__ = ["LiveCluster", "ClusterStore", "ClusterStoreConfig"]
+__all__ = [
+    "LiveCluster",
+    "ClusterStore",
+    "ClusterStoreConfig",
+    "ReconciliationResult",
+]
 
 
 @dataclass(frozen=True)
@@ -165,6 +172,17 @@ class LiveCluster:
 
 
 @dataclass
+class ReconciliationResult:
+    """Typed counters of one reconciliation pass (surfaced via reducer stats)."""
+
+    clusters_before: int = 0
+    clusters_after: int = 0
+    merged: int = 0
+    split: int = 0
+    members_removed: int = 0
+
+
+@dataclass
 class ClusterStoreConfig:
     """Typed knobs for one per-session ClusterStore.
 
@@ -179,6 +197,15 @@ class ClusterStoreConfig:
     max_active_clusters: int = 40
     max_members_per_cluster: int = 200
     max_representatives: int = 5
+    # Reconciliation knobs (OpenSpec 5.5): mirror the FastReducerConfig knobs.
+    reconcile_unreconciled_threshold: int = 100
+    reconcile_age_sec: float = 60.0
+    # A cluster is only split when it is far less cohesive than the merge
+    # threshold: 0.375 merges similar comments, 0.15 splits members whose
+    # average similarity to the centroid is well below that bar — i.e. the
+    # cluster never hovers in the zone where comments would have been merged
+    # into it in the first place. Low values prevent split/merge oscillation.
+    cohesion_split_threshold: float = 0.15
 
     def validate_runtime(self) -> None:
         """Fail-fast on non-positive knobs (called by the store at init)."""
@@ -192,6 +219,12 @@ class ClusterStoreConfig:
             raise ValueError("max_members_per_cluster must be > 0")
         if self.max_representatives <= 0:
             raise ValueError("max_representatives must be > 0")
+        if self.reconcile_unreconciled_threshold <= 0:
+            raise ValueError("reconcile_unreconciled_threshold must be > 0")
+        if self.reconcile_age_sec <= 0:
+            raise ValueError("reconcile_age_sec must be > 0")
+        if self.cohesion_split_threshold <= 0:
+            raise ValueError("cohesion_split_threshold must be > 0")
 
 
 class ClusterStore:
@@ -220,6 +253,11 @@ class ClusterStore:
         self._evicted_count = 0
         self._evicted_members = 0
         self._evicted_clusters = 0
+        # Reconciliation trigger state (OpenSpec 5.5): count/age of unreconciled
+        # comments since the last reconciliation. PURE trigger state — assign()
+        # never delays fast-lane assignment because of it.
+        self._unreconciled_count = 0
+        self._first_unreconciled_at: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Assignment
@@ -248,6 +286,11 @@ class ClusterStore:
             best = self._create_cluster(ts)
         best.add_member(comment_id, text, vector, ts, viewer_key, intent, candidates)
         self._total_members_assigned += 1
+        # Every fast-lane assignment is an unreconciled comment; the first one
+        # after a reconciliation anchors the age timer.
+        self._unreconciled_count += 1
+        if self._first_unreconciled_at is None:
+            self._first_unreconciled_at = ts
         # Bounds run after the add so a fresh 0-member cluster never evicts itself.
         self._enforce_cluster_bound()
         self._enforce_member_bound(best)
@@ -284,6 +327,162 @@ class ClusterStore:
         return evicted
 
     # ------------------------------------------------------------------
+    # Reconciliation (5.5-5.6) — NEVER called from the fast-lane hot path
+    # ------------------------------------------------------------------
+
+    def reconcile_due(self, now: float) -> bool:
+        """True when count OR age threshold is met (whichever comes first).
+
+        Count: ``unreconciled_count >= reconcile_unreconciled_threshold``.
+        Age: ``now - first_unreconciled_at >= reconcile_age_sec`` once the
+        first unreconciled comment arrived. Pure trigger state — it never
+        gates fast-lane assignment.
+        """
+        if self._unreconciled_count >= self._config.reconcile_unreconciled_threshold:
+            return True
+        if self._first_unreconciled_at is not None:
+            return now - self._first_unreconciled_at >= self._config.reconcile_age_sec
+        return False
+
+    def _reset_reconciliation_trigger(self) -> None:
+        """Clear the trigger state after a successful reconciliation."""
+        self._unreconciled_count = 0
+        self._first_unreconciled_at = None
+
+    def reconcile(self, now: float) -> ReconciliationResult:
+        """Deterministic bounded repair of the active horizon (OpenSpec 5.6).
+
+        Steps: expire members outside the horizon, merge compatible active
+        clusters (greedy first-match in demand order, surviving stable id =
+        higher message_count, tie-break lower cluster_id), split active
+        clusters with cohesion below the split threshold in one greedy pass,
+        recompute every touched cluster, and enforce the member bound. Cold
+        clusters outside the horizon are never touched. Members are moved via
+        add_member/remove_member (idempotent) so identities/demand are never
+        duplicated or lost.
+        """
+        before = len(self._clusters)
+        result = ReconciliationResult(clusters_before=before)
+        result.members_removed = self.expire(now)
+        self._reset_reconciliation_trigger()
+        active = self.active_clusters(now)
+        merged_away: set[str] = set()
+        for survivor in active:
+            if survivor.cluster_id in merged_away:
+                continue
+            candidates = [
+                c
+                for c in active
+                if c.cluster_id not in merged_away
+                and c.cluster_id != survivor.cluster_id
+                and c.intent == survivor.intent
+                and self._mergeable(survivor, c)
+            ]
+            if not candidates:
+                continue
+            candidates.sort(key=lambda c: (-c.message_count, c.cluster_id))
+            other = candidates[0]
+            if self._should_survive(other, survivor):
+                survivor, other = other, survivor
+            for member_id in list(other.member_ids):
+                survivor.add_member(
+                    comment_id=member_id,
+                    text=other._member_texts[member_id],
+                    vector=other._member_embeddings[member_id],
+                    ts=other._member_ts[member_id],
+                    viewer_key=other._member_viewers[member_id],
+                    intent=survivor.intent,
+                    product_candidates=other.product_candidates,
+                )
+                other.remove_member(member_id)
+            self._clusters.pop(other.cluster_id, None)
+            merged_away.add(other.cluster_id)
+            result.merged += 1
+            survivor.recompute()
+            # Boundedness: merged member counts may exceed the cap — evict the
+            # oldest deterministically via the existing member-bound path.
+            self._enforce_member_bound(survivor)
+
+        for cluster in active:
+            if cluster.cluster_id in merged_away or not cluster.member_ids:
+                continue
+            if (
+                cluster.cohesion < self._config.cohesion_split_threshold
+                and len(cluster.member_ids) >= 2
+            ):
+                self._split_low_cohesion(cluster, merged_away)
+                result.split += 1
+                # Merging into others may overflow their cap — evict oldest.
+                for other in self._clusters.values():
+                    self._enforce_member_bound(other)
+
+        self._enforce_cluster_bound()
+        result.clusters_after = len(self._clusters)
+        return result
+
+    def _mergeable(self, a: LiveCluster, b: LiveCluster) -> bool:
+        """Centroid-compatible AND intent-compatible AND products non-conflicting."""
+        if a.intent != b.intent:
+            return False
+        if cosine(a.centroid, b.centroid) < self._config.merge_threshold:
+            return False
+        # Never merge clusters with clearly conflicting resolved products:
+        # both resolved non-empty and disjoint (or identically empty with
+        # conflicting candidates) is a conflict; one side empty is fine.
+        if a.resolved_product_ids and b.resolved_product_ids:
+            return bool(set(a.resolved_product_ids) & set(b.resolved_product_ids))
+        if a.resolved_product_ids or b.resolved_product_ids:
+            return True
+        a_ids = {c.product_id for c in a.product_candidates}
+        b_ids = {c.product_id for c in b.product_candidates}
+        if a_ids and b_ids and not (a_ids & b_ids):
+            return False
+        return True
+
+    @staticmethod
+    def _should_survive(a: LiveCluster, b: LiveCluster) -> bool:
+        """True when ``a`` is the deterministic survivor: higher message_count,
+        tie-break lower cluster_id (lexicographic)."""
+        if a.message_count != b.message_count:
+            return a.message_count > b.message_count
+        return a.cluster_id < b.cluster_id
+
+    def _split_low_cohesion(self, cluster: LiveCluster, removed: set[str]) -> None:
+        """One deterministic greedy pass: members by (ts asc) move to the best
+        other active cluster when cosine >= merge_threshold, else stay."""
+        others = [
+            c
+            for c in self._clusters.values()
+            if c.cluster_id != cluster.cluster_id and c.cluster_id not in removed and c.member_ids
+        ]
+        others.sort(key=lambda c: (-c.message_count, c.cluster_id))
+        for member_id in sorted(cluster.member_ids, key=lambda cid: cluster._member_ts[cid]):
+            # Read member data BEFORE removal — remove_member drops it.
+            text = cluster._member_texts[member_id]
+            vector = cluster._member_embeddings[member_id]
+            ts = cluster._member_ts[member_id]
+            viewer_key = cluster._member_viewers[member_id]
+            best, best_sim = None, self._config.merge_threshold
+            for other in others:
+                sim = cosine(vector, other.centroid)
+                if sim >= best_sim:
+                    best, best_sim = other, sim
+            if best is None:
+                continue
+            cluster.remove_member(member_id)
+            best.add_member(
+                comment_id=member_id,
+                text=text,
+                vector=vector,
+                ts=ts,
+                viewer_key=viewer_key,
+                intent=cluster.intent,
+                product_candidates=cluster.product_candidates,
+            )
+        if not cluster.member_ids:
+            self._clusters.pop(cluster.cluster_id, None)
+
+    # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
 
@@ -311,6 +510,7 @@ class ClusterStore:
             "evicted_count": self._evicted_count,
             "evicted_members": self._evicted_members,
             "evicted_clusters": self._evicted_clusters,
+            "unreconciled_count": self._unreconciled_count,
         }
 
     # ------------------------------------------------------------------
