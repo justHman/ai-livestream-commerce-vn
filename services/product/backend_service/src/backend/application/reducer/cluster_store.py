@@ -88,6 +88,8 @@ class LiveCluster:
         viewer_key: Optional[str],
         intent: str,
         product_candidates: list[ProductCandidate],
+        product_resolution_threshold: float = 1.5,
+        product_resolution_margin: float = 1.0,
     ) -> None:
         """Add one member and refresh derived state."""
         self.intent = intent
@@ -103,6 +105,7 @@ class LiveCluster:
         self.intent_distribution[intent] = self.intent_distribution.get(intent, 0) + 1
         for cand in product_candidates:
             self._merge_candidate(cand)
+        self.resolve_products(product_resolution_threshold, product_resolution_margin)
         self.unique_viewer_count = len(self.viewer_ids)
         self.newest_t = max(self.newest_t, ts)
         self.updated_at = ts
@@ -114,7 +117,41 @@ class LiveCluster:
         self.newest_t = max((self._member_ts[cid] for cid in self.member_ids), default=0.0)
         self.recompute()
 
-    def recompute(self, max_representatives: int = 5) -> None:
+    def resolve_products(
+        self,
+        product_resolution_threshold: float = 1.5,
+        product_resolution_margin: float = 1.0,
+    ) -> list[str]:
+        """Derive resolved_product_ids from merged candidates (OpenSpec 6.3).
+
+        A candidate resolves iff ``score >= max(top - margin, threshold)``
+        where ``top`` is the highest merged score; otherwise ambiguity is
+        preserved (resolved=[] and confidence=0.0, never a silent top-1).
+        Confidence is monotonic in the top score: ``top / (top + 1)`` — 0.5 at
+        the default threshold 1.5, asymptoting to 1.0. Deterministic: ids
+        sorted lexicographically.
+        """
+        if not self.product_candidates:
+            self.resolved_product_ids = []
+            self.product_resolution_confidence = 0.0
+            return []
+        top = max(c.score for c in self.product_candidates)
+        gate = max(top - product_resolution_margin, product_resolution_threshold)
+        resolved = sorted(
+            c.product_id for c in self.product_candidates if c.score > 0 and c.score >= gate
+        )
+        self.resolved_product_ids = resolved
+        # Confidence is the normalized top score ONLY when the gates cleared;
+        # a below-gate top still reports 0.0 (ambiguity preserved).
+        self.product_resolution_confidence = top / (top + 1.0) if resolved else 0.0
+        return resolved
+
+    def recompute(
+        self,
+        max_representatives: int = 5,
+        product_resolution_threshold: float = 1.5,
+        product_resolution_margin: float = 1.0,
+    ) -> None:
         """Recenter centroid, cohesion, medoid, and representative picks.
 
         Representatives = medoid + greedy diversity picks (lowest max-similarity
@@ -125,7 +162,9 @@ class LiveCluster:
             self.cohesion = 0.0
             self.medoid_comment_id = None
             self.representative_comment_ids = []
+            self.resolve_products(product_resolution_threshold, product_resolution_margin)
             return
+        self.resolve_products(product_resolution_threshold, product_resolution_margin)
         vectors = [self._member_embeddings[cid] for cid in self.member_ids]
         self.centroid = average(vectors)
         sims = [(cosine(v, self.centroid), cid) for cid, v in zip(self.member_ids, vectors)]
@@ -244,6 +283,12 @@ class ClusterStoreConfig:
     # cluster never hovers in the zone where comments would have been merged
     # into it in the first place. Low values prevent split/merge oscillation.
     cohesion_split_threshold: float = 0.15
+    # Product resolution gates (OpenSpec 6.3): a candidate resolves only when
+    # its merged score is >= product_resolution_threshold AND within
+    # product_resolution_margin of the top score. No candidate cleared both ->
+    # resolved=[] and confidence=0.0 (ambiguity preserved, never silent top-1).
+    product_resolution_threshold: float = 1.5
+    product_resolution_margin: float = 1.0
 
     def validate_runtime(self) -> None:
         """Fail-fast on non-positive knobs (called by the store at init)."""
@@ -263,6 +308,10 @@ class ClusterStoreConfig:
             raise ValueError("reconcile_age_sec must be > 0")
         if self.cohesion_split_threshold <= 0:
             raise ValueError("cohesion_split_threshold must be > 0")
+        if self.product_resolution_threshold <= 0:
+            raise ValueError("product_resolution_threshold must be > 0")
+        if self.product_resolution_margin < 0:
+            raise ValueError("product_resolution_margin must be >= 0")
 
 
 class ClusterStore:
@@ -328,7 +377,17 @@ class ClusterStore:
                 best, best_sim = cluster, sim
         if best is None:
             best = self._create_cluster(ts)
-        best.add_member(comment_id, text, vector, ts, viewer_key, intent, candidates)
+        best.add_member(
+            comment_id,
+            text,
+            vector,
+            ts,
+            viewer_key,
+            intent,
+            candidates,
+            product_resolution_threshold=self._config.product_resolution_threshold,
+            product_resolution_margin=self._config.product_resolution_margin,
+        )
         self._total_members_assigned += 1
         # Every fast-lane assignment is an unreconciled comment; the first one
         # after a reconciliation anchors the age timer.
@@ -366,7 +425,10 @@ class ClusterStore:
                 cluster.newest_t = max(
                     (cluster._member_ts[cid] for cid in cluster.member_ids), default=0.0
                 )
-                cluster.recompute()
+                cluster.recompute(
+                    product_resolution_threshold=self._config.product_resolution_threshold,
+                    product_resolution_margin=self._config.product_resolution_margin,
+                )
         self._evicted_members += evicted
         return evicted
 
@@ -456,12 +518,17 @@ class ClusterStore:
                         viewer_key=other._member_viewers[member_id],
                         intent=survivor.intent,
                         product_candidates=other.product_candidates,
+                        product_resolution_threshold=self._config.product_resolution_threshold,
+                        product_resolution_margin=self._config.product_resolution_margin,
                     )
                     other.remove_member(member_id)
                 self._clusters.pop(other.cluster_id, None)
                 merged_away.add(other.cluster_id)
                 result.merged += 1
-                survivor.recompute()
+                survivor.recompute(
+                    product_resolution_threshold=self._config.product_resolution_threshold,
+                    product_resolution_margin=self._config.product_resolution_margin,
+                )
                 # Boundedness: merged member counts may exceed the cap — evict
                 # the oldest deterministically via the existing member-bound path.
                 self._enforce_member_bound(survivor)
@@ -580,6 +647,8 @@ class ClusterStore:
                 viewer_key=viewer_key,
                 intent=cluster.intent,
                 product_candidates=cluster.product_candidates,
+                product_resolution_threshold=self._config.product_resolution_threshold,
+                product_resolution_margin=self._config.product_resolution_margin,
             )
         if not cluster.member_ids:
             self._clusters.pop(cluster.cluster_id, None)
