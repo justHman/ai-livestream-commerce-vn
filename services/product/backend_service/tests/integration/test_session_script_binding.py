@@ -227,6 +227,59 @@ def test_bind_missing_script_returns_structured_409(mock_env: None) -> None:
         assert sorted(i["product_id"] for i in error["details"]["missing"]) == ["P001", "P002"]
 
 
+def test_bind_stale_entity_facts_revision_returns_409(mock_env: None) -> None:
+    """Task 8.9: fact revision change -> different version -> STALE.
+
+    The entity-derived versions feed ``DependencyFingerprint``; the
+    recorded-at-approval fingerprint differs from current -> 409 stale.
+    """
+    from backend.application.entity.fingerprints import entity_facts_version
+    from backend.application.entity.models import EntityDocument, Fact
+    from backend.application.script_authoring.session_binding import DependencyFingerprint
+
+    def make_entity(price_revision: int) -> EntityDocument:
+        return EntityDocument(
+            id="product:entity-p1",
+            entity_type="product",
+            revision=1,
+            name="Kem ABC",
+            facts=[
+                Fact(
+                    key="commerce.price.current",
+                    type="int",
+                    value=350000,
+                    unit="VND",
+                    revision=price_revision,
+                    freshness="volatile",
+                    updated_at="2026-08-01T00:00:00+00:00",
+                ),
+            ],
+        )
+
+    recorded = DependencyFingerprint(
+        product_facts_version=entity_facts_version(make_entity(1)),
+    )
+    source = _FakeSource()
+    source.recorded_dependencies_by_item = {
+        "script_item:11111111111111111111111111111111": recorded,
+        "script_item:22222222222222222222222222222222": recorded,
+    }
+    # A price fact revision bump after approval must stale the binding.
+    source.current_deps = DependencyFingerprint(
+        product_facts_version=entity_facts_version(make_entity(2)),
+    )
+    with TestClient(_make_app(source)) as client:
+        sid = _start_session(client)
+        r = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={"script_set_id": SET_ID},
+        )
+        assert r.status_code == 409, r.text
+        error = r.json()["error"]
+        assert error["code"] == "missing_or_stale_script"
+        assert sorted(i["product_id"] for i in error["details"]["stale"]) == ["P001", "P002"]
+
+
 def test_bind_stale_approval_returns_structured_409(mock_env: None) -> None:
     source = _FakeSource()
     # Approvals recorded rules-1 but current deps are rules-2 -> STALE.
