@@ -43,16 +43,16 @@
 
 ## 5. Stable ClusterStore and reconciliation
 
-- [ ] 5.1 Define `LiveCluster`, stable `cluster_id`, representative, viewer-demand, product-resolution, novelty, and lifecycle fields.
-- [ ] 5.2 Implement bounded per-session `ClusterStore`.
-- [ ] 5.3 Implement incremental semantic assignment/update from newly embedded comments.
-- [ ] 5.4 Implement member/embedding expiry tied to active rolling horizon.
-- [ ] 5.5 Implement reconciliation trigger state: `>=100` unreconciled comments OR `>=60s` since first unreconciled comment.
-- [ ] 5.6 Implement bounded active-horizon reconciliation capable of compatible merge/split/centroid/medoid repair.
-- [ ] 5.7 Preserve last valid fast-lane state on reconciliation failure and emit typed diagnostics.
-- [ ] 5.8 Add stable-ID and arrival-order benchmark fixtures.
-- [ ] 5.9 Add long-duration bounded-memory test proving state does not grow linearly with livestream duration.
-- [ ] 5.10 Remove parallel unbounded rolling-comment/embedding history no longer required by the new store.
+- [x] 5.1 Define `LiveCluster`, stable `cluster_id`, representative, viewer-demand, product-resolution, novelty, and lifecycle fields.
+- [x] 5.2 Implement bounded per-session `ClusterStore`.
+- [x] 5.3 Implement incremental semantic assignment/update from newly embedded comments.
+- [x] 5.4 Implement member/embedding expiry tied to active rolling horizon.
+- [x] 5.5 Implement reconciliation trigger state: `>=100` unreconciled comments OR `>=60s` since first unreconciled comment.
+- [x] 5.6 Implement bounded active-horizon reconciliation capable of compatible merge/split/centroid/medoid repair.
+- [x] 5.7 Preserve last valid fast-lane state on reconciliation failure and emit typed diagnostics.
+- [x] 5.8 Add stable-ID and arrival-order benchmark fixtures.
+- [x] 5.9 Add long-duration bounded-memory test proving state does not grow linearly with livestream duration.
+- [x] 5.10 Remove parallel unbounded rolling-comment/embedding history no longer required by the new store.
 
 ## 6. Soft routing, multi-product resolution, and ranking
 

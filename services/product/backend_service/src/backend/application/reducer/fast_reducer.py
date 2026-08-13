@@ -26,6 +26,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .cluster_store import (
+    ClusterStore,
+    ClusterStoreConfig,
+    ReconciliationError,
+    ReconciliationFailure,
+    ReconciliationResult,
+)
+
 __all__ = ["AcceptedComment", "FastReducer", "FastReducerConfig"]
 
 
@@ -57,6 +65,14 @@ class FastReducerConfig:
     microbatch_max_wait_ms: int = 300
     rolling_horizon_sec: float = 75.0
     max_pending: int = 500
+    cluster_merge_threshold: float = 0.375
+    max_active_clusters: int = 40
+    max_members_per_cluster: int = 200
+    max_representatives: int = 5
+    # Reconciliation knobs (OpenSpec 5.5) — mirror the ClusterStoreConfig knobs.
+    reconcile_unreconciled_threshold: int = 100
+    reconcile_age_sec: float = 60.0
+    cohesion_split_threshold: float = 0.15
 
     def validate_runtime(self) -> None:
         """Fail-fast on non-positive knobs (called by the reducer at init)."""
@@ -66,6 +82,20 @@ class FastReducerConfig:
             raise ValueError("rolling_horizon_sec must be > 0")
         if self.max_pending <= 0:
             raise ValueError("max_pending must be > 0")
+        if self.cluster_merge_threshold <= 0:
+            raise ValueError("cluster_merge_threshold must be > 0")
+        if self.max_active_clusters <= 0:
+            raise ValueError("max_active_clusters must be > 0")
+        if self.max_members_per_cluster <= 0:
+            raise ValueError("max_members_per_cluster must be > 0")
+        if self.max_representatives <= 0:
+            raise ValueError("max_representatives must be > 0")
+        if self.reconcile_unreconciled_threshold <= 0:
+            raise ValueError("reconcile_unreconciled_threshold must be > 0")
+        if self.reconcile_age_sec <= 0:
+            raise ValueError("reconcile_age_sec must be > 0")
+        if self.cohesion_split_threshold <= 0:
+            raise ValueError("cohesion_split_threshold must be > 0")
 
 
 @dataclass
@@ -104,6 +134,42 @@ class FastReducer:
         self._embedder = embedder
         self._now = now_fn or time.time
         self._sessions: dict[str, _SessionState] = {}
+        self._stores: dict[str, ClusterStore] = {}
+        # Reconciliation observability (OpenSpec 5.6): cumulative counters plus
+        # the last run's per-pass counters.
+        self._reconciles_run: dict[str, int] = {}
+        self._reconcile_merged_total: dict[str, int] = {}
+        self._reconcile_split_total: dict[str, int] = {}
+        self._last_reconcile: dict[str, ReconciliationResult] = {}
+        # Reconciliation failure diagnostics (5.7): cumulative counter + the
+        # last typed failure, so a failed pass never crashes the fast lane.
+        self._reconciliation_failures: dict[str, int] = {}
+        self._last_reconciliation_failure: dict[str, ReconciliationFailure] = {}
+
+    # ------------------------------------------------------------------
+    # Per-session cluster store (5.3)
+    # ------------------------------------------------------------------
+
+    def _get_store(self, session_id: str) -> ClusterStore:
+        """Lazily create the session's cluster store on first use."""
+        store = self._stores.get(session_id)
+        if store is None:
+            store = ClusterStore(
+                session_id,
+                config=ClusterStoreConfig(
+                    merge_threshold=self._config.cluster_merge_threshold,
+                    rolling_horizon_sec=self._config.rolling_horizon_sec,
+                    max_active_clusters=self._config.max_active_clusters,
+                    max_members_per_cluster=self._config.max_members_per_cluster,
+                    max_representatives=self._config.max_representatives,
+                    reconcile_unreconciled_threshold=self._config.reconcile_unreconciled_threshold,
+                    reconcile_age_sec=self._config.reconcile_age_sec,
+                    cohesion_split_threshold=self._config.cohesion_split_threshold,
+                ),
+                now_fn=self._now,
+            )
+            self._stores[session_id] = store
+        return store
 
     # ------------------------------------------------------------------
     # Wakeup seam (the ONLY way the reducer learns of work)
@@ -209,7 +275,67 @@ class FastReducer:
         state.embedded_total += len(embedded)
         cutoff = now - self._config.rolling_horizon_sec
         state.demand = [d for d in state.demand if d["ts"] >= cutoff]
+        store = self._get_store(session_id)
+        for comment in batch:
+            entry = state.cache.get(comment.comment_id)
+            if entry is not None and entry[0] == comment.text:
+                store.assign(
+                    comment_id=comment.comment_id,
+                    text=comment.text,
+                    vector=entry[1],
+                    ts=comment.ts,
+                    viewer_key=comment.viewer_key,
+                    intent="unknown",
+                    product_candidates=[],
+                )
+        # Write-path expiry keeps store memory bounded as the horizon advances (5.4).
+        store.expire(now)
         return batch
+
+    # ------------------------------------------------------------------
+    # Reconciliation (5.5-5.6) — invoked by the caller when due; never on the
+    # fast-lane hot path (run_once never calls it). Pure CPU on small bounded
+    # data, so it is called directly, not via asyncio.to_thread.
+    # ------------------------------------------------------------------
+
+    def reconciliation_due(self, session_id: str, now: float) -> bool:
+        """Delegate the count/age trigger check to the session's store."""
+        return self._get_store(session_id).reconcile_due(now)
+
+    async def reconcile(self, session_id: str, now: float) -> ReconciliationResult:
+        """Run the store's bounded reconciliation when due (no-op otherwise).
+
+        After a successful pass the trigger state resets (store-side) and the
+        per-session cumulative counters accumulate. A failed pass (5.7) never
+        propagates: the store has restored the pre-pass state, the typed
+        failure is recorded here for diagnostics, and the fast lane keeps
+        operating — the caller queries the stats to observe it.
+        """
+        store = self._get_store(session_id)
+        if not store.reconcile_due(now):
+            count = store.cluster_count()
+            return ReconciliationResult(clusters_before=count, clusters_after=count)
+        try:
+            result = store.reconcile(now)
+        except ReconciliationError as exc:
+            failure = exc.failure
+            self._reconciliation_failures[session_id] = (
+                self._reconciliation_failures.get(session_id, 0) + 1
+            )
+            self._last_reconciliation_failure[session_id] = failure
+            return ReconciliationResult(
+                clusters_before=failure.clusters_before,
+                clusters_after=failure.clusters_before,
+            )
+        self._reconciles_run[session_id] = self._reconciles_run.get(session_id, 0) + 1
+        self._reconcile_merged_total[session_id] = (
+            self._reconcile_merged_total.get(session_id, 0) + result.merged
+        )
+        self._reconcile_split_total[session_id] = (
+            self._reconcile_split_total.get(session_id, 0) + result.split
+        )
+        self._last_reconcile[session_id] = result
+        return result
 
     # ------------------------------------------------------------------
     # Async waiter (used by the future fast-lane loop; 4.6 proof seam)
@@ -267,6 +393,14 @@ class FastReducer:
 
     def stats(self, session_id: str) -> dict:
         """Content-safe per-session counters (no raw viewer text)."""
+        failure = self._last_reconciliation_failure.get(session_id)
+        base = {
+            "reconciles_run": self._reconciles_run.get(session_id, 0),
+            "reconcile_merged_total": self._reconcile_merged_total.get(session_id, 0),
+            "reconcile_split_total": self._reconcile_split_total.get(session_id, 0),
+            "reconciliation_failures": self._reconciliation_failures.get(session_id, 0),
+            "last_reconciliation_failure": None if failure is None else failure.to_dict(),
+        }
         state = self._sessions.get(session_id)
         if state is None:
             return {
@@ -276,7 +410,10 @@ class FastReducer:
                 "cache_hits": 0,
                 "demand_size": 0,
                 "wake_notifications": 0,
+                "last_reconcile": None,
+                **base,
             }
+        last = self._last_reconcile.get(session_id)
         return {
             "pending": len(state.pending),
             "embedded_total": state.embedded_total,
@@ -284,4 +421,14 @@ class FastReducer:
             "cache_hits": state.cache_hits,
             "demand_size": len(state.demand),
             "wake_notifications": state.wake_notifications,
+            "last_reconcile": None
+            if last is None
+            else {
+                "clusters_before": last.clusters_before,
+                "clusters_after": last.clusters_after,
+                "merged": last.merged,
+                "split": last.split,
+                "members_removed": last.members_removed,
+            },
+            **base,
         }

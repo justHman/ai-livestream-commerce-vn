@@ -646,6 +646,10 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
+        # Bound the old comment/embedding history at write time (5.10): the
+        # ClusterStore owns the long-term demand — this state only feeds the
+        # Director's selection window.
+        state.prune_history(director_now, director.cfg.selection_window_sec)
         now = ds.now()
         self._advance_timers(session_id, now, state)
         await self._fill_prepared(session_id)

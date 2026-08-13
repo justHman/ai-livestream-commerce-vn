@@ -15,7 +15,13 @@ from backend.application.director.coordinator import CoordinatorConfig, Director
 from backend.application.director.decision import Director
 from backend.application.director.hooks import HookPool
 from backend.application.director.session_context import DirectorRuntime, DirectorSession
-from backend.application.director.state import Phase, ProductState, ProductStatus, StreamState
+from backend.application.director.state import (
+    WINDOW_SLACK_SEC,
+    Phase,
+    ProductState,
+    ProductStatus,
+    StreamState,
+)
 
 
 def test_stage2_runtime_config_validates_qna_and_pivot_defaults() -> None:
@@ -23,6 +29,56 @@ def test_stage2_runtime_config_validates_qna_and_pivot_defaults() -> None:
     cfg.validate_runtime()
     assert (cfg.max_qa_clusters_per_window, cfg.qa_window_hard_timeout_sec) == (2, 45.0)
     assert (cfg.demand_pivot_enter_share, cfg.demand_pivot_exit_share) == (0.60, 0.45)
+
+
+def test_add_comments_prunes_history_outside_decision_horizon() -> None:
+    """5.10: rolling comments + embeddings stay bounded to the decision window."""
+    state = StreamState()
+    state.add_comments(
+        [
+            Comment(text="cũ", embedding=[0.0], t=-10.0),
+            Comment(text="mới", embedding=[1.0], t=70.0),
+            Comment(text="cận mốc", embedding=[2.0], t=70.0),
+        ]
+    )
+    state.embeddings_cache.update(
+        {comment.id: comment.embedding for comment in state.rolling_comments}
+    )
+
+    state.prune_history(now=75.0, window_sec=75.0)
+
+    assert [comment.text for comment in state.rolling_comments] == ["mới", "cận mốc"]
+    assert set(state.embeddings_cache) == {comment.id for comment in state.rolling_comments}
+
+
+@pytest.mark.asyncio
+async def test_long_session_keeps_rolling_history_bounded(
+    coordinator: DirectorCoordinator, runtime: DirectorRuntime
+) -> None:
+    """5.10: a long synthetic session never grows comment/embedding history."""
+    session_id = "test-bounded-history"
+    session, clock = _make_session()
+    _inject_session(runtime, session_id, session)
+    coordinator.start(session_id, [Product(id="p1", name="Product 1")])
+    try:
+        for offset in range(30):
+            clock.set(60.0 + offset * 10.0)
+            coordinator.ingest(
+                session_id, f"comment {offset}", "viewer", ts=time.time() - offset * 10.0
+            )
+            await coordinator._tick_once(session_id)
+
+        window_bound = 2 * session.director.cfg.selection_window_sec + WINDOW_SLACK_SEC
+        state = session.director.state
+        assert len(state.rolling_comments) <= window_bound
+        assert len(state.embeddings_cache) == len(state.rolling_comments)
+        # Only comments inside the decision horizon survive.
+        assert all(
+            state.rolling_comments[-1].t - comment.t <= window_bound
+            for comment in state.rolling_comments
+        )
+    finally:
+        await _stop(coordinator, session_id)
 
 
 class _FakeClock:
