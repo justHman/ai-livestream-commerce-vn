@@ -60,13 +60,13 @@
 - [x] 6.2 Preserve strong explicit product-id/alias matches as high-confidence candidates.
 - [x] 6.3 Add cluster-level product resolver with confidence threshold and top-candidate margin.
 - [x] 6.4 Represent zero/one/many resolved product IDs.
-- [ ] 6.5 Add deterministic comparison-question fixtures that resolve multiple products without accidental merge rejection.
-- [ ] 6.6 Add unique-viewer count to cluster state and make it the primary demand popularity signal.
-- [ ] 6.7 Add repeated-single-viewer anti-inflation tests.
-- [ ] 6.8 Replace pivot share calculations with active unique-viewer demand.
-- [ ] 6.9 Select medoid/diversity representatives instead of first-N arrival members.
-- [ ] 6.10 Replace coarse `product:intent` cooldown/cache identity with stable semantic topic/cluster fingerprint inputs.
-- [ ] 6.11 Make skip/selection lifecycle state persist on stable cluster identities.
+- [x] 6.5 Add deterministic comparison-question fixtures that resolve multiple products without accidental merge rejection.
+- [x] 6.6 Add unique-viewer count to cluster state and make it the primary demand popularity signal.
+- [x] 6.7 Add repeated-single-viewer anti-inflation tests.
+- [x] 6.8 Replace pivot share calculations with active unique-viewer demand.
+- [x] 6.9 Select medoid/diversity representatives instead of first-N arrival members.
+- [x] 6.10 Replace coarse `product:intent` cooldown/cache identity with stable semantic topic/cluster fingerprint inputs.
+- [x] 6.11 Make skip/selection lifecycle state persist on stable cluster identities.
 
 ## 7. ClusterEnvelope boundary
 
