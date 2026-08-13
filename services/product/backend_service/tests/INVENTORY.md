@@ -29,6 +29,8 @@ llm/engines/base.py:34 and tts/engines/base.py:20 (service-local fallbacks).
 | test_run_plan.py | RunPlan schema, build_run_plan determinism, coverage cursor, Utterance schema | core/tests/test_run_plan.py | unit |
 | test_text_chunker.py | TextChunker punctuation/max/timeout/finalize flushes with fake clock | core/tests/test_text_chunker.py | unit |
 | fixtures.py | Shared MOCK_ENTITIES fixture (EntityDocument products, replaces core/debug/mock_data.py for service tests) | new | unit |
+| unit/entity/test_datastudio_forms.py | Data Studio row/common coercion, custom.* unknown labels, full-replace save revision | — (multi-platform change, cluster 9) | unit |
+| unit/entity/test_suggestions.py | extraction seam: stub/no-engine/malformed/raising all degrade to empty, never 5xx | — (multi-platform change, cluster 9) | unit |
 
 ## integration/
 
@@ -59,6 +61,7 @@ llm/engines/base.py:34 and tts/engines/base.py:20 (service-local fallbacks).
 | test_session_routes.py | /sessions lifecycle, plan/create, admin config no-secrets, mock 404 | core/tests/test_sessions_api.py | integration |
 | test_voice_routes.py | /engines status + TTS preset apply/404 | core/tests/test_engines_endpoint.py | integration |
 | test_voice_routes_discovery.py | engines/avatars discovery, tts/preview WAV, failed swap preserves engine | core/tests/test_runtime_discovery_preview.py | integration |
+| test_entities_api.py | /entities CRUD, revision 409, render-preview exact output, suggestions empty w/o LLM | — (multi-platform change, cluster 9) | integration |
 
 ## Moved out of backend ownership
 
