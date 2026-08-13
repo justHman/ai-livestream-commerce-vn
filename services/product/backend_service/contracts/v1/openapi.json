@@ -178,7 +178,7 @@
         "type": "object"
       },
       "CommentPayload": {
-        "description": "Payload for ``viewer.comment`` — the only semantically reduced event.",
+        "description": "Payload for ``viewer.comment`` \u2014 the only semantically reduced event.",
         "properties": {
           "text": {
             "maxLength": 500,
@@ -340,6 +340,95 @@
         "title": "EngineSwapReq",
         "type": "object"
       },
+      "EntityDocument": {
+        "additionalProperties": false,
+        "description": "Aggregate root: the universal commerce entity envelope (Decision 10).",
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "entity_type": {
+            "enum": [
+              "product",
+              "shop",
+              "campaign"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/Fact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "knowledge_blocks": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeBlock"
+            },
+            "title": "Knowledge Blocks",
+            "type": "array"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/Relation"
+            },
+            "title": "Relations",
+            "type": "array"
+          },
+          "revision": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "entity_type",
+          "name"
+        ],
+        "title": "EntityDocument",
+        "type": "object"
+      },
+      "EntityListOut": {
+        "properties": {
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntityDocument"
+            },
+            "title": "Entities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "entities"
+        ],
+        "title": "EntityListOut",
+        "type": "object"
+      },
       "EventsIn": {
         "description": "Bounded batch of canonical events (one-or-many share this schema).",
         "properties": {
@@ -357,6 +446,138 @@
           "events"
         ],
         "title": "EventsIn",
+        "type": "object"
+      },
+      "Fact": {
+        "additionalProperties": false,
+        "description": "One typed, revisioned fact value on an entity.\n\n``key`` is a canonical registry key (e.g. ``commerce.price.current``) or a\ncustom key (``custom.<slug>``) for facts the registry does not know.\n``labels`` are user-facing aliases for THIS fact instance (e.g. how the\noperator named the field in the workbench), distinct from the global\naliases the registry maps.",
+        "properties": {
+          "freshness": {
+            "default": "stable",
+            "enum": [
+              "stable",
+              "volatile"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "key": {
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_.-]*$",
+            "title": "Key",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "revision": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "type": {
+            "enum": [
+              "int",
+              "float",
+              "str",
+              "bool"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "value"
+        ],
+        "title": "Fact",
+        "type": "object"
+      },
+      "FactRowIn": {
+        "additionalProperties": false,
+        "description": "One user-facing label/value row (task 9.2).\n\nThe label resolves through the fact registry; unknown labels become\n``custom.<slug>`` facts instead of being rejected (task 9.3).",
+        "properties": {
+          "label": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "FactRowIn",
         "type": "object"
       },
       "FixReq": {
@@ -451,6 +672,101 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "KnowledgeBlock": {
+        "additionalProperties": false,
+        "description": "Long revisioned prose (description, usage, story, campaign background).\n\nKept out of facts on purpose: prose is retrieved per query (Decision 13),\nso it must not be serialized whole-document every turn.",
+        "properties": {
+          "content": {
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "custom",
+            "enum": [
+              "description",
+              "usage",
+              "story",
+              "campaign",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "revision": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "content"
+        ],
+        "title": "KnowledgeBlock",
+        "type": "object"
+      },
+      "KnowledgeBlockIn": {
+        "additionalProperties": false,
+        "description": "One raw/pasted knowledge block (task 9.4).",
+        "properties": {
+          "content": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "kind": {
+            "default": "custom",
+            "enum": [
+              "description",
+              "usage",
+              "story",
+              "campaign",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Tags",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "KnowledgeBlockIn",
+        "type": "object"
+      },
       "LiveSessionBriefIn": {
         "description": "Lightweight pre-live brief; no runtime session is created.",
         "properties": {
@@ -489,7 +805,7 @@
         "properties": {
           "products": {
             "items": {
-              "$ref": "#/components/schemas/ProductIn"
+              "$ref": "#/components/schemas/ProductEntityIn"
             },
             "maxItems": 100,
             "title": "Products",
@@ -713,7 +1029,7 @@
           },
           "products": {
             "items": {
-              "$ref": "#/components/schemas/ProductIn"
+              "$ref": "#/components/schemas/ProductEntityIn"
             },
             "maxItems": 100,
             "title": "Products",
@@ -794,7 +1110,8 @@
         "title": "PlatformEvent",
         "type": "object"
       },
-      "ProductIn": {
+      "ProductEntityIn": {
+        "description": "Flat product input (Decision 12: simple UX at the boundary).\n\nConverts to an ``EntityDocument`` (product) via ``to_entity()``: canonical\nkeys (registry.py) for price/stock/promotion/shipping/warranty facts,\n``custom.*`` keys for material/ref_image, and a description knowledge block\ncarrying colors/sizes/features as tags.",
         "properties": {
           "colors": {
             "items": {
@@ -950,7 +1267,7 @@
           "id",
           "name"
         ],
-        "title": "ProductIn",
+        "title": "ProductEntityIn",
         "type": "object"
       },
       "RegenerateReq": {
@@ -971,6 +1288,63 @@
           }
         },
         "title": "RegenerateReq",
+        "type": "object"
+      },
+      "Relation": {
+        "additionalProperties": false,
+        "description": "Link to another entity, typed so consumers can filter by kind.",
+        "properties": {
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Metadata",
+            "type": "object"
+          },
+          "relation_type": {
+            "default": "custom",
+            "enum": [
+              "belongs_to_shop",
+              "related_product",
+              "campaign_targets",
+              "custom"
+            ],
+            "title": "Relation Type",
+            "type": "string"
+          },
+          "target_entity_id": {
+            "minLength": 1,
+            "title": "Target Entity Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_entity_id"
+        ],
+        "title": "Relation",
+        "type": "object"
+      },
+      "RenderPreviewReq": {
+        "additionalProperties": false,
+        "description": "Exact query-relevant context renderer input (task 9.8).",
+        "properties": {
+          "max_block_chars": {
+            "default": 400,
+            "maximum": 2000.0,
+            "minimum": 1.0,
+            "title": "Max Block Chars",
+            "type": "integer"
+          },
+          "selectors": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Selectors",
+            "type": "array"
+          }
+        },
+        "title": "RenderPreviewReq",
         "type": "object"
       },
       "RuntimeConfigReq": {
@@ -1289,6 +1663,80 @@
         "title": "ShopProfileIn",
         "type": "object"
       },
+      "SimpleEntityUpsertReq": {
+        "additionalProperties": false,
+        "description": "The Data Studio form: simple common fields + arbitrary rows + prose.\n\n``common`` accepts ONLY the canonical keys below (unknown keys are a 400);\neach entry is a string the UI typed, coerced to the registry type.",
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Aliases",
+            "type": "array"
+          },
+          "common": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Common",
+            "type": "object"
+          },
+          "entity_type": {
+            "default": "product",
+            "enum": [
+              "product",
+              "shop",
+              "campaign"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "fact_rows": {
+            "items": {
+              "$ref": "#/components/schemas/FactRowIn"
+            },
+            "maxItems": 200,
+            "title": "Fact Rows",
+            "type": "array"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Id",
+            "type": "string"
+          },
+          "knowledge_blocks": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeBlockIn"
+            },
+            "maxItems": 50,
+            "title": "Knowledge Blocks",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "SimpleEntityUpsertReq",
+        "type": "object"
+      },
       "StartReq": {
         "properties": {
           "avatar_id": {
@@ -1310,6 +1758,142 @@
           }
         },
         "title": "StartReq",
+        "type": "object"
+      },
+      "SuggestedFact": {
+        "additionalProperties": false,
+        "description": "One extracted suggestion; advisory until the operator saves it.",
+        "properties": {
+          "key": {
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_.-]*$",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "type": {
+            "default": "str",
+            "enum": [
+              "int",
+              "float",
+              "str",
+              "bool"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "value"
+        ],
+        "title": "SuggestedFact",
+        "type": "object"
+      },
+      "SuggestionReq": {
+        "additionalProperties": false,
+        "description": "Extraction input; advisory only, the save path never calls this.",
+        "properties": {
+          "block_kind": {
+            "default": "custom",
+            "enum": [
+              "description",
+              "usage",
+              "story",
+              "campaign",
+              "custom"
+            ],
+            "title": "Block Kind",
+            "type": "string"
+          },
+          "block_title": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Block Title",
+            "type": "string"
+          },
+          "entity_type": {
+            "default": "product",
+            "enum": [
+              "product",
+              "shop",
+              "campaign"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SuggestionReq",
+        "type": "object"
+      },
+      "SuggestionResponse": {
+        "additionalProperties": false,
+        "description": "Advisory extraction result; save path never depends on it (task 9.6).",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "source_block_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Block Id"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestedFact"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "title": "SuggestionResponse",
         "type": "object"
       },
       "TTSPresetIn": {
@@ -1436,171 +2020,11 @@
         ],
         "title": "ViewerRef",
         "type": "object"
-      },
-      "ProductEntityIn": {
-        "description": "Flat product input (Decision 12: simple UX at the boundary).\n\nConverts to an ``EntityDocument`` (product) via ``to_entity()``: canonical\nkeys (registry.py) for price/stock/promotion/shipping/warranty facts,\n``custom.*`` keys for material/ref_image, and a description knowledge block\ncarrying colors/sizes/features as tags.",
-        "properties": {
-          "colors": {
-            "items": {
-              "maxLength": 500,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 32,
-            "title": "Colors",
-            "type": "array"
-          },
-          "description": {
-            "default": "",
-            "maxLength": 2000,
-            "title": "Description",
-            "type": "string"
-          },
-          "features": {
-            "items": {
-              "maxLength": 500,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 32,
-            "title": "Features",
-            "type": "array"
-          },
-          "id": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Id",
-            "type": "string"
-          },
-          "in_stock": {
-            "default": true,
-            "title": "In Stock",
-            "type": "boolean"
-          },
-          "material": {
-            "anyOf": [
-              {
-                "maxLength": 256,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Material"
-          },
-          "name": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "original_price": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Original Price"
-          },
-          "price": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Price"
-          },
-          "promotion": {
-            "anyOf": [
-              {
-                "maxLength": 500,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Promotion"
-          },
-          "ref_image": {
-            "anyOf": [
-              {
-                "maxLength": 2048,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ref Image"
-          },
-          "shipping": {
-            "anyOf": [
-              {
-                "maxLength": 500,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Shipping"
-          },
-          "sizes": {
-            "items": {
-              "maxLength": 500,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 32,
-            "title": "Sizes",
-            "type": "array"
-          },
-          "stock_total": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Stock Total"
-          },
-          "warranty": {
-            "anyOf": [
-              {
-                "maxLength": 500,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Warranty"
-          }
-        },
-        "required": [
-          "id",
-          "name"
-        ],
-        "title": "ProductEntityIn",
-        "type": "object"
       }
     }
   },
   "info": {
-    "title": "VN Live-Commerce Host — core API",
+    "title": "VN Live-Commerce Host \u2014 core API",
     "version": "0.1.0"
   },
   "openapi": "3.1.0",
@@ -1628,7 +2052,7 @@
     },
     "/api/v1/admin/health": {
       "get": {
-        "description": "Deep health — same payload as /health/ready.",
+        "description": "Deep health \u2014 same payload as /health/ready.",
         "operationId": "admin_health_api_v1_admin_health_get",
         "responses": {
           "200": {
@@ -2054,6 +2478,268 @@
           }
         },
         "summary": "Preview Tts"
+      }
+    },
+    "/api/v1/entities": {
+      "get": {
+        "description": "List stored entities, optionally filtered by type (sorted by id).",
+        "operationId": "entities_list_api_v1_entities_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "entity_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "product",
+                    "shop",
+                    "campaign"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntityListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Entities List"
+      }
+    },
+    "/api/v1/entities/suggestions": {
+      "post": {
+        "description": "Optional AI fact extraction (task 9.5); NEVER required before saving.\n\nAdvisory only: the operator moves accepted suggestions into the form and\nthe save path (PUT) is the single authority. Always 200: no engine, a\nstub engine, malformed output, or an engine failure all return an empty\nsuggestion list (with a ``note`` when the output did not parse).",
+        "operationId": "entities_suggestions_api_v1_entities_suggestions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestionReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Entities Suggestions"
+      }
+    },
+    "/api/v1/entities/{entity_id}": {
+      "delete": {
+        "description": "Delete an entity; 204 on success, 404 when missing.",
+        "operationId": "entities_delete_api_v1_entities__entity_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Entities Delete"
+      },
+      "get": {
+        "description": "The full normalized entity document (task 9.7 advanced view).",
+        "operationId": "entities_get_api_v1_entities__entity_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntityDocument"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Entities Get"
+      },
+      "put": {
+        "description": "Save the Data Studio form (the single authority for facts/blocks).\n\nThe body id must match the path id; the stored document is returned at\n200. Concurrent stale writes (revision regression) surface as 409.",
+        "operationId": "entities_put_api_v1_entities__entity_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimpleEntityUpsertReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntityDocument"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Entities Put"
+      }
+    },
+    "/api/v1/entities/{entity_id}/render-preview": {
+      "post": {
+        "description": "Exact query-relevant evidence/context rendering preview (task 9.8).",
+        "operationId": "entities_render_preview_api_v1_entities__entity_id__render_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderPreviewReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Entities Render Preview Api V1 Entities  Entity Id  Render Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Entities Render Preview"
       }
     },
     "/api/v1/media/livekit/room/{session_id}": {
@@ -2608,7 +3294,7 @@
     },
     "/api/v1/script-sets/{set_id}/products/{product_id}/fix": {
       "post": {
-        "description": "Constrained AI repair for a gate-failed version (task 11.6).\n\nEligible only for gate-failed immutable versions; otherwise 409\n``fix_not_eligible``. The fixed result is a new DRAFT that must be\nsubmitted again — never auto-approved.",
+        "description": "Constrained AI repair for a gate-failed version (task 11.6).\n\nEligible only for gate-failed immutable versions; otherwise 409\n``fix_not_eligible``. The fixed result is a new DRAFT that must be\nsubmitted again \u2014 never auto-approved.",
         "operationId": "fix_product_api_v1_script_sets__set_id__products__product_id__fix_post",
         "parameters": [
           {

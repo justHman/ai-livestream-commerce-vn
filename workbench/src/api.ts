@@ -10,15 +10,21 @@ import type {
   AvatarsResponse,
   ConfigApplyResponse,
   EnginesResponse,
+  EntityDocument,
+  EntityType,
   HealthReadyResponse,
   IngestRequest,
   IngestResponse,
   LiveKitRoomResponse,
+  RenderPreviewResponse,
   SandboxVerifyRequest,
   SandboxVerifyResponse,
   SayRequest,
+  SimpleEntityUpsertReq,
   StartRequest,
   StartResponse,
+  SuggestionResponse,
+  SuggestFactsRequest,
 } from "./api_types";
 
 export interface ApiDeps {
@@ -233,6 +239,58 @@ export function createApi(deps: ApiDeps) {
     );
   }
 
+  async function listEntities(entityType?: EntityType): Promise<{ entities: EntityDocument[] }> {
+    const query = entityType ? `?entity_type=${encodeURIComponent(entityType)}` : "";
+    return requestJson<{ entities: EntityDocument[] }>(`/api/v1/entities${query}`, {
+      headers: viewerHeaders(),
+    });
+  }
+
+  async function getEntity(id: string): Promise<EntityDocument> {
+    return requestJson<EntityDocument>(`/api/v1/entities/${encodeURIComponent(id)}`, {
+      headers: viewerHeaders(),
+    });
+  }
+
+  async function putEntity(id: string, req: SimpleEntityUpsertReq): Promise<EntityDocument> {
+    return requestJson<EntityDocument>(`/api/v1/entities/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: viewerHeaders(true),
+      body: JSON.stringify(req),
+    });
+  }
+
+  async function deleteEntity(id: string): Promise<void> {
+    const response = await fetch(base() + `/api/v1/entities/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: viewerHeaders(),
+    });
+    if (!response.ok) throw new ApiError(response.status, `HTTP ${response.status}`);
+  }
+
+  async function suggestFacts(req: SuggestFactsRequest): Promise<SuggestionResponse> {
+    return requestJson<SuggestionResponse>("/api/v1/entities/suggestions", {
+      method: "POST",
+      headers: viewerHeaders(true),
+      body: JSON.stringify(req),
+    });
+  }
+
+  async function renderPreview(
+    id: string,
+    selectors: string[],
+    maxBlockChars = 400,
+  ): Promise<RenderPreviewResponse> {
+    return requestJson<RenderPreviewResponse>(
+      `/api/v1/entities/${encodeURIComponent(id)}/render-preview`,
+      {
+        method: "POST",
+        headers: viewerHeaders(true),
+        body: JSON.stringify({ selectors, max_block_chars: maxBlockChars }),
+      },
+    );
+  }
+
   async function previewTts(
     text: string,
     ttsId: string,
@@ -273,6 +331,12 @@ export function createApi(deps: ApiDeps) {
     livekitRoom,
     applyEngine,
     previewTts,
+    listEntities,
+    getEntity,
+    putEntity,
+    deleteEntity,
+    suggestFacts,
+    renderPreview,
     baseUrl: base,
     viewerHeaders,
     adminHeaders,

@@ -161,6 +161,65 @@
         <div id="scriptSetStatus" class="status" aria-live="polite"></div>
         <div id="scriptSetErrors" class="script-errors" role="alert" aria-live="polite"></div>
       </section>
+
+      <section class="panel" id="dataStudioPanel" aria-labelledby="dataStudioHeading">
+        <h2 id="dataStudioHeading">10. Entity Data Studio</h2>
+        <p class="hint">Nhập thông tin shop/sản phẩm/chiến dịch không cần biết khóa kỹ thuật: các trường phổ biến, dòng nhãn/giá trị tùy ý và nội dung thô dạng khối. AI gợi ý là tùy chọn — lưu luôn hoạt động khi AI tắt.</p>
+
+        <div class="grid-2">
+          <div class="field"><label for="dsEntityType">Loại entity</label><select id="dsEntityType"><option value="product">Sản phẩm</option><option value="shop">Shop</option><option value="campaign">Chiến dịch</option></select></div>
+          <div class="field"><label for="dsEntitySelect">Entity có sẵn</label><select id="dsEntitySelect"><option value="">Chưa tải</option></select></div>
+        </div>
+        <div class="actions">
+          <button id="dsNewEntityBtn" type="button" class="secondary">Entity mới</button>
+        </div>
+
+        <div class="grid-2">
+          <div class="field"><label for="dsId">ID (bắt buộc khi lưu)</label><input id="dsId" maxlength="128" placeholder="product-..." autocomplete="off"></div>
+          <div class="field"><label for="dsName">Tên (bắt buộc khi lưu)</label><input id="dsName" maxlength="256"></div>
+          <div class="field"><label for="dsAliases">Bí danh, phân cách bằng dấu phẩy</label><input id="dsAliases" maxlength="1000"></div>
+          <div class="field"><label for="dsTags">Tags, phân cách bằng dấu phẩy</label><input id="dsTags" maxlength="1000"></div>
+        </div>
+
+        <h3>Trường phổ biến</h3>
+        <div class="grid-2">
+          <div class="field"><label for="dsBrand">Thương hiệu</label><input id="dsBrand" maxlength="200"></div>
+          <div class="field"><label for="dsSku">Mã SKU</label><input id="dsSku" maxlength="200"></div>
+          <div class="field"><label for="dsPrice">Giá hiện tại (VND)</label><input id="dsPrice" type="number" min="0"></div>
+          <div class="field"><label for="dsOriginalPrice">Giá gốc (VND)</label><input id="dsOriginalPrice" type="number" min="0"></div>
+          <div class="field"><label for="dsPromotion">Khuyến mãi</label><input id="dsPromotion" maxlength="500"></div>
+          <div class="field"><label for="dsShipping">Vận chuyển</label><input id="dsShipping" maxlength="500"></div>
+          <div class="field"><label for="dsWarranty">Bảo hành</label><input id="dsWarranty" maxlength="500"></div>
+          <div class="field"><label class="toggle" for="dsInStock"><input id="dsInStock" type="checkbox"> Còn hàng</label></div>
+          <div class="field"><label for="dsStockQuantity">Số lượng tồn</label><input id="dsStockQuantity" type="number" min="0"></div>
+        </div>
+
+        <h3>Nhãn và giá trị tùy ý</h3>
+        <p class="hint">Nhãn tiếng Việt bất kỳ được giữ nguyên (vd: "Dùng cho da dầu"). Không cần biết khóa kỹ thuật.</p>
+        <div id="dsRowList" class="ds-row-list"></div>
+        <div class="actions"><button id="dsAddRowBtn" type="button" class="secondary">Thêm dòng</button></div>
+
+        <h3>Khối nội dung thô</h3>
+        <div id="dsBlockList" class="ds-block-list"></div>
+        <div class="actions"><button id="dsAddBlockBtn" type="button" class="secondary">Thêm khối nội dung</button></div>
+
+        <h3>Gợi ý từ AI (tùy chọn)</h3>
+        <div id="dsSuggestionList" class="ds-suggestion-list" aria-live="polite">Chưa có gợi ý — bấm 'Gợi ý từ AI' trên một block nội dung.</div>
+        <div id="dsSuggestionNote" class="hint" aria-live="polite"></div>
+
+        <h3>Render preview — những gì Agent/LLM nhìn thấy</h3>
+        <div class="field"><label for="dsSelectors">Selectors (phân cách bằng dấu phẩy, để trống = toàn bộ)</label><input id="dsSelectors" placeholder="Giá hiện tại, warranty" maxlength="1000"></div>
+        <div class="actions"><button id="dsRenderBtn" type="button" class="secondary" disabled>Xem bản render</button></div>
+        <div id="dsRenderNote" class="hint" aria-live="polite"></div>
+        <pre id="dsRenderText" class="ds-render" aria-live="polite"></pre>
+
+        <div class="actions"><button id="dsSaveBtn" type="button" disabled>Lưu entity (PUT)</button></div>
+        <div id="dsStatus" class="status" aria-live="polite">Chọn hoặc tạo entity.</div>
+        <div id="dsErrors" class="script-errors" role="alert" aria-live="polite"></div>
+
+        <h3>Dạng chuẩn hóa (normalized entity document)</h3>
+        <div id="dsDocumentView" class="ds-doc" aria-live="polite">Chưa có entity đã tải — bấm Lưu hoặc chọn entity để xem dạng chuẩn hóa.</div>
+      </section>
     </div>
   </main>
 

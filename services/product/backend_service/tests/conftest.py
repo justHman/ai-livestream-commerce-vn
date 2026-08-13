@@ -32,6 +32,7 @@ def make_deps(
     orchestrators=None,
     locks=None,
     event_ingestion=None,
+    entity_repo=None,
 ):
     """Build the deps-shaped object accepted by ``create_app(deps=...)``.
 
@@ -60,5 +61,6 @@ def make_deps(
             self.locks = locks if locks is not None else SessionLockRegistry()
             self.orchestrators = orchestrators if orchestrators is not None else {}
             self.event_ingestion = event_ingestion
+            self.entity_repo = entity_repo
 
     return _Deps()
