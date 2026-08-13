@@ -313,9 +313,8 @@ class FastReducer:
         """
         store = self._get_store(session_id)
         if not store.reconcile_due(now):
-            return ReconciliationResult(
-                clusters_before=len(store._clusters), clusters_after=len(store._clusters)
-            )
+            count = store.cluster_count()
+            return ReconciliationResult(clusters_before=count, clusters_after=count)
         try:
             result = store.reconcile(now)
         except ReconciliationError as exc:

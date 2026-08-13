@@ -416,6 +416,7 @@ class ClusterStore:
         # swap for structural sharing if a reconciliation ever gets heavy.
         trigger = (self._unreconciled_count, self._first_unreconciled_at)
         before = len(self._clusters)
+        members_before = sum(len(c.member_ids) for c in self._clusters.values())
         result = ReconciliationResult(clusters_before=before)
         phase = "merge_state_corruption"
         try:
@@ -481,7 +482,7 @@ class ClusterStore:
             self._enforce_cluster_bound()
             result.clusters_after = len(self._clusters)
         except Exception as exc:  # noqa: BLE001 - any mid-pass failure restores state
-            failure = self._record_failure(exc, phase, before, trigger)
+            failure = self._record_failure(exc, phase, before, members_before, trigger)
             self._restore(snapshot, trigger)
             raise ReconciliationError(failure) from exc
         return result
@@ -491,6 +492,7 @@ class ClusterStore:
         exc: Exception,
         phase: str,
         clusters_before: int,
+        members_before: int,
         trigger: tuple[int, Optional[float]],
     ) -> ReconciliationFailure:
         """Record a typed content-safe diagnostic (5.7) for the failed pass.
@@ -505,7 +507,7 @@ class ClusterStore:
             error_message=str(exc),
             at=self._now(),
             clusters_before=clusters_before,
-            members_before=sum(len(c.member_ids) for c in self._clusters.values()),
+            members_before=members_before,
             restored=True,
         )
         self.last_reconciliation_failure = failure
@@ -598,6 +600,10 @@ class ClusterStore:
 
     def get_cluster(self, cluster_id: str) -> Optional[LiveCluster]:
         return self._clusters.get(cluster_id)
+
+    def cluster_count(self) -> int:
+        """Total clusters currently held (public read for the reducer seam)."""
+        return len(self._clusters)
 
     def stats(self) -> dict:
         """Content-safe counters (no raw viewer text)."""
