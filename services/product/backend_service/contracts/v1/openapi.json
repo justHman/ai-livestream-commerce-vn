@@ -459,7 +459,7 @@
         "properties": {
           "products": {
             "items": {
-              "$ref": "#/components/schemas/ProductIn"
+              "$ref": "#/components/schemas/ProductEntityIn"
             },
             "maxItems": 100,
             "title": "Products",
@@ -767,7 +767,7 @@
           },
           "products": {
             "items": {
-              "$ref": "#/components/schemas/ProductIn"
+              "$ref": "#/components/schemas/ProductEntityIn"
             },
             "maxItems": 100,
             "title": "Products",
@@ -777,7 +777,8 @@
         "title": "PlanCreateReq",
         "type": "object"
       },
-      "ProductIn": {
+      "ProductEntityIn": {
+        "description": "Flat product input (Decision 12: simple UX at the boundary).\n\nConverts to an ``EntityDocument`` (product) via ``to_entity()``: canonical\nkeys (registry.py) for price/stock/promotion/shipping/warranty facts,\n``custom.*`` keys for material/ref_image, and a description knowledge block\ncarrying colors/sizes/features as tags.",
         "properties": {
           "colors": {
             "items": {
@@ -933,7 +934,7 @@
           "id",
           "name"
         ],
-        "title": "ProductIn",
+        "title": "ProductEntityIn",
         "type": "object"
       },
       "RegenerateReq": {
