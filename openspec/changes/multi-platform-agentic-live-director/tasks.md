@@ -43,8 +43,8 @@
 
 ## 5. Stable ClusterStore and reconciliation
 
-- [ ] 5.1 Define `LiveCluster`, stable `cluster_id`, representative, viewer-demand, product-resolution, novelty, and lifecycle fields.
-- [ ] 5.2 Implement bounded per-session `ClusterStore`.
+- [x] 5.1 Define `LiveCluster`, stable `cluster_id`, representative, viewer-demand, product-resolution, novelty, and lifecycle fields.
+- [x] 5.2 Implement bounded per-session `ClusterStore`.
 - [ ] 5.3 Implement incremental semantic assignment/update from newly embedded comments.
 - [ ] 5.4 Implement member/embedding expiry tied to active rolling horizon.
 - [ ] 5.5 Implement reconciliation trigger state: `>=100` unreconciled comments OR `>=60s` since first unreconciled comment.
