@@ -24,13 +24,13 @@
 
 ## 3. Safety Gate before embedding
 
-- [ ] 3.1 Define versioned `SafetyDecision` and policy reason codes.
-- [ ] 3.2 Implement malformed/replay-flood/spam checks.
-- [ ] 3.3 Add curated profanity/toxicity/harassment/unsafe-content resources with provenance/license metadata.
-- [ ] 3.4 Add deterministic prompt-injection pattern handling as an additional viewer-content safety signal.
-- [ ] 3.5 Prove rejected comments never reach embedder calls, cluster membership, demand counts, or Agent context.
-- [ ] 3.6 Add sanitized safety counters to diagnostics.
-- [ ] 3.7 Add fixture coverage for Vietnamese slang/diacritics and false-positive regression.
+- [x] 3.1 Define versioned `SafetyDecision` and policy reason codes.
+- [x] 3.2 Implement malformed/replay-flood/spam checks.
+- [x] 3.3 Add curated profanity/toxicity/harassment/unsafe-content resources with provenance/license metadata.
+- [x] 3.4 Add deterministic prompt-injection pattern handling as an additional viewer-content safety signal.
+- [x] 3.5 Prove rejected comments never reach embedder calls, cluster membership, demand counts, or Agent context.
+- [x] 3.6 Add sanitized safety counters to diagnostics.
+- [x] 3.7 Add fixture coverage for Vietnamese slang/diacritics and false-positive regression.
 
 ## 4. Event-driven fast reducer
 
