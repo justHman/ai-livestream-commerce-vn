@@ -14,7 +14,10 @@ Lives below the HTTP transport: the /events route validates the request
      coordinator session is active, otherwise parks them on session meta
      (``pending_platform_chat``) so they are not lost; the old sync
      DirectorRuntime.ingest fallback is removed (OpenSpec 2.12),
-  6. routes join/follow/like to session signals only — never embedded.
+  6. notifies the FastReducer of every accepted comment — the event-driven
+     wakeup for the fast lane (OpenSpec 4.1); duplicate/rejected events
+     never notify,
+  7. routes join/follow/like to session signals only — never embedded.
 
 Only the coordinator path performs semantic reduction; the service never
 branches on ``platform``.
@@ -80,11 +83,13 @@ class PlatformEventIngestionService:
         dedup_max_ids: int = 1000,
         unique_viewer_key_fn: Callable[[PlatformEvent], Optional[str]] = _default_unique_viewer_key,
         now_fn: Optional[Callable[[], float]] = None,
+        reducer: Any = None,
     ) -> None:
         self._store = store
         self._pg_store = pg_store
         self._coordinator = coordinator
         self._runtime = runtime
+        self._reducer = reducer
         self._max_events_per_request = max_events_per_request
         self._dedup_window_sec = dedup_window_sec
         self._dedup_max_ids = dedup_max_ids
@@ -256,6 +261,32 @@ class PlatformEventIngestionService:
             return _REASON_STALE
         return None
 
+    def _notify_reducer(
+        self, session_id: str, event: PlatformEvent, comment_id: Optional[str]
+    ) -> None:
+        """Wake the FastReducer with the accepted comment (OpenSpec 4.1).
+
+        Fires for BOTH accepted routing outcomes — coordinator-queued and
+        meta-parked — because both are accepted semantic items (Decision 2).
+        The reducer only ever sees accepted comments; SafetyGate runs before
+        this path. Imported lazily to avoid a circular import (the reducer
+        package never imports platform_events).
+        """
+        if self._reducer is None:
+            return
+        from backend.application.reducer import AcceptedComment
+
+        self._reducer.notify_new_events(
+            session_id,
+            comment=AcceptedComment(
+                event_id=event.event_id,
+                comment_id=comment_id or event.event_id,
+                text=event.payload.text if isinstance(event.payload, CommentPayload) else "",
+                ts=event.occurred_at,
+                viewer_key=self._unique_viewer_key_fn(event),
+            ),
+        )
+
     async def _process_event(
         self, session_id: str, event: PlatformEvent, meta: dict, now: float
     ) -> dict:
@@ -281,6 +312,7 @@ class PlatformEventIngestionService:
             if comment_id is not None:
                 result["comment_id"] = comment_id
             await self._persist_accepted(session_id, event)
+            self._notify_reducer(session_id, event, comment_id)
         else:
             self._apply_signal(meta, event)
         self._record_viewer_key(meta, event)
