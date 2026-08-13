@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .cluster_store import ClusterStore, ClusterStoreConfig
+
 __all__ = ["AcceptedComment", "FastReducer", "FastReducerConfig"]
 
 
@@ -57,6 +59,13 @@ class FastReducerConfig:
     microbatch_max_wait_ms: int = 300
     rolling_horizon_sec: float = 75.0
     max_pending: int = 500
+    cluster_merge_threshold: float = 0.375
+    max_active_clusters: int = 40
+    max_members_per_cluster: int = 200
+    max_representatives: int = 5
+    # Reconciliation knobs (OpenSpec 5.5) — declared now, logic lands later.
+    reconcile_unreconciled_threshold: int = 100
+    reconcile_age_sec: float = 60.0
 
     def validate_runtime(self) -> None:
         """Fail-fast on non-positive knobs (called by the reducer at init)."""
@@ -66,6 +75,18 @@ class FastReducerConfig:
             raise ValueError("rolling_horizon_sec must be > 0")
         if self.max_pending <= 0:
             raise ValueError("max_pending must be > 0")
+        if self.cluster_merge_threshold <= 0:
+            raise ValueError("cluster_merge_threshold must be > 0")
+        if self.max_active_clusters <= 0:
+            raise ValueError("max_active_clusters must be > 0")
+        if self.max_members_per_cluster <= 0:
+            raise ValueError("max_members_per_cluster must be > 0")
+        if self.max_representatives <= 0:
+            raise ValueError("max_representatives must be > 0")
+        if self.reconcile_unreconciled_threshold <= 0:
+            raise ValueError("reconcile_unreconciled_threshold must be > 0")
+        if self.reconcile_age_sec <= 0:
+            raise ValueError("reconcile_age_sec must be > 0")
 
 
 @dataclass
@@ -104,6 +125,29 @@ class FastReducer:
         self._embedder = embedder
         self._now = now_fn or time.time
         self._sessions: dict[str, _SessionState] = {}
+        self._stores: dict[str, ClusterStore] = {}
+
+    # ------------------------------------------------------------------
+    # Per-session cluster store (5.3)
+    # ------------------------------------------------------------------
+
+    def _get_store(self, session_id: str) -> ClusterStore:
+        """Lazily create the session's cluster store on first use."""
+        store = self._stores.get(session_id)
+        if store is None:
+            store = ClusterStore(
+                session_id,
+                config=ClusterStoreConfig(
+                    merge_threshold=self._config.cluster_merge_threshold,
+                    rolling_horizon_sec=self._config.rolling_horizon_sec,
+                    max_active_clusters=self._config.max_active_clusters,
+                    max_members_per_cluster=self._config.max_members_per_cluster,
+                    max_representatives=self._config.max_representatives,
+                ),
+                now_fn=self._now,
+            )
+            self._stores[session_id] = store
+        return store
 
     # ------------------------------------------------------------------
     # Wakeup seam (the ONLY way the reducer learns of work)
@@ -209,6 +253,21 @@ class FastReducer:
         state.embedded_total += len(embedded)
         cutoff = now - self._config.rolling_horizon_sec
         state.demand = [d for d in state.demand if d["ts"] >= cutoff]
+        store = self._get_store(session_id)
+        for comment in batch:
+            entry = state.cache.get(comment.comment_id)
+            if entry is not None and entry[0] == comment.text:
+                store.assign(
+                    comment_id=comment.comment_id,
+                    text=comment.text,
+                    vector=entry[1],
+                    ts=comment.ts,
+                    viewer_key=comment.viewer_key,
+                    intent="unknown",
+                    product_candidates=[],
+                )
+        # Write-path expiry keeps store memory bounded as the horizon advances (5.4).
+        store.expire(now)
         return batch
 
     # ------------------------------------------------------------------

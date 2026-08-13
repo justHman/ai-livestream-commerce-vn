@@ -218,6 +218,8 @@ class ClusterStore:
         self._total_clusters_created = 0
         self._total_members_assigned = 0
         self._evicted_count = 0
+        self._evicted_members = 0
+        self._evicted_clusters = 0
 
     # ------------------------------------------------------------------
     # Assignment
@@ -252,6 +254,36 @@ class ClusterStore:
         return best.cluster_id
 
     # ------------------------------------------------------------------
+    # Expiry (5.4)
+    # ------------------------------------------------------------------
+
+    def expire(self, now: float) -> int:
+        """Evict members older than the rolling horizon; returns evicted count.
+
+        Per-member timestamps make this a plain filter: members whose
+        ``ts < now - rolling_horizon_sec`` are dropped from ALL clusters,
+        affected clusters are recomputed, and clusters left empty are
+        removed. Expiry is the write-path memory bound (5.9) and only
+        touches state outside the horizon — nothing extra is retained.
+        """
+        cutoff = now - self._config.rolling_horizon_sec
+        evicted = 0
+        for cluster in list(self._clusters.values()):
+            for cid in [c for c in cluster.member_ids if cluster._member_ts[c] < cutoff]:
+                cluster._drop_member_with_ts(cid)
+                evicted += 1
+            if not cluster.member_ids:
+                self._clusters.pop(cluster.cluster_id)
+                self._evicted_clusters += 1
+            else:
+                cluster.newest_t = max(
+                    (cluster._member_ts[cid] for cid in cluster.member_ids), default=0.0
+                )
+                cluster.recompute()
+        self._evicted_members += evicted
+        return evicted
+
+    # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
 
@@ -277,6 +309,8 @@ class ClusterStore:
             "total_members_assigned": self._total_members_assigned,
             "member_ids_count": sum(len(c.member_ids) for c in self._clusters.values()),
             "evicted_count": self._evicted_count,
+            "evicted_members": self._evicted_members,
+            "evicted_clusters": self._evicted_clusters,
         }
 
     # ------------------------------------------------------------------
