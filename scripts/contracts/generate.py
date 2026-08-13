@@ -7,7 +7,6 @@ Artifacts are service-owned (no root ``contracts/`` registry):
     backend  -> services/product/backend_service/contracts/v1/
         openapi.json
         websocket/control.schema.json
-        websocket/platform.schema.json
     llm      -> services/product/llm_service/contracts/v1/openapi.json
     tts      -> services/product/tts_service/contracts/v1/openapi.json
     avatar   -> services/product/avatar_service/contracts/v1/openapi.json
@@ -419,85 +418,6 @@ CONTROL_SCHEMA = {
     },
 }
 
-_PLATFORM_CLIENT = {
-    "type": "object",
-    "properties": {
-        "text": {"type": "string", "minLength": 1, "maxLength": 500},
-        "author": {"type": "string", "maxLength": 128},
-        "ts": {"type": "number"},
-    },
-    "required": ["text"],
-    "additionalProperties": False,
-}
-
-_PLATFORM_EVENTS = {
-    "platform.connected": {
-        "type": "object",
-        "properties": {
-            "type": {"const": "platform.connected"},
-            "session_id": {"type": "string"},
-        },
-        "required": ["type", "session_id"],
-        "additionalProperties": False,
-    },
-    "platform.accepted": {
-        "type": "object",
-        "properties": {
-            "type": {"const": "platform.accepted"},
-            "comment_id": {"type": "string"},
-        },
-        "required": ["type", "comment_id"],
-        "additionalProperties": False,
-    },
-    "platform.stored": {
-        "type": "object",
-        "properties": {
-            "type": {"const": "platform.stored"},
-            "pending": {"type": "integer"},
-        },
-        "required": ["type", "pending"],
-        "additionalProperties": False,
-    },
-    "error": {
-        "type": "object",
-        "properties": {
-            "type": {"const": "error"},
-            "detail": {"type": "string"},
-        },
-        "required": ["type", "detail"],
-        "additionalProperties": False,
-    },
-}
-
-PLATFORM_SCHEMA = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "$id": "backend/contracts/v1/websocket/platform.schema.json",
-    "title": "Backend platform WebSocket channel",
-    "description": (
-        "Viewer chat ingress on /api/v1/ws/platform/{session_id}. The "
-        "client posts {text, author?, ts?}; the backend replies with an "
-        "acceptance/storage event or an error. Consumed by the workbench "
-        "platform client."
-    ),
-    "type": "object",
-    "definitions": {
-        "clientMessage": _PLATFORM_CLIENT,
-        "serverEvent": {
-            "type": "object",
-            "oneOf": [
-                {"$ref": f"#/definitions/events/{name}"} for name in sorted(_PLATFORM_EVENTS)
-            ],
-            "required": ["type"],
-        },
-        "events": {name: _PLATFORM_EVENTS[name] for name in sorted(_PLATFORM_EVENTS)},
-    },
-    "properties": {
-        "clientMessage": {"$ref": "#/definitions/clientMessage"},
-        "serverEvent": {"$ref": "#/definitions/serverEvent"},
-    },
-}
-
-
 def generate_artifacts(service_name: str) -> list[Path]:
     """Regenerate the committed artifacts for one service; return written paths."""
     service = SERVICES[service_name]
@@ -510,10 +430,8 @@ def generate_artifacts(service_name: str) -> list[Path]:
         ws_dir = out_dir / "websocket"
         ws_dir.mkdir(parents=True, exist_ok=True)
         control = ws_dir / "control.schema.json"
-        platform = ws_dir / "platform.schema.json"
         control.write_bytes(dump_json(CONTROL_SCHEMA))
-        platform.write_bytes(dump_json(PLATFORM_SCHEMA))
-        written += [control, platform]
+        written += [control]
     return written
 
 

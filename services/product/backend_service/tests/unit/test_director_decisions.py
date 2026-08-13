@@ -434,33 +434,16 @@ def test_mock_catalog_starts_with_heygen_hoodie(monkeypatch: pytest.MonkeyPatch)
     assert MOCK_PRODUCTS[0]["id"] == "P004"
 
 
-def test_sync_runtime_commits_opening_only_after_backend_success(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_runtime_has_no_sync_ingest_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sync DirectorRuntime.ingest fallback is removed (OpenSpec 2.12)."""
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
 
-    class Backend(_CloudBackend):
-        def __init__(self) -> None:
-            self.fail = True
-
-        def say(self, session_id: str, text: str, generate: bool = True) -> str:
-            if self.fail:
-                raise ConnectionError("transient")
-            return text
-
-    backend = Backend()
+    backend = _CloudBackend()
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
-    session_id = "sync-runtime-commit"
+    session_id = "runtime-no-sync-ingest"
     runtime.attach(session_id, [Product(**MOCK_PRODUCTS[0])])
-    session = runtime.get_session(session_id)
 
-    with __import__("pytest").raises(ConnectionError):
-        runtime.ingest(session_id, [])
-    assert session.director.state.cursor.opening_turn_index == 0
-
-    backend.fail = False
-    runtime.ingest(session_id, [])
-    assert session.director.state.cursor.opening_turn_index == 1
+    assert not hasattr(runtime, "ingest")
 
 
 def test_attach_ticks_remain_silent_until_first_ingest(monkeypatch: pytest.MonkeyPatch) -> None:

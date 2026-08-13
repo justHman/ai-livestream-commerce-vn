@@ -8,19 +8,19 @@
 
 ## 2. Canonical multi-platform event ingress
 
-- [ ] 2.1 Define `PlatformEvent`, `ViewerRef`, typed payload models, validation limits, and stable event-id semantics.
-- [ ] 2.2 Implement `POST /api/v1/sessions/{session_id}/events` accepting bounded one-or-many events.
-- [ ] 2.3 Implement `PlatformEventIngestionService` below HTTP transport.
-- [ ] 2.4 Implement bounded/durable session event-id deduplication and idempotent duplicate responses.
-- [ ] 2.5 Normalize stable viewer identity fields needed for unique-viewer demand.
-- [ ] 2.6 Persist accepted/rejected event metadata through existing repository/store boundaries without blocking semantic processing on optional diagnostics persistence.
-- [ ] 2.7 Route non-comment canonical events to traffic/session signals without embedding them.
-- [ ] 2.8 Add multi-platform, burst, duplicate, retry, reordered, and malformed ingestion tests.
-- [ ] 2.9 Remove `/ws/platform/{session_id}`.
-- [ ] 2.10 Remove `/sessions/{session_id}/ingest`.
-- [ ] 2.11 Remove `/sessions/{session_id}/chat`.
-- [ ] 2.12 Remove the synchronous Director ingest fallback used by the deleted API surface.
-- [ ] 2.13 Remove platform WebSocket schema generation/artifact and regenerate backend contracts.
+- [x] 2.1 Define `PlatformEvent`, `ViewerRef`, typed payload models, validation limits, and stable event-id semantics.
+- [x] 2.2 Implement `POST /api/v1/sessions/{session_id}/events` accepting bounded one-or-many events.
+- [x] 2.3 Implement `PlatformEventIngestionService` below HTTP transport.
+- [x] 2.4 Implement bounded/durable session event-id deduplication and idempotent duplicate responses.
+- [x] 2.5 Normalize stable viewer identity fields needed for unique-viewer demand.
+- [x] 2.6 Persist accepted/rejected event metadata through existing repository/store boundaries without blocking semantic processing on optional diagnostics persistence.
+- [x] 2.7 Route non-comment canonical events to traffic/session signals without embedding them.
+- [x] 2.8 Add multi-platform, burst, duplicate, retry, reordered, and malformed ingestion tests.
+- [x] 2.9 Remove `/ws/platform/{session_id}`.
+- [x] 2.10 Remove `/sessions/{session_id}/ingest`.
+- [x] 2.11 Remove `/sessions/{session_id}/chat`.
+- [x] 2.12 Remove the synchronous Director ingest fallback used by the deleted API surface.
+- [x] 2.13 Remove platform WebSocket schema generation/artifact and regenerate backend contracts.
 
 ## 3. Safety Gate before embedding
 

@@ -62,6 +62,11 @@ class BootstrapContainer:
     # /script-sets and session binding surfaces return 501.
     script_authoring_service: Any = None
 
+    # -- Canonical multi-platform event ingress (multi-platform change) --
+    # PlatformEventIngestionService or None. When None, the /events endpoint
+    # returns 501 (legacy test containers that do not wire it).
+    event_ingestion: Any = None
+
     # -- Per-session state (owned by this container, not global) --
     hub: ControlHub | None = None
     locks: SessionLockRegistry | None = None
@@ -84,6 +89,7 @@ def create_container(
     locks: SessionLockRegistry | None = None,
     avatars: Any = None,
     script_authoring_service: Any = None,
+    event_ingestion: Any = None,
 ) -> BootstrapContainer:
     """Construct a BootstrapContainer with the given resources.
 
@@ -106,4 +112,5 @@ def create_container(
         locks=locks or SessionLockRegistry(),
         avatars=avatars or AvatarStore(),
         script_authoring_service=script_authoring_service,
+        event_ingestion=event_ingestion,
     )

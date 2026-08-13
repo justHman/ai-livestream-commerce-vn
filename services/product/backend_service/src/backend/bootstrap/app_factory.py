@@ -34,6 +34,8 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     backend = config.build_render_backend()
     store = config.build_store()
     engine_manager = v1_engine_manager(config)
+    pg_store = _build_pg_store(config)
+    from backend.application.platform_events import PlatformEventIngestionService
     from backend.application.publishing import LiveKitPublisherRegistry, publish_enabled
 
     return create_container(
@@ -41,8 +43,12 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
         store=store,
         config=config,
         engine_manager=engine_manager,
-        pg_store=_build_pg_store(config),
+        pg_store=pg_store,
         livekit_publishers=LiveKitPublisherRegistry() if publish_enabled() else None,
+        event_ingestion=PlatformEventIngestionService(
+            store=store,
+            pg_store=pg_store,
+        ),
     )
 
 
@@ -190,6 +196,7 @@ def create_app(
             orchestrators=deps.orchestrators,
             avatars=deps.avatars,
             script_authoring_service=getattr(deps, "script_authoring_service", None),
+            event_ingestion=getattr(deps, "event_ingestion", None),
         )
     else:
         resolved_container = _build_container(config, container=None)

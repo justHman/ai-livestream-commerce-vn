@@ -177,19 +177,9 @@
         "title": "BatchGenerateReq",
         "type": "object"
       },
-      "CommentIn": {
+      "CommentPayload": {
+        "description": "Payload for ``viewer.comment`` \u2014 the only semantically reduced event.",
         "properties": {
-          "t": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "T"
-          },
           "text": {
             "maxLength": 500,
             "minLength": 1,
@@ -200,7 +190,28 @@
         "required": [
           "text"
         ],
-        "title": "CommentIn",
+        "title": "CommentPayload",
+        "type": "object"
+      },
+      "CountPayload": {
+        "additionalProperties": false,
+        "description": "Payload for join/follow/like events: optional batch count.",
+        "properties": {
+          "count": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          }
+        },
+        "title": "CountPayload",
         "type": "object"
       },
       "DraftIn": {
@@ -327,6 +338,25 @@
           "engine"
         ],
         "title": "EngineSwapReq",
+        "type": "object"
+      },
+      "EventsIn": {
+        "description": "Bounded batch of canonical events (one-or-many share this schema).",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformEvent"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "EventsIn",
         "type": "object"
       },
       "FixReq": {
@@ -496,78 +526,6 @@
         "title": "PathAttachReq",
         "type": "object"
       },
-      "PathChatIn": {
-        "properties": {
-          "author": {
-            "default": "viewer",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Author",
-            "type": "string"
-          },
-          "text": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
-          },
-          "ts": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ts"
-          }
-        },
-        "required": [
-          "text"
-        ],
-        "title": "PathChatIn",
-        "type": "object"
-      },
-      "PathIngestReq": {
-        "properties": {
-          "comments": {
-            "items": {
-              "$ref": "#/components/schemas/CommentIn"
-            },
-            "maxItems": 100,
-            "title": "Comments",
-            "type": "array"
-          },
-          "msg_rate": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Msg Rate"
-          },
-          "viewer_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Viewer Count"
-          }
-        },
-        "required": [
-          "comments"
-        ],
-        "title": "PathIngestReq",
-        "type": "object"
-      },
       "PathRuntimeConfigUpdateReq": {
         "description": "Runtime config for the canonical path-style /sessions/{id}/config route.\nsession_id comes from the URL, not the body.",
         "properties": {
@@ -648,18 +606,6 @@
               }
             ],
             "title": "Demand Pivot Score Margin"
-          },
-          "initial_ingest_mode": {
-            "anyOf": [
-              {
-                "pattern": "^(batch|single)$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Initial Ingest Mode"
           },
           "max_qa_clusters_per_window": {
             "anyOf": [
@@ -775,6 +721,77 @@
           }
         },
         "title": "PlanCreateReq",
+        "type": "object"
+      },
+      "PlatformEvent": {
+        "description": "One normalized viewer event from any source platform.",
+        "properties": {
+          "event_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Event Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "title": "Occurred At",
+            "type": "number"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommentPayload"
+              },
+              {
+                "$ref": "#/components/schemas/CountPayload"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            ],
+            "title": "Payload"
+          },
+          "platform": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Platform",
+            "type": "string"
+          },
+          "source_stream_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Source Stream Id",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "viewer.comment",
+              "viewer.join",
+              "viewer.follow",
+              "viewer.like"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "viewer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ViewerRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "platform",
+          "source_stream_id",
+          "occurred_at",
+          "type"
+        ],
+        "title": "PlatformEvent",
         "type": "object"
       },
       "ProductIn": {
@@ -1035,18 +1052,6 @@
               }
             ],
             "title": "Demand Pivot Score Margin"
-          },
-          "initial_ingest_mode": {
-            "anyOf": [
-              {
-                "pattern": "^(batch|single)$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Initial Ingest Mode"
           },
           "max_qa_clusters_per_window": {
             "anyOf": [
@@ -1390,6 +1395,46 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "ViewerRef": {
+        "description": "Stable viewer identity when the source platform provides one.",
+        "properties": {
+          "avatar_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "viewer_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Viewer Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "viewer_id"
+        ],
+        "title": "ViewerRef",
         "type": "object"
       }
     }
@@ -2797,58 +2842,6 @@
         "summary": "Sessions Attach"
       }
     },
-    "/api/v1/sessions/{session_id}/chat": {
-      "post": {
-        "description": "Accept a single viewer chat comment via the DirectorCoordinator.\n\nReturns 202 Accepted immediately; the coordinator's tick loop processes\ncomments asynchronously. Returns 404 if the coordinator is not active or\nthe session is not attached.",
-        "operationId": "sessions_chat_api_v1_sessions__session_id__chat_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "title": "Session Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PathChatIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sessions Chat Api V1 Sessions  Session Id  Chat Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Sessions Chat"
-      }
-    },
     "/api/v1/sessions/{session_id}/config": {
       "patch": {
         "description": "Canonical path-style runtime config update.",
@@ -2901,10 +2894,10 @@
         "summary": "Sessions Config"
       }
     },
-    "/api/v1/sessions/{session_id}/ingest": {
+    "/api/v1/sessions/{session_id}/events": {
       "post": {
-        "description": "Feed viewer comments to the Director; it decides + the avatar speaks.\n\nThis is the closed loop: comments -> cluster/score -> Decision ->\nbackground streaming pipeline. Frontend just POSTs raw comments; the\navatar reacts.\n\nWave 2: when a DirectorCoordinator is active for this session, route\ncomments through it (async ChatQueue path) instead of the sync Director\ningest. Falls back to the existing sync Director path when coordinator\nis None.",
-        "operationId": "sessions_ingest_api_v1_sessions__session_id__ingest_post",
+        "description": "Canonical viewer ingress: one canonical endpoint for one-or-many events.\n\nThe request body is a bounded list of normalized ``PlatformEvent``\nvalues; a single-event request uses the same schema and service path as\na multi-event batch. Every per-event outcome (accepted / duplicate /\nrejected) is a valid batch result -> 200. 404 when the session is\nunknown (no session meta AND no coordinator session).",
+        "operationId": "sessions_events_api_v1_sessions__session_id__events_post",
         "parameters": [
           {
             "in": "path",
@@ -2920,7 +2913,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PathIngestReq"
+                "$ref": "#/components/schemas/EventsIn"
               }
             }
           },
@@ -2932,7 +2925,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Sessions Ingest Api V1 Sessions  Session Id  Ingest Post",
+                  "title": "Response Sessions Events Api V1 Sessions  Session Id  Events Post",
                   "type": "object"
                 }
               }
@@ -2950,7 +2943,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Sessions Ingest"
+        "summary": "Sessions Events"
       }
     },
     "/api/v1/sessions/{session_id}/interrupt": {
