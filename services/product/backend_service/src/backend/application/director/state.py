@@ -19,6 +19,11 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+# Slack added to the selection window when pruning old comment history at
+# write time: decide() only ever sees a selection_window_sec horizon, so a
+# comment older than window + slack can never influence a decision.
+WINDOW_SLACK_SEC = 5.0
+
 
 class Phase(str, enum.Enum):
     OPENING = "opening"
@@ -114,6 +119,9 @@ class StreamState:
     # Phase B: rolling comments + embedding cache persisted cross-tick.
     # The coordinator merges new comments via add_comments(); Director.decide()
     # reads rolling_comments instead of receiving a fresh list every call.
+    # Memory is bounded at write time (5.10): history is pruned to the
+    # selection window + WINDOW_SLACK_SEC, so it can never grow linearly with
+    # total comments — the ClusterStore owns the bounded long-term demand.
     rolling_comments: list[Any] = field(default_factory=list)  # list[Comment]
     embeddings_cache: dict[str, list[float]] = field(default_factory=dict)  # comment_id -> vec
     answered_comments: set[str] = field(default_factory=set)
@@ -154,6 +162,23 @@ class StreamState:
             if comment.id not in existing:
                 self.rolling_comments.append(comment)
                 existing.add(comment.id)
+
+    def prune_history(self, now: float, window_sec: float) -> None:
+        """Drop comment history outside the decision horizon (5.10 boundedness).
+
+        Comments older than ``window_sec + WINDOW_SLACK_SEC`` can never be
+        returned by decide()'s selection-window filter, so they are removed
+        with their embeddings. ``embeddings_cache`` is pruned in the same pass
+        to the ids still referenced by the retained window.
+        """
+        cutoff = now - window_sec - WINDOW_SLACK_SEC
+        retained = [comment for comment in self.rolling_comments if comment.t >= cutoff]
+        if len(retained) != len(self.rolling_comments):
+            self.rolling_comments = retained
+            retained_ids = {comment.id for comment in retained}
+            for comment_id in list(self.embeddings_cache):
+                if comment_id not in retained_ids:
+                    del self.embeddings_cache[comment_id]
 
     def advance_talking_point(self, n_points: int) -> None:
         """Advance talking_point_idx after a proactive speak (clamp to n_points)."""
