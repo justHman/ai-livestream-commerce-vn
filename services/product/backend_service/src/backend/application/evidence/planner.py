@@ -78,8 +78,8 @@ class EvidencePlanner:
         """Return document views for known ids (normalized, Decision 12)."""
         return await self._repo.get_entities(ids, selectors)
 
-    async def plan(self, requests: list[EvidenceRequest]) -> EvidenceBundle:
-        """Plan evidence for requests: cache-first, batch only misses."""
+    async def get_evidence(self, requests: list[EvidenceRequest]) -> EvidenceBundle:
+        """Batch evidence retrieval (contract op): cache-first, batch only misses."""
         # Diagnostics are per-plan; snapshot the cache counters up front.
         baseline = (self._cache.stats.hits, self._cache.stats.misses, self._cache.stats.stale)
 
