@@ -16,7 +16,7 @@ import pytest
 from backend.application.live_runtime.sentence_speaker import (
     ScriptSentencePlayer,
 )
-from tests.unit.live_runtime.qa_fixtures import (
+from unit.live_runtime.qa_fixtures import (
     P010_SENTENCES,
     P020_QA_ENVELOPE,
     RecordingQaResolver,
