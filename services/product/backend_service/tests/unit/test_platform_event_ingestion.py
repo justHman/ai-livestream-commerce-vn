@@ -14,6 +14,7 @@ import pytest
 from backend.application.db.memory_session_store import InMemorySessionStore
 from backend.application.platform_events import PlatformEvent
 from backend.application.platform_events.ingestion import PlatformEventIngestionService
+from backend.application.reducer import AcceptedComment, FastReducer, FastReducerConfig
 
 
 def _event(
@@ -310,3 +311,93 @@ async def test_comment_parked_on_meta_when_no_coordinator() -> None:
 
     assert pending[0]["event_id"] == "p1"
     assert pending[0]["text"] == "hi"
+
+
+# ---------------------------------------------------------------------------
+# FastReducer wakeup seam (OpenSpec 4.1): accepted comments notify, duplicates
+# and rejected events never do.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingReducer:
+    """Boundary stand-in for FastReducer: records notify payloads."""
+
+    def __init__(self) -> None:
+        self.notified: list[tuple[str, AcceptedComment]] = []
+
+    def notify_new_events(self, session_id: str, comment: AcceptedComment | None = None) -> None:
+        self.notified.append((session_id, comment))
+
+
+def _make_reducer_wired_service(store, reducer) -> PlatformEventIngestionService:
+    return PlatformEventIngestionService(store=store, reducer=reducer)
+
+
+@pytest.mark.asyncio
+async def test_accepted_comment_wakes_reducer_with_full_payload() -> None:
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    reducer = _RecordingReducer()
+    service = _make_reducer_wired_service(store, reducer)
+    now = time.time()
+    await service.ingest(
+        "s1",
+        [
+            PlatformEvent(
+                **{
+                    **_event("w1", text="giá bao nhiêu", viewer_id="v7"),
+                    "occurred_at": now,
+                }
+            )
+        ],
+    )
+
+    assert len(reducer.notified) == 1
+    _, comment = reducer.notified[0]
+    assert comment.event_id == "w1"
+    assert comment.comment_id == "w1"  # parked path: falls back to event_id
+    assert comment.text == "giá bao nhiêu"
+    assert comment.ts == now
+    assert comment.viewer_key == "tiktok:stream-1:v7"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_and_rejected_events_do_not_wake_reducer() -> None:
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    reducer = _RecordingReducer()
+    service = _make_reducer_wired_service(store, reducer)
+    now = time.time()
+    event = PlatformEvent(**{**_event("d1", text="hi"), "occurred_at": now})
+    stale = PlatformEvent(**{**_event("r1", text="old"), "occurred_at": now - 3600 * 24 * 2})
+
+    await service.ingest("s1", [event, event, stale])
+
+    # Only the FIRST d1 is accepted and notified; the duplicate and the
+    # rejected stale event must not notify again.
+    assert [(sid, c.event_id) for sid, c in reducer.notified] == [("s1", "d1")]
+
+
+@pytest.mark.asyncio
+async def test_reducer_wake_notifications_and_pending_after_accepted_comment() -> None:
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    reducer = FastReducer(
+        config=FastReducerConfig(microbatch_max_wait_ms=300),
+        embedder=_FakeReducerEmbedder(),
+        now_fn=lambda: time.time(),
+    )
+    service = _make_reducer_wired_service(store, reducer)
+    await service.ingest("s1", [PlatformEvent(**{**_event("f1", text="hello")})])
+
+    assert reducer.stats("s1")["wake_notifications"] == 1
+    pending = reducer.drain_batch("s1", time.time())
+    assert pending[0].event_id == "f1"
+    assert pending[0].text == "hello"
+
+
+class _FakeReducerEmbedder:
+    """No-op embedder so FastReducer constructs without a real model."""
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] for _ in texts]
