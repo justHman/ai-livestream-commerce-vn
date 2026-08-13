@@ -16,6 +16,15 @@ from .cluster_store import (
     ReconciliationFailure,
     ReconciliationResult,
 )
+from .demand import (
+    DemandConfig,
+    DemandScore,
+    DemandWeights,
+    cluster_fingerprint,
+    product_demand,
+    score_clusters,
+    should_pivot,
+)
 from .fast_reducer import AcceptedComment, FastReducer, FastReducerConfig
 
 __all__ = [
@@ -29,4 +38,11 @@ __all__ = [
     "ReconciliationError",
     "ReconciliationFailure",
     "ReconciliationResult",
+    "DemandConfig",
+    "DemandScore",
+    "DemandWeights",
+    "cluster_fingerprint",
+    "product_demand",
+    "score_clusters",
+    "should_pivot",
 ]

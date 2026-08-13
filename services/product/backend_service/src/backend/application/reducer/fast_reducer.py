@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 from .cluster_store import (
     ClusterStore,
     ClusterStoreConfig,
+    ProductCandidate,
     ReconciliationError,
     ReconciliationFailure,
     ReconciliationResult,
@@ -73,6 +74,12 @@ class FastReducerConfig:
     reconcile_unreconciled_threshold: int = 100
     reconcile_age_sec: float = 60.0
     cohesion_split_threshold: float = 0.15
+    product_resolution_threshold: float = 1.5
+    product_resolution_margin: float = 1.0
+    # Product catalog + current product for soft routing (OpenSpec 6.1-6.3).
+    # When empty, hints produce no candidates and the fast lane runs standalone.
+    products: list[Any] = field(default_factory=list)
+    current_product_id: Optional[str] = None
 
     def validate_runtime(self) -> None:
         """Fail-fast on non-positive knobs (called by the reducer at init)."""
@@ -96,6 +103,10 @@ class FastReducerConfig:
             raise ValueError("reconcile_age_sec must be > 0")
         if self.cohesion_split_threshold <= 0:
             raise ValueError("cohesion_split_threshold must be > 0")
+        if self.product_resolution_threshold <= 0:
+            raise ValueError("product_resolution_threshold must be > 0")
+        if self.product_resolution_margin < 0:
+            raise ValueError("product_resolution_margin must be >= 0")
 
 
 @dataclass
@@ -165,6 +176,8 @@ class FastReducer:
                     reconcile_unreconciled_threshold=self._config.reconcile_unreconciled_threshold,
                     reconcile_age_sec=self._config.reconcile_age_sec,
                     cohesion_split_threshold=self._config.cohesion_split_threshold,
+                    product_resolution_threshold=self._config.product_resolution_threshold,
+                    product_resolution_margin=self._config.product_resolution_margin,
                 ),
                 now_fn=self._now,
             )
@@ -276,17 +289,30 @@ class FastReducer:
         cutoff = now - self._config.rolling_horizon_sec
         state.demand = [d for d in state.demand if d["ts"] >= cutoff]
         store = self._get_store(session_id)
+        # Lazy import: routing imports director.clustering, which never imports
+        # the reducer package (reducer only used this seam to avoid a cycle).
+        from ..director.routing import route_hints
+
         for comment in batch:
             entry = state.cache.get(comment.comment_id)
             if entry is not None and entry[0] == comment.text:
+                hints = route_hints(
+                    comment.text, self._config.products, self._config.current_product_id
+                )
+                candidates = [
+                    ProductCandidate(pid, score, evidence)
+                    for pid, score, evidence in hints.product_candidates
+                ]
                 store.assign(
                     comment_id=comment.comment_id,
                     text=comment.text,
                     vector=entry[1],
                     ts=comment.ts,
                     viewer_key=comment.viewer_key,
-                    intent="unknown",
-                    product_candidates=[],
+                    # Carry the routed intent through: store assignment and
+                    # merge compatibility are intent-gated.
+                    intent=hints.intent_candidates[0] if hints.intent_candidates else "unknown",
+                    product_candidates=candidates,
                 )
         # Write-path expiry keeps store memory bounded as the horizon advances (5.4).
         store.expire(now)

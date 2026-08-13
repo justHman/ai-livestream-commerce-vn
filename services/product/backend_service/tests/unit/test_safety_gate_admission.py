@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.application.entity.models import EntityDocument
 from backend.application.director.clustering import Comment, cluster_comments
+from backend.application.entity.models import EntityDocument
 from backend.application.director.config import StreamConfig
 from backend.application.director.decision import Director
 from backend.application.director.embeddings import HashingEmbedder
