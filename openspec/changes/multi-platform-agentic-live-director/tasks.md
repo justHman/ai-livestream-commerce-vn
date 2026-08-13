@@ -94,14 +94,14 @@
 
 ## 9. Shop/Product Data Studio
 
-- [ ] 9.1 Add simple common-field form.
-- [ ] 9.2 Add arbitrary user-facing label/value rows mapped through the fact registry.
-- [ ] 9.3 Preserve unknown labels as custom facts rather than rejecting them.
-- [ ] 9.4 Add raw/pasted knowledge blocks.
-- [ ] 9.5 Add optional AI extraction suggestions without making extraction a save dependency.
-- [ ] 9.6 Require explicit user acceptance before suggested facts become authoritative.
-- [ ] 9.7 Add advanced normalized entity document view.
-- [ ] 9.8 Show exact evidence/context rendering preview.
+- [x] 9.1 Add simple common-field form.
+- [x] 9.2 Add arbitrary user-facing label/value rows mapped through the fact registry.
+- [x] 9.3 Preserve unknown labels as custom facts rather than rejecting them.
+- [x] 9.4 Add raw/pasted knowledge blocks.
+- [x] 9.5 Add optional AI extraction suggestions without making extraction a save dependency.
+- [x] 9.6 Require explicit user acceptance before suggested facts become authoritative.
+- [x] 9.7 Add advanced normalized entity document view.
+- [x] 9.8 Show exact evidence/context rendering preview.
 
 ## 10. Evidence Planner and cache
 
