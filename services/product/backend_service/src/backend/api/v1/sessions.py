@@ -22,36 +22,6 @@ from .router import logger
 from .router import router as _router  # noqa: F401
 
 
-async def _persist_viewer_msgs(
-    d: Any, session_id: str, comments, *, author: str = "viewer"
-) -> None:
-    """Persist ingested viewer comments to the runtime DB (fire-and-forget).
-
-    No-op when pg_store is None/disabled. Swallows errors so a broken runtime
-    DB never breaks the ingest/chat response.
-    """
-    if d.pg_store is None or not getattr(d.pg_store, "enabled", False):
-        return
-    for c in comments:
-        text = getattr(c, "text", None)
-        if not text:
-            continue
-        try:
-            await d.pg_store.insert_viewer_msg(
-                session_id,
-                text,
-                author=author,
-                comment_id=None,
-                source="platform",
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning(
-                "Postgres persistence failed session=%s operation=insert_viewer_msg", session_id
-            )
-
-
 def _container(request: Request):
     return container_from_request(request)
 
@@ -396,96 +366,33 @@ async def sessions_config(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@_router.post("/sessions/{session_id}/ingest")
-async def sessions_ingest(
+# ── Canonical multi-platform event ingress (OpenSpec 2.2) ────────────
+
+
+@_router.post("/sessions/{session_id}/events")
+async def sessions_events(
     session_id: str,
-    req: router.PathIngestReq,
+    req: router.EventsIn,
     request: Request,
     _: None = Depends(router.viewer_auth),
     _limit: None = Depends(router.rate_limit_viewer),
 ) -> dict[str, Any]:
-    """Feed viewer comments to the Director; it decides + the avatar speaks.
+    """Canonical viewer ingress: one canonical endpoint for one-or-many events.
 
-    This is the closed loop: comments -> cluster/score -> Decision ->
-    background streaming pipeline. Frontend just POSTs raw comments; the
-    avatar reacts.
-
-    Wave 2: when a DirectorCoordinator is active for this session, route
-    comments through it (async ChatQueue path) instead of the sync Director
-    ingest. Falls back to the existing sync Director path when coordinator
-    is None.
+    The request body is a bounded list of normalized ``PlatformEvent``
+    values; a single-event request uses the same schema and service path as
+    a multi-event batch. Every per-event outcome (accepted / duplicate /
+    rejected) is a valid batch result -> 200. 404 when the session is
+    unknown (no session meta AND no coordinator session).
     """
     d = _container(request)
-    # Wave 2: coordinator path (async tick loop drains the queue).
-    if d.coordinator is not None and d.coordinator.has(session_id):
-        d.coordinator.update_traffic(
-            session_id,
-            viewer_count=req.viewer_count,
-            msg_rate=req.msg_rate,
-        )
-        for c in req.comments:
-            d.coordinator.ingest(session_id, c.text, author="viewer", ts=c.t)
-        await _persist_viewer_msgs(d, session_id, req.comments, author="viewer")
-        return {"ok": True, "accepted": True, "queue_stats": d.coordinator.stats(session_id)}
-
-    # Fallback: original sync Director path.
-    if d.director is None:
-        raise HTTPException(status_code=501, detail="Director not enabled")
-    if not d.director.has(session_id):
-        raise HTTPException(status_code=409, detail="call attach first")
-
-    raw = [c.model_dump() for c in req.comments]
-    if d.hub is not None:
-        await d.hub.emit(session_id, {"type": "director.cycle_started"})
+    service = getattr(d, "event_ingestion", None)
+    if service is None:
+        raise HTTPException(status_code=501, detail="event ingestion not enabled")
     try:
-        result = await asyncio.to_thread(
-            d.director.ingest, session_id, raw, req.viewer_count, req.msg_rate
-        )
+        return await service.ingest(session_id, req.events)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
-    await _persist_viewer_msgs(d, session_id, req.comments, author="viewer")
-    if d.hub is not None:
-        await d.hub.emit(session_id, {"type": "director.spoke", **result})
-    return {"ok": True, **result}
-
-
-# ── Wave 2: single-comment chat endpoint (Phase B coordinator) ────────
-
-
-@_router.post("/sessions/{session_id}/chat", status_code=202)
-async def sessions_chat(
-    session_id: str,
-    req: router.PathChatIn,
-    request: Request,
-    _: None = Depends(router.viewer_auth),
-    _limit: None = Depends(router.rate_limit_viewer),
-) -> dict[str, Any]:
-    """Accept a single viewer chat comment via the DirectorCoordinator.
-
-    Returns 202 Accepted immediately; the coordinator's tick loop processes
-    comments asynchronously. Returns 404 if the coordinator is not active or
-    the session is not attached.
-    """
-    d = _container(request)
-    if d.coordinator is None or not d.coordinator.has(session_id):
-        raise HTTPException(404, "session not attached to coordinator")
-    comment = d.coordinator.ingest(
-        session_id=session_id,
-        text=req.text,
-        author=req.author,
-        ts=req.ts,
-    )
-    await _persist_viewer_msgs(
-        d,
-        session_id,
-        [router.CommentIn(text=req.text, t=req.ts)],
-        author=req.author,
-    )
-    return {
-        "accepted": True,
-        "comment_id": comment.id,
-        "queue_stats": d.coordinator.stats(session_id),
-    }
 
 
 @_router.post("/sessions/{session_id}/plan/create")

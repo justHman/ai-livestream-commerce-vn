@@ -15,10 +15,7 @@ from . import admin, avatars, scripts, sessions, voices, websockets  # noqa: F40
 
 from .router import (  # noqa: F401
     AvatarCreateReq,
-    ChatIn,
-    CommentIn,
     ControlHub,
-    IngestReq,
     PlanCreateReq,
     ProductIn,
     SayReq,
@@ -26,7 +23,6 @@ from .router import (  # noqa: F401
     StartReq,
     TTSPresetIn,
     TTSPreviewReq,
-    _persist_viewer_msgs,
     build_run_plan,
     router,
 )
@@ -36,10 +32,7 @@ from .hub import AvatarStore  # noqa: F401
 __all__ = [
     "AvatarCreateReq",
     "AvatarStore",
-    "ChatIn",
-    "CommentIn",
     "ControlHub",
-    "IngestReq",
     "PlanCreateReq",
     "ProductIn",
     "SayReq",

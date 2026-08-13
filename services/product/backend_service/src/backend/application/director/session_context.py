@@ -23,12 +23,10 @@ from typing import Optional
 
 from backend.application.render.engines_base import RenderBackend
 from .catalog import Product
-from .clustering import Comment
 from .config import StreamConfig
 from .decision import Decision, Director
 from .embeddings import build_embedder
 from .hooks import HookPool
-from .routing import route_comment
 from .state import ProductState, StreamState
 
 
@@ -273,61 +271,6 @@ class DirectorRuntime:
     def detach(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
 
-    def ingest(
-        self,
-        session_id: str,
-        raw_comments: list[dict],
-        traffic_viewer_count: Optional[int] = None,
-        traffic_msg_rate: Optional[float] = None,
-    ) -> dict:
-        """Embed + feed comments to the Director, execute the Decision.
-
-        raw_comments: [{"text": str, "t": float?}]; missing t uses session clock.
-        Returns the Decision + what was spoken.
-        """
-        ds = self._sessions.get(session_id)
-        if ds is None:
-            raise KeyError(session_id)
-
-        now = ds.now()
-        if traffic_viewer_count is not None:
-            ds.director.state.traffic.viewer_count = traffic_viewer_count
-        if traffic_msg_rate is not None:
-            ds.director.state.traffic.msg_rate = traffic_msg_rate
-
-        texts = [c["text"] for c in raw_comments]
-        vecs = ds.embedder.encode(texts) if texts else []
-        current = ds.director.state.current_product()
-        comments = [
-            route_comment(
-                Comment(
-                    text=t,
-                    embedding=list(v),
-                    t=float(c["t"]) if c.get("t") is not None else now,
-                    id=str(c.get("id") or f"sync-{index}"),
-                ),
-                ds.catalog,
-                current.product_id if current is not None else None,
-            )
-            for index, (c, t, v) in enumerate(zip(raw_comments, texts, vecs))
-        ]
-
-        decision: Decision = ds.director.decide(comments, now=now)
-        spoken = self._execute(session_id, decision)
-        if decision.action not in ("idle", "skip") and spoken is not None:
-            decision.prepared_script = spoken
-            decision.completed_at = ds.now()
-            ds.director.mark_spoken(decision)
-        return {
-            "action": decision.action,
-            "spoken": spoken,
-            "product_id": decision.product_id,
-            "field": decision.field,
-            "may_interrupt": decision.may_interrupt,
-            "phase": ds.director.state.phase.value,
-            "reason": decision.reason,
-        }
-
     def prompt_layers(self, session_id: str, decision: Decision) -> dict[str, str]:
         """Compose prompt via the canonical composer (OpenSpec 1.13).
 
@@ -372,28 +315,3 @@ class DirectorRuntime:
             "stage_task": stage_task,
             "final_prompt": final_prompt,
         }
-
-    def _execute(self, session_id: str, decision: Decision) -> Optional[str]:
-        """Turn a Decision into a backend.say() call. Returns spoken text.
-
-        - speak_hook / close          -> verbatim TTS (no LLM), templated lines.
-        - answer_fact                 -> LLM GROUNDED on the O(1) structured value
-                                         (natural phrasing, exact data). Falls back
-                                         to verbatim `text` if no prompt.
-        - answer_cluster / introduce  -> LLM generation from the prompt.
-        """
-        if decision.action in ("speak_hook", "close"):
-            if decision.text:
-                return self.backend.say(session_id, decision.text, generate=False)
-            return None
-        if decision.action == "answer_fact":
-            if decision.prompt:
-                return self.backend.say(session_id, decision.prompt, generate=True)
-            if decision.text:
-                return self.backend.say(session_id, decision.text, generate=False)
-            return None
-        if decision.action in ("answer_cluster", "introduce_product", "sell_product"):
-            if decision.prompt:
-                return self.backend.say(session_id, decision.prompt, generate=True)
-            return None
-        return None  # idle

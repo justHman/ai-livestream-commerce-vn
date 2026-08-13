@@ -16,7 +16,6 @@ removed. This router exposes:
   POST /api/v1/sessions/*  (canonical path-style aliases)
   POST /api/v1/avatars CRUD (in-memory)
   WS   /api/v1/ws/control/{session_id}
-  WS   /api/v1/ws/platform/{session_id}
   POST /api/v1/media/livekit/room/{session_id}
 """
 
@@ -45,6 +44,8 @@ from backend.application.schemas.run_plan import (
     RunPlan,
     SellingTask,
 )
+
+from backend.application.platform_events import EventsIn  # noqa: F401  (re-exported for route modules)
 
 from .auth import viewer_auth
 
@@ -159,7 +160,6 @@ class ShopProfileIn(BaseModel):
 
 class RuntimeConfigReq(BaseModel):
     comment_rate: Optional[float] = Field(default=None, ge=0.2, le=5.0)
-    initial_ingest_mode: Optional[str] = Field(default=None, pattern="^(batch|single)$")
     max_qa_clusters_per_window: Optional[int] = Field(default=None, ge=1, le=20)
     qa_window_hard_timeout_sec: Optional[float] = Field(default=None, gt=0, le=600)
     qa_topic_cooldown_sec: Optional[float] = Field(default=None, ge=0, le=3600)
@@ -201,18 +201,6 @@ class AttachReq(BaseModel):
         return self.shop_profile
 
 
-class CommentIn(BaseModel):
-    text: str = Field(min_length=1, max_length=500)
-    t: Optional[float] = None
-
-
-class IngestReq(BaseModel):
-    session_id: str = Field(max_length=128)
-    comments: list[CommentIn] = Field(max_length=100)
-    viewer_count: Optional[int] = None
-    msg_rate: Optional[float] = None
-
-
 class RuntimeConfigUpdateReq(RuntimeConfigReq):
     session_id: str = Field(max_length=128)
 
@@ -222,15 +210,6 @@ class PathRuntimeConfigUpdateReq(RuntimeConfigReq):
     session_id comes from the URL, not the body."""
 
     pass
-
-
-class ChatIn(BaseModel):
-    """Wave 2: single chat comment from a viewer (Phase B coordinator path)."""
-
-    session_id: str = Field(max_length=128)
-    text: str = Field(min_length=1, max_length=500)
-    author: str = Field(min_length=1, max_length=128)
-    ts: Optional[float] = None
 
 
 class TTSPresetIn(BaseModel):
@@ -274,18 +253,6 @@ class PlanCreateReq(BaseModel):
 class PathSayReq(BaseModel):
     text: str = Field(min_length=1, max_length=2_000)
     generate: bool = True
-
-
-class PathChatIn(BaseModel):
-    text: str = Field(min_length=1, max_length=500)
-    author: str = Field(default="viewer", min_length=1, max_length=128)
-    ts: Optional[float] = None
-
-
-class PathIngestReq(BaseModel):
-    comments: list[CommentIn] = Field(max_length=100)
-    viewer_count: Optional[int] = None
-    msg_rate: Optional[float] = None
 
 
 class PathAttachReq(BaseModel):
@@ -354,36 +321,6 @@ async def _allow_ws_message(ws: WebSocket, scope: str, session_id: str, connecti
     if not allowed:
         await ws.close(code=_WS_RATE_LIMIT_CLOSE_CODE, reason="message rate limit exceeded")
     return allowed
-
-
-async def _persist_viewer_msgs(
-    d: Any, session_id: str, comments, *, author: str = "viewer"
-) -> None:
-    """Persist ingested viewer comments to the runtime DB (fire-and-forget).
-
-    No-op when pg_store is None/disabled. Swallows errors so a broken runtime
-    DB never breaks the ingest/chat response.
-    """
-    if d.pg_store is None or not getattr(d.pg_store, "enabled", False):
-        return
-    for c in comments:
-        text = getattr(c, "text", None)
-        if not text:
-            continue
-        try:
-            await d.pg_store.insert_viewer_msg(
-                session_id,
-                text,
-                author=author,
-                comment_id=None,
-                source="platform",
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning(
-                "Postgres persistence failed session=%s operation=insert_viewer_msg", session_id
-            )
 
 
 def build_run_plan(
