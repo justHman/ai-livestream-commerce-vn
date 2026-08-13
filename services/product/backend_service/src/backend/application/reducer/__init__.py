@@ -12,6 +12,8 @@ from .cluster_store import (
     ClusterStoreConfig,
     LiveCluster,
     ProductCandidate,
+    ReconciliationError,
+    ReconciliationFailure,
     ReconciliationResult,
 )
 from .fast_reducer import AcceptedComment, FastReducer, FastReducerConfig
@@ -24,5 +26,7 @@ __all__ = [
     "ClusterStore",
     "ClusterStoreConfig",
     "ProductCandidate",
+    "ReconciliationError",
+    "ReconciliationFailure",
     "ReconciliationResult",
 ]

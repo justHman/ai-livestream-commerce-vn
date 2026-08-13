@@ -1,18 +1,22 @@
-"""Stable bounded per-session cluster store for the live-demand pipeline (OpenSpec 5.1-5.6).
+"""Stable bounded per-session cluster store for the live-demand pipeline (OpenSpec 5.1-5.7).
 
 Each session owns one ``ClusterStore``: incremental semantic assignment keeps a
 stable ``LiveCluster`` per topic (stable ids -> lifecycle state survives fast-lane
 updates), and every store is hard-bounded (max clusters / members per cluster) so
 reducer memory cannot grow linearly with total comments. Per-member timestamps
-make expiry a plain filter (5.4). Reconciliation (5.5-5.6) is a count/age-triggered
+make expiry a plain filter (5.4). Reconciliation (5.5-5.7) is a count/age-triggered
 bounded repair of the active horizon — merge compatible clusters, split
 low-cohesion ones, recompute centroids — and NEVER runs on the fast-lane hot path.
+A failed pass (5.7) is transactional: the pre-pass state is restored verbatim and
+a typed content-safe ``ReconciliationFailure`` is recorded, so the fast lane
+keeps operating on the last valid cluster state.
 """
 
 from __future__ import annotations
 
+import copy
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Optional
 from uuid import uuid4
 
@@ -22,6 +26,8 @@ __all__ = [
     "LiveCluster",
     "ClusterStore",
     "ClusterStoreConfig",
+    "ReconciliationError",
+    "ReconciliationFailure",
     "ReconciliationResult",
 ]
 
@@ -182,6 +188,38 @@ class ReconciliationResult:
     members_removed: int = 0
 
 
+@dataclass(frozen=True)
+class ReconciliationFailure:
+    """Typed content-safe diagnostic of one FAILED reconciliation pass (5.7).
+
+    Deliberately free of raw viewer text: only ids and counts, so it is safe
+    to surface in stats/diagnostics. ``at`` uses the store's injected clock.
+    """
+
+    session_id: str
+    failure_code: str
+    error_message: str
+    at: float
+    clusters_before: int
+    members_before: int
+    restored: bool
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class ReconciliationError(Exception):
+    """Raised by ``ClusterStore.reconcile`` when a pass fails mid-way.
+
+    The store has already restored the pre-pass state before this is raised;
+    the fast lane catches it to record diagnostics and keep operating.
+    """
+
+    def __init__(self, failure: ReconciliationFailure) -> None:
+        super().__init__(failure.error_message)
+        self.failure = failure
+
+
 @dataclass
 class ClusterStoreConfig:
     """Typed knobs for one per-session ClusterStore.
@@ -258,6 +296,12 @@ class ClusterStore:
         # never delays fast-lane assignment because of it.
         self._unreconciled_count = 0
         self._first_unreconciled_at: Optional[float] = None
+        # Last failed reconciliation (5.7): None until the first failure, then
+        # replaced by every subsequent failure.
+        self.last_reconciliation_failure: Optional[ReconciliationFailure] = None
+        # Test-only failure injection (5.7): when set, the next reconcile pass
+        # fails at the named phase after the snapshot, then the seam clears.
+        self._fail_next_reconcile_at: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Assignment
@@ -360,65 +404,121 @@ class ClusterStore:
         clusters outside the horizon are never touched. Members are moved via
         add_member/remove_member (idempotent) so identities/demand are never
         duplicated or lost.
+
+        Fail-safe (5.7): the pass is transactional — the affected clusters and
+        the trigger state are snapshotted first, and any mid-pass exception
+        restores the snapshot verbatim, records a typed
+        ``ReconciliationFailure``, and re-raises ``ReconciliationError`` so the
+        fast lane stays on the last valid cluster state.
         """
+        snapshot = {cid: copy.deepcopy(cluster) for cid, cluster in self._clusters.items()}
+        # ponytail: deep copy is bounded by max_active_clusters * max_members —
+        # swap for structural sharing if a reconciliation ever gets heavy.
+        trigger = (self._unreconciled_count, self._first_unreconciled_at)
         before = len(self._clusters)
         result = ReconciliationResult(clusters_before=before)
-        result.members_removed = self.expire(now)
-        self._reset_reconciliation_trigger()
-        active = self.active_clusters(now)
-        merged_away: set[str] = set()
-        for survivor in active:
-            if survivor.cluster_id in merged_away:
-                continue
-            candidates = [
-                c
-                for c in active
-                if c.cluster_id not in merged_away
-                and c.cluster_id != survivor.cluster_id
-                and c.intent == survivor.intent
-                and self._mergeable(survivor, c)
-            ]
-            if not candidates:
-                continue
-            candidates.sort(key=lambda c: (-c.message_count, c.cluster_id))
-            other = candidates[0]
-            if self._should_survive(other, survivor):
-                survivor, other = other, survivor
-            for member_id in list(other.member_ids):
-                survivor.add_member(
-                    comment_id=member_id,
-                    text=other._member_texts[member_id],
-                    vector=other._member_embeddings[member_id],
-                    ts=other._member_ts[member_id],
-                    viewer_key=other._member_viewers[member_id],
-                    intent=survivor.intent,
-                    product_candidates=other.product_candidates,
-                )
-                other.remove_member(member_id)
-            self._clusters.pop(other.cluster_id, None)
-            merged_away.add(other.cluster_id)
-            result.merged += 1
-            survivor.recompute()
-            # Boundedness: merged member counts may exceed the cap — evict the
-            # oldest deterministically via the existing member-bound path.
-            self._enforce_member_bound(survivor)
+        phase = "merge_state_corruption"
+        try:
+            # Test-only failure seam (5.7): one-shot, consumed before mutation.
+            if self._fail_next_reconcile_at is not None:
+                phase = self._fail_next_reconcile_at
+                self._fail_next_reconcile_at = None
+                raise ValueError(f"injected reconciliation failure at {phase}")
+            result.members_removed = self.expire(now)
+            phase = "expiry_error"
+            self._reset_reconciliation_trigger()
+            active = self.active_clusters(now)
+            merged_away: set[str] = set()
+            for survivor in active:
+                if survivor.cluster_id in merged_away:
+                    continue
+                candidates = [
+                    c
+                    for c in active
+                    if c.cluster_id not in merged_away
+                    and c.cluster_id != survivor.cluster_id
+                    and c.intent == survivor.intent
+                    and self._mergeable(survivor, c)
+                ]
+                if not candidates:
+                    continue
+                candidates.sort(key=lambda c: (-c.message_count, c.cluster_id))
+                other = candidates[0]
+                if self._should_survive(other, survivor):
+                    survivor, other = other, survivor
+                for member_id in list(other.member_ids):
+                    survivor.add_member(
+                        comment_id=member_id,
+                        text=other._member_texts[member_id],
+                        vector=other._member_embeddings[member_id],
+                        ts=other._member_ts[member_id],
+                        viewer_key=other._member_viewers[member_id],
+                        intent=survivor.intent,
+                        product_candidates=other.product_candidates,
+                    )
+                    other.remove_member(member_id)
+                self._clusters.pop(other.cluster_id, None)
+                merged_away.add(other.cluster_id)
+                result.merged += 1
+                survivor.recompute()
+                # Boundedness: merged member counts may exceed the cap — evict
+                # the oldest deterministically via the existing member-bound path.
+                self._enforce_member_bound(survivor)
 
-        for cluster in active:
-            if cluster.cluster_id in merged_away or not cluster.member_ids:
-                continue
-            if (
-                cluster.cohesion < self._config.cohesion_split_threshold
-                and len(cluster.member_ids) >= 2
-            ):
-                self._split_low_cohesion(cluster, merged_away)
-                result.split += 1
-                # Merging into others may overflow their cap — evict oldest.
-                for other in self._clusters.values():
-                    self._enforce_member_bound(other)
+            for cluster in active:
+                if cluster.cluster_id in merged_away or not cluster.member_ids:
+                    continue
+                if (
+                    cluster.cohesion < self._config.cohesion_split_threshold
+                    and len(cluster.member_ids) >= 2
+                ):
+                    self._split_low_cohesion(cluster, merged_away)
+                    result.split += 1
+                    # Merging into others may overflow their cap — evict oldest.
+                    for other in self._clusters.values():
+                        self._enforce_member_bound(other)
 
-        self._enforce_cluster_bound()
-        result.clusters_after = len(self._clusters)
+            self._enforce_cluster_bound()
+            result.clusters_after = len(self._clusters)
+        except Exception as exc:  # noqa: BLE001 - any mid-pass failure restores state
+            failure = self._record_failure(exc, phase, before, trigger)
+            self._restore(snapshot, trigger)
+            raise ReconciliationError(failure) from exc
         return result
+
+    def _record_failure(
+        self,
+        exc: Exception,
+        phase: str,
+        clusters_before: int,
+        trigger: tuple[int, Optional[float]],
+    ) -> ReconciliationFailure:
+        """Record a typed content-safe diagnostic (5.7) for the failed pass.
+
+        The message is sanitized by ``str(exc)`` — the error text may be
+        derived from malformed cluster data, so diagnostics must never embed
+        raw viewer text.
+        """
+        failure = ReconciliationFailure(
+            session_id=self.session_id,
+            failure_code=phase,
+            error_message=str(exc),
+            at=self._now(),
+            clusters_before=clusters_before,
+            members_before=sum(len(c.member_ids) for c in self._clusters.values()),
+            restored=True,
+        )
+        self.last_reconciliation_failure = failure
+        return failure
+
+    def _restore(
+        self,
+        snapshot: dict[str, LiveCluster],
+        trigger: tuple[int, Optional[float]],
+    ) -> None:
+        """Restore the pre-pass state verbatim so the fast lane keeps operating."""
+        self._clusters = {cid: copy.deepcopy(c) for cid, c in snapshot.items()}
+        self._unreconciled_count, self._first_unreconciled_at = trigger
 
     def _mergeable(self, a: LiveCluster, b: LiveCluster) -> bool:
         """Centroid-compatible AND intent-compatible AND products non-conflicting."""
@@ -501,6 +601,7 @@ class ClusterStore:
 
     def stats(self) -> dict:
         """Content-safe counters (no raw viewer text)."""
+        failure = self.last_reconciliation_failure
         return {
             "session_id": self.session_id,
             "active_cluster_count": len(self._clusters),
@@ -511,6 +612,8 @@ class ClusterStore:
             "evicted_members": self._evicted_members,
             "evicted_clusters": self._evicted_clusters,
             "unreconciled_count": self._unreconciled_count,
+            "reconciliation_failures": 1 if failure is not None else 0,
+            "last_reconciliation_failure": None if failure is None else failure.to_dict(),
         }
 
     # ------------------------------------------------------------------

@@ -26,7 +26,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .cluster_store import ClusterStore, ClusterStoreConfig, ReconciliationResult
+from .cluster_store import (
+    ClusterStore,
+    ClusterStoreConfig,
+    ReconciliationError,
+    ReconciliationFailure,
+    ReconciliationResult,
+)
 
 __all__ = ["AcceptedComment", "FastReducer", "FastReducerConfig"]
 
@@ -135,6 +141,10 @@ class FastReducer:
         self._reconcile_merged_total: dict[str, int] = {}
         self._reconcile_split_total: dict[str, int] = {}
         self._last_reconcile: dict[str, ReconciliationResult] = {}
+        # Reconciliation failure diagnostics (5.7): cumulative counter + the
+        # last typed failure, so a failed pass never crashes the fast lane.
+        self._reconciliation_failures: dict[str, int] = {}
+        self._last_reconciliation_failure: dict[str, ReconciliationFailure] = {}
 
     # ------------------------------------------------------------------
     # Per-session cluster store (5.3)
@@ -296,14 +306,28 @@ class FastReducer:
         """Run the store's bounded reconciliation when due (no-op otherwise).
 
         After a successful pass the trigger state resets (store-side) and the
-        per-session cumulative counters accumulate.
+        per-session cumulative counters accumulate. A failed pass (5.7) never
+        propagates: the store has restored the pre-pass state, the typed
+        failure is recorded here for diagnostics, and the fast lane keeps
+        operating — the caller queries the stats to observe it.
         """
         store = self._get_store(session_id)
         if not store.reconcile_due(now):
             return ReconciliationResult(
                 clusters_before=len(store._clusters), clusters_after=len(store._clusters)
             )
-        result = store.reconcile(now)
+        try:
+            result = store.reconcile(now)
+        except ReconciliationError as exc:
+            failure = exc.failure
+            self._reconciliation_failures[session_id] = (
+                self._reconciliation_failures.get(session_id, 0) + 1
+            )
+            self._last_reconciliation_failure[session_id] = failure
+            return ReconciliationResult(
+                clusters_before=failure.clusters_before,
+                clusters_after=failure.clusters_before,
+            )
         self._reconciles_run[session_id] = self._reconciles_run.get(session_id, 0) + 1
         self._reconcile_merged_total[session_id] = (
             self._reconcile_merged_total.get(session_id, 0) + result.merged
@@ -370,6 +394,14 @@ class FastReducer:
 
     def stats(self, session_id: str) -> dict:
         """Content-safe per-session counters (no raw viewer text)."""
+        failure = self._last_reconciliation_failure.get(session_id)
+        base = {
+            "reconciles_run": self._reconciles_run.get(session_id, 0),
+            "reconcile_merged_total": self._reconcile_merged_total.get(session_id, 0),
+            "reconcile_split_total": self._reconcile_split_total.get(session_id, 0),
+            "reconciliation_failures": self._reconciliation_failures.get(session_id, 0),
+            "last_reconciliation_failure": None if failure is None else failure.to_dict(),
+        }
         state = self._sessions.get(session_id)
         if state is None:
             return {
@@ -379,10 +411,8 @@ class FastReducer:
                 "cache_hits": 0,
                 "demand_size": 0,
                 "wake_notifications": 0,
-                "reconciles_run": self._reconciles_run.get(session_id, 0),
-                "reconcile_merged_total": self._reconcile_merged_total.get(session_id, 0),
-                "reconcile_split_total": self._reconcile_split_total.get(session_id, 0),
                 "last_reconcile": None,
+                **base,
             }
         last = self._last_reconcile.get(session_id)
         return {
@@ -392,9 +422,6 @@ class FastReducer:
             "cache_hits": state.cache_hits,
             "demand_size": len(state.demand),
             "wake_notifications": state.wake_notifications,
-            "reconciles_run": self._reconciles_run.get(session_id, 0),
-            "reconcile_merged_total": self._reconcile_merged_total.get(session_id, 0),
-            "reconcile_split_total": self._reconcile_split_total.get(session_id, 0),
             "last_reconcile": None
             if last is None
             else {
@@ -404,4 +431,5 @@ class FastReducer:
                 "split": last.split,
                 "members_removed": last.members_removed,
             },
+            **base,
         }
