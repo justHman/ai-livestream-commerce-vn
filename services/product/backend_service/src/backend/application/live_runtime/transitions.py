@@ -52,7 +52,5 @@ def build_qa_lead_in(product: str, topic_phrase: str | None = None) -> str:
     """
     product = product or "sản phẩm"
     if topic_phrase:
-        return DEFAULT_QA_LEAD_IN_TEMPLATE.format(
-            product=product, topic_phrase=topic_phrase
-        )
+        return DEFAULT_QA_LEAD_IN_TEMPLATE.format(product=product, topic_phrase=topic_phrase)
     return FALLBACK_QA_LEAD_IN_TEMPLATE.format(product=product)

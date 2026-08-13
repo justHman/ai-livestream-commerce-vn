@@ -23,7 +23,6 @@ from backend.application.live_runtime.transitions import (
 from unit.live_runtime.qa_fixtures import (
     P010_SENTENCES,
     P020_QA_ENVELOPE,
-    P020_ANSWER_TEXT,
     QNA_LEAD_IN,
     RESUME_BRIDGE_P010,
     RecordingQaResolver,
@@ -116,6 +115,7 @@ def test_facts_survive_composition_byte_exact() -> None:
 
     assert "P020" in composed
     assert "65W" in composed
+    assert "sạc nhanh 65W nha." in composed
 
 
 def test_lead_in_never_contains_raw_question_text() -> None:

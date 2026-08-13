@@ -70,6 +70,7 @@ __all__ = [
     "PrefetchConfig",
     "VolatileEvidenceSource",
     "VolatileRevalidator",
+    "INTENT_TOPIC_PHRASES",
     "build_qa_lead_in",
     "build_resume_bridge",
     "estimate_tokens",
