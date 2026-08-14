@@ -185,14 +185,14 @@
 
 ## 17. Workbench runtime inspectors
 
-- [ ] 17.1 Add Safety Gate counters/reason inspector.
-- [ ] 17.2 Add stable cluster/representative/unique-viewer/product-confidence inspector.
-- [ ] 17.3 Show fast-lane and reconciliation trigger state.
-- [ ] 17.4 Show exact selected ClusterEnvelope.
-- [ ] 17.5 Show SessionMemory/TopicMemory/EvidenceCache metadata.
-- [ ] 17.6 Show evidence plan, cache hit/miss, batched fetches, and LLM/tool round count.
-- [ ] 17.7 Show bound script version, current sentence, last completed sentence, and next sentence.
-- [ ] 17.8 Add speech-arbiter timeline with script/Q&A/resume events.
+- [x] 17.1 Add Safety Gate counters/reason inspector.
+- [x] 17.2 Add stable cluster/representative/unique-viewer/product-confidence inspector.
+- [x] 17.3 Show fast-lane and reconciliation trigger state.
+- [x] 17.4 Show exact selected ClusterEnvelope.
+- [x] 17.5 Show SessionMemory/TopicMemory/EvidenceCache metadata.
+- [x] 17.6 Show evidence plan, cache hit/miss, batched fetches, and LLM/tool round count.
+- [x] 17.7 Show bound script version, current sentence, last completed sentence, and next sentence.
+- [x] 17.8 Add speech-arbiter timeline with script/Q&A/resume events.
 
 ## 18. Optional agent context-compression benchmark
 
