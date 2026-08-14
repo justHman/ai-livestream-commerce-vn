@@ -196,13 +196,13 @@
 
 ## 18. Optional agent context-compression benchmark
 
-- [ ] 18.1 Define all-text baseline fixture set using the actual target vision-capable model.
-- [ ] 18.2 Define hybrid mode that keeps instruction/control/dynamic exact facts as text and renders only eligible read-only descriptive context as images.
-- [ ] 18.3 Record effective/model-reported input tokens, TTFT, total latency, and cost.
-- [ ] 18.4 Measure exact number/identifier accuracy, Vietnamese diacritics, grounding, tool selection, and hallucination.
-- [ ] 18.5 Define non-regression thresholds and a minimum material token/latency benefit.
-- [ ] 18.6 Keep hybrid mode disabled if thresholds are not met.
-- [ ] 18.7 Ensure image context is never used to carry tool schemas, response schemas, instruction hierarchy, or authoritative volatile facts.
+- [x] 18.1 Define all-text baseline fixture set using the actual target vision-capable model.
+- [x] 18.2 Define hybrid mode that keeps instruction/control/dynamic exact facts as text and renders only eligible read-only descriptive context as images.
+- [x] 18.3 Record effective/model-reported input tokens, TTFT, total latency, and cost.
+- [x] 18.4 Measure exact number/identifier accuracy, Vietnamese diacritics, grounding, tool selection, and hallucination.
+- [x] 18.5 Define non-regression thresholds and a minimum material token/latency benefit.
+- [x] 18.6 Keep hybrid mode disabled if thresholds are not met.
+- [x] 18.7 Ensure image context is never used to carry tool schemas, response schemas, instruction hierarchy, or authoritative volatile facts.
 
 ## 19. Contract cleanup and verification
 
