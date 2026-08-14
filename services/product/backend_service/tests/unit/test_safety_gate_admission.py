@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.application.director.catalog import Product
 from backend.application.director.clustering import Comment, cluster_comments
+from backend.application.entity.models import EntityDocument
 from backend.application.director.config import StreamConfig
 from backend.application.director.decision import Director
 from backend.application.director.embeddings import HashingEmbedder
@@ -28,7 +28,7 @@ from backend.application.safety_gate.decision import ReasonCode, SafetyDecision
 from backend.application.safety_gate.engine import SafetyGate, check
 from backend.application.safety_gate.injection_patterns import detect_injection
 
-from .fixtures import MOCK_PRODUCTS
+from .fixtures import MOCK_ENTITIES
 
 # Texts that pass every gate rule (verified against the current rule set).
 ACCEPTED_TEXTS = (
@@ -46,8 +46,8 @@ PIVOT_PRODUCT_ID = "P002"
 SPAM_PIVOT_TEXT = "like and subscribe để mua serum P002"
 
 
-def _product() -> Product:
-    return Product(**MOCK_PRODUCTS[0])
+def _product() -> EntityDocument:
+    return MOCK_ENTITIES[0]
 
 
 def _gate() -> SafetyGate:
@@ -72,7 +72,7 @@ def _routed_comment(
     text: str,
     comment_id: str,
     t: float,
-    product: Product,
+    product: EntityDocument,
 ) -> Comment:
     return route_comment(
         Comment(
@@ -219,10 +219,10 @@ def test_rejected_comment_absent_from_ranked_cluster_demand() -> None:
 # -- Agent-context boundary ---------------------------------------------------
 
 
-def _seeded_director(product: Product) -> Director:
+def _seeded_director(product: EntityDocument) -> Director:
     from backend.api.v1.router import build_run_plan
 
-    run_plan = build_run_plan([{"id": product.id, "name": product.name}])
+    run_plan = build_run_plan([product])
     return Director(
         state=StreamState(
             phase=Phase.SELLING,
