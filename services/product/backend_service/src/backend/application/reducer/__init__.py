@@ -16,6 +16,7 @@ from .cluster_store import (
     ReconciliationFailure,
     ReconciliationResult,
 )
+from .envelope import ClusterEnvelope, build_envelope
 from .fast_reducer import AcceptedComment, FastReducer, FastReducerConfig
 
 __all__ = [
@@ -29,4 +30,6 @@ __all__ = [
     "ReconciliationError",
     "ReconciliationFailure",
     "ReconciliationResult",
+    "ClusterEnvelope",
+    "build_envelope",
 ]
