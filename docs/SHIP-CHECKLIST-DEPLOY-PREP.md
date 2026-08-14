@@ -7,7 +7,7 @@
 
 | Area | Current state |
 |---|---|
-| API and sessions | `/sessions/*`, `/avatars/*`, `/ws/platform/{id}`, `/admin/*`, auth, and bounded input/WS handling |
+| API and sessions | `/sessions/*`, `/avatars/*`, `/sessions/{id}/events` ingress, `/admin/*`, auth, and bounded input/WS handling |
 | Director | Timer accounting, run-plan cursor/coverage, and coordinator shutdown |
 | Postgres runtime | Optional `DATABASE_URL` store with bounded retries, readiness, persistence, and shutdown cleanup |
 | LiveKit audio | Room-token minting plus per-session PCM publisher registry; cleanup on session stop and app shutdown |

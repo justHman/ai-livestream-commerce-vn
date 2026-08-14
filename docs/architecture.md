@@ -37,7 +37,7 @@ developer console.
 ## Lifecycle
 
 1. `POST /sessions` or compatible `/lite/start` creates a renderer session.
-2. `attach`, `plan/create`, `chat`, and `ingest` configure Director state.
+2. `attach` and `plan/create` configure Director state; viewer traffic arrives via `POST /sessions/{id}/events`.
 3. A `StreamingAvatarBackend` runs LLM → text chunker → TTS → renderer in a
    worker thread, with a bounded video queue. Cloud backends retain `say()`.
    Text chunking is source-agnostic segmentation owned by
@@ -60,14 +60,18 @@ All routes are under `/api/v1`.
 | Surface | Current behavior |
 |---|---|
 | `/health`, `/health/live`, `/health/ready` | public liveness and dependency readiness |
-| `/sessions`, `/sessions/{id}/{say,interrupt,stop,attach,ingest,chat}` | preferred session aliases |
+| `/sessions`, `/sessions/{id}/{say,interrupt,stop,attach}` | session lifecycle aliases |
+| `/sessions/{id}/events` | canonical multi-platform viewer ingress (one endpoint for all platforms; see `scope-engine-and-models.md` §4.5.1) |
 | `/sessions/{id}/plan/create` | deterministic run-plan creation |
 | `/lite/*` | compatible legacy session paths |
 | `/media/livekit/room/{id}` | room-join token when configured |
 | `/avatars/*` | in-memory CRUD and idle-regenerate placeholder |
-| `/ws/control/{id}`, `/ws/platform/{id}` | viewer control and platform-comment input |
+| `/ws/control/{id}` | viewer control event stream |
 | `/engines/*`, `/admin/*` | admin-authenticated engine/config/health operations |
 | `/mock/*`, `/debug/*` | development/debug-gated endpoints |
+
+Removed (Decision 22): `/sessions/{id}/ingest`, `/sessions/{id}/chat`, and
+`/ws/platform/{id}` — viewer ingress is only `POST /sessions/{id}/events`.
 
 Viewer routes use `BACKEND_API_TOKEN`; admin routes use `ADMIN_API_TOKEN`.
 Tokens may be empty only in `APP_ENV=dev`. HTTP bodies, fields, REST rates, and
