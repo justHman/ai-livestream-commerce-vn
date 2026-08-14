@@ -12,6 +12,8 @@ import type {
   EnginesResponse,
   EntityDocument,
   EntityType,
+  EventsIn,
+  EventsResponse,
   HealthReadyResponse,
   LiveKitRoomResponse,
   RenderPreviewResponse,
@@ -164,6 +166,20 @@ export function createApi(deps: ApiDeps) {
     );
   }
 
+  async function postEvents(
+    sessionId: string,
+    req: EventsIn,
+  ): Promise<EventsResponse> {
+    return requestJson<EventsResponse>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/events`,
+      {
+        method: "POST",
+        headers: viewerHeaders(true),
+        body: JSON.stringify(req),
+      },
+    );
+  }
+
   async function applyRuntimeConfig(
     sessionId: string,
     config: Record<string, unknown>,
@@ -292,6 +308,7 @@ export function createApi(deps: ApiDeps) {
     interrupt,
     stopSession,
     attach,
+    postEvents,
     applyRuntimeConfig,
     sandboxVerify,
     livekitRoom,

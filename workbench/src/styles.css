@@ -72,8 +72,17 @@ audio { width: 100%; margin-top: 10px; }
 .diagnostic-content { font: .78rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow: auto; user-select: text; }
 #clusterList details { border-top: 1px solid var(--line); padding: 8px 0; }
 #clusterList summary { cursor: pointer; color: var(--text); }
-#msgFeed, #eventLog { max-height: 230px; overflow: auto; background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 9px; }
+#eventLog, #sourceFeed { max-height: 230px; overflow: auto; background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 9px; }
 .feed-row, .event-row { padding: 5px 0; border-bottom: 1px solid #262b43; overflow-wrap: anywhere; }
+.sim-source-tag { display: inline-block; margin-right: 7px; padding: 1px 7px; border-radius: 99px; font-size: .72rem; background: var(--primary-strong); color: white; }
+.sim-source-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+.sim-source-card { border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: #15182a; }
+.sim-source-card h4 { margin: 0 0 8px; font-size: .85rem; }
+.sim-source-card label { font-size: .78rem; margin: 6px 0; display: flex; align-items: center; gap: 6px; }
+.sim-source-card input[type="checkbox"] { width: auto; }
+.sim-source-card .actions { display: flex; gap: 6px; margin-top: 8px; }
+.sim-source-card button { padding: 6px 8px; font-size: .76rem; }
+.sim-request-json { max-height: 260px; overflow: auto; background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 9px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .76rem; }
 .event-row time { color: var(--muted); margin-right: 7px; }
 .wide { grid-column: 1 / -1; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

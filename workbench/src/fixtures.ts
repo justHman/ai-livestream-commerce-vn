@@ -11,6 +11,9 @@ import productsJson from "./fixtures/products.json";
 import shopProfilesJson from "./fixtures/shop_profiles.json";
 import viewerMessagesJson from "./fixtures/viewer_messages.json";
 
+export { SE_REPLAY_SCENARIOS, SE_REPLAY_FIXTURES_VERSION, replayRequestBody } from "./fixtures/se_replay_fixtures";
+export type { SeReplayEvent, SeReplayScenario } from "./fixtures/se_replay_fixtures";
+
 export interface ShopProfileFixture extends ShopProfile {
   id: string;
   persona: string;

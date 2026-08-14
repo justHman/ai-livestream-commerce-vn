@@ -134,6 +134,56 @@ export interface RuntimeConfigUpdate extends RuntimeConfig {
   session_id: string;
 }
 
+// ---------------- Canonical platform event ingress (OpenSpec 2.1) ----------------
+// TS mirror of backend `PlatformEvent`/`EventsIn` (platform_events/models.py) —
+// the exact wire shape SE adapters must POST to /api/v1/sessions/{id}/events.
+
+export type PlatformEventType = "viewer.comment" | "viewer.join" | "viewer.follow" | "viewer.like";
+
+export interface ViewerRef {
+  viewer_id: string;
+  display_name?: string;
+  avatar_url?: string;
+}
+
+export interface CommentPayload {
+  text: string;
+}
+
+export interface CountPayload {
+  count?: number;
+}
+
+export interface PlatformEvent {
+  event_id: string;
+  platform: string;
+  source_stream_id: string;
+  occurred_at: number;
+  type: PlatformEventType;
+  viewer?: ViewerRef;
+  payload: CommentPayload | CountPayload | Record<string, unknown>;
+}
+
+export interface EventsIn {
+  events: PlatformEvent[];
+}
+
+export type EventOutcomeStatus = "accepted" | "duplicate" | "rejected";
+
+export interface EventOutcome {
+  event_id: string;
+  status: EventOutcomeStatus;
+  comment_id?: string;
+  reason?: string;
+}
+
+export interface EventsResponse {
+  events: EventOutcome[];
+  accepted: number;
+  duplicate: number;
+  rejected: number;
+}
+
 export interface AttachResponse {
   ok: boolean;
   products?: number;
