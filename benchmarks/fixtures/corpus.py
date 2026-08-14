@@ -15,13 +15,14 @@ import copy
 from dataclasses import asdict
 from typing import Any
 
-from backend.application.director.catalog import Product
+from backend.application.director.catalog import embedding_text
 from backend.application.director.clustering import Comment
 from backend.application.director.config import StreamConfig
 from backend.application.director.embeddings import HashingEmbedder
 from backend.application.director.hooks import HookPool
 from backend.application.director.routing import route_comment
 from backend.application.director.state import Phase, ProductState, StreamState
+from backend.application.entity.models import EntityDocument
 
 from .products import CORPUS_PRODUCTS
 
@@ -47,7 +48,7 @@ COMMENT_CORPUS: list[dict[str, str]] = [
 ]
 
 
-def corpus_products() -> list[Product]:
+def corpus_products() -> list[EntityDocument]:
     """Deep-copied product catalog (embeddings filled by the caller)."""
     return copy.deepcopy(CORPUS_PRODUCTS)
 
@@ -73,8 +74,12 @@ def build_state(
         ProductState(
             product_id=p.id,
             name=p.name,
-            embedding=p.embedding,
-            ref_image=p.ref_image,
+            embedding=embedding_text(p),  # placeholder; refreshed by the caller
+            ref_image=(
+                str(p.get_fact("custom.ref_image").value)
+                if p.get_fact("custom.ref_image") is not None
+                else None
+            ),
         )
         for p in products
     ]

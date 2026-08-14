@@ -160,8 +160,41 @@ resp = await llm_client.chat.completions.create(
 ### 4.5 External API (FE/BE team SE ↔ API)
 - REST `/api/v1/sessions/*` — commands (start/attach/stop/say).
 - `POST /api/v1/sessions/{id}/plan/create` — run-plan generation (see §4.6).
-- WS `/api/v1/ws/platform/{sid}` — platform adapter → API ingress (comment realtime).
+- `POST /api/v1/sessions/{id}/events` — canonical SE viewer-ingress contract (see below; replaces the removed `/ws/platform` WS and `/sessions/{id}/ingest|chat` routes).
 - WS `/api/v1/ws/control/{sid}` — API → BE team SE event stream (director state, decisions, avatar state, warnings). BE forwards to FE as they choose; API does NOT push directly to FE.
+
+#### 4.5.1 Canonical viewer ingress — `POST /api/v1/sessions/{session_id}/events` (SE reference)
+
+One endpoint for every source platform. Adapters normalize their upstream events to this shape before calling; the backend never contains TikTok/Shopee/Facebook/YouTube protocol logic.
+
+```jsonc
+// Request body — a bounded list (1..100). One-event requests use the same schema/path.
+{
+  "events": [
+    {
+      "event_id": "string",            // idempotency identity (retry with the SAME id)
+      "platform": "tiktok",            // provenance, observed + stored, never branched on
+      "source_stream_id": "string",    // upstream stream/live id
+      "occurred_at": 1750000000.0,     // epoch seconds; |now - occurred_at| > 24h -> rejected
+      "type": "viewer.comment",        // viewer.comment | viewer.join | viewer.follow | viewer.like
+      "viewer": { "viewer_id": "string", "display_name": "string?", "avatar_url": "string?" },
+      "payload": { "text": "string" }  // viewer.comment only; join/follow/like carry optional "count"
+    }
+  ]
+}
+```
+
+Response semantics:
+
+| Outcome | HTTP | Body |
+|---|---|---|
+| Batch processed (any mix of accepted/duplicate/rejected) | `200` | `{"events": [{"event_id": "...", "status": "accepted\|duplicate\|rejected", "reason": "..."}], "accepted": n, "duplicate": n, "rejected": n}` — every per-event outcome is a valid batch result |
+| Unknown session (no session meta and no live session) | `404` | FastAPI `detail` |
+| Malformed event / out-of-bounds batch | `422` | FastAPI validation `detail`; oversized comment text -> `413` (input_too_long) |
+| Auth / rate limit | `401` / `429` | FastAPI `detail` |
+| Event ingestion not enabled | `501` | `detail: "event ingestion not enabled"` |
+
+Idempotency: a retried `event_id` returns `status: "duplicate"` and repeats no persistence/embedding/demand effect (session-scoped bounded dedup, 3600s window). Non-comment events update traffic/session signals and are never embedded or spoken.
 
 ### 4.6 Run plan layer — proactive + reactive Director (livestream cadence)
 
@@ -370,8 +403,8 @@ REST = default (no `rest/` prefix). WS + media have prefix (different protocol, 
 | | `GET /api/v1/avatars` | REST | BE team SE | FE test |
 | | `PUT/DELETE /api/v1/avatars/{id}` | REST | BE team SE | FE test |
 | | `POST /api/v1/avatars/{id}/idle/regenerate` | REST | BE team SE | FE test |
-| Realtime WS | `WS /api/v1/ws/platform/{sid}` | WebSocket | BE team SE (platform adapter) | FE test (mock chat panel) |
-| | `WS /api/v1/ws/control/{sid}` | WebSocket | BE team SE (event consumer, forwards to FE) | FE test (consumer role) |
+| Viewer ingress | `POST /api/v1/sessions/{id}/events` | REST | BE team SE (platform adapter; §4.5.1) | FE test (mock events) |
+| Realtime WS | `WS /api/v1/ws/control/{sid}` | WebSocket | BE team SE (event consumer, forwards to FE) | FE test (consumer role) |
 | Media | `POST /api/v1/media/livekit/room/{sid}` | REST → LiveKit | BE team SE gets token, FE joins LiveKit | FE test joins LiveKit |
 | | `GET /api/v1/media/frame/{sid}.png` | HTTP | debug snapshot | debug |
 | Engines | `POST /api/v1/engines/tts` | REST | BE team SE | FE test |

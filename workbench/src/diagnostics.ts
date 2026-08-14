@@ -2,6 +2,20 @@
 
 import type { ClusterEnvelope, DebugClustersResponse, QueueStats } from "./api_types";
 import type { ClusterInfo } from "./api_types";
+import type { RuntimeInspectorsSnapshot } from "./api_types";
+import {
+  INSPECTOR_IDS,
+  escapeHtml,
+  metric,
+  renderArbiterTimeline,
+  renderClustersSnapshot,
+  renderEnvelope,
+  renderEvidence,
+  renderMemory,
+  renderReconcile,
+  renderSafety,
+  renderScriptCursor,
+} from "./inspectors";
 
 export interface RenderSink {
   setText: (id: string, text: string) => void;
@@ -19,20 +33,8 @@ const DIAGNOSTIC_IDS = [
   "upcomingWork",
   "completedHistory",
   "clusterList",
+  ...INSPECTOR_IDS,
 ] as const;
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function metric(label: string, value: number | string): string {
-  return `<div class="metric"><span>${label}</span><strong>${String(value ?? 0)}</strong></div>`;
-}
 
 function renderClusters(clusters: ClusterInfo[]): string {
   if (!clusters.length) {
@@ -64,6 +66,15 @@ export function clearDiagnostics(sink: RenderSink): void {
   sink.setText("upcomingWork", "Không có turn đang chờ.");
   sink.setText("completedHistory", "Chưa có speech hoàn tất.");
   sink.setText("clusterList", "Chưa có active cluster.");
+  clearRuntimeInspectors(sink);
+}
+
+/** Reset all runtime inspector cards to their empty placeholders. */
+export function clearRuntimeInspectors(sink: RenderSink): void {
+  for (const id of INSPECTOR_IDS) {
+    sink.setHtml(id, "");
+  }
+  renderRuntimeInspectors(null, sink);
 }
 
 export function renderDiagnostics(data: DebugClustersResponse, sink: RenderSink): void {
@@ -111,6 +122,19 @@ export function renderDiagnostics(data: DebugClustersResponse, sink: RenderSink)
 
 export function diagnosticsIds(): readonly string[] {
   return DIAGNOSTIC_IDS;
+}
+
+/** Render the C15 runtime inspector cards (safety/cluster/reconcile/envelope/
+ * memory/evidence/script/arbiter). Accepts null for empty state. */
+export function renderRuntimeInspectors(snapshot: RuntimeInspectorsSnapshot | null, sink: RenderSink): void {
+  sink.setHtml("safetyInspector", renderSafety(snapshot?.safety));
+  sink.setHtml("clusterInspector", renderClustersSnapshot(snapshot?.clusters));
+  sink.setHtml("reconcileInspector", renderReconcile(snapshot?.fast_lane, snapshot?.clusters));
+  sink.setHtml("envelopeInspector", renderEnvelope(snapshot?.envelope));
+  sink.setHtml("memoryInspector", renderMemory(snapshot?.memory));
+  sink.setHtml("evidenceInspector", renderEvidence(snapshot?.agent));
+  sink.setHtml("scriptCursorInspector", renderScriptCursor(snapshot?.script_cursor));
+  sink.setHtml("arbiterTimelineInspector", renderArbiterTimeline(snapshot?.arbiter));
 }
 
 export function renderEnvelopeSummary(envelope: ClusterEnvelope): string {

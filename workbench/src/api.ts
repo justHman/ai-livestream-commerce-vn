@@ -12,9 +12,9 @@ import type {
   EnginesResponse,
   EntityDocument,
   EntityType,
+  EventsIn,
+  EventsResponse,
   HealthReadyResponse,
-  IngestRequest,
-  IngestResponse,
   LiveKitRoomResponse,
   RenderPreviewResponse,
   SandboxVerifyRequest,
@@ -166,32 +166,16 @@ export function createApi(deps: ApiDeps) {
     );
   }
 
-  async function ingest(
+  async function postEvents(
     sessionId: string,
-    req: Omit<IngestRequest, "session_id">,
-  ): Promise<IngestResponse> {
-    return requestJson<IngestResponse>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/ingest`,
+    req: EventsIn,
+  ): Promise<EventsResponse> {
+    return requestJson<EventsResponse>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/events`,
       {
         method: "POST",
         headers: viewerHeaders(true),
         body: JSON.stringify(req),
-      },
-    );
-  }
-
-  async function chat(
-    sessionId: string,
-    text: string,
-    author = "viewer",
-    ts?: number,
-  ): Promise<{ accepted: boolean; comment_id?: string }> {
-    return requestJson<{ accepted: boolean; comment_id?: string }>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/chat`,
-      {
-        method: "POST",
-        headers: viewerHeaders(true),
-        body: JSON.stringify({ text, author, ts }),
       },
     );
   }
@@ -324,8 +308,7 @@ export function createApi(deps: ApiDeps) {
     interrupt,
     stopSession,
     attach,
-    ingest,
-    chat,
+    postEvents,
     applyRuntimeConfig,
     sandboxVerify,
     livekitRoom,

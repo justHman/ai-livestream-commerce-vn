@@ -1,7 +1,7 @@
 ﻿## 1. OpenSpec and contract baseline
 
 - [x] 1.1 Record implementation baseline SHA and validate this change under the repository's `spec-driven` schema. (baseline: dd8672e)
-- [ ] 1.2 Add strict delta specs for all new/modified capabilities in this change.
+- [x] 1.2 Add strict delta specs for all new/modified capabilities in this change.
 - [x] 1.3 Add a contract migration test that fails while any removed viewer-ingress route remains mounted.
 - [x] 1.4 Add a static test that fails if `websocket/platform.schema.json` remains generated after migration.
 - [x] 1.5 Add architecture guards preventing a second script-specific chunker or sentence=`TextChunk` coupling.
@@ -175,45 +175,45 @@
 
 ## 16. Workbench SE Adapter Simulator
 
-- [ ] 16.1 Replace direct legacy single/batch viewer injection as the primary integration model.
-- [ ] 16.2 Simulate concurrent TikTok/Shopee/Facebook/YouTube sources.
-- [ ] 16.3 Add per-platform rate/burst/batch/jitter/out-of-order controls.
-- [ ] 16.4 Add retry using identical event IDs.
-- [ ] 16.5 Add malformed-event and source-outage/recovery scenarios.
-- [ ] 16.6 Display simulated source payload and exact canonical `/events` request.
-- [ ] 16.7 Add deterministic replay fixtures suitable as an SE integration reference.
+- [x] 16.1 Replace direct legacy single/batch viewer injection as the primary integration model.
+- [x] 16.2 Simulate concurrent TikTok/Shopee/Facebook/YouTube sources.
+- [x] 16.3 Add per-platform rate/burst/batch/jitter/out-of-order controls.
+- [x] 16.4 Add retry using identical event IDs.
+- [x] 16.5 Add malformed-event and source-outage/recovery scenarios.
+- [x] 16.6 Display simulated source payload and exact canonical `/events` request.
+- [x] 16.7 Add deterministic replay fixtures suitable as an SE integration reference.
 
 ## 17. Workbench runtime inspectors
 
-- [ ] 17.1 Add Safety Gate counters/reason inspector.
-- [ ] 17.2 Add stable cluster/representative/unique-viewer/product-confidence inspector.
-- [ ] 17.3 Show fast-lane and reconciliation trigger state.
-- [ ] 17.4 Show exact selected ClusterEnvelope.
-- [ ] 17.5 Show SessionMemory/TopicMemory/EvidenceCache metadata.
-- [ ] 17.6 Show evidence plan, cache hit/miss, batched fetches, and LLM/tool round count.
-- [ ] 17.7 Show bound script version, current sentence, last completed sentence, and next sentence.
-- [ ] 17.8 Add speech-arbiter timeline with script/Q&A/resume events.
+- [x] 17.1 Add Safety Gate counters/reason inspector.
+- [x] 17.2 Add stable cluster/representative/unique-viewer/product-confidence inspector.
+- [x] 17.3 Show fast-lane and reconciliation trigger state.
+- [x] 17.4 Show exact selected ClusterEnvelope.
+- [x] 17.5 Show SessionMemory/TopicMemory/EvidenceCache metadata.
+- [x] 17.6 Show evidence plan, cache hit/miss, batched fetches, and LLM/tool round count.
+- [x] 17.7 Show bound script version, current sentence, last completed sentence, and next sentence.
+- [x] 17.8 Add speech-arbiter timeline with script/Q&A/resume events.
 
 ## 18. Optional agent context-compression benchmark
 
-- [ ] 18.1 Define all-text baseline fixture set using the actual target vision-capable model.
-- [ ] 18.2 Define hybrid mode that keeps instruction/control/dynamic exact facts as text and renders only eligible read-only descriptive context as images.
-- [ ] 18.3 Record effective/model-reported input tokens, TTFT, total latency, and cost.
-- [ ] 18.4 Measure exact number/identifier accuracy, Vietnamese diacritics, grounding, tool selection, and hallucination.
-- [ ] 18.5 Define non-regression thresholds and a minimum material token/latency benefit.
-- [ ] 18.6 Keep hybrid mode disabled if thresholds are not met.
-- [ ] 18.7 Ensure image context is never used to carry tool schemas, response schemas, instruction hierarchy, or authoritative volatile facts.
+- [x] 18.1 Define all-text baseline fixture set using the actual target vision-capable model.
+- [x] 18.2 Define hybrid mode that keeps instruction/control/dynamic exact facts as text and renders only eligible read-only descriptive context as images.
+- [x] 18.3 Record effective/model-reported input tokens, TTFT, total latency, and cost.
+- [x] 18.4 Measure exact number/identifier accuracy, Vietnamese diacritics, grounding, tool selection, and hallucination.
+- [x] 18.5 Define non-regression thresholds and a minimum material token/latency benefit.
+- [x] 18.6 Keep hybrid mode disabled if thresholds are not met.
+- [x] 18.7 Ensure image context is never used to carry tool schemas, response schemas, instruction hierarchy, or authoritative volatile facts.
 
 ## 19. Contract cleanup and verification
 
-- [ ] 19.1 Remove obsolete Workbench/API types and fixtures for deleted viewer-ingress contracts.
-- [ ] 19.2 Remove obsolete `initial_ingest_mode` public/runtime configuration.
-- [ ] 19.3 Regenerate deterministic backend OpenAPI and surviving control WebSocket schema.
-- [ ] 19.4 Update docs/reference integration contract for SE.
-- [ ] 19.5 Run focused unit/integration tests for each subsystem.
-- [ ] 19.6 Run deterministic cluster/reducer benchmarks.
-- [ ] 19.7 Run script Q&A/resume end-to-end tests through the canonical TextChunker/TTS/backend path.
-- [ ] 19.8 Run Workbench tests/build.
-- [ ] 19.9 Run contract generation diff check.
-- [ ] 19.10 Run strict OpenSpec validation.
-- [ ] 19.11 Verify repository search finds no mounted deleted ingress route, platform WS contract artifact, rigid entity compatibility adapter, or script-specific chunker path.
+- [x] 19.1 Remove obsolete Workbench/API types and fixtures for deleted viewer-ingress contracts.
+- [x] 19.2 Remove obsolete `initial_ingest_mode` public/runtime configuration.
+- [x] 19.3 Regenerate deterministic backend OpenAPI and surviving control WebSocket schema.
+- [x] 19.4 Update docs/reference integration contract for SE.
+- [x] 19.5 Run focused unit/integration tests for each subsystem.
+- [x] 19.6 Run deterministic cluster/reducer benchmarks.
+- [x] 19.7 Run script Q&A/resume end-to-end tests through the canonical TextChunker/TTS/backend path.
+- [x] 19.8 Run Workbench tests/build.
+- [x] 19.9 Run contract generation diff check.
+- [x] 19.10 Run strict OpenSpec validation.
+- [x] 19.11 Verify repository search finds no mounted deleted ingress route, platform WS contract artifact, rigid entity compatibility adapter, or script-specific chunker path.

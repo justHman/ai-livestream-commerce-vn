@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from backend.application.director.catalog import Product
 from backend.application.director.clustering import Comment, cluster_comments
-from backend.application.director.embeddings import BiEncoderEmbedder, DEFAULT_MODEL_ID, HashingEmbedder
+from backend.application.director.embeddings import (
+    BiEncoderEmbedder,
+    DEFAULT_MODEL_ID,
+    HashingEmbedder,
+)
 from backend.application.director.routing import route_comment
 
 
@@ -31,10 +34,9 @@ EXPECTED_PAIRS = {
 
 
 def benchmark(embedder, threshold: float) -> dict:
-    products = [
-        Product(id="P004", name="Áo hoodie HeyGen", features=["hoodie", "size XL"]),
-        Product(id="P002", name="Serum Vitamin C", features=["serum", "vitamin C"]),
-    ]
+    from benchmarks.fixtures.products import CORPUS_PRODUCTS
+
+    products = CORPUS_PRODUCTS
     texts = [text for _, text, _ in FIXTURE]
     vectors = embedder.encode(texts)
     comments = [
@@ -46,11 +48,7 @@ def benchmark(embedder, threshold: float) -> dict:
         for (comment_id, text, _), vector in zip(FIXTURE, vectors)
     ]
     clusters = cluster_comments(comments, merge_threshold=threshold)
-    merged_pairs = {
-        frozenset(cluster.member_ids)
-        for cluster in clusters
-        if cluster.size == 2
-    }
+    merged_pairs = {frozenset(cluster.member_ids) for cluster in clusters if cluster.size == 2}
     unexpected = merged_pairs - EXPECTED_PAIRS
     missed = EXPECTED_PAIRS - merged_pairs
     return {
@@ -58,9 +56,7 @@ def benchmark(embedder, threshold: float) -> dict:
         "threshold": threshold,
         "comments": len(comments),
         "clusters": len(clusters),
-        "singleton_ratio": round(
-            sum(cluster.size == 1 for cluster in clusters) / len(clusters), 3
-        ),
+        "singleton_ratio": round(sum(cluster.size == 1 for cluster in clusters) / len(clusters), 3),
         "expected_merges": len(merged_pairs & EXPECTED_PAIRS),
         "missed_merges": len(missed),
         "unexpected_merges": len(unexpected),

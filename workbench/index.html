@@ -89,8 +89,8 @@
         <div id="demoStateText" class="status" aria-live="polite">status: idle — đang chờ.</div>
         <div id="demoStates" class="demo-states" aria-label="Các trạng thái Auto Demo"></div>
         <div class="grid-2">
-          <div class="field"><label for="autoDemoRate">Tốc độ comment/giây</label><input id="autoDemoRate" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
-          <div class="field"><label for="autoDemoMode">Initial ingest mode</label><select id="autoDemoMode"><option value="batch">Batch 20 comments</option><option value="single">Gửi từng comment</option></select></div>
+          <div class="field"><label for="autoDemoRate">Tốc độ event/giây mỗi nguồn</label><input id="autoDemoRate" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
+          <div class="field"><label for="autoDemoMode">Chế độ gửi</label><select id="autoDemoMode"><option value="batch">Batch — gộp nhiều nguồn/request</option><option value="single">Từng event/request</option></select></div>
           <div class="field"><label for="qaMaxClusters">Max Q&A clusters/window</label><input id="qaMaxClusters" type="number" min="1" max="20" value="2"></div>
           <div class="field"><label for="qaTimeout">Q&A timeout (giây)</label><input id="qaTimeout" type="number" min="1" max="600" value="45"></div>
           <div class="field"><label for="qaCooldown">Topic cooldown (giây)</label><input id="qaCooldown" type="number" min="0" max="3600" value="120"></div>
@@ -101,8 +101,50 @@
           <div class="field"><label for="pivotExit">Pivot exit share</label><input id="pivotExit" type="number" min="0.01" max="1" step="0.01" value="0.45"></div>
         </div>
         <div class="actions"><button id="applyRuntimeConfigBtn" type="button" class="secondary">Áp dụng runtime config</button><button id="autoDemoBtn" type="button">Chạy Auto Demo</button><button id="stopAutoBtn" type="button" class="danger" disabled>Dừng Auto Demo</button></div>
-        <h3>Viewer comments</h3>
-        <div id="msgFeed" aria-live="polite"></div>
+        <h3>Nguồn mô phỏng SE (mỗi nguồn = một stream)</h3>
+        <p class="hint">Rate/burst/jitter/out-of-order áp khi Chạy Auto Demo; Retry/Malformed/Outage tác động tức thì. Retry gửi lại đúng event_id — backend trả duplicate.</p>
+        <div class="sim-source-controls">
+          <div class="sim-source-card">
+            <h4>TikTok</h4>
+            <div class="field"><label for="rate-tiktok">Rate (event/s)</label><input id="rate-tiktok" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
+            <div class="field"><label for="burst-tiktok">Burst (số event/round)</label><input id="burst-tiktok" type="number" min="1" max="10" step="1" value="1"></div>
+            <label><input id="jitter-tiktok" type="checkbox"> Jitter (delay ngẫu nhiên)</label>
+            <label><input id="ooo-tiktok" type="checkbox"> Out-of-order (đảo thứ tự)</label>
+            <label><input id="outage-tiktok" type="checkbox"> Outage (ngừng nguồn)</label>
+            <div class="actions"><button id="retry-tiktok" type="button" class="secondary">Retry event_id</button><button id="malformed-tiktok" type="button" class="warning">Gửi malformed</button></div>
+          </div>
+          <div class="sim-source-card">
+            <h4>Shopee</h4>
+            <div class="field"><label for="rate-shopee">Rate (event/s)</label><input id="rate-shopee" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
+            <div class="field"><label for="burst-shopee">Burst (số event/round)</label><input id="burst-shopee" type="number" min="1" max="10" step="1" value="1"></div>
+            <label><input id="jitter-shopee" type="checkbox"> Jitter (delay ngẫu nhiên)</label>
+            <label><input id="ooo-shopee" type="checkbox"> Out-of-order (đảo thứ tự)</label>
+            <label><input id="outage-shopee" type="checkbox"> Outage (ngừng nguồn)</label>
+            <div class="actions"><button id="retry-shopee" type="button" class="secondary">Retry event_id</button><button id="malformed-shopee" type="button" class="warning">Gửi malformed</button></div>
+          </div>
+          <div class="sim-source-card">
+            <h4>Facebook</h4>
+            <div class="field"><label for="rate-facebook">Rate (event/s)</label><input id="rate-facebook" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
+            <div class="field"><label for="burst-facebook">Burst (số event/round)</label><input id="burst-facebook" type="number" min="1" max="10" step="1" value="1"></div>
+            <label><input id="jitter-facebook" type="checkbox"> Jitter (delay ngẫu nhiên)</label>
+            <label><input id="ooo-facebook" type="checkbox"> Out-of-order (đảo thứ tự)</label>
+            <label><input id="outage-facebook" type="checkbox"> Outage (ngừng nguồn)</label>
+            <div class="actions"><button id="retry-facebook" type="button" class="secondary">Retry event_id</button><button id="malformed-facebook" type="button" class="warning">Gửi malformed</button></div>
+          </div>
+          <div class="sim-source-card">
+            <h4>YouTube</h4>
+            <div class="field"><label for="rate-youtube">Rate (event/s)</label><input id="rate-youtube" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
+            <div class="field"><label for="burst-youtube">Burst (số event/round)</label><input id="burst-youtube" type="number" min="1" max="10" step="1" value="1"></div>
+            <label><input id="jitter-youtube" type="checkbox"> Jitter (delay ngẫu nhiên)</label>
+            <label><input id="ooo-youtube" type="checkbox"> Out-of-order (đảo thứ tự)</label>
+            <label><input id="outage-youtube" type="checkbox"> Outage (ngừng nguồn)</label>
+            <div class="actions"><button id="retry-youtube" type="button" class="secondary">Retry event_id</button><button id="malformed-youtube" type="button" class="warning">Gửi malformed</button></div>
+          </div>
+        </div>
+        <h3>Nguồn mô phỏng</h3>
+        <div id="sourceFeed" aria-live="polite"></div>
+        <h3>Yêu cầu /events chính xác</h3>
+        <pre id="eventsRequestJson" class="sim-request-json">Chưa có request nào.</pre>
       </section>
 
       <section class="panel" id="diagnosticsPanel" aria-labelledby="diagnosticsHeading">
@@ -118,6 +160,14 @@
           <article class="diagnostic-card"><h3>Upcoming work — đầy đủ</h3><div id="upcomingWork" class="diagnostic-content">Không có turn đang chờ.</div></article>
           <article class="diagnostic-card wide"><h3>Completed history — đầy đủ</h3><div id="completedHistory" class="diagnostic-content">Chưa có speech hoàn tất.</div></article>
           <article class="diagnostic-card wide"><h3>Active clusters</h3><div id="clusterList"></div></article>
+          <article class="diagnostic-card"><h3>Safety Gate</h3><div id="safetyInspector" class="diagnostic-content">Safety Gate: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Clusters ổn định</h3><div id="clusterInspector" class="diagnostic-content">Clusters ổn định: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Fast-lane + reconciliation</h3><div id="reconcileInspector" class="diagnostic-content">Fast-lane + reconciliation: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>ClusterEnvelope đã chọn</h3><div id="envelopeInspector" class="diagnostic-content">ClusterEnvelope đã chọn: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Memory layers</h3><div id="memoryInspector" class="diagnostic-content">Memory layers: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Evidence + Agent rounds</h3><div id="evidenceInspector" class="diagnostic-content">Evidence + Agent rounds: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Script cursor</h3><div id="scriptCursorInspector" class="diagnostic-content">Script cursor: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Speech-arbiter timeline</h3><div id="arbiterTimelineInspector" class="diagnostic-content">Speech-arbiter timeline: chưa có dữ liệu.</div></article>
         </div>
       </section>
 

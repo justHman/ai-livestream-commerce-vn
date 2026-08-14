@@ -9,11 +9,15 @@ import { createApi } from "./api";
 import { loadFixtures } from "./fixtures";
 import { DEV_TOKENS } from "./dev_tokens";
 import { connectLiveKit, disconnectRoom } from "./livekit";
-import { renderDiagnostics, type RenderSink } from "./diagnostics";
+import { renderDiagnostics, renderRuntimeInspectors, type RenderSink } from "./diagnostics";
+import type { RuntimeInspectorsSnapshot } from "./api_types";
 import { reducer, initialState, type Action, type RootState } from "./state";
-import { ControlSocket, PlatformSocket } from "./websocket";
-import { ViewerSimulator, validateSimulatorInput } from "./simulator";
-import type { LifecycleEvent, ProductEntity } from "./api_types";
+import { ControlSocket } from "./websocket";
+import { validateSimulatorInput } from "./simulator";
+import { EventSimulator, defaultSources } from "./eventSimulator";
+import type { SimEmission, SimSourceDefinition, SourcePlatform } from "./eventSimulator";
+import type { PlatformEvent } from "./api_types";
+import type { ArbiterStateName, LifecycleEvent, ProductEntity } from "./api_types";
 import { validateProductCatalog, validateShopLimits, productJson } from "./validation";
 import { clearDiagnostics } from "./diagnostics";
 import { mountAuthoring } from "./authoringView";
@@ -36,9 +40,8 @@ const SHOP_FIELD_MAP: Record<string, ShopKey> = {
 let state: RootState = initialState();
 let store: ReturnType<typeof createApi>;
 let controlSocket: ControlSocket;
-let platformSocket: PlatformSocket;
 let livekitRoom: import("livekit-client").Room | null = null;
-let simulator: ViewerSimulator | null = null;
+let simulator: EventSimulator | null = null;
 let diagnosticTimer: ReturnType<typeof setTimeout> | null = null;
 let previewObjectUrl: string | null = null;
 
@@ -106,6 +109,8 @@ function render(_action: Action): void {
   if (state.diagnostics) {
     const data = state.diagnostics as Parameters<typeof renderDiagnostics>[0];
     renderDiagnostics(data, sink);
+    const inspectors = (data as unknown as { runtime_inspectors?: RuntimeInspectorsSnapshot }).runtime_inspectors;
+    renderRuntimeInspectors(inspectors ?? null, sink);
   } else {
     clearDiagnostics(sink);
   }
@@ -235,8 +240,8 @@ function renderEvents(): void {
 
 function persistLocalDraft(): void {
   try {
-    const { shop, products, selectedProductIds, productOrder, testPreferences } = state.draft;
-    localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify({ version: LOCAL_DRAFT_VERSION, draft: { shop, products, selectedProductIds, productOrder, testPreferences } }));
+    const { shop, products, selectedProductIds, productOrder } = state.draft;
+    localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify({ version: LOCAL_DRAFT_VERSION, draft: { shop, products, selectedProductIds, productOrder } }));
   } catch (error) {
     addEvent(`Không lưu draft local: ${safeMessage(error)}`, "warning");
   }
@@ -294,7 +299,6 @@ async function stopSession(): Promise<void> {
     await store.stopSession(state.session.id);
     simulator?.stop();
     controlSocket.disconnect();
-    platformSocket.disconnect();
     await disconnectRoom(livekitRoom);
     livekitRoom = null;
     ($("avatarVideo") as HTMLVideoElement).srcObject = null;
@@ -322,6 +326,17 @@ async function handleLifecycleEvent(event: LifecycleEvent): Promise<void> {
       completed_speech_history: event.completed_speech_history ?? [],
       speech_queue: { current_product: event.product_id ? { product_id: event.product_id, name: "" } : null },
     };
+    // C15 runtime inspectors: surfaced from lifecycle event fields where the
+    // backend channel exists today; the remaining sections are omitted and
+    // render placeholders until their backend channels carry the fields.
+    const inspectors: RuntimeInspectorsSnapshot = {};
+    if (event.selected_cluster?.length) {
+      inspectors.envelope = { cluster_id: event.selected_cluster[0] ?? "" };
+    }
+    if (event.state) {
+      // Lifecycle state names overlap the arbiter states; surface verbatim.
+      inspectors.arbiter = { state: event.state as ArbiterStateName };
+    }
     dispatch({
       type: "DIAGNOSTICS_SET",
       value: {
@@ -332,6 +347,7 @@ async function handleLifecycleEvent(event: LifecycleEvent): Promise<void> {
         embedder_name: "unknown",
         embedder_status: "unknown",
         queue_stats: queue,
+        runtime_inspectors: inspectors,
       },
     });
     renderDiagnostics(state.diagnostics as Parameters<typeof renderDiagnostics>[0], sink);
@@ -432,44 +448,136 @@ function startAutoDemo(): void {
     addEvent(`Auto Demo fixtures invalid: ${issues.join("; ")}`, "danger");
     return;
   }
-  dispatch({ type: "AUTO_PHASE", phase: "advancing", active: true });
   const rate = Math.min(5, Math.max(0.2, Number(($("autoDemoRate") as HTMLInputElement).value) || 0.67));
-  const batchSize = ($("autoDemoMode") as HTMLSelectElement).value === "batch" ? AUTO_DEMO_COMMENT_COUNT : 1;
-  platformSocket.connect(state.session.id);
-  simulator = new ViewerSimulator(
-    messages,
+  const batchMode = ($("autoDemoMode") as HTMLSelectElement).value === "batch";
+  // Chế độ gửi: batch = gộp mọi nguồn thành 1 request /events; single = mỗi
+  // event một request. Không còn là initial_ingest_mode của backend (19.2).
+  const sources = defaultSources(messages);
+  for (const source of sources) applySourceControls(source);
+  dispatch({ type: "AUTO_PHASE", phase: "advancing", active: true });
+  simulator = new EventSimulator(
+    sources,
     {
-      onMessage: (message, batchIndex) => {
-        appendComment(message.author, message.text);
-        const sent = platformSocket.send(message);
-        if (!sent) addEvent(`Simulator message ${batchIndex} dropped (WS not open).`, "warning");
+      onEmit: (emission) => {
+        appendSourceEvent(emission);
+        if (batchMode) queueBatchEmission(emission);
+        else void postEvents(emission.emitted.event);
       },
       onError: (error) => addEvent(`Simulator error: ${safeMessage(error)}`, "danger"),
     },
-    { seed: 42, ratePerSecond: rate, batchSize },
+    { seed: 42 },
   );
   simulator.start();
-  addEvent(`Auto Demo chạy liên tục ở tốc độ ${rate} comment/s.`, "success");
+  addEvent(`Auto Demo chạy 4 nguồn mô phỏng (${sources.map((s) => s.platform).join(", ")}) ở tốc độ ${rate} event/s/nguồn.`, "success");
   scheduleDiagnostics(0);
 }
 
 function stopAutoDemo(): void {
   simulator?.stop();
   simulator = null;
+  flushBatch();
   dispatch({ type: "AUTO_PHASE", phase: "stopped", active: false });
   if (state.session.id) {
     store.interrupt(state.session.id).catch(() => addEvent("Interrupt Auto Demo thất bại.", "danger"));
   }
 }
 
-function appendComment(author: string, text: string): void {
-  const feed = $("msgFeed");
+/** Canonical viewer ingress for simulated messages: POST the normalized
+ * platform event to /api/v1/sessions/{id}/events via the API client
+ * (Decision 22 removed the platform WS + ingest/chat routes). */
+function postEvents(event: PlatformEvent): void {
+  if (!state.session.id || !state.session.attached) return;
+  showRequestPayload({ events: [structuredClone(event)] });
+  store
+    .postEvents(state.session.id, { events: [event] })
+    .then((body) => addEvent(`/events: ${body.accepted} accepted, ${body.duplicate} duplicate, ${body.rejected} rejected.`, body.rejected ? "warning" : "success"))
+    .catch((error) => addEvent(`/events bị từ chối: ${safeMessage(error)}`, "warning"));
+}
+
+/** Batch gửi: gộp event các nguồn trong 1 cửa sổ nhỏ thành một request. */
+const batchWindowMs = 500;
+let batchTimer: ReturnType<typeof setTimeout> | null = null;
+let batchEvents: PlatformEvent[] = [];
+
+function queueBatchEmission(emission: SimEmission): void {
+  batchEvents.push(emission.emitted.event);
+  if (batchTimer) return;
+  batchTimer = setTimeout(() => {
+    batchTimer = null;
+    if (!batchEvents.length) return;
+    const events = batchEvents.splice(0);
+    const body = { events };
+    showRequestPayload(body);
+    if (!state.session.id || !state.session.attached) return;
+    store
+      .postEvents(state.session.id, body)
+      .then((resp) => addEvent(`/events batch: ${resp.accepted} accepted, ${resp.duplicate} duplicate, ${resp.rejected} rejected.`, resp.rejected ? "warning" : "success"))
+      .catch((error) => addEvent(`/events batch bị từ chối: ${safeMessage(error)}`, "warning"));
+  }, batchWindowMs);
+}
+
+function flushBatch(): void {
+  if (batchTimer) {
+    clearTimeout(batchTimer);
+    batchTimer = null;
+  }
+  batchEvents = [];
+}
+
+function appendSourceEvent(emission: SimEmission): void {
+  const feed = $("sourceFeed");
   const row = document.createElement("div");
   row.className = "feed-row";
-  row.textContent = `${author}: ${text}`;
+  const tag = document.createElement("span");
+  tag.className = "sim-source-tag";
+  tag.textContent = emission.source.platform;
+  const text = document.createTextNode(
+    `${emission.emitted.source.streamId} · ${emission.emitted.source.displayName}: ${emission.emitted.source.text ?? (emission.emitted.malformed ? "(malformed — thiếu payload.text)" : "")}`,
+  );
+  row.append(tag, text);
   feed.appendChild(row);
   feed.scrollTop = feed.scrollHeight;
   while (feed.children.length > AUTO_DEMO_COMMENT_COUNT) feed.firstElementChild?.remove();
+}
+
+/** Hiển thị JSON chính xác của request /events sắp gửi (16.6). */
+function showRequestPayload(body: { events: PlatformEvent[] }): void {
+  ($("eventsRequestJson") as HTMLElement).textContent = JSON.stringify(body, null, 2);
+}
+
+/** Đọc per-source controls (đã bind ở bindEvents) và áp vào source config. */
+function applySourceControls(source: SimSourceDefinition): void {
+  const rate = Number(($(`rate-${source.platform}`) as HTMLInputElement).value);
+  if (rate > 0) source.config.ratePerSecond = Math.min(5, Math.max(0.2, rate));
+  const batch = Number(($(`burst-${source.platform}`) as HTMLInputElement).value);
+  if (batch > 0) source.config.batchSize = Math.min(10, Math.floor(batch));
+  source.config.jitterProbability = ($(`jitter-${source.platform}`) as HTMLInputElement).checked ? 0.3 : 0;
+  source.config.outOfOrder = ($(`ooo-${source.platform}`) as HTMLInputElement).checked;
+  source.config.paused = ($(`outage-${source.platform}`) as HTMLInputElement).checked;
+}
+
+/** Nút điều khiển per-source khi Auto Demo đang chạy (16.4/16.5). */
+function handleSourceControl(platform: string, action: string): void {
+  if (!simulator) return;
+  const source = simulator.sources.find((s) => s.platform === platform as SourcePlatform);
+  if (!source) return;
+  if (action === "retry") {
+    const emission = simulator.retry(source.streamId);
+    if (emission) {
+      appendSourceEvent(emission);
+      void postEvents(emission.emitted.event);
+    }
+  } else if (action === "malformed") {
+    const emission = simulator.emitMalformedOnce(source.streamId);
+    if (emission) {
+      appendSourceEvent(emission);
+      void postEvents(emission.emitted.event);
+    }
+  } else if (action === "pause") {
+    const paused = ($(`outage-${platform}`) as HTMLInputElement).checked;
+    simulator.setPaused(source.streamId, paused);
+    addEvent(`Nguồn ${platform} ${paused ? "ngừng (outage)" : "khôi phục"} (${source.streamId}).`, paused ? "warning" : "success");
+  }
 }
 
 function scheduleDiagnostics(delay = 0): void {
@@ -493,7 +601,6 @@ function applyRuntimeConfig(): void {
   }
   const payload: Record<string, unknown> = {
     comment_rate: Number(($("autoDemoRate") as HTMLInputElement).value),
-    initial_ingest_mode: ($("autoDemoMode") as HTMLSelectElement).value,
     max_qa_clusters_per_window: Number(($("qaMaxClusters") as HTMLInputElement).value),
     qa_window_hard_timeout_sec: Number(($("qaTimeout") as HTMLInputElement).value),
     qa_topic_cooldown_sec: Number(($("qaCooldown") as HTMLInputElement).value),
@@ -572,6 +679,11 @@ function bindEvents(): void {
   ($("autoDemoBtn") as HTMLButtonElement).addEventListener("click", startAutoDemo);
   ($("stopAutoBtn") as HTMLButtonElement).addEventListener("click", stopAutoDemo);
   ($("applyRuntimeConfigBtn") as HTMLButtonElement).addEventListener("click", applyRuntimeConfig);
+  for (const platform of ["tiktok", "shopee", "facebook", "youtube"] as const) {
+    ($(`retry-${platform}`) as HTMLButtonElement).addEventListener("click", () => handleSourceControl(platform, "retry"));
+    ($(`malformed-${platform}`) as HTMLButtonElement).addEventListener("click", () => handleSourceControl(platform, "malformed"));
+    ($(`outage-${platform}`) as HTMLInputElement).addEventListener("change", () => handleSourceControl(platform, "pause"));
+  }
   ($("verifyBtn") as HTMLButtonElement).addEventListener("click", () => void verifySandbox());
   ($("apiToken") as HTMLInputElement).addEventListener("change", () => void loadProtected());
   ($("adminToken") as HTMLInputElement).addEventListener("change", () => void loadProtected());
@@ -746,12 +858,6 @@ function boot(): void {
     adminToken: getAdminToken,
   });
   controlSocket = new ControlSocket({
-    backendUrl: backendUrl(),
-    getViewerToken,
-    onLifecycle: (event) => void handleLifecycleEvent(event),
-    onStatus: addEvent,
-  });
-  platformSocket = new PlatformSocket({
     backendUrl: backendUrl(),
     getViewerToken,
     onLifecycle: (event) => void handleLifecycleEvent(event),

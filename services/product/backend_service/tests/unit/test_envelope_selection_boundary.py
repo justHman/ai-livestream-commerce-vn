@@ -21,7 +21,8 @@ import pytest
 from backend.application.agentic_director.fast_path import FactValue, FastPathConfig
 from backend.application.live_runtime.pending_qa import PendingQaStore, QaHysteresisConfig
 from backend.application.live_runtime.qa_resolver import BoundaryQaResolver, QaResolution
-from unit.live_runtime.qa_fixtures import P020_QA_ENVELOPE, build_p020_answer
+from backend.application.live_runtime.transitions import build_qa_lead_in
+from unit.live_runtime.qa_fixtures import P020_QA_ENVELOPE
 
 
 class _SentinelEnvelope:
@@ -74,7 +75,9 @@ class _EligibilityResolver:
 
     async def resolve_qa(self, candidate) -> QaResolution:
         self.resolved.append(candidate.cluster_id)
-        return QaResolution.answer(speech_text=build_p020_answer())
+        return QaResolution.answer(
+            speech_text=build_qa_lead_in("P020", "giá bao nhiêu") + "Giá hiện tại của P020 là 65W.",
+        )
 
     def prefetch_stable_evidence(self, candidate) -> None:
         pass
@@ -161,7 +164,10 @@ async def test_resolver_consumes_sentinel_envelope_without_raw_container_access(
     resolution = await resolver.resolve_qa(_SentinelEnvelope())
 
     assert resolution.kind == "answer"
-    assert resolution.speech_text == "Giá hiện tại của P020 là 65W."
+    # Composed turn (C14 lead-in + grounded answer): the raw question text is
+    # paraphrased through the canonical lead-in, never spoken as a standalone.
+    lead_in = build_qa_lead_in("P020", "giá bao nhiêu")
+    assert resolution.speech_text == lead_in + "Giá hiện tại của P020 là 65W."
 
 
 async def test_llm_seam_receives_envelope_content_not_raw_comments() -> None:
@@ -205,4 +211,7 @@ async def test_selected_envelope_flow_reaches_resolver_exactly_once() -> None:
     resolution = await stub.resolve_qa(winner.envelope)
 
     assert stub.resolved == ["cl-sentinel"]
-    assert resolution.speech_text == build_p020_answer()
+    assert (
+        resolution.speech_text
+        == build_qa_lead_in("P020", "giá bao nhiêu") + "Giá hiện tại của P020 là 65W."
+    )
