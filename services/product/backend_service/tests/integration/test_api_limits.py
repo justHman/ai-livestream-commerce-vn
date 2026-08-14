@@ -177,33 +177,61 @@ def test_admin_mutation_is_rate_limited() -> None:
 
 
 def test_exact_vietnamese_emoji_boundaries_are_accepted() -> None:
-    from backend.api.v1.router import AvatarCreateReq, ChatIn, PlanCreateReq, SayReq
+    from backend.api.v1.router import AvatarCreateReq, PlanCreateReq, SayReq
+    from backend.application.platform_events import EventsIn, PlatformEvent, ViewerRef
 
     say = SayReq(session_id="session", text="🛍" * 2_000)
-    chat = ChatIn(session_id="session", text="ế" * 500, author="👤" * 128)
     plan = PlanCreateReq(persona="ệ" * 1_000)
     avatar = AvatarCreateReq(ref_photo_url="u" * 2_048)
+    event = PlatformEvent(
+        event_id="ế" * 128,
+        platform="t" * 32,
+        source_stream_id="s" * 256,
+        occurred_at=1_700_000_000.0,
+        type="viewer.comment",
+        viewer=ViewerRef(viewer_id="👤" * 128, display_name="ế" * 128),
+        payload={"text": "ế" * 500},
+    )
+    batch = EventsIn(events=[event])
 
     assert (
         len(say.text),
-        len(chat.text),
-        len(chat.author),
+        len(event.event_id),
+        len(event.platform),
+        len(event.source_stream_id),
+        len(event.viewer.viewer_id),
+        len(event.viewer.display_name),
+        len(event.payload.text),
+        len(batch.events),
         len(plan.persona),
         len(avatar.ref_photo_url),
     ) == (
         2_000,
-        500,
         128,
+        32,
+        256,
+        128,
+        128,
+        500,
+        1,
         1_000,
         2_048,
     )
 
 
-def test_author_max_plus_one_is_rejected() -> None:
-    from backend.api.v1.router import ChatIn
+def test_viewer_id_max_plus_one_is_rejected() -> None:
+    from backend.application.platform_events import PlatformEvent, ViewerRef
 
     with pytest.raises(ValidationError):
-        ChatIn(session_id="session", text="text", author="x" * 129)
+        PlatformEvent(
+            event_id="e1",
+            platform="t",
+            source_stream_id="s",
+            occurred_at=1_700_000_000.0,
+            type="viewer.comment",
+            viewer=ViewerRef(viewer_id="x" * 129),
+            payload={"text": "text"},
+        )
 
 
 def test_persona_max_plus_one_is_rejected() -> None:
@@ -227,18 +255,33 @@ def test_say_max_plus_one_is_rejected() -> None:
         SayReq(session_id="session", text="x" * 2_001)
 
 
-def test_comment_batch_over_limit_is_rejected() -> None:
-    from backend.api.v1.router import IngestReq
+def test_event_batch_over_limit_is_rejected() -> None:
+    from backend.application.platform_events import EventsIn
+
+    event = {
+        "event_id": "e",
+        "platform": "t",
+        "source_stream_id": "s",
+        "occurred_at": 1_700_000_000.0,
+        "type": "viewer.comment",
+        "payload": {"text": "x"},
+    }
+    with pytest.raises(ValidationError):
+        EventsIn(events=[event] * 101)
+
+
+def test_event_text_over_limit_is_rejected() -> None:
+    from backend.application.platform_events import PlatformEvent
 
     with pytest.raises(ValidationError):
-        IngestReq(session_id="session", comments=[{"text": "x"}] * 101)
-
-
-def test_comment_text_over_limit_is_rejected() -> None:
-    from backend.api.v1.router import CommentIn
-
-    with pytest.raises(ValidationError):
-        CommentIn(text="x" * 501)
+        PlatformEvent(
+            event_id="e1",
+            platform="t",
+            source_stream_id="s",
+            occurred_at=1_700_000_000.0,
+            type="viewer.comment",
+            payload={"text": "x" * 501},
+        )
 
 
 def test_validation_413_does_not_echo_submitted_marker() -> None:
@@ -246,8 +289,19 @@ def test_validation_413_does_not_echo_submitted_marker() -> None:
     marker = "sensitive-marker-should-not-echo"
     with _client(config) as client:
         response = client.post(
-            f"/api/v1/sessions/{'session'}/chat",
-            json={"text": marker * 20, "author": "viewer"},
+            f"/api/v1/sessions/{'session'}/events",
+            json={
+                "events": [
+                    {
+                        "event_id": "e1",
+                        "platform": "t",
+                        "source_stream_id": "s",
+                        "occurred_at": 1.0,
+                        "type": "viewer.comment",
+                        "payload": {"text": marker * 20},
+                    }
+                ]
+            },
         )
 
     assert (response.status_code, marker not in response.text) == (413, True)

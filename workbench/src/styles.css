@@ -72,8 +72,17 @@ audio { width: 100%; margin-top: 10px; }
 .diagnostic-content { font: .78rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 230px; overflow: auto; user-select: text; }
 #clusterList details { border-top: 1px solid var(--line); padding: 8px 0; }
 #clusterList summary { cursor: pointer; color: var(--text); }
-#msgFeed, #eventLog { max-height: 230px; overflow: auto; background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 9px; }
+#eventLog, #sourceFeed { max-height: 230px; overflow: auto; background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 9px; }
 .feed-row, .event-row { padding: 5px 0; border-bottom: 1px solid #262b43; overflow-wrap: anywhere; }
+.sim-source-tag { display: inline-block; margin-right: 7px; padding: 1px 7px; border-radius: 99px; font-size: .72rem; background: var(--primary-strong); color: white; }
+.sim-source-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+.sim-source-card { border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: #15182a; }
+.sim-source-card h4 { margin: 0 0 8px; font-size: .85rem; }
+.sim-source-card label { font-size: .78rem; margin: 6px 0; display: flex; align-items: center; gap: 6px; }
+.sim-source-card input[type="checkbox"] { width: auto; }
+.sim-source-card .actions { display: flex; gap: 6px; margin-top: 8px; }
+.sim-source-card button { padding: 6px 8px; font-size: .76rem; }
+.sim-request-json { max-height: 260px; overflow: auto; background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 9px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .76rem; }
 .event-row time { color: var(--muted); margin-right: 7px; }
 .wide { grid-column: 1 / -1; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
@@ -112,6 +121,26 @@ audio { width: 100%; margin-top: 10px; }
 .script-item-actions { margin-top: 10px; }
 .script-errors { color: #ffd1c8; white-space: pre-wrap; min-height: 1.3em; margin-top: 6px; }
 .approve-select { border-color: var(--warning); }
+.ds-row { display: grid; grid-template-columns: 1fr 1fr 0.7fr auto; gap: 8px; margin: 7px 0; align-items: center; }
+.ds-block { border: 1px solid var(--line); border-radius: 9px; padding: 10px; margin: 9px 0; background: #15182a; }
+.ds-block-head { display: grid; grid-template-columns: 0.9fr 2fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ds-block textarea { margin-bottom: 8px; }
+.ds-block-foot { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.ds-suggestion { display: flex; justify-content: space-between; gap: 10px; align-items: center; border: 1px dashed var(--line); border-radius: 9px; padding: 10px; margin: 8px 0; background: #15182a; }
+.ds-suggestion-body { min-width: 0; }
+.ds-suggestion-value { display: block; color: var(--text); margin: 3px 0; overflow-wrap: anywhere; }
+.ds-suggestion-meta { color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
+.ds-suggestion .actions { margin-top: 0; flex: 0 0 auto; }
+.ds-render { background: #0d101d; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: .78rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; margin: 8px 0 0; }
+.ds-doc { background: #111425; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: .8rem; }
+.ds-doc h3 { margin: 10px 0 6px; }
+.ds-doc-list { margin: 0 0 8px; padding-left: 18px; color: var(--muted); overflow-wrap: anywhere; }
+.ds-block-doc { border-top: 1px solid var(--line); padding: 6px 0; }
+.ds-block-doc summary { cursor: pointer; color: var(--text); }
+.ds-block-doc pre { background: #0d101d; border-radius: 7px; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .76rem; margin: 6px 0; }
+@media (max-width: 620px) {
+  .ds-row, .ds-block-head, .ds-block-foot { grid-template-columns: 1fr; }
+}
 
 @media (max-width: 1024px) {
   main { grid-template-columns: 1fr; }

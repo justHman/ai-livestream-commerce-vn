@@ -17,7 +17,6 @@ import sys
 
 from generate import (
     CONTROL_SCHEMA,
-    PLATFORM_SCHEMA,
     ROOT,
     SERVICES,
     dump_json,
@@ -33,7 +32,6 @@ _ARTIFACTS = {
     "backend": (
         "services/product/backend_service/contracts/v1/openapi.json",
         "services/product/backend_service/contracts/v1/websocket/control.schema.json",
-        "services/product/backend_service/contracts/v1/websocket/platform.schema.json",
     ),
     "llm": ("services/product/llm_service/contracts/v1/openapi.json",),
     "tts": ("services/product/tts_service/contracts/v1/openapi.json",),
@@ -62,7 +60,6 @@ def regenerate(service_name: str) -> dict[str, bytes]:
     if service["ws_schemas"]:
         base = "services/product/backend_service/contracts/v1/websocket"
         out[f"{base}/control.schema.json"] = dump_json(CONTROL_SCHEMA)
-        out[f"{base}/platform.schema.json"] = dump_json(PLATFORM_SCHEMA)
     return out
 
 

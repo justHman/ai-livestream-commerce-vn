@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from backend.api.v1 import ProductIn, build_run_plan
+from backend.api.v1 import ProductEntityIn, build_run_plan
 from backend.application.director.scoring import coverage_ratio, mark_coverage
 from backend.application.director.embeddings import HashingEmbedder
 from backend.application.director.state import DirectorCursor, StreamState
@@ -13,8 +13,8 @@ from backend.application.schemas.utterance import AvatarAction, Utterance
 
 def test_build_run_plan_deterministic() -> None:
     products = [
-        ProductIn(id="a", name="SP A", features=["cotton", "sale 30%"]),
-        ProductIn(id="b", name="SP B", description="siêu nhẹ", price=50000),
+        ProductEntityIn(id="a", name="SP A", features=["cotton", "sale 30%"]),
+        ProductEntityIn(id="b", name="SP B", description="siêu nhẹ", price=50000),
     ]
     p1 = build_run_plan(products, persona="MC test")
     p2 = build_run_plan(products, persona="MC test")
@@ -59,7 +59,7 @@ def test_cursor_advance_and_covered_points() -> None:
 
 
 def test_run_plan_roundtrip_json() -> None:
-    plan = build_run_plan([ProductIn(id="x", name="X", features=["f1"])], persona=None)
+    plan = build_run_plan([ProductEntityIn(id="x", name="X", features=["f1"])], persona=None)
     raw = plan.model_dump()
     restored = RunPlan.model_validate(raw)
     assert restored.selling[0].product_id == "x"

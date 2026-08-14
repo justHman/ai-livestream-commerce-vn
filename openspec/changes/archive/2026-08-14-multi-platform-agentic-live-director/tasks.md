@@ -1,0 +1,219 @@
+﻿## 1. OpenSpec and contract baseline
+
+- [x] 1.1 Record implementation baseline SHA and validate this change under the repository's `spec-driven` schema. (baseline: dd8672e)
+- [x] 1.2 Add strict delta specs for all new/modified capabilities in this change.
+- [x] 1.3 Add a contract migration test that fails while any removed viewer-ingress route remains mounted.
+- [x] 1.4 Add a static test that fails if `websocket/platform.schema.json` remains generated after migration.
+- [x] 1.5 Add architecture guards preventing a second script-specific chunker or sentence=`TextChunk` coupling.
+
+## 2. Canonical multi-platform event ingress
+
+- [x] 2.1 Define `PlatformEvent`, `ViewerRef`, typed payload models, validation limits, and stable event-id semantics.
+- [x] 2.2 Implement `POST /api/v1/sessions/{session_id}/events` accepting bounded one-or-many events.
+- [x] 2.3 Implement `PlatformEventIngestionService` below HTTP transport.
+- [x] 2.4 Implement bounded/durable session event-id deduplication and idempotent duplicate responses.
+- [x] 2.5 Normalize stable viewer identity fields needed for unique-viewer demand.
+- [x] 2.6 Persist accepted/rejected event metadata through existing repository/store boundaries without blocking semantic processing on optional diagnostics persistence.
+- [x] 2.7 Route non-comment canonical events to traffic/session signals without embedding them.
+- [x] 2.8 Add multi-platform, burst, duplicate, retry, reordered, and malformed ingestion tests.
+- [x] 2.9 Remove `/ws/platform/{session_id}`.
+- [x] 2.10 Remove `/sessions/{session_id}/ingest`.
+- [x] 2.11 Remove `/sessions/{session_id}/chat`.
+- [x] 2.12 Remove the synchronous Director ingest fallback used by the deleted API surface.
+- [x] 2.13 Remove platform WebSocket schema generation/artifact and regenerate backend contracts.
+
+## 3. Safety Gate before embedding
+
+- [x] 3.1 Define versioned `SafetyDecision` and policy reason codes.
+- [x] 3.2 Implement malformed/replay-flood/spam checks.
+- [x] 3.3 Add curated profanity/toxicity/harassment/unsafe-content resources with provenance/license metadata.
+- [x] 3.4 Add deterministic prompt-injection pattern handling as an additional viewer-content safety signal.
+- [x] 3.5 Prove rejected comments never reach embedder calls, cluster membership, demand counts, or Agent context.
+- [x] 3.6 Add sanitized safety counters to diagnostics.
+- [x] 3.7 Add fixture coverage for Vietnamese slang/diacritics and false-positive regression.
+
+## 4. Event-driven fast reducer
+
+- [x] 4.1 Introduce event/condition-driven reducer wakeup instead of unconditional fixed polling.
+- [x] 4.2 Add typed `microbatch_max_wait_ms` config and batch new accepted comments for embedding.
+- [x] 4.3 Preserve one embedding per accepted comment identity/revision.
+- [x] 4.4 Separate rolling-demand horizon config from microbatch timing.
+- [x] 4.5 Add deterministic fast-lane latency benchmark from accepted event to updated ranked demand.
+- [x] 4.6 Prove idle sessions do not wake at the old fixed polling cadence when no work/deadline exists.
+
+## 5. Stable ClusterStore and reconciliation
+
+- [x] 5.1 Define `LiveCluster`, stable `cluster_id`, representative, viewer-demand, product-resolution, novelty, and lifecycle fields.
+- [x] 5.2 Implement bounded per-session `ClusterStore`.
+- [x] 5.3 Implement incremental semantic assignment/update from newly embedded comments.
+- [x] 5.4 Implement member/embedding expiry tied to active rolling horizon.
+- [x] 5.5 Implement reconciliation trigger state: `>=100` unreconciled comments OR `>=60s` since first unreconciled comment.
+- [x] 5.6 Implement bounded active-horizon reconciliation capable of compatible merge/split/centroid/medoid repair.
+- [x] 5.7 Preserve last valid fast-lane state on reconciliation failure and emit typed diagnostics.
+- [x] 5.8 Add stable-ID and arrival-order benchmark fixtures.
+- [x] 5.9 Add long-duration bounded-memory test proving state does not grow linearly with livestream duration.
+- [x] 5.10 Remove parallel unbounded rolling-comment/embedding history no longer required by the new store.
+
+## 6. Soft routing, multi-product resolution, and ranking
+
+- [x] 6.1 Replace hard single-product pre-cluster routing with `RoutingHints`.
+- [x] 6.2 Preserve strong explicit product-id/alias matches as high-confidence candidates.
+- [x] 6.3 Add cluster-level product resolver with confidence threshold and top-candidate margin.
+- [x] 6.4 Represent zero/one/many resolved product IDs.
+- [x] 6.5 Add deterministic comparison-question fixtures that resolve multiple products without accidental merge rejection.
+- [x] 6.6 Add unique-viewer count to cluster state and make it the primary demand popularity signal.
+- [x] 6.7 Add repeated-single-viewer anti-inflation tests.
+- [x] 6.8 Replace pivot share calculations with active unique-viewer demand.
+- [x] 6.9 Select medoid/diversity representatives instead of first-N arrival members.
+- [x] 6.10 Replace coarse `product:intent` cooldown/cache identity with stable semantic topic/cluster fingerprint inputs.
+- [x] 6.11 Make skip/selection lifecycle state persist on stable cluster identities.
+
+## 7. ClusterEnvelope boundary
+
+- [x] 7.1 Define canonical `ClusterEnvelope`.
+- [x] 7.2 Ensure Director/Agent receives only selected envelopes, not the uncontrolled rolling raw comment list.
+- [x] 7.3 Include ranking score breakdown, representative questions, unique viewers, product candidates/resolution, novelty, and current script product.
+- [x] 7.4 Add static/unit checks preventing raw full-window comments from being appended automatically to Agent prompts.
+- [x] 7.5 Update cluster diagnostics and Workbench to show the exact envelope used for each Q&A decision.
+
+## 8. Universal commerce entity context
+
+- [x] 8.1 Define `EntityDocument`, `Fact`, `KnowledgeBlock`, and `Relation`.
+- [x] 8.2 Define Common Fact Registry with canonical commerce/identity keys, aliases, types, and freshness policy.
+- [x] 8.3 Support arbitrary custom facts without Python/TypeScript schema changes.
+- [x] 8.4 Implement revisioned entity repository using the existing persistence stack's document/JSON semantics unless design evidence proves a separate datastore is required.
+- [x] 8.5 Implement entity search by id/name/alias/tags and fact selectors.
+- [x] 8.6 Implement query-relevant context rendering rather than full-document serialization.
+- [x] 8.7 Migrate Director catalog/retrieval/fact answering.
+- [x] 8.8 Migrate session attach/snapshots/run-plan inputs.
+- [x] 8.9 Migrate script-authoring authoritative context/fingerprints without weakening approval freshness.
+- [x] 8.10 Migrate backend API models and generated OpenAPI.
+- [x] 8.11 Migrate Workbench TypeScript types/fixtures/UI.
+- [x] 8.12 Remove rigid product/shop compatibility adapters after all consumers migrate.
+- [x] 8.13 Add cross-domain fixtures for fashion, cosmetics, food, electronics, household goods, and at least one custom vertical.
+
+## 9. Shop/Product Data Studio
+
+- [x] 9.1 Add simple common-field form.
+- [x] 9.2 Add arbitrary user-facing label/value rows mapped through the fact registry.
+- [x] 9.3 Preserve unknown labels as custom facts rather than rejecting them.
+- [x] 9.4 Add raw/pasted knowledge blocks.
+- [x] 9.5 Add optional AI extraction suggestions without making extraction a save dependency.
+- [x] 9.6 Require explicit user acceptance before suggested facts become authoritative.
+- [x] 9.7 Add advanced normalized entity document view.
+- [x] 9.8 Show exact evidence/context rendering preview.
+
+## 10. Evidence Planner and cache
+
+- [x] 10.1 Define typed `EvidenceRequest`, `EvidenceBundle`, and freshness metadata.
+- [x] 10.2 Implement generic `search_entities`, `get_entities`, and batched `get_evidence` application operations.
+- [x] 10.3 Implement `EvidenceCache` keyed by entity/selector/revision/freshness semantics.
+- [x] 10.4 Implement cache-first planner that batches only misses.
+- [x] 10.5 Execute independent evidence misses concurrently where safe.
+- [x] 10.6 Define shorter freshness or explicit invalidation for price/stock/promotion/availability.
+- [x] 10.7 Add cache-hit, partial-hit, stale, revision-change, and volatile-refresh tests.
+- [x] 10.8 Add diagnostics for requested selectors, cache hit/miss counts, freshness state, and batch fan-in without leaking unnecessary private content.
+
+## 11. Structured Agent memory
+
+- [x] 11.1 Implement bounded `ScriptState`.
+- [x] 11.2 Implement bounded structured `SessionMemory`.
+- [x] 11.3 Implement keyed `TopicMemory` for recent Q&A/reference resolution.
+- [x] 11.4 Keep `EvidenceCache` independent from LLM conversation turns.
+- [x] 11.5 Add deterministic eviction/token-budget policy.
+- [x] 11.6 Prove full runtime transcript persistence is not automatically replayed into model context.
+- [x] 11.7 Add follow-up fixture such as â€œváº­y cĂ¡i Ä‘Ă³ cĂ³ sáº¡c nhanh khĂ´ng?â€ resolving through bounded topic/entity memory.
+
+## 12. Bounded Agentic Director
+
+- [x] 12.1 Define typed Agent plan/result contracts above the existing model-agnostic LLM seam.
+- [x] 12.2 Implement deterministic factual fast-path eligibility.
+- [x] 12.3 Support zero-LLM exact templated factual answers where appropriate.
+- [x] 12.4 Support one-generation grounded verbalization for factual answers requiring natural phrasing.
+- [x] 12.5 Implement complex path with maximum one planning generation, one normal evidence round, and one final answer generation.
+- [x] 12.6 Add configurable exceptional ceiling of a second evidence round; reject attempts beyond the budget.
+- [x] 12.7 Validate all model-requested evidence operations against an allowlisted typed schema.
+- [x] 12.8 Forbid arbitrary filesystem/web/job-management/tool execution.
+- [x] 12.9 Ensure backend code, not model output, owns retries, candidate selection, pivot policy, script cursor state, and job creation.
+- [x] 12.10 Add exact call/round/token/latency telemetry.
+- [x] 12.11 Add ambiguous, comparative, multi-product, open-ended, and referential Q&A fixtures.
+- [x] 12.12 Add hallucination regression proving unavailable authoritative evidence is never replaced by invented exact facts.
+
+## 13. Approved-script sentence cursor
+
+- [x] 13.1 Add deterministic sentence-map derivation from exact approved `spoken_text`.
+- [x] 13.2 Prove sentence-span concatenation preserves the exact approved artifact.
+- [x] 13.3 Persist/runtime-store script-set id, approved version, product id, current sentence index, last completed sentence, and exact next sentence.
+- [x] 13.4 Speak each approved sentence through the existing canonical `speak_verbatim` path.
+- [x] 13.5 Advance cursor only after normal sentence-level speech completion.
+- [x] 13.6 Do not infer sentence completion from individual TextChunk boundaries.
+- [x] 13.7 Preserve Change A ownership of chunk policy, deadlines, hints, and finality.
+- [x] 13.8 Preserve Change B approval/version immutability and no post-approval rewrite.
+
+## 14. Speech Arbiter and pending Q&A
+
+- [x] 14.1 Implement explicit arbiter state machine.
+- [x] 14.2 Make active approved script sentence non-preemptible for normal Q&A.
+- [x] 14.3 Continue reducer processing while the sentence is playing.
+- [x] 14.4 Maintain bounded pending-Q&A candidates with score hysteresis/supersession.
+- [x] 14.5 Revalidate winner at safe sentence boundary.
+- [x] 14.6 Defer expensive final Agent generation until boundary revalidation by default.
+- [x] 14.7 Allow stable evidence prefetch for high-confidence pending candidates.
+- [x] 14.8 Revalidate volatile evidence just-in-time before speech.
+- [x] 14.9 Speak Q&A, preserve checkpoint at exact next script sentence, then resume.
+- [x] 14.10 Keep operator/emergency hard interrupt as a distinct control-plane path.
+- [x] 14.11 Add P010-script/P020-Q&A fixture proving P010 current sentence completes, P020 Q&A speaks, and P010 resumes at exact next sentence.
+- [x] 14.12 Add Q&A failure fixture proving script cursor remains valid and runtime resumes per policy.
+
+## 15. Natural lead-in and resume transitions
+
+- [x] 15.1 Add deterministic Vietnamese Q&A lead-in templates based on cluster/topic/product.
+- [x] 15.2 Allow final answer generation to include the lead-in in the same call.
+- [x] 15.3 Add deterministic resume templates using current script product and optional sentence metadata.
+- [x] 15.4 Do not add a dedicated bridge-only LLM call to the normal path.
+- [x] 15.5 Add Vietnamese naturalness fixtures and exact-fact preservation checks.
+
+## 16. Workbench SE Adapter Simulator
+
+- [x] 16.1 Replace direct legacy single/batch viewer injection as the primary integration model.
+- [x] 16.2 Simulate concurrent TikTok/Shopee/Facebook/YouTube sources.
+- [x] 16.3 Add per-platform rate/burst/batch/jitter/out-of-order controls.
+- [x] 16.4 Add retry using identical event IDs.
+- [x] 16.5 Add malformed-event and source-outage/recovery scenarios.
+- [x] 16.6 Display simulated source payload and exact canonical `/events` request.
+- [x] 16.7 Add deterministic replay fixtures suitable as an SE integration reference.
+
+## 17. Workbench runtime inspectors
+
+- [x] 17.1 Add Safety Gate counters/reason inspector.
+- [x] 17.2 Add stable cluster/representative/unique-viewer/product-confidence inspector.
+- [x] 17.3 Show fast-lane and reconciliation trigger state.
+- [x] 17.4 Show exact selected ClusterEnvelope.
+- [x] 17.5 Show SessionMemory/TopicMemory/EvidenceCache metadata.
+- [x] 17.6 Show evidence plan, cache hit/miss, batched fetches, and LLM/tool round count.
+- [x] 17.7 Show bound script version, current sentence, last completed sentence, and next sentence.
+- [x] 17.8 Add speech-arbiter timeline with script/Q&A/resume events.
+
+## 18. Optional agent context-compression benchmark
+
+- [x] 18.1 Define all-text baseline fixture set using the actual target vision-capable model.
+- [x] 18.2 Define hybrid mode that keeps instruction/control/dynamic exact facts as text and renders only eligible read-only descriptive context as images.
+- [x] 18.3 Record effective/model-reported input tokens, TTFT, total latency, and cost.
+- [x] 18.4 Measure exact number/identifier accuracy, Vietnamese diacritics, grounding, tool selection, and hallucination.
+- [x] 18.5 Define non-regression thresholds and a minimum material token/latency benefit.
+- [x] 18.6 Keep hybrid mode disabled if thresholds are not met.
+- [x] 18.7 Ensure image context is never used to carry tool schemas, response schemas, instruction hierarchy, or authoritative volatile facts.
+
+## 19. Contract cleanup and verification
+
+- [x] 19.1 Remove obsolete Workbench/API types and fixtures for deleted viewer-ingress contracts.
+- [x] 19.2 Remove obsolete `initial_ingest_mode` public/runtime configuration.
+- [x] 19.3 Regenerate deterministic backend OpenAPI and surviving control WebSocket schema.
+- [x] 19.4 Update docs/reference integration contract for SE.
+- [x] 19.5 Run focused unit/integration tests for each subsystem.
+- [x] 19.6 Run deterministic cluster/reducer benchmarks.
+- [x] 19.7 Run script Q&A/resume end-to-end tests through the canonical TextChunker/TTS/backend path.
+- [x] 19.8 Run Workbench tests/build.
+- [x] 19.9 Run contract generation diff check.
+- [x] 19.10 Run strict OpenSpec validation.
+- [x] 19.11 Verify repository search finds no mounted deleted ingress route, platform WS contract artifact, rigid entity compatibility adapter, or script-specific chunker path.

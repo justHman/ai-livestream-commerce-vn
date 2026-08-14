@@ -62,12 +62,22 @@ class BootstrapContainer:
     # /script-sets and session binding surfaces return 501.
     script_authoring_service: Any = None
 
+    # -- Canonical multi-platform event ingress (multi-platform change) --
+    # PlatformEventIngestionService or None. When None, the /events endpoint
+    # returns 501 (legacy test containers that do not wire it).
+    event_ingestion: Any = None
+
     # -- Per-session state (owned by this container, not global) --
     hub: ControlHub | None = None
     locks: SessionLockRegistry | None = None
     orchestrators: dict = field(default_factory=dict)
     # Legacy avatars store — moved to container scope
     avatars: Any = None  # AvatarStore or None
+
+    # -- Entity Data Studio (multi-platform-agentic-live-director, cluster 9) --
+    # In-memory repository is the Data Studio default (single-process
+    # dev/tests); the C8 Postgres adapter swaps in later — do not wire it.
+    entity_repo: Any = None  # EntityRepository or None
 
 
 def create_container(
@@ -84,12 +94,15 @@ def create_container(
     locks: SessionLockRegistry | None = None,
     avatars: Any = None,
     script_authoring_service: Any = None,
+    event_ingestion: Any = None,
+    entity_repo: Any = None,
 ) -> BootstrapContainer:
     """Construct a BootstrapContainer with the given resources.
 
     Callers (``build_lifespan`` and tests) pass already-constructed
     resources.  This function is a convenience factory, not a DI engine.
     """
+    from backend.application.entity.repository import InMemoryEntityRepository
     from backend.application.render.locks import SessionLockRegistry
     from backend.api.v1.hub import AvatarStore, ControlHub
 
@@ -106,4 +119,6 @@ def create_container(
         locks=locks or SessionLockRegistry(),
         avatars=avatars or AvatarStore(),
         script_authoring_service=script_authoring_service,
+        event_ingestion=event_ingestion,
+        entity_repo=entity_repo if entity_repo is not None else InMemoryEntityRepository(),
     )

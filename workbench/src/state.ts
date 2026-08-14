@@ -6,9 +6,8 @@
 import type {
   Draft,
   LifecycleEvent,
-  Product,
+  ProductEntity,
   ShopProfile,
-  TestPreferences,
 } from "./api_types";
 
 import { EMPTY_PRODUCT, EMPTY_SHOP } from "./api_types";
@@ -68,7 +67,7 @@ export type Action =
   | { type: "EVENT_ADD"; value: { at: string; message: string; tone: string } }
   | { type: "EVENT_CLEAR" };
 
-export function emptyProduct(id: string, name: string): Product {
+export function emptyProduct(id: string, name: string): ProductEntity {
   return { ...EMPTY_PRODUCT, id, name };
 }
 
@@ -93,7 +92,6 @@ export function initialState(): RootState {
       jsonText: "[]",
       jsonDirty: false,
       errors: [],
-      testPreferences: { initialIngestMode: "batch", commentRate: 0.67 },
     },
     autoDemo: { phase: "idle", active: false },
     diagnostics: null,
@@ -167,15 +165,4 @@ export function reducer(current: RootState, action: Action): RootState {
     default:
       return current;
   }
-}
-
-export function mergeTestPreferences(draft: Draft, testPreferences: Partial<TestPreferences> | undefined): Draft {
-  const base: TestPreferences = draft.testPreferences ?? { initialIngestMode: "batch", commentRate: 0.67 };
-  return {
-    ...draft,
-    testPreferences: {
-      initialIngestMode: testPreferences?.initialIngestMode ?? base.initialIngestMode,
-      commentRate: testPreferences?.commentRate ?? base.commentRate,
-    },
-  };
 }

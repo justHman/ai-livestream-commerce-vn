@@ -35,7 +35,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
-from .catalog import Product
+from backend.application.entity.models import EntityDocument
+
 from .comment_buffer import ChatQueue, IncomingComment
 from .clustering import Comment, cluster_comments
 from .decision import Decision, Director
@@ -210,7 +211,7 @@ class DirectorCoordinator:
     def start(
         self,
         session_id: str,
-        products: list[Product],
+        products: list[EntityDocument],
         cfg: Optional[StreamConfig] = None,
         hooks: Optional[HookPool] = None,
         *,
@@ -296,7 +297,7 @@ class DirectorCoordinator:
         for session_id in list(self._tasks):
             self.stop(session_id)
 
-    def update_catalog(self, session_id: str, products: list[Product]) -> None:
+    def update_catalog(self, session_id: str, products: list[EntityDocument]) -> None:
         """Refresh catalog and invalidate work created before Re-attach."""
         session = self._runtime.get_session(session_id)
         session.director.catalog = {product.id: product for product in products}
@@ -645,6 +646,10 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
+        # Bound the old comment/embedding history at write time (5.10): the
+        # ClusterStore owns the long-term demand — this state only feeds the
+        # Director's selection window.
+        state.prune_history(director_now, director.cfg.selection_window_sec)
         now = ds.now()
         self._advance_timers(session_id, now, state)
         await self._fill_prepared(session_id)

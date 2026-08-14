@@ -109,6 +109,19 @@ CREATE TABLE IF NOT EXISTS tts_call_log (
 CREATE INDEX IF NOT EXISTS idx_tts_call_log_session_id ON tts_call_log (session_id);
 CREATE INDEX IF NOT EXISTS idx_tts_call_log_created_at ON tts_call_log (created_at);
 
+-- Universal commerce entity documents (task 8.4): JSONB document per entity,
+-- revisioned; upserts must not regress revisions (guard lives in SQL).
+CREATE TABLE IF NOT EXISTS entities (
+    entity_id       TEXT PRIMARY KEY,
+    entity_type     TEXT NOT NULL,
+    revision        INT NOT NULL DEFAULT 0,
+    document        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_entities_type ON entities (entity_type);
+
 -- Ops / security audit trail.
 CREATE TABLE IF NOT EXISTS audit_events (
     id              BIGSERIAL PRIMARY KEY,

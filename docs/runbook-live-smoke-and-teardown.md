@@ -115,7 +115,7 @@ $sid = $started.session_id
 
 Invoke-RestMethod "$base/api/v1/sessions/$sid/attach" -Method Post -Headers $viewer -Body '{"products":[]}' | ConvertTo-Json | Tee-Object "$logDir/05-attach.json"
 Invoke-RestMethod "$base/api/v1/sessions/$sid/plan/create" -Method Post -Headers $viewer -Body '{"products":[]}' | ConvertTo-Json | Tee-Object "$logDir/06-plan.json"
-Invoke-RestMethod "$base/api/v1/sessions/$sid/chat" -Method Post -Headers $viewer -Body '{"text":"smoke","author":"tier-s"}' | ConvertTo-Json | Tee-Object "$logDir/07-chat.json"
+Invoke-RestMethod "$base/api/v1/sessions/$sid/events" -Method Post -Headers $viewer -Body '{"events":[{"event_id":"smoke-1","platform":"tier-s","source_stream_id":"smoke","occurred_at":123.0,"type":"viewer.comment","viewer":{"viewer_id":"v1"},"payload":{"text":"smoke"}}]}' | ConvertTo-Json | Tee-Object "$logDir/07-events.json"
 Invoke-RestMethod "$base/api/v1/sessions/$sid/stop" -Method Post -Headers $viewer -Body "{}" | ConvertTo-Json | Tee-Object "$logDir/08-session-stop.json"
 ```
 

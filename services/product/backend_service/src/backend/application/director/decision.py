@@ -27,7 +27,9 @@ from dataclasses import dataclass, field as dataclass_field
 from typing import Optional
 from uuid import uuid4
 
-from .catalog import Product, route_intent_to_field
+from backend.application.entity.models import EntityDocument
+
+from .catalog import answer_field, embedding_text, route_intent_to_field
 from .clustering import Comment, cluster_comments
 from .config import StreamConfig
 from .hooks import HookPool
@@ -88,12 +90,12 @@ class Director:
         state: StreamState,
         cfg: Optional[StreamConfig] = None,
         hook_pool: Optional[HookPool] = None,
-        catalog: Optional[dict[str, Product]] = None,
+        catalog: Optional[dict[str, EntityDocument]] = None,
     ) -> None:
         self.state = state
         self.cfg = cfg or StreamConfig()
         self.hooks = hook_pool or HookPool()
-        # product_id -> structured Product, for O(1) factual answers (TIER 2).
+        # product_id -> EntityDocument, for O(1) factual answers (TIER 2).
         self.catalog = catalog or {}
 
     # ── phase transitions ────────────────────────────────────────────
@@ -413,7 +415,7 @@ class Director:
         cached_script = variants[variant_index % len(variants)] if variants else None
         field_name = self._route_field(top)
         fact = (
-            self.catalog[product_id].answer_field(field_name)
+            answer_field(self.catalog[product_id], field_name)
             if (field_name and product_id in self.catalog)
             else None
         )
@@ -661,7 +663,7 @@ class Director:
 
     def _stage_prompt(self, product, stage: str, instruction: str) -> str:
         catalog_product = self.catalog.get(product.product_id)
-        facts = catalog_product.embedding_text() if catalog_product else product.name
+        facts = embedding_text(catalog_product) if catalog_product else product.name
         return (
             f"Nhiệm vụ stage {stage}: {instruction}. "
             "Chỉ tạo một turn từ 1 đến 3 câu hoàn chỉnh, có nhịp nói tự nhiên. "
@@ -678,12 +680,25 @@ class Director:
                 f"Mở sản phẩm '{product.name}' bằng 1 đến 2 câu hoàn chỉnh, "
                 "tự nhiên như MC livestream. Chỉ tạo tò mò, chưa kể hết mọi thông tin."
             )
+        description = next(
+            (
+                block.content
+                for block in catalog_product.knowledge_blocks
+                if block.kind == "description"
+            ),
+            "",
+        )
+        highlights = [
+            block.content
+            for block in catalog_product.knowledge_blocks
+            if block.kind in ("custom", "usage", "campaign")
+        ]
         return (
             "Nhiệm vụ stage intro: mở sản phẩm bằng 1 đến 2 câu hoàn chỉnh, tự nhiên, "
             "dí dỏm như MC livestream. Chỉ định vị sản phẩm và tạo tò mò; chưa đọc toàn bộ "
             "giá, khuyến mãi, size, vận chuyển và CTA trong một lượt. "
-            f"Tên: {catalog_product.name}. Mô tả: {catalog_product.description}. "
-            f"Điểm nổi bật được phép gợi mở: {', '.join(catalog_product.features)}."
+            f"Tên: {catalog_product.name}. Mô tả: {description}. "
+            f"Điểm nổi bật được phép gợi mở: {', '.join(highlights)}."
         )
 
     def _answer_prompt(self, top: ScoredCluster) -> str:
