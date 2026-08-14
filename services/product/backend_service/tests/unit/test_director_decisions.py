@@ -443,7 +443,6 @@ def test_runtime_has_no_sync_ingest_path(monkeypatch: pytest.MonkeyPatch) -> Non
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
     session_id = "sync-runtime-commit"
     runtime.attach(session_id, [MOCK_ENTITIES[0]])
-    session = runtime.get_session(session_id)
 
     assert not hasattr(runtime, "ingest")
 
