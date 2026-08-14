@@ -82,7 +82,7 @@ describe("black-box transport contract", () => {
       viewer_messages,
       {
         onMessage: (message) => {
-          // Emulate PlatformSocket.send: only well-formed canonical messages.
+          // Only well-formed canonical messages are forwarded to ingress.
           if (typeof message.text === "string" && typeof message.author === "string" && typeof message.ts === "number") {
             sent.push(message);
           }

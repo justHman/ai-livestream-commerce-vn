@@ -141,7 +141,6 @@ describe("api canonical paths", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await api.stopSession("s1");
-    await api.ingest("s1", { comments: [{ text: "x" }], viewer_count: 1, msg_rate: 2 });
     const urls = fetchMock.mock.calls.map(([url]) => url as string);
     expect(urls.some((u) => u.includes("/lite/"))).toBe(false);
     expect(urls).toContain("http://127.0.0.1:8800/api/v1/sessions/s1/stop");

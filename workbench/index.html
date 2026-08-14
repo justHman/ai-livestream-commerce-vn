@@ -90,7 +90,7 @@
         <div id="demoStates" class="demo-states" aria-label="Các trạng thái Auto Demo"></div>
         <div class="grid-2">
           <div class="field"><label for="autoDemoRate">Tốc độ comment/giây</label><input id="autoDemoRate" type="number" min="0.2" max="5" step="0.01" value="0.67"></div>
-          <div class="field"><label for="autoDemoMode">Initial ingest mode</label><select id="autoDemoMode"><option value="batch">Batch 20 comments</option><option value="single">Gửi từng comment</option></select></div>
+          <div class="field"><label for="autoDemoMode">Chế độ gửi</label><select id="autoDemoMode"><option value="batch">Batch 20 comments</option><option value="single">Gửi từng comment</option></select></div>
           <div class="field"><label for="qaMaxClusters">Max Q&A clusters/window</label><input id="qaMaxClusters" type="number" min="1" max="20" value="2"></div>
           <div class="field"><label for="qaTimeout">Q&A timeout (giây)</label><input id="qaTimeout" type="number" min="1" max="600" value="45"></div>
           <div class="field"><label for="qaCooldown">Topic cooldown (giây)</label><input id="qaCooldown" type="number" min="0" max="3600" value="120"></div>
@@ -118,6 +118,14 @@
           <article class="diagnostic-card"><h3>Upcoming work — đầy đủ</h3><div id="upcomingWork" class="diagnostic-content">Không có turn đang chờ.</div></article>
           <article class="diagnostic-card wide"><h3>Completed history — đầy đủ</h3><div id="completedHistory" class="diagnostic-content">Chưa có speech hoàn tất.</div></article>
           <article class="diagnostic-card wide"><h3>Active clusters</h3><div id="clusterList"></div></article>
+          <article class="diagnostic-card"><h3>Safety Gate</h3><div id="safetyInspector" class="diagnostic-content">Safety Gate: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Clusters ổn định</h3><div id="clusterInspector" class="diagnostic-content">Clusters ổn định: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Fast-lane + reconciliation</h3><div id="reconcileInspector" class="diagnostic-content">Fast-lane + reconciliation: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>ClusterEnvelope đã chọn</h3><div id="envelopeInspector" class="diagnostic-content">ClusterEnvelope đã chọn: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Memory layers</h3><div id="memoryInspector" class="diagnostic-content">Memory layers: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Evidence + Agent rounds</h3><div id="evidenceInspector" class="diagnostic-content">Evidence + Agent rounds: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Script cursor</h3><div id="scriptCursorInspector" class="diagnostic-content">Script cursor: chưa có dữ liệu.</div></article>
+          <article class="diagnostic-card"><h3>Speech-arbiter timeline</h3><div id="arbiterTimelineInspector" class="diagnostic-content">Speech-arbiter timeline: chưa có dữ liệu.</div></article>
         </div>
       </section>
 

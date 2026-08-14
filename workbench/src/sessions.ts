@@ -33,14 +33,6 @@ export async function attach(
   return deps.api.attach(sessionId, req);
 }
 
-export async function ingest(
-  deps: SessionDeps,
-  sessionId: string,
-  comments: Array<{ text: string; t?: number }>,
-) {
-  return deps.api.ingest(sessionId, { comments, viewer_count: 1010, msg_rate: 2.0 });
-}
-
 export async function applyRuntimeConfig(
   deps: SessionDeps,
   sessionId: string,

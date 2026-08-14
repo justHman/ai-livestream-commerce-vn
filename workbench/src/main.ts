@@ -9,11 +9,12 @@ import { createApi } from "./api";
 import { loadFixtures } from "./fixtures";
 import { DEV_TOKENS } from "./dev_tokens";
 import { connectLiveKit, disconnectRoom } from "./livekit";
-import { renderDiagnostics, type RenderSink } from "./diagnostics";
+import { renderDiagnostics, renderRuntimeInspectors, type RenderSink } from "./diagnostics";
+import type { RuntimeInspectorsSnapshot } from "./api_types";
 import { reducer, initialState, type Action, type RootState } from "./state";
-import { ControlSocket, PlatformSocket } from "./websocket";
+import { ControlSocket } from "./websocket";
 import { ViewerSimulator, validateSimulatorInput } from "./simulator";
-import type { LifecycleEvent, ProductEntity } from "./api_types";
+import type { ArbiterStateName, LifecycleEvent, ProductEntity } from "./api_types";
 import { validateProductCatalog, validateShopLimits, productJson } from "./validation";
 import { clearDiagnostics } from "./diagnostics";
 import { mountAuthoring } from "./authoringView";
@@ -36,7 +37,6 @@ const SHOP_FIELD_MAP: Record<string, ShopKey> = {
 let state: RootState = initialState();
 let store: ReturnType<typeof createApi>;
 let controlSocket: ControlSocket;
-let platformSocket: PlatformSocket;
 let livekitRoom: import("livekit-client").Room | null = null;
 let simulator: ViewerSimulator | null = null;
 let diagnosticTimer: ReturnType<typeof setTimeout> | null = null;
@@ -106,6 +106,8 @@ function render(_action: Action): void {
   if (state.diagnostics) {
     const data = state.diagnostics as Parameters<typeof renderDiagnostics>[0];
     renderDiagnostics(data, sink);
+    const inspectors = (data as unknown as { runtime_inspectors?: RuntimeInspectorsSnapshot }).runtime_inspectors;
+    renderRuntimeInspectors(inspectors ?? null, sink);
   } else {
     clearDiagnostics(sink);
   }
@@ -235,8 +237,8 @@ function renderEvents(): void {
 
 function persistLocalDraft(): void {
   try {
-    const { shop, products, selectedProductIds, productOrder, testPreferences } = state.draft;
-    localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify({ version: LOCAL_DRAFT_VERSION, draft: { shop, products, selectedProductIds, productOrder, testPreferences } }));
+    const { shop, products, selectedProductIds, productOrder } = state.draft;
+    localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify({ version: LOCAL_DRAFT_VERSION, draft: { shop, products, selectedProductIds, productOrder } }));
   } catch (error) {
     addEvent(`Không lưu draft local: ${safeMessage(error)}`, "warning");
   }
@@ -294,7 +296,6 @@ async function stopSession(): Promise<void> {
     await store.stopSession(state.session.id);
     simulator?.stop();
     controlSocket.disconnect();
-    platformSocket.disconnect();
     await disconnectRoom(livekitRoom);
     livekitRoom = null;
     ($("avatarVideo") as HTMLVideoElement).srcObject = null;
@@ -322,6 +323,17 @@ async function handleLifecycleEvent(event: LifecycleEvent): Promise<void> {
       completed_speech_history: event.completed_speech_history ?? [],
       speech_queue: { current_product: event.product_id ? { product_id: event.product_id, name: "" } : null },
     };
+    // C15 runtime inspectors: surfaced from lifecycle event fields where the
+    // backend channel exists today; the remaining sections are omitted and
+    // render placeholders until their backend channels carry the fields.
+    const inspectors: RuntimeInspectorsSnapshot = {};
+    if (event.selected_cluster?.length) {
+      inspectors.envelope = { cluster_id: event.selected_cluster[0] ?? "" };
+    }
+    if (event.state) {
+      // Lifecycle state names overlap the arbiter states; surface verbatim.
+      inspectors.arbiter = { state: event.state as ArbiterStateName };
+    }
     dispatch({
       type: "DIAGNOSTICS_SET",
       value: {
@@ -332,6 +344,7 @@ async function handleLifecycleEvent(event: LifecycleEvent): Promise<void> {
         embedder_name: "unknown",
         embedder_status: "unknown",
         queue_stats: queue,
+        runtime_inspectors: inspectors,
       },
     });
     renderDiagnostics(state.diagnostics as Parameters<typeof renderDiagnostics>[0], sink);
@@ -434,19 +447,16 @@ function startAutoDemo(): void {
   }
   dispatch({ type: "AUTO_PHASE", phase: "advancing", active: true });
   const rate = Math.min(5, Math.max(0.2, Number(($("autoDemoRate") as HTMLInputElement).value) || 0.67));
-  const batchSize = ($("autoDemoMode") as HTMLSelectElement).value === "batch" ? AUTO_DEMO_COMMENT_COUNT : 1;
-  platformSocket.connect(state.session.id);
   simulator = new ViewerSimulator(
     messages,
     {
       onMessage: (message, batchIndex) => {
         appendComment(message.author, message.text);
-        const sent = platformSocket.send(message);
-        if (!sent) addEvent(`Simulator message ${batchIndex} dropped (WS not open).`, "warning");
+        void postSimulatedEvent(message, batchIndex);
       },
       onError: (error) => addEvent(`Simulator error: ${safeMessage(error)}`, "danger"),
     },
-    { seed: 42, ratePerSecond: rate, batchSize },
+    { seed: 42, ratePerSecond: rate, batchSize: 1 },
   );
   simulator.start();
   addEvent(`Auto Demo chạy liên tục ở tốc độ ${rate} comment/s.`, "success");
@@ -460,6 +470,34 @@ function stopAutoDemo(): void {
   if (state.session.id) {
     store.interrupt(state.session.id).catch(() => addEvent("Interrupt Auto Demo thất bại.", "danger"));
   }
+}
+
+/** Canonical viewer ingress for simulated messages: POST the normalized
+ * platform event to /api/v1/sessions/{id}/events (Decision 22: the platform
+ * channel and legacy ingress routes were removed). */
+function postSimulatedEvent(message: { text: string; author: string; ts: number }, batchIndex: number): void {
+  if (!state.session.id || !state.session.attached) return;
+  const event = {
+    event_id: `sim-${batchIndex}-${Math.floor(message.ts)}`,
+    platform: "workbench",
+    source_stream_id: "simulator",
+    occurred_at: message.ts,
+    type: "viewer.comment",
+    viewer: { viewer_id: `sim_${message.author}`, display_name: message.author },
+    payload: { text: message.text },
+  };
+  fetch(`/api/v1/sessions/${encodeURIComponent(state.session.id)}/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ events: [event] }),
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        addEvent(`Simulator event ${batchIndex} rejected (HTTP ${response.status}): ${(body as Record<string, unknown>)?.detail ?? "unknown"}`, "warning");
+      }
+    })
+    .catch(() => addEvent(`Simulator event ${batchIndex} failed to send.`, "warning"));
 }
 
 function appendComment(author: string, text: string): void {
@@ -493,7 +531,6 @@ function applyRuntimeConfig(): void {
   }
   const payload: Record<string, unknown> = {
     comment_rate: Number(($("autoDemoRate") as HTMLInputElement).value),
-    initial_ingest_mode: ($("autoDemoMode") as HTMLSelectElement).value,
     max_qa_clusters_per_window: Number(($("qaMaxClusters") as HTMLInputElement).value),
     qa_window_hard_timeout_sec: Number(($("qaTimeout") as HTMLInputElement).value),
     qa_topic_cooldown_sec: Number(($("qaCooldown") as HTMLInputElement).value),
@@ -746,12 +783,6 @@ function boot(): void {
     adminToken: getAdminToken,
   });
   controlSocket = new ControlSocket({
-    backendUrl: backendUrl(),
-    getViewerToken,
-    onLifecycle: (event) => void handleLifecycleEvent(event),
-    onStatus: addEvent,
-  });
-  platformSocket = new PlatformSocket({
     backendUrl: backendUrl(),
     getViewerToken,
     onLifecycle: (event) => void handleLifecycleEvent(event),
