@@ -175,13 +175,13 @@
 
 ## 16. Workbench SE Adapter Simulator
 
-- [ ] 16.1 Replace direct legacy single/batch viewer injection as the primary integration model.
-- [ ] 16.2 Simulate concurrent TikTok/Shopee/Facebook/YouTube sources.
-- [ ] 16.3 Add per-platform rate/burst/batch/jitter/out-of-order controls.
-- [ ] 16.4 Add retry using identical event IDs.
-- [ ] 16.5 Add malformed-event and source-outage/recovery scenarios.
-- [ ] 16.6 Display simulated source payload and exact canonical `/events` request.
-- [ ] 16.7 Add deterministic replay fixtures suitable as an SE integration reference.
+- [x] 16.1 Replace direct legacy single/batch viewer injection as the primary integration model.
+- [x] 16.2 Simulate concurrent TikTok/Shopee/Facebook/YouTube sources.
+- [x] 16.3 Add per-platform rate/burst/batch/jitter/out-of-order controls.
+- [x] 16.4 Add retry using identical event IDs.
+- [x] 16.5 Add malformed-event and source-outage/recovery scenarios.
+- [x] 16.6 Display simulated source payload and exact canonical `/events` request.
+- [x] 16.7 Add deterministic replay fixtures suitable as an SE integration reference.
 
 ## 17. Workbench runtime inspectors
 
