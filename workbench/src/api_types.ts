@@ -195,6 +195,20 @@ export interface ClusterInfo {
   product_id?: string;
   actionable: boolean;
   members?: string[];
+  /** Content-safe snapshot of the exact Q&A envelope used for a decision
+   * (task 7.5); optional — the backend channel that populates it lands with
+   * the C15 wiring. */
+  envelope?: ClusterEnvelope;
+}
+
+export interface ClusterEnvelope {
+  cluster_id: string;
+  intent: string;
+  ranking_score: number;
+  message_count: number;
+  unique_viewer_count: number;
+  resolved_product_ids: string[];
+  source_platform_counts: Array<[string, number]>;
 }
 
 export interface QueueStats {

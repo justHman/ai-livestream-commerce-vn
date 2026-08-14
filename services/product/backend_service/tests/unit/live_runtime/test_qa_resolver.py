@@ -187,3 +187,33 @@ async def test_prefetch_stable_is_noop_hook() -> None:
     resolver.prefetch_stable_evidence(FastEnvelope())
 
     assert True
+
+
+async def test_resolve_records_exact_envelope_decision() -> None:
+    resolver = _resolver(fact=FactValue(value="1.2 triệu", fresh=True))
+
+    await resolver.resolve_qa(FastEnvelope())
+
+    decisions = resolver.latest_envelope_decisions()
+    assert len(decisions) == 1
+    assert decisions[0]["cluster_id"] == "cl-fast"
+
+
+async def test_envelope_decision_never_exposes_viewer_text() -> None:
+    resolver = _resolver(fact=FactValue(value="1.2 triệu", fresh=True))
+
+    await resolver.resolve_qa(FastEnvelope())
+
+    decision = resolver.latest_envelope_decisions()[0]
+    assert "text" not in decision
+    assert "question" not in decision
+
+
+async def test_envelope_decisions_bounded_at_last_five() -> None:
+    resolver = _resolver(fact=FactValue(value="1.2 triệu", fresh=True))
+    for _ in range(7):
+        await resolver.resolve_qa(FastEnvelope())
+
+    decisions = resolver.latest_envelope_decisions()
+
+    assert len(decisions) == 5

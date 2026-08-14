@@ -1,6 +1,6 @@
 /** Diagnostics rendering — Director + queue state into DOM. */
 
-import type { DebugClustersResponse, QueueStats } from "./api_types";
+import type { ClusterEnvelope, DebugClustersResponse, QueueStats } from "./api_types";
 import type { ClusterInfo } from "./api_types";
 
 export interface RenderSink {
@@ -111,6 +111,19 @@ export function renderDiagnostics(data: DebugClustersResponse, sink: RenderSink)
 
 export function diagnosticsIds(): readonly string[] {
   return DIAGNOSTIC_IDS;
+}
+
+export function renderEnvelopeSummary(envelope: ClusterEnvelope): string {
+  const platforms = envelope.source_platform_counts
+    .map(([platform, count]) => `${escapeHtml(platform)}:${count}`)
+    .join(" ");
+  return (
+    `<div class="envelope-summary">cluster=${escapeHtml(envelope.cluster_id)} · ` +
+    `intent=${escapeHtml(envelope.intent)} · score=${envelope.ranking_score} · ` +
+    `msgs=${envelope.message_count} · viewers=${envelope.unique_viewer_count} · ` +
+    `products=${envelope.resolved_product_ids.map(escapeHtml).join(",")} · ` +
+    `platforms=${platforms}</div>`
+  );
 }
 
 export { renderClusters };
