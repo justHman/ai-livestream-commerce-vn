@@ -25,6 +25,7 @@ from .demand import (
     score_clusters,
     should_pivot,
 )
+from .envelope import ClusterEnvelope, build_envelope
 from .fast_reducer import AcceptedComment, FastReducer, FastReducerConfig
 
 __all__ = [
@@ -45,4 +46,6 @@ __all__ = [
     "product_demand",
     "score_clusters",
     "should_pivot",
+    "ClusterEnvelope",
+    "build_envelope",
 ]

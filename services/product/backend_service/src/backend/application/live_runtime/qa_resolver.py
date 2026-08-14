@@ -18,6 +18,7 @@ arbiter consumes; tests inject recording fakes.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -98,6 +99,24 @@ def _canonical_lead_in(candidate: Any) -> str:
     return build_qa_lead_in(product, topic_phrase)
 
 
+def _envelope_snapshot(candidate: Any) -> dict[str, object]:
+    """Content-safe snapshot of the winning Q&A envelope (task 7.5).
+
+    Telemetry-safe by construction: counts and ids only — never raw viewer
+    text or representative question texts. Mirrors the existing content-safe
+    ``as_dict`` pattern in ``pending_qa.py``.
+    """
+    return {
+        "cluster_id": candidate.cluster_id,
+        "intent": candidate.intent,
+        "ranking_score": float(getattr(candidate, "ranking_score", 0.0)),
+        "message_count": candidate.message_count,
+        "unique_viewer_count": candidate.unique_viewer_count,
+        "resolved_product_ids": list(candidate.resolved_product_ids),
+        "source_platform_counts": list(candidate.source_platform_counts),
+    }
+
+
 class BoundaryQaResolver:
     """Live default resolver: fast path -> complex path at the boundary."""
 
@@ -129,6 +148,11 @@ class BoundaryQaResolver:
         self._make_complex_plan = make_complex_plan
         self._max_speech_length = max_speech_length
         self._lead_in_builder = lead_in_builder
+        self._envelope_decisions: deque[dict[str, object]] = deque(maxlen=5)
+
+    def latest_envelope_decisions(self) -> list[dict[str, object]]:
+        """Bounded content-safe record of the last Q&A envelope decisions."""
+        return list(self._envelope_decisions)
 
     def prefetch_stable_evidence(self, candidate: Any) -> None:
         """Hook the arbiter MAY call while the sentence plays (default no-op)."""
@@ -153,6 +177,9 @@ class BoundaryQaResolver:
 
     async def resolve_qa(self, candidate: Any) -> QaResolution:
         """Resolve one candidate at the boundary; never called mid-sentence."""
+        # Diagnostics snapshot (task 7.5): record-only, never affects the
+        # resolution path — C15 wires the surface that consumes this.
+        self._envelope_decisions.append(_envelope_snapshot(candidate))
         if not self.revalidate_volatile(candidate):
             return QaResolution.unavailable(reason="volatile_evidence_unavailable")
 
