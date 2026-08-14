@@ -206,14 +206,14 @@
 
 ## 19. Contract cleanup and verification
 
-- [ ] 19.1 Remove obsolete Workbench/API types and fixtures for deleted viewer-ingress contracts.
-- [ ] 19.2 Remove obsolete `initial_ingest_mode` public/runtime configuration.
-- [ ] 19.3 Regenerate deterministic backend OpenAPI and surviving control WebSocket schema.
-- [ ] 19.4 Update docs/reference integration contract for SE.
-- [ ] 19.5 Run focused unit/integration tests for each subsystem.
-- [ ] 19.6 Run deterministic cluster/reducer benchmarks.
-- [ ] 19.7 Run script Q&A/resume end-to-end tests through the canonical TextChunker/TTS/backend path.
-- [ ] 19.8 Run Workbench tests/build.
-- [ ] 19.9 Run contract generation diff check.
-- [ ] 19.10 Run strict OpenSpec validation.
-- [ ] 19.11 Verify repository search finds no mounted deleted ingress route, platform WS contract artifact, rigid entity compatibility adapter, or script-specific chunker path.
+- [x] 19.1 Remove obsolete Workbench/API types and fixtures for deleted viewer-ingress contracts.
+- [x] 19.2 Remove obsolete `initial_ingest_mode` public/runtime configuration.
+- [x] 19.3 Regenerate deterministic backend OpenAPI and surviving control WebSocket schema.
+- [x] 19.4 Update docs/reference integration contract for SE.
+- [x] 19.5 Run focused unit/integration tests for each subsystem.
+- [x] 19.6 Run deterministic cluster/reducer benchmarks.
+- [x] 19.7 Run script Q&A/resume end-to-end tests through the canonical TextChunker/TTS/backend path.
+- [x] 19.8 Run Workbench tests/build.
+- [x] 19.9 Run contract generation diff check.
+- [x] 19.10 Run strict OpenSpec validation.
+- [x] 19.11 Verify repository search finds no mounted deleted ingress route, platform WS contract artifact, rigid entity compatibility adapter, or script-specific chunker path.
