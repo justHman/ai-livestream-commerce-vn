@@ -1,4 +1,10 @@
-## ADDED Requirements
+# agentic-live-director Specification
+
+## Purpose
+
+Bounded evidence-aware viewer Q&A Agent: operates after deterministic traffic reduction (consuming only selected compact ClusterEnvelopes), with explicit bounded structured memory (ScriptState, SessionMemory, TopicMemory, EvidenceCache) independent of LLM transcript retention, cache-aware batch evidence retrieval with freshness semantics for volatile facts, a deterministic factual fast path (zero-LLM templated answers or one verbalization generation), a bounded complex path under code-owned budgets (max one planning generation, one normal evidence round, one final answer generation, exceptional second round only), allowlisted typed evidence operations, and observable per-Q&A execution telemetry. Authoritative evidence always wins over model claims.
+
+## Requirements
 
 ### Requirement: Agent operates after deterministic traffic reduction
 The live Agentic Director SHALL consume selected compact cluster envelopes rather than the raw rolling viewer transcript.
@@ -21,8 +27,8 @@ The runtime SHALL retain enough keyed recent topic/entity context to resolve sho
 
 #### Scenario: Pronoun follow-up
 - **GIVEN** the prior answered topic concerned product P020
-- **WHEN** a viewer cluster asks “vậy cái đó có sạc nhanh không?”
-- **THEN** bounded topic/entity memory MAY resolve “cái đó” to P020
+- **WHEN** a viewer cluster asks "vậy cái đó có sạc nhanh không?"
+- **THEN** bounded topic/entity memory MAY resolve "cái đó" to P020
 - **AND** the runtime SHALL not require the entire livestream transcript.
 
 ### Requirement: Evidence retrieval is cache-aware and batch-native

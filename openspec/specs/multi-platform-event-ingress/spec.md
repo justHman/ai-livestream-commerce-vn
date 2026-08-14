@@ -1,4 +1,10 @@
-## ADDED Requirements
+# multi-platform-event-ingress Specification
+
+## Purpose
+
+One canonical SE→AI viewer/platform event contract for all live platforms (TikTok, Shopee, Facebook, YouTube, future). A single bounded `POST /api/v1/sessions/{session_id}/events` accepts one-or-many normalized events with stable `event_id` idempotency, platform provenance without platform business logic, normalized viewer identity, and a deterministic Safety Gate before any embedding. Removed viewer-ingress contracts are never mounted; Workbench simulates the SE boundary with canonical event requests.
+
+## Requirements
 
 ### Requirement: One canonical multi-platform event endpoint
 The AI backend SHALL expose one canonical `POST /api/v1/sessions/{session_id}/events` viewer/platform ingestion contract that accepts one or many normalized events in the same request.

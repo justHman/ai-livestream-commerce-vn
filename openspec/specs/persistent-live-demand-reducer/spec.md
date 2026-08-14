@@ -1,4 +1,10 @@
-## ADDED Requirements
+# persistent-live-demand-reducer Specification
+
+## Purpose
+
+Event-driven persistent live-demand reduction for a commerce livestream: an event-driven fast lane (no unconditional fixed polling), an independent rolling demand horizon, count/age reconciliation triggers, a bounded stable per-session ClusterStore with stable cluster identities, soft product routing with multi-product resolution, unique-viewer-aware ranking, semantic representatives, and a compact ClusterEnvelope as the only viewer-demand boundary into the Agentic Director.
+
+## Requirements
 
 ### Requirement: Event-driven fast reducer
 Accepted semantic comments SHALL wake an event-driven reducer; the runtime SHALL NOT require unconditional fixed-interval polling to discover work.
@@ -62,7 +68,7 @@ The runtime SHALL prune active comment/embedding/member state that is no longer 
 Pre-cluster routing SHALL produce candidate evidence and SHALL not permanently force every comment into one product partition when confidence is weak.
 
 #### Scenario: Ambiguous reference
-- **WHEN** a viewer says “cái này pin tốt không?” and no explicit product is identifiable
+- **WHEN** a viewer says "cái này pin tốt không?" and no explicit product is identifiable
 - **THEN** the comment MAY remain product-ambiguous
 - **AND** cluster-level resolution or Agent evidence reasoning MAY resolve it later.
 

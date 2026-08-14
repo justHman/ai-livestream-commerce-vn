@@ -1,4 +1,10 @@
-## ADDED Requirements
+# script-qna-speech-arbitration Specification
+
+## Purpose
+
+Sentence-level approved-script runtime + reactive Q&A speech arbitration above the canonical Change A TextChunker: immutable approved `spoken_text` with a deterministic derived sentence map, a script cursor that advances only on normal sentence completion, a Speech Arbiter where an active approved sentence is non-preemptible for normal Q&A (Q&A may take the next boundary), pending-Q&A revalidation at the safe boundary, exact next-sentence resume after Q&A, natural deterministic Vietnamese lead-in/resume transitions without a default bridge-only LLM call, stable-evidence prefetch with just-in-time volatile revalidation, and a distinct operator hard-interrupt control plane.
+
+## Requirements
 
 ### Requirement: Approved spoken text remains immutable
 Runtime Q&A integration SHALL consume exact human-approved `spoken_text` without post-approval rewriting.
@@ -62,7 +68,7 @@ Reactive Q&A SHALL enter naturally with a concise representative paraphrase rath
 
 #### Scenario: Many viewers ask about P020 fast charging
 - **WHEN** that cluster wins
-- **THEN** the spoken turn MAY begin with a natural phrase equivalent to “Em thấy nhiều anh chị đang hỏi P020 có hỗ trợ sạc nhanh không…”
+- **THEN** the spoken turn MAY begin with a natural phrase equivalent to "Em thấy nhiều anh chị đang hỏi P020 có hỗ trợ sạc nhanh không…"
 - **AND** it SHALL not enumerate every raw viewer message.
 
 ### Requirement: Natural script resume bridge
@@ -70,7 +76,7 @@ After Q&A, runtime SHALL emit a concise natural bridge back to the current scrip
 
 #### Scenario: Return from P020 to P010
 - **WHEN** P020 Q&A finishes and P010 sentence 8 is next
-- **THEN** runtime MAY speak a deterministic bridge equivalent to “Rồi, em tiếp tục với P010 nhé…”
+- **THEN** runtime MAY speak a deterministic bridge equivalent to "Rồi, em tiếp tục với P010 nhé…"
 - **AND** a separate bridge-only LLM call SHALL not be required by default.
 
 ### Requirement: Stable evidence may prefetch; volatile evidence is just-in-time

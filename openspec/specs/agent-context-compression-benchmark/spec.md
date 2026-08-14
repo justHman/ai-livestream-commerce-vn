@@ -1,4 +1,10 @@
-## ADDED Requirements
+# agent-context-compression-benchmark Specification
+
+## Purpose
+
+Optional benchmark-only hybrid text+image context compression for vision-capable models: an all-text baseline fixture set using the actual target vision-capable model, a hybrid mode that keeps instruction/control/dynamic exact facts as text and renders only eligible read-only descriptive context as images, measurement of effective/model-reported input tokens, TTFT, total latency, and cost, correctness measurement (exact number/identifier accuracy, Vietnamese diacritics, grounding, tool selection, hallucination), non-regression thresholds with a minimum material token/latency benefit, hybrid mode disabled unless thresholds pass, and image context never carrying tool schemas, response schemas, instruction hierarchy, or authoritative volatile facts.
+
+## Requirements
 
 ### Requirement: Text remains the control plane
 System/developer instructions, exact identifiers, dynamic authoritative facts, tool schemas, response schemas, and the current execution task SHALL remain textual context.

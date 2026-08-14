@@ -1,4 +1,10 @@
-## ADDED Requirements
+# universal-commerce-entity-context Specification
+
+## Purpose
+
+Cross-domain shop/product/entity knowledge without a new rigid schema per vertical: a small common entity document envelope with revisioned flexible facts, aliases/tags, knowledge blocks, and relations; a Common Fact Registry mapping user labels to canonical semantic keys while permitting arbitrary `custom.*` facts; volatile exact facts remain structured with freshness metadata; query-relevant context rendering; simple non-technical editing with human-controlled optional AI extraction; existing persistence preferred until disproven; and breaking migration from the rigid shop/product schemas without a permanent compatibility adapter.
+
+## Requirements
 
 ### Requirement: Universal entity document
 Shop, product, campaign, and future commerce entities SHALL use a small common document envelope with revisioned flexible facts, knowledge blocks, aliases/tags, and relations.
@@ -10,7 +16,7 @@ Shop, product, campaign, and future commerce entities SHALL use a small common d
 ### Requirement: Common Fact Registry
 The system SHALL define canonical semantic keys, aliases, types, and freshness policy for code-relevant common facts while permitting arbitrary custom facts.
 
-#### Scenario: User types “Giá hiện tại”
+#### Scenario: User types "Giá hiện tại"
 - **WHEN** the UI/backend recognizes that label
 - **THEN** it SHALL map to the canonical current-price semantic key.
 
@@ -38,7 +44,7 @@ Long descriptions, shop story, usage guidance, campaign background, and other ir
 Workbench SHALL allow normal users to enter common fields, arbitrary label/value rows, and pasted raw knowledge without requiring canonical keys or JSON expertise.
 
 #### Scenario: Unknown user label
-- **WHEN** a non-technical operator enters “Dùng cho da dầu”
+- **WHEN** a non-technical operator enters "Dùng cho da dầu"
 - **THEN** the system SHALL save the information as mapped/common or custom data
 - **AND** the operator SHALL not need to understand internal namespaces.
 
