@@ -128,6 +128,51 @@ describe("api canonical paths", () => {
     expect(init.method).toBe("PATCH");
   });
 
+  it("postEvents posts the exact canonical body to /sessions/{id}/events", async () => {
+    const fetchMock = mockFetch(200, {
+      events: [{ event_id: "ev-1", status: "accepted", comment_id: "c-1" }],
+      accepted: 1,
+      duplicate: 0,
+      rejected: 0,
+    });
+    const api = createApi({
+      backendUrl: "http://127.0.0.1:8800",
+      viewerToken: () => "v",
+      adminToken: () => "a",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await api.postEvents("s1", {
+      events: [
+        {
+          event_id: "ev-1",
+          platform: "tiktok",
+          source_stream_id: "tiktok-live-1",
+          occurred_at: 1_700_000_000,
+          type: "viewer.comment",
+          viewer: { viewer_id: "v-101", display_name: "Minh" },
+          payload: { text: "Kem chống nắng giá bao nhiêu shop?" },
+        },
+      ],
+    });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8800/api/v1/sessions/s1/events");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      events: [
+        {
+          event_id: "ev-1",
+          platform: "tiktok",
+          source_stream_id: "tiktok-live-1",
+          occurred_at: 1_700_000_000,
+          type: "viewer.comment",
+          viewer: { viewer_id: "v-101", display_name: "Minh" },
+          payload: { text: "Kem chống nắng giá bao nhiêu shop?" },
+        },
+      ],
+    });
+    expect(result).toEqual({ events: [{ event_id: "ev-1", status: "accepted", comment_id: "c-1" }], accepted: 1, duplicate: 0, rejected: 0 });
+  });
+
   it("never uses /lite/* aliases", async () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(
@@ -141,7 +186,6 @@ describe("api canonical paths", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await api.stopSession("s1");
-    await api.ingest("s1", { comments: [{ text: "x" }], viewer_count: 1, msg_rate: 2 });
     const urls = fetchMock.mock.calls.map(([url]) => url as string);
     expect(urls.some((u) => u.includes("/lite/"))).toBe(false);
     expect(urls).toContain("http://127.0.0.1:8800/api/v1/sessions/s1/stop");

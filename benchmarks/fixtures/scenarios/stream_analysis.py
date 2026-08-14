@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.application.director.catalog import embedding_text
 from backend.application.director.clustering import cluster_comments
 from backend.application.director.decision import Director
 from backend.application.director.embeddings import HashingEmbedder
@@ -30,7 +31,7 @@ from ..corpus import (
 def scenario() -> dict[str, Any]:
     embedder = HashingEmbedder()
     products = corpus_products()
-    for product, vector in zip(products, embedder.encode([p.embedding_text() for p in products])):
+    for product, vector in zip(products, embedder.encode([embedding_text(p) for p in products])):
         product.embedding = vector
 
     comments = corpus_comments(embedder)

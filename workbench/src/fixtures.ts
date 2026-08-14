@@ -5,11 +5,14 @@
  * duplicates, and reference violations. No silent defaults for required fields.
  */
 
-import type { Product, ShopProfile } from "./api_types";
+import type { ProductEntity, ShopProfile } from "./api_types";
 
 import productsJson from "./fixtures/products.json";
 import shopProfilesJson from "./fixtures/shop_profiles.json";
 import viewerMessagesJson from "./fixtures/viewer_messages.json";
+
+export { SE_REPLAY_SCENARIOS, SE_REPLAY_FIXTURES_VERSION, replayRequestBody } from "./fixtures/se_replay_fixtures";
+export type { SeReplayEvent, SeReplayScenario } from "./fixtures/se_replay_fixtures";
 
 export interface ShopProfileFixture extends ShopProfile {
   id: string;
@@ -46,7 +49,7 @@ export class FixtureError extends Error {
 export interface FixtureData {
   shop_profiles: ShopProfileFixture[];
   viewer_messages: ViewerMessageFixture[];
-  products: Product[];
+  products: ProductEntity[];
 }
 
 export function validateShopProfiles(items: unknown): ShopProfileFixture[] {
@@ -115,11 +118,11 @@ const stringLimits: Record<string, number> = {
   id: 128, name: 256, description: 2000, promotion: 500, material: 256, shipping: 500, warranty: 500, ref_image: 2048,
 };
 
-export function validateProducts(value: unknown): Product[] {
+export function validateProducts(value: unknown): ProductEntity[] {
   if (!Array.isArray(value)) throw new FixtureError("products must be an array", ["products: not an array"]);
   if (value.length > 100) throw new FixtureError("products: too many", ["products: too many"]);
   const ids = new Set<string>();
-  const out: Product[] = [];
+  const out: ProductEntity[] = [];
   for (const [index, item] of value.entries()) {
     const path = `products[${index}]`;
     if (typeof item !== "object" || item === null || Array.isArray(item)) {
@@ -166,7 +169,7 @@ export function validateProducts(value: unknown): Product[] {
     if (price != null && original != null && original < price) {
       throw new FixtureError(`${path}.original_price: must be >= price`, [`${path}.original_price: < price`]);
     }
-    out.push(record as unknown as Product);
+    out.push(record as unknown as ProductEntity);
   }
   if (!out.length) throw new FixtureError("products: empty dataset", ["products: empty"]);
   return out;
@@ -186,7 +189,7 @@ export function shopProfileById(id: string): ShopProfileFixture {
   return found;
 }
 
-export function productById(id: string): Product {
+export function productById(id: string): ProductEntity {
   const products = loadFixtures().products;
   const found = products.find((p) => p.id === id);
   if (!found) throw new FixtureError(`product ${id} not found`, [`products: unknown id ${id}`]);

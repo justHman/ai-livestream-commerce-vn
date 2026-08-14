@@ -1,0 +1,157 @@
+{
+  "schema": "vi-context-compression-corpus",
+  "version": 1,
+  "created_by": "ai-livestream-commerce-vn backend tests (authored synthetic)",
+  "provenance": {
+    "authored_synthetic": true,
+    "contains_pii": false,
+    "factual_ground_truth": false,
+    "purpose": "benchmark fixture for optional hybrid image-context compression (OpenSpec section 18)"
+  },
+  "task_classes": [
+    "exact_number_or_identifier",
+    "vietnamese_diacritics",
+    "grounding",
+    "tool_selection",
+    "hallucination_prone"
+  ],
+  "descriptive_context": [
+    {
+      "id": "desc-shop-story",
+      "kind": "shop_story",
+      "text": "Tiệm \"Sao Mai Homestay\" của chị Lan khởi nghiệp từ năm 2019 với bốn căn phòng nhỏ trong một ngôi nhà sân vườn ở ngoại ô thành phố Huế. Sau hai lần mở rộng vào các năm 2021 và 2024, tiệm hiện có mười hai căn phòng, trong đó có ba phòng gia đình. Chị Lan tự mô tả phong cách phục vụ của mình là thân thiện, kỹ lưỡng và luôn đặt sự thoải mái của khách lên hàng đầu, một phương châm mà chị nói mình học được từ mẹ chị vốn làm nghề nấu ăn tại các quán cơm bình dân."
+    },
+    {
+      "id": "desc-campaign-bg",
+      "kind": "campaign_background",
+      "text": "Chương trình khuyến mãi cuối năm của shop mang tên \"Ngày Hội Giảm Giá Mùa Đông\" được thiết kế như một sự tri ân dành cho những khách hàng đã đồng hành từ những ngày đầu. Ý tưởng chủ đạo của chiến dịch là kể lại hành trình phát triển của thương hiệu qua từng mùa, vì vậy mỗi tuần trong sáu tuần diễn ra chương trình đều có một chủ đề riêng: tuần đầu tiên nói về nguồn gốc, tuần thứ hai nói về những cải tiến về chất liệu, và bốn tuần còn lại giới thiệu lần lượt từng nhóm sản phẩm chủ lực của shop."
+    },
+    {
+      "id": "desc-product-long",
+      "kind": "long_description",
+      "text": "Chiếc túi xách \"Tote Thu Đông 2026\" được làm từ vải canvas dày phủ lớp chống thấm nhẹ, với lớp lót bên trong chia làm ba ngăn cùng một túi khoá kéo nhỏ. Quai túi được may gia cố hai lớp và có thể gập gọn khi không dùng. Sản phẩm được hoàn thiện bằng đường may mép bo tròn và khoá kéo kim loại màu đen bạc, mang lại cảm giác chắc chắn nhưng vẫn nhẹ nhàng khi đeo. Đây là dòng sản phẩm chủ lực của shop trong mùa này và được đội ngũ chọn lựa kỹ từ khâu vải vóc cho đến phụ kiện hoàn thiện."
+    },
+    {
+      "id": "desc-shop-story-2",
+      "kind": "shop_story",
+      "text": "Shop \"Góc Bếp Nhà Hoa\" bắt đầu như một gian bếp nhỏ trong chợ đầu mối, nơi bà Hoa bán các loại gia vị khô tự tay pha chế. Sau mười lăm năm, thương hiệu đã có mặt tại ba mươi tỉnh thành, nhưng bà Hoa vẫn giữ thói quen tự nếm thử từng mẻ gia vị trước khi xuất xưởng. Bà thường kể rằng bí quyết của shop nằm ở việc kiên nhẫn phơi sấy nguyên liệu theo phương pháp truyền thống, một công đoạn mà bà không bao giờ cho phép cắt bớt dù chi phí cao hơn."
+    },
+    {
+      "id": "desc-campaign-bg-2",
+      "kind": "campaign_background",
+      "text": "Chiến dịch quảng bá dòng sản phẩm chăm sóc da mang tên \"Làn Da Sạch - Tâm Hồn Thảnh Thơi\" hướng tới những khách hàng làm việc văn phòng thường xuyên căng thẳng. Thông điệp của chiến dịch xoay quanh ý tưởng rằng việc chăm sóc da không chỉ là thói quen làm đẹp mà còn là một nghi thức thư giãn sau giờ làm việc. Nội dung truyền thông được xây dựng dựa trên những khoảnh khắc nhỏ trong ngày, từ buổi sáng thức dậy đến buổi tối trước khi đi ngủ, để tạo sự gần gũi với người xem."
+    },
+    {
+      "id": "desc-product-long-2",
+      "kind": "long_description",
+      "text": "Đèn bàn học \"Ánh Sáng Xanh\" có thiết kế tối giản với thân đèn bằng kim loại sơn tĩnh điện màu xám, phần cánh tay đèn có thể điều chỉnh độ cao và góc chiếu linh hoạt. Nguồn sáng sử dụng công nghệ LED chống nhấp nháy với năm mức độ sáng khác nhau, từ mức dịu nhẹ cho buổi tối đến mức sáng nhất cho công việc chi tiết. Đế đèn được thiết kế chống trượt với một ngăn nhỏ để đựng bút, và toàn bộ sản phẩm được bảo hành trong mười hai tháng kể từ ngày mua."
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "fix-exact-001",
+      "task_class": "exact_number_or_identifier",
+      "question": "Mã sản phẩm của áo khoác \"NovaWarm X2\" là gì?",
+      "answer": "SKU-NW-2247",
+      "evidence": ["desc-product-long", "desc-shop-story"]
+    },
+    {
+      "id": "fix-exact-002",
+      "task_class": "exact_number_or_identifier",
+      "question": "Tiệm \"Sao Mai Homestay\" hiện có bao nhiêu phòng?",
+      "answer": "12",
+      "evidence": ["desc-shop-story"]
+    },
+    {
+      "id": "fix-exact-003",
+      "task_class": "exact_number_or_identifier",
+      "question": "Đèn bàn \"Ánh Sáng Xanh\" được bảo hành trong bao lâu?",
+      "answer": "12 tháng",
+      "evidence": ["desc-product-long-2"]
+    },
+    {
+      "id": "fix-diacritic-001",
+      "task_class": "vietnamese_diacritics",
+      "question": "Combo nước hoa \"Hương Quê\" giá bao nhiêu?",
+      "answer": "250.000đ",
+      "evidence": ["desc-product-long", "desc-campaign-bg"]
+    },
+    {
+      "id": "fix-diacritic-002",
+      "task_class": "vietnamese_diacritics",
+      "question": "Túi \"Tote Thu Đông 2026\" có mấy ngăn bên trong?",
+      "answer": "ba ngăn",
+      "evidence": ["desc-product-long"]
+    },
+    {
+      "id": "fix-diacritic-003",
+      "task_class": "vietnamese_diacritics",
+      "question": "Chương trình khuyến mãi cuối năm của shop kéo dài bao nhiêu tuần?",
+      "answer": "sáu tuần",
+      "evidence": ["desc-campaign-bg"]
+    },
+    {
+      "id": "fix-ground-001",
+      "task_class": "grounding",
+      "question": "Túi \"Tote Thu Đông 2026\" được làm từ chất liệu gì?",
+      "answer": "Vải canvas dày",
+      "evidence": ["desc-product-long"]
+    },
+    {
+      "id": "fix-ground-002",
+      "task_class": "grounding",
+      "question": "Bà Hoa làm nghề gì trước khi mở shop \"Góc Bếp Nhà Hoa\"?",
+      "answer": "Bán gia vị khô tại chợ đầu mối",
+      "evidence": ["desc-shop-story-2"]
+    },
+    {
+      "id": "fix-ground-003",
+      "task_class": "grounding",
+      "question": "Chiến dịch \"Làn Da Sạch - Tâm Hồn Thảnh Thơi\" hướng tới đối tượng nào?",
+      "answer": "Khách hàng làm việc văn phòng",
+      "evidence": ["desc-campaign-bg-2"]
+    },
+    {
+      "id": "fix-tool-001",
+      "task_class": "tool_selection",
+      "question": "Khách muốn biết chi tiết chương trình ưu đãi đang chạy, bạn chọn công cụ nào?",
+      "answer": "promotion_lookup",
+      "evidence": ["desc-campaign-bg"]
+    },
+    {
+      "id": "fix-tool-002",
+      "task_class": "tool_selection",
+      "question": "Khách hỏi về tình trạng đơn hàng của mình, bạn chọn công cụ nào?",
+      "answer": "order_status_lookup",
+      "evidence": ["desc-shop-story"]
+    },
+    {
+      "id": "fix-tool-003",
+      "task_class": "tool_selection",
+      "question": "Khách muốn kiểm tra số dư ví của mình, bạn chọn công cụ nào?",
+      "answer": "wallet_balance_lookup",
+      "evidence": ["desc-shop-story-2"]
+    },
+    {
+      "id": "fix-halluc-001",
+      "task_class": "hallucination_prone",
+      "question": "Túi \"Tote Thu Đông 2026\" có bán tại Hà Nội không?",
+      "answer": "Không có thông tin",
+      "evidence": ["desc-product-long"]
+    },
+    {
+      "id": "fix-halluc-002",
+      "task_class": "hallucination_prone",
+      "question": "Tiệm \"Sao Mai Homestay\" có nhận đặt tiệc không?",
+      "answer": "Không có thông tin",
+      "evidence": ["desc-shop-story"]
+    },
+    {
+      "id": "fix-halluc-003",
+      "task_class": "hallucination_prone",
+      "question": "Đèn bàn \"Ánh Sáng Xanh\" có màu trắng không?",
+      "answer": "Không có thông tin",
+      "evidence": ["desc-product-long-2"]
+    }
+  ]
+}

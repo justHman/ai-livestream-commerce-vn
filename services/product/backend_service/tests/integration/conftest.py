@@ -31,6 +31,7 @@ def make_deps(
     livekit_publishers: Any = None,
     avatars: Any = None,
     orchestrators: dict | None = None,
+    entity_repo: Any = None,
 ):
     """Build the deps-shaped object accepted by ``create_app(deps=...)``."""
 
@@ -48,6 +49,7 @@ def make_deps(
             self.avatars = avatars if avatars is not None else AvatarStore()
             self.locks = None
             self.orchestrators = orchestrators if orchestrators is not None else {}
+            self.entity_repo = entity_repo
 
     return _Deps()
 

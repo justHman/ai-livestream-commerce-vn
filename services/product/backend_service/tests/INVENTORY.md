@@ -28,14 +28,18 @@ llm/engines/base.py:34 and tts/engines/base.py:20 (service-local fallbacks).
 | test_render_backend_enum.py | AppConfig.build_render_backend selector contract (mock local; cloud/self-host remote placeholder) | core/tests/test_render_backend_enum.py | unit |
 | test_run_plan.py | RunPlan schema, build_run_plan determinism, coverage cursor, Utterance schema | core/tests/test_run_plan.py | unit |
 | test_text_chunker.py | TextChunker punctuation/max/timeout/finalize flushes with fake clock | core/tests/test_text_chunker.py | unit |
-| fixtures.py | Shared MOCK_PRODUCTS fixture (replaces core/debug/mock_data.py for service tests) | new | unit |
+| fixtures.py | Shared MOCK_ENTITIES fixture (EntityDocument products, replaces core/debug/mock_data.py for service tests) | new | unit |
+| unit/entity/test_datastudio_forms.py | Data Studio row/common coercion, custom.* unknown labels, full-replace save revision | — (multi-platform change, cluster 9) | unit |
+| unit/entity/test_suggestions.py | extraction seam: stub/no-engine/malformed/raising all degrade to empty, never 5xx | — (multi-platform change, cluster 9) | unit |
 
 ## integration/
 
 | Test file | Behaviors covered | Legacy source | Owner |
 |---|---|---|---|
 | test_api_limits.py | SlidingWindowLimiter, MaxBodySizeMiddleware, REST/WS 429/413, CORS on 413, boundary models | core/tests/test_api_limits.py | integration |
-| test_api_persist.py | pg persistence at start/ingest/chat, failure log hygiene, no-pg no-op | core/tests/test_api_persist.py | integration |
+| test_api_persist.py | pg persistence at start/events, failure log hygiene, sanitized audit, no-pg no-op | core/tests/test_api_persist.py | integration |
+| test_events_api.py | /events single/many/duplicate/404/422/auth/429/rejected reason | — (multi-platform change) | integration |
+| test_removed_ingress_routes.py | /ingest /chat /ws/platform not mounted, /ws/control still works | — (multi-platform change) | integration |
 | test_api_security.py | Viewer/admin auth 401/403, debug gate 404, CORS '*' rejection, health public | core/tests/test_api_auth.py | integration |
 | test_api_security_helpers.py | auth tokens_match/parse_bearer, WS token, rate limits, container isolation | core/tests/test_backend_api_security.py | integration |
 | test_app_factory.py | create_app env-driven + injected deps, health live/ready, engine load errors | core/tests/test_app_factory.py | integration |
@@ -43,11 +47,10 @@ llm/engines/base.py:34 and tts/engines/base.py:20 (service-local fallbacks).
 | test_avatar_routes.py | /avatars CRUD + idle regenerate | core/tests/test_avatars_api.py | integration |
 | test_control_websocket.py | /ws/control token auth, control.connected, ping/pong | core/tests/test_ws_auth.py | integration |
 | test_embedder_readiness.py | hash/semantic embedder modes, health/ready embedder status | core/tests/test_embedder_readiness.py | integration |
-| test_lite_chat_integration.py | /chat coordinator path, cluster snapshot, 404/413, stop drops session | core/tests/test_lite_chat_integration.py | integration |
+| test_lite_chat_integration.py | /events coordinator path, cluster snapshot, 413, park-without-attach, stop drops session | core/tests/test_lite_chat_integration.py | integration |
 | test_livekit_publishing.py | LiveKitPublisherRegistry lifecycle, stop ordering, shutdown, per-session publisher | core/tests/test_livekit_publish_registry.py | integration |
 | test_livekit_token.py | mint_room_token claims, media/livekit/room endpoint, 503 on missing secret | core/tests/test_livekit_token.py | integration |
 | test_mock_media_absent.py | /mock/* MJPEG routes absent from production app | core/tests/test_mjpeg_continuous.py | integration |
-| test_platform_websocket.py | /ws/platform store/accept/reject, burst 1008, reconnect budget | core/tests/test_platform_ws.py | integration |
 | test_postgres_runtime_store.py | runtime_schema.sql tables/indexes, store enabled/disabled | core/tests/test_postgres_schema.py | integration |
 | test_postgres_store_lifecycle.py | PostgresRuntimeStore lifecycle with fake pool, persistence SQL | core/tests/test_postgres_store_lifecycle.py | integration |
 | test_sandbox_route_absent.py | /admin/sandbox/verify absent from production app | core/tests/test_sandbox_verification.py | integration |
@@ -58,6 +61,7 @@ llm/engines/base.py:34 and tts/engines/base.py:20 (service-local fallbacks).
 | test_session_routes.py | /sessions lifecycle, plan/create, admin config no-secrets, mock 404 | core/tests/test_sessions_api.py | integration |
 | test_voice_routes.py | /engines status + TTS preset apply/404 | core/tests/test_engines_endpoint.py | integration |
 | test_voice_routes_discovery.py | engines/avatars discovery, tts/preview WAV, failed swap preserves engine | core/tests/test_runtime_discovery_preview.py | integration |
+| test_entities_api.py | /entities CRUD, revision 409, render-preview exact output, suggestions empty w/o LLM | — (multi-platform change, cluster 9) | integration |
 
 ## Moved out of backend ownership
 

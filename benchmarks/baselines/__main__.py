@@ -63,7 +63,7 @@ def _bench(name: str, fn: Callable[[], None], rounds: int = 200) -> dict:
 
 def run_baselines() -> dict:
     """Run every baseline; returns the full report dict."""
-    from backend.application.director.catalog import route_intent_to_field
+    from backend.application.director.catalog import embedding_text, route_intent_to_field
     from backend.application.director.comment_buffer import ChatQueue
     from backend.application.director.clustering import cluster_comments
     from backend.application.director.embeddings import HashingEmbedder, cosine
@@ -79,7 +79,7 @@ def run_baselines() -> dict:
 
     embedder = HashingEmbedder()
     products = corpus_products()
-    for product, vector in zip(products, embedder.encode([p.embedding_text() for p in products])):
+    for product, vector in zip(products, embedder.encode([embedding_text(p) for p in products])):
         product.embedding = vector
 
     comments = corpus_comments(embedder)

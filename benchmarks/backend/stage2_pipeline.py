@@ -23,9 +23,11 @@ if __package__ in (None, ""):
 
 from backend.api.v1 import build_run_plan
 from backend.config import AppConfig
-from benchmarks.backend.fixture_data import MOCK_PRODUCTS, MOCK_VIEWER_MSGS
-from backend.application.director.catalog import Product
+from backend.application.director.catalog import embedding_text
 from backend.application.director.clustering import Comment
+from backend.application.entity.models import EntityDocument
+from benchmarks.backend.fixture_data import MOCK_VIEWER_MSGS
+from benchmarks.fixtures.corpus import corpus_products
 from backend.application.director.config import StreamConfig
 from backend.application.director.decision import Decision, Director
 from backend.application.director.embeddings import HashingEmbedder, build_embedder, embedder_status
@@ -188,7 +190,7 @@ def _product_comments(
     count: int,
     prefix: str,
     now: float,
-    products: list[Product],
+    products: list[EntityDocument],
     embedder: object,
     current_product_id: str,
 ) -> list[Comment]:
@@ -210,28 +212,26 @@ def _product_comments(
     ]
 
 
-def _new_director(products: list[Product], embedder: object) -> Director:
-    vectors = embedder.encode([product.embedding_text() for product in products])
+def _new_director(products: list[EntityDocument], embedder: object) -> Director:
+    vectors = embedder.encode([embedding_text(product) for product in products])
     states = []
     for product, vector in zip(products, vectors):
-        product.embedding = list(vector)
         states.append(
             ProductState(
                 product_id=product.id,
                 name=product.name,
-                ref_image=product.ref_image,
+                ref_image=(
+                    str(product.get_fact("custom.ref_image").value)
+                    if product.get_fact("custom.ref_image") is not None
+                    else None
+                ),
                 embedding=list(vector),
             )
         )
     state = StreamState(
         phase=Phase.OPENING,
         products=states,
-        run_plan=build_run_plan(
-            [
-                next(item for item in MOCK_PRODUCTS if item["id"] == product.id)
-                for product in products
-            ]
-        ),
+        run_plan=build_run_plan(products),
     )
     state.cursor.profile_revision = 1
     state.cursor.catalog_revision = 1
@@ -312,10 +312,7 @@ async def _run_full_loop(
     tts_engine: TTSEngine,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    products = [
-        Product(**next(item for item in MOCK_PRODUCTS if item["id"] == product_id))
-        for product_id in ("P004", "P002")
-    ]
+    products = corpus_products()
     director = _new_director(products, embedder)
     backend = MockRenderBackend(fps=1, width=96, height=54)
     session_id = backend.start(StartOptions(is_sandbox=True)).session_id

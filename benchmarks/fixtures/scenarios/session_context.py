@@ -16,6 +16,14 @@ from ..corpus import build_state, jsonable
 from ..products import CORPUS_PRODUCTS
 
 
+def _block_items(entity, tag: str) -> list[str]:
+    """Items of a knowledge block carrying ``tag`` (color/size), in order."""
+    for block in entity.knowledge_blocks:
+        if tag in block.tags:
+            return [part.strip() for part in block.content.split(",") if part.strip()]
+    return []
+
+
 def scenario() -> dict[str, Any]:
     state = build_state(phase=Phase.SELLING, current_product_index=0)
     state.traffic.viewer_count = 120
@@ -44,12 +52,28 @@ def scenario() -> dict[str, Any]:
             {
                 "id": p.id,
                 "name": p.name,
-                "price": p.price,
-                "original_price": p.original_price,
-                "shipping": p.shipping,
-                "sizes": p.sizes,
-                "colors": p.colors,
-                "stock_total": p.stock_total,
+                "price": (
+                    p.get_fact("commerce.price.current").value
+                    if p.get_fact("commerce.price.current") is not None
+                    else None
+                ),
+                "original_price": (
+                    p.get_fact("commerce.price.original").value
+                    if p.get_fact("commerce.price.original") is not None
+                    else None
+                ),
+                "shipping": (
+                    p.get_fact("commerce.shipping").value
+                    if p.get_fact("commerce.shipping") is not None
+                    else None
+                ),
+                "sizes": _block_items(p, "size"),
+                "colors": _block_items(p, "color"),
+                "stock_total": (
+                    p.get_fact("commerce.stock.quantity").value
+                    if p.get_fact("commerce.stock.quantity") is not None
+                    else None
+                ),
             }
             for p in CORPUS_PRODUCTS
         ],

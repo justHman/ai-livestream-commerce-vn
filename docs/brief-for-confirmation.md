@@ -174,8 +174,8 @@ REST = default (no `rest/` prefix). WS + media prefixed (different protocol, dif
 | | `GET /api/v1/avatars` | REST | BE team SE | FE test |
 | | `PUT/DELETE /api/v1/avatars/{id}` | REST | BE team SE | FE test |
 | | `POST /api/v1/avatars/{id}/idle/regenerate` | REST | BE team SE | FE test |
-| Realtime WS | `WS /api/v1/ws/platform/{sid}` | WebSocket | BE team SE (platform adapter) | FE test (mock chat) |
-| | `WS /api/v1/ws/control/{sid}` | WebSocket | BE team SE (event consumer â†’ FE) | FE test (consumer) |
+| Viewer ingress | `POST /api/v1/sessions/{id}/events` | REST | BE team SE (platform adapter; canonical contract, §4.5.1) | FE test (mock events) |
+| Realtime WS | `WS /api/v1/ws/control/{sid}` | WebSocket | BE team SE (event consumer â†’ FE) | FE test (consumer) |
 | Media | `POST /api/v1/media/livekit/room/{sid}` | REST | BE team SE gets token, FE joins LiveKit | FE test joins LiveKit |
 | | `GET /api/v1/media/frame/{sid}.png` | HTTP | debug | debug |
 | Engines | `POST /api/v1/engines/tts` | REST | BE team SE | FE test |
@@ -265,7 +265,7 @@ REST = default (no `rest/` prefix). WS + media prefixed (different protocol, dif
 `docs/protocol-schema.md`:
 - HTTP/SSE schema LLM/TTS/Avatar.
 - LiveKit signaling, track types, codec.
-- WS event envelope `/ws/control` + `/ws/platform` (versioned, msg_id, ack).
+- WS event envelope `/ws/control` (versioned, msg_id, ack) + canonical `/sessions/{id}/events` ingress.
 - Error code catalog.
 
 ### D7. Config & Env Reference
