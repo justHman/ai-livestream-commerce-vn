@@ -1,4 +1,4 @@
-## 1. OpenSpec and contract baseline
+﻿## 1. OpenSpec and contract baseline
 
 - [x] 1.1 Record implementation baseline SHA and validate this change under the repository's `spec-driven` schema. (baseline: dd8672e)
 - [ ] 1.2 Add strict delta specs for all new/modified capabilities in this change.
@@ -70,11 +70,11 @@
 
 ## 7. ClusterEnvelope boundary
 
-- [ ] 7.1 Define canonical `ClusterEnvelope`.
-- [ ] 7.2 Ensure Director/Agent receives only selected envelopes, not the uncontrolled rolling raw comment list.
-- [ ] 7.3 Include ranking score breakdown, representative questions, unique viewers, product candidates/resolution, novelty, and current script product.
-- [ ] 7.4 Add static/unit checks preventing raw full-window comments from being appended automatically to Agent prompts.
-- [ ] 7.5 Update cluster diagnostics and Workbench to show the exact envelope used for each Q&A decision.
+- [x] 7.1 Define canonical `ClusterEnvelope`.
+- [x] 7.2 Ensure Director/Agent receives only selected envelopes, not the uncontrolled rolling raw comment list.
+- [x] 7.3 Include ranking score breakdown, representative questions, unique viewers, product candidates/resolution, novelty, and current script product.
+- [x] 7.4 Add static/unit checks preventing raw full-window comments from being appended automatically to Agent prompts.
+- [x] 7.5 Update cluster diagnostics and Workbench to show the exact envelope used for each Q&A decision.
 
 ## 8. Universal commerce entity context
 
@@ -122,7 +122,7 @@
 - [x] 11.4 Keep `EvidenceCache` independent from LLM conversation turns.
 - [x] 11.5 Add deterministic eviction/token-budget policy.
 - [x] 11.6 Prove full runtime transcript persistence is not automatically replayed into model context.
-- [x] 11.7 Add follow-up fixture such as “vậy cái đó có sạc nhanh không?” resolving through bounded topic/entity memory.
+- [x] 11.7 Add follow-up fixture such as â€œváº­y cĂ¡i Ä‘Ă³ cĂ³ sáº¡c nhanh khĂ´ng?â€ resolving through bounded topic/entity memory.
 
 ## 12. Bounded Agentic Director
 
