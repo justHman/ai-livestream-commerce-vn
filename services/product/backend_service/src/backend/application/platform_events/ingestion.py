@@ -21,10 +21,20 @@ Lives below the HTTP transport: the /events route validates the request
 
 Only the coordinator path performs semantic reduction; the service never
 branches on ``platform``.
+
+Concurrency: the read -> decide -> write dedup critical section in
+``ingest()`` is serialized per session by an in-process ``asyncio.Lock`` so
+two concurrent ``/events`` for the same session cannot both accept the same
+``event_id`` (P1-04). This assumes SINGLE-PROCESS ownership of a session —
+enforced in the deployment by ALB ``lb_cookie`` stickiness on the backend
+target group. Multi-instance deployments must move dedup to Redis ``SET NX``
+or a transactional DB; the in-process lock does not coordinate across
+processes.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from enum import Enum
@@ -95,6 +105,11 @@ class PlatformEventIngestionService:
         self._dedup_max_ids = dedup_max_ids
         self._unique_viewer_key_fn = unique_viewer_key_fn
         self._now = now_fn or time.time
+        # Per-session ingress lock: serializes the read -> decide -> write
+        # dedup critical section so concurrent /events for the same session
+        # cannot both accept the same event_id (P1-04). Single-process
+        # ownership only (ALB lb_cookie stickiness) — see module docstring.
+        self._ingest_locks: dict[str, asyncio.Lock] = {}
         # Sanitized rejection counters (no raw viewer content), observable via stats().
         self._rejection_counts: dict[str, int] = {}
         self._accepted_count: int = 0
@@ -324,16 +339,23 @@ class PlatformEventIngestionService:
         """Process a bounded batch; returns the per-event result list + counts.
 
         Raises KeyError when the session is unknown (no meta, no coordinator).
+
+        The whole body runs under a per-session lock (P1-04): meta is read,
+        decided, and written as one atomic section so two concurrent ingests
+        for the same session observe each other's dedup writes instead of
+        both accepting the same event_id.
         """
-        if not await self._session_exists(session_id):
-            raise KeyError(session_id)
-        meta = await self._load_meta(session_id)
-        now = self._now()
-        results = [await self._process_event(session_id, event, meta, now) for event in events]
-        counts = {"accepted": 0, "duplicate": 0, "rejected": 0}
-        for item in results:
-            counts[item["status"]] = counts.get(item["status"], 0) + 1
-        return {"events": results, **counts}
+        lock = self._ingest_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            if not await self._session_exists(session_id):
+                raise KeyError(session_id)
+            meta = await self._load_meta(session_id)
+            now = self._now()
+            results = [await self._process_event(session_id, event, meta, now) for event in events]
+            counts = {"accepted": 0, "duplicate": 0, "rejected": 0}
+            for item in results:
+                counts[item["status"]] = counts.get(item["status"], 0) + 1
+            return {"events": results, **counts}
 
     def stats(self, session_id: str) -> dict:
         """Content-safe per-session observability for event ingress.

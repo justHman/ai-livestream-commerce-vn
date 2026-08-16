@@ -146,6 +146,9 @@ class FastReducer:
         self._now = now_fn or time.time
         self._sessions: dict[str, _SessionState] = {}
         self._stores: dict[str, ClusterStore] = {}
+        # Global wake for the background loop (P0-01): set by ANY notify so a
+        # single reducer-loop task can serve every session event-driven.
+        self._any_wake = asyncio.Event()
         # Reconciliation observability (OpenSpec 5.6): cumulative counters plus
         # the last run's per-pass counters.
         self._reconciles_run: dict[str, int] = {}
@@ -204,6 +207,7 @@ class FastReducer:
                 state.first_pending_ts = comment.ts
         state.wake_notifications += 1
         state.wake_event.set()
+        self._any_wake.set()
 
     # ------------------------------------------------------------------
     # Coalescing deadline (pure function of the injected clock)
@@ -372,9 +376,19 @@ class FastReducer:
 
         Loop: no pending deadline -> wait on the event indefinitely (an idle
         session never wakes on its own); deadline passed -> return; deadline
-        in the future -> wait on the event with that remaining timeout, then
-        return. The event is consumed by ``drain_batch``, so a stale wake
-        without pending work just loops back to the indefinite wait.
+        in the future -> clear the stale wake, then wait on the event with
+        that remaining timeout, looping until the deadline passes. The event
+        is consumed by ``drain_batch``, so a stale wake without pending work
+        just loops back to the indefinite wait.
+
+        The wake event is cleared before each bounded wait (P1-03): a wake set
+        by an EARLIER notify stays set once the waiter starts, so without the
+        clear ``wait_for(event.wait())`` would satisfy instantly and return
+        before the coalescing deadline, processing nearly one-by-one. Clearing
+        makes the wait block the full remaining time unless a NEW notify
+        re-sets it — and a new notify does not extend the anchored deadline
+        (``first_pending_ts``), so the batch still drains on the first item's
+        clock.
         """
         while True:
             now = self._now()
@@ -386,11 +400,48 @@ class FastReducer:
             if remaining <= 0:
                 return
             state = self._sessions[session_id]
+            state.wake_event.clear()
             try:
                 await asyncio.wait_for(state.wake_event.wait(), timeout=remaining)
             except asyncio.TimeoutError:
-                pass
-            return
+                return
+
+    async def run_loop(self) -> None:
+        """Serve every session's fast lane until cancelled (P0-01).
+
+        One background task for ALL sessions (no per-session loop, no
+        process-global singleton). Event-driven, never polls: drains each
+        session whose coalescing deadline has passed, then blocks on the
+        global wake event (or the earliest pending deadline) until a new
+        notify arrives or a deadline matures. The lifespan starts this task
+        on startup and cancels it on shutdown.
+        """
+        while True:
+            now = self._now()
+            drained = False
+            for session_id in list(self._sessions):
+                deadline = self.pending_deadline(session_id, now)
+                if deadline is not None and deadline <= now:
+                    await self.run_once(session_id, now)
+                    drained = True
+            if drained:
+                continue
+            pending = [
+                (session_id, self.pending_deadline(session_id, now))
+                for session_id, state in self._sessions.items()
+                if state.pending
+            ]
+            if not pending:
+                self._any_wake.clear()
+                await self._any_wake.wait()
+                continue
+            session_id, deadline = min(pending, key=lambda item: item[1])
+            remaining = max(0.0, deadline - now)
+            self._any_wake.clear()
+            try:
+                await asyncio.wait_for(self._any_wake.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                continue  # deadline matured; loop drains it
 
     # ------------------------------------------------------------------
     # Observability
