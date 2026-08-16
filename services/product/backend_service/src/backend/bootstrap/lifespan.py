@@ -35,6 +35,35 @@ _WS_RATE_LIMIT_CLOSE_CODE = 1008
 # -- Startup ---------------------------------------------------------
 
 
+def _start_reducer_loop(container: BootstrapContainer) -> None:
+    """Start the single reducer-loop task that serves all sessions (P0-01).
+
+    Only when the composition wired a FastReducer (``DIRECTOR_ENABLED=1``).
+    The task is stored on the container so ``_shutdown`` can cancel it.
+    """
+    reducer = getattr(container, "reducer", None)
+    if reducer is None:
+        return
+    container.reducer_loop_task = asyncio.create_task(reducer.run_loop(), name="reducer-loop")
+
+
+async def _stop_reducer_loop(container: BootstrapContainer) -> None:
+    """Cancel and await the reducer-loop task; safe when absent/done.
+
+    The cancelled task reference stays on the container so shutdown is
+    observable (``reducer_loop_task.done()`` is True after exit).
+    """
+    task = getattr(container, "reducer_loop_task", None)
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 async def _connect_postgres(container: BootstrapContainer) -> None:
     """Connect + apply schema with bounded retries.
 
@@ -204,6 +233,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
     stages = (
         ("orchestrators", stop_session_pipeline),
         ("coordinator", stop_coordinator),
+        ("reducer", lambda: _stop_reducer_loop(container)),
         ("livekit.stop_all", stop_livekit),
         ("render.stop_all", stop_backend),
         ("clients.close", close_clients),
@@ -222,6 +252,7 @@ def build_lifespan(container: BootstrapContainer):
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await _connect_postgres(container)
+        _start_reducer_loop(container)
         try:
             yield
         finally:

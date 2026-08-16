@@ -25,6 +25,34 @@ from .lifespan import build_lifespan
 logger = logging.getLogger(__name__)
 
 
+def _build_director_pipeline(config, backend, engine_manager):
+    """Construct the agentic Director pipeline (P0-01).
+
+    Returns ``(runtime, coordinator, reducer)`` or ``(None, None, None)`` when
+    ``DIRECTOR_ENABLED=0`` keeps the pipeline inert. The composition root owns
+    construction so the SAME instances are injected into
+    ``PlatformEventIngestionService`` and the lifespan's reducer loop.
+    """
+    if not config.director_enabled:
+        return None, None, None
+    from backend.application.director.coordinator import CoordinatorConfig, DirectorCoordinator
+    from backend.application.director.embeddings import HashingEmbedder
+    from backend.application.director.session_context import DirectorRuntime
+    from backend.application.reducer import FastReducer
+
+    embedder = HashingEmbedder()  # offline/CI-safe; reducer REQUIRES an embedder
+    runtime = DirectorRuntime(backend, embedder=embedder)
+    coordinator = DirectorCoordinator(
+        runtime=runtime,
+        llm=engine_manager.llm if engine_manager is not None else None,
+        tts=engine_manager.tts if engine_manager is not None else None,
+        backend=backend,
+        cfg=CoordinatorConfig(),
+    )
+    reducer = FastReducer(embedder=embedder)
+    return runtime, coordinator, reducer
+
+
 def _build_container(config, container: BootstrapContainer | None) -> BootstrapContainer:
     """Construct the container from ``config`` or use the injected one."""
     if container is not None:
@@ -38,6 +66,8 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     from backend.application.platform_events import PlatformEventIngestionService
     from backend.application.publishing import LiveKitPublisherRegistry, publish_enabled
 
+    director, coordinator, reducer = _build_director_pipeline(config, backend, engine_manager)
+
     return create_container(
         backend=backend,
         store=store,
@@ -45,9 +75,15 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
         engine_manager=engine_manager,
         pg_store=pg_store,
         livekit_publishers=LiveKitPublisherRegistry() if publish_enabled() else None,
+        director=director,
+        coordinator=coordinator,
+        reducer=reducer,
         event_ingestion=PlatformEventIngestionService(
             store=store,
             pg_store=pg_store,
+            coordinator=coordinator,
+            runtime=director,
+            reducer=reducer,
         ),
     )
 
