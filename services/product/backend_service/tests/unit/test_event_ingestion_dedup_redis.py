@@ -206,3 +206,37 @@ async def test_with_session_lock_times_out_bounded() -> None:
     with pytest.raises(SessionLockTimeout):
         async with store.with_session_lock("s1", acquire_timeout_seconds=0.05):
             pass  # pragma: no cover
+
+
+def test_sessions_events_lock_timeout_returns_503() -> None:
+    """Route maps a held session lock to 503, never a generic 500."""
+    from fastapi.testclient import TestClient
+
+    from backend.application.platform_events import PlatformEventIngestionService
+    from backend.config import AppConfig
+    from conftest import make_deps as _Deps
+
+    async def _seed(store: RedisSessionStore) -> None:
+        await store.set("s1", {"status": "active"})
+        await store.acquire_session_lock("s1", "holder-token", ttl_seconds=10)
+
+    fake = _FakeRedis()
+    store = RedisSessionStore(client=fake)
+    asyncio.run(_seed(store))
+
+    config = AppConfig(render_backend="mock", app_env="dev")
+    deps = _Deps(
+        config=config,
+        store=store,
+        event_ingestion=PlatformEventIngestionService(
+            store=store, lock_acquire_timeout_seconds=0.05
+        ),
+    )
+    from backend.main import create_app
+
+    with TestClient(create_app(config=config, deps=deps)) as client:
+        r = client.post(
+            "/api/v1/sessions/s1/events", json={"events": [_event("e1", text="hello")]}
+        )
+
+    assert r.status_code == 503

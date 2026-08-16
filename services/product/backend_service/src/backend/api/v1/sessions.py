@@ -17,6 +17,7 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
+from backend.application.db.session_store import SessionLockTimeout
 
 from . import router
 from .router import logger
@@ -400,6 +401,8 @@ async def sessions_events(
         return await service.ingest(session_id, req.events)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
+    except SessionLockTimeout:
+        raise HTTPException(status_code=503, detail="session busy")
 
 
 @_router.post("/sessions/{session_id}/plan/create")
