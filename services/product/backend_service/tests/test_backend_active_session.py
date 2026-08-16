@@ -1007,7 +1007,9 @@ def test_windows_job_assign_failure_non_nt_skips_fallback(
         (),
         {
             "pid": 9999,
-            "poll": lambda self: None,
+            "stdout": None,
+            "stderr": None,
+            "poll": lambda self: 0,
             "kill": lambda self: None,
             "wait": lambda self, timeout=None: 0,
         },
