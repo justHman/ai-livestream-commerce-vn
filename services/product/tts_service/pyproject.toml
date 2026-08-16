@@ -8,6 +8,7 @@ dependencies = [
     "numpy",
     "fastapi",
     "numba>=0.60",
+    "pyjwt>=2.13.0",
 ]
 
 [project.optional-dependencies]

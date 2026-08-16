@@ -91,6 +91,13 @@ class FakeEnrollingProvider:
         # Provider-private payload: never crosses the API boundary.
         return {"speaker_emb": [0.25] * 192, "ref_codes": [0.5] * 62}
 
+    # --- pre-admission validation (P1-07) ---
+    def validate_request(self, request: ProviderRequest) -> None:
+        if request.style not in self.capabilities().supported_styles:
+            from tts.providers.errors import ProviderValidationError
+
+            raise ProviderValidationError(f"unsupported style: {request.style}")
+
     def profile_loader(self, voice_profile_id: str, tenant_id: str):
         from tts.voices.store import ProfileNotFoundError
 

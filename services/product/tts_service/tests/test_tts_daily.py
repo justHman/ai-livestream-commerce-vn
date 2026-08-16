@@ -9,7 +9,7 @@ import tempfile
 import re
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -496,12 +496,13 @@ def test_platform_collector_emit_event_also_writes_daily() -> None:
 
 
 def test_platform_collector_retain_daily_honors_window() -> None:
+    today = date.today()
     with removable_temp_dir() as root:
         collector = PlatformCollector(active_root=root / "active", daily_root=root / "daily")
         daily_dir = root / "daily" / "platform" / "livekit"
         daily_dir.mkdir(parents=True, exist_ok=True)
-        old_path = daily_dir / "2026-07-01.log"
-        new_path = daily_dir / "2026-08-03.log"
+        old_path = daily_dir / f"{(today - timedelta(days=10)).isoformat()}.log"
+        new_path = daily_dir / f"{(today - timedelta(days=1)).isoformat()}.log"
         old_path.write_text("x\n", encoding="utf-8")
         new_path.write_text("x\n", encoding="utf-8")
         try:
