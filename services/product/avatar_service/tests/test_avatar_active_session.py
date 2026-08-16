@@ -738,6 +738,9 @@ def test_timeout_reaps_descendant_pids() -> None:
         _assert_pid_dead(int(grandchild_pid_path.read_text(encoding="ascii")))
 
 
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows-specific; os.name monkeypatch poisons pathlib on POSIX"
+)
 def test_windows_job_handle_closes_on_assign_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -774,6 +777,9 @@ def test_windows_job_handle_closes_on_assign_failure(
     assert closed == [7]
 
 
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows-specific; os.name monkeypatch poisons pathlib on POSIX"
+)
 def test_windows_job_termination_failure_is_sanitized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -896,6 +902,9 @@ def test_repeated_start_session_truncates_each_time() -> None:
             collector.close()
 
 
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows-specific; os.name monkeypatch poisons pathlib on POSIX"
+)
 def test_windows_job_assign_failure_fallback_kills_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -933,6 +942,9 @@ def test_windows_job_assign_failure_fallback_kills_tree(
     assert taskkill_called[0][2] == "9999"
 
 
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows-specific; os.name monkeypatch poisons pathlib on POSIX"
+)
 def test_windows_job_assign_failure_taskkill_fallback_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
