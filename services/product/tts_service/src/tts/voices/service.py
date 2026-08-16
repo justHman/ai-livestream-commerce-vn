@@ -46,6 +46,21 @@ class VoiceProfileService:
         self._enroll_voice_fn = enroll_voice_fn
         self._metrics = metrics
 
+    def set_enrollment_fn(self, enroll_voice_fn: EnrollFn) -> None:
+        """Inject (or replace) the provider enrollment callable post-construction.
+
+        The lifespan builds the voice service before the provider is ready
+        (the provider's ``profile_loader`` depends on the service) and
+        retrofits the provider's ``enroll_voice`` here once the provider is
+        up (P1-05). Raises when the injected callable is the unavailable
+        default — a wire failure must surface, not silently keep 503s.
+        """
+        if enroll_voice_fn is _enroll_unavailable:
+            raise ProviderUnavailableError(
+                "refusing to wire the unavailable default as the enrollment fn"
+            )
+        self._enroll_voice_fn = enroll_voice_fn
+
     def enroll_cloned(
         self,
         reference_audio: bytes,

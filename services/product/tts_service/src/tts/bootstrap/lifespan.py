@@ -79,9 +79,17 @@ def _build_runtime(app: FastAPI, provider) -> object | None:
     if provider is None:
         return None
     cfg = app.state.runtime_config
+    # P1-07: pre-admission validation from the provider. Unsupported client
+    # input (style/cue/format) raises a typed 4xx ProviderError BEFORE any
+    # capacity is consumed, so one invalid request can never fail an entire
+    # provider batch of unrelated siblings.
     return SchedulerRuntime(
         population=PendingPopulation(),
-        admission=AdmissionController(cfg.global_pending_limit, cfg.per_session_pending_limit),
+        admission=AdmissionController(
+            cfg.global_pending_limit,
+            cfg.per_session_pending_limit,
+            validate=provider.validate_request,
+        ),
         selector=FairnessSelector(),
         provider=provider,
         config=cfg,
@@ -102,13 +110,26 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     metrics = get_metrics_registry()
     app.state.metrics = metrics
     _record_gpu_metrics(metrics)
-    # Voice-profile service over the configured store URI (runtime cluster
-    # replaces the injected enrollment fn with the real provider).
+    # Voice-profile service over the configured store URI. The provider's
+    # ``profile_loader`` depends on the service, so the service is built
+    # FIRST with the unavailable default enrollment fn; once the provider is
+    # up, its real enrollment seam is retrofitted (P1-05) — the provider is
+    # the single owner of the enrollment/encoding call.
     _wire_voice_service(app)
     # Provider-owned lifecycle: starts when config selects it; failure only
     # flips runtime_ready, never crashes the app. With no provider configured
     # ("none") the legacy engine alone satisfies runtime readiness.
     provider = _build_provider(app)
+    if provider is not None:
+        enroll_voice = getattr(provider, "enroll_voice", None)
+        if callable(enroll_voice):
+            app.state.voice_service.set_enrollment_fn(enroll_voice)
+            logger.info("voice enrollment wired provider=%s", provider.provider_name)
+        else:
+            logger.warning(
+                "provider %s exposes no enroll_voice; cloned enrollment stays 503",
+                getattr(provider, "provider_name", "?"),
+            )
     app.state.provider = provider
     runtime = _build_runtime(app, provider)
     app.state.runtime = runtime

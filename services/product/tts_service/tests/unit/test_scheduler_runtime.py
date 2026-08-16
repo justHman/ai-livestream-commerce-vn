@@ -396,3 +396,43 @@ async def test_submit_returns_result_for_correct_request_id() -> None:
     assert result.request_id == "r1"
     assert result.sample_rate == 48_000
     assert result.waveform is not None
+
+
+# ── P1-07: invalid request must not fail unrelated siblings ──────────────────
+async def test_runtime_validates_before_admission_and_sibling_completes() -> None:
+    """P1-07: pre-admission validation + batch-path parity at the runtime level.
+
+    A request with style 'bogus' is rejected with the typed 4xx CapabilityError
+    BEFORE it enters the pending population; the valid sibling in the same
+    round still synthesizes. Without the validator, the bogus request joins
+    the provider batch and (for a provider that KeyErrors on the style) fails
+    the whole batch — the review finding this test encodes.
+    """
+    from tts.providers.errors import CapabilityError
+
+    class StrictProvider(FakeProvider):
+        """Fake provider that mirrors VieNeu batch construction: any member
+        with an unsupported style raises KeyError during request building."""
+
+        def synthesize_batch(self, requests: list[ProviderRequest]) -> list[ProviderResult]:
+            for request in requests:
+                if request.style not in ("natural",):
+                    raise KeyError(request.style)
+            return super().synthesize_batch(requests)
+
+    clock = FakeClock()
+    provider = StrictProvider(max_batch_size=4)
+    runtime = _make_runtime(clock, provider, max_batch_size=4)
+    runtime._admission.validate = lambda request: (
+        None
+        if request.style in ("natural",)
+        else (_ for _ in ()).throw(CapabilityError(f"unsupported style {request.style!r}"))
+    )
+    with pytest.raises(CapabilityError):
+        runtime._admission.try_admit(_request("bad", style="bogus"), clock.now())
+    assert runtime.pending_depth() == 0  # rejected pre-queue
+    tasks = await _submit(runtime, _request("good"))
+    await _settle(clock)
+    result = await asyncio.wait_for(tasks[0], timeout=5)
+    assert result.request_id == "good"
+    assert provider.batch_calls == [(("fake", 0.8), ("good",))]

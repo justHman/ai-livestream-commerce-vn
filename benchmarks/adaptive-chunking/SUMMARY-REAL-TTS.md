@@ -107,10 +107,12 @@ Per-pair chunk/duration comparison (from manifest.json):
 | 8.3 runner | DONE | Mode B' HTTP runner v1.2.0 + 32 unit tests green (this worktree), CLI verified |
 | 8.4 baseline fixed (real TTS) | DONE | real-TTS run (log + 3812 paired audio artifacts) |
 | 8.5 bounded candidate search (real TTS) | DONE (representative subset) | cand-01 + cand-05 real-TTS runs; other 10 identical by construction (dead config knobs), documented above |
-| 8.6 blinded human review | PENDING USER | paired clips built (24 mp3 + manifest) at .runtime/benchmarks/realtss-pairs/clips/ - user listens blind |
-| 8.7 PASS rule | PENDING 8.6 | Correctness invariants all zero (preservation 0, finality 0, protected 0, underrun 0). TTFA constraint: adaptive p95 (1171-1560 ms) does NOT regress >5% vs baseline (1918 ms) - improves. Prosody eligibility requires human review (8.6) |
-| 8.8 keep fixed + block Change B | APPLIED (unchanged until 8.9) | fixed remains default; Change B stays blocked until 8.9 |
-| 8.9 commit calibrated constants | NOT DONE | requires 8.6 human review + 8.7 PASS before committing calibrated constants/weights and flipping intended default |
+| 8.6 blinded human review | **DONE 2026-08-12 (informal in-chat)** | user rated the 5 differing paired clips (no standalone record file); paired clips at .runtime/benchmarks/realtss-pairs/clips/ (24 mp3 + manifest) |
+| 8.7 PASS rule | **PASS 2026-08-12** | Correctness invariants all zero (preservation 0, finality 0, protected 0, underrun 0). TTFA constraint: adaptive p95 (1171-1560 ms) does NOT regress >5% vs baseline (1918 ms) - improves. Prosody non-regression confirmed by the 8.6 user review (5 differing pairs) |
+| 8.8 keep fixed + block Change B | APPLIED (until 8.9) | fixed remained default; Change B stayed blocked until 8.9 |
+| 8.9 commit calibrated constants | **PASS 2026-08-12** | cand-05 constants committed (fd68faf); adaptive_vi intended default with fixed rollback; Change A PASS. Supersedes the earlier NOT DONE state recorded below (reconciled 2026-08-16 per review P2-09) |
+
+> **Reconciliation note (2026-08-16):** this table previously recorded 8.6 PENDING USER / 8.9 NOT DONE. The user confirmed the informal prosody review was completed on 2026-08-12 (5 differing pairs, no regression) — PASS supersedes the pending state. Chronological evidence preserved in the archived `tasks.md` task 8.9.
 
 ## Human review gate (8.6) - what the user should listen for
 

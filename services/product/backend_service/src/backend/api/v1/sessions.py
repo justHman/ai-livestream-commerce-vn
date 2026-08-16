@@ -9,6 +9,7 @@ Dependencies come from the typed ``BootstrapContainer`` via
 from __future__ import annotations
 
 import asyncio
+import os
 
 from typing import Any
 
@@ -126,7 +127,7 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
         StreamOrchestrator,
         StreamingControllerConfig,
     )
-    from backend.application.text_chunker import FixedChunkPolicyConfig
+    from backend.application.text_chunker import ChunkPolicy, FixedChunkPolicyConfig
     from llm.engines.base import LLMEngine, _NoopEngine
     from tts.engines.base import TTSEngine, ToneEngine
 
@@ -158,6 +159,10 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
             cfg, "text_chunk_flush_timeout_ms", StreamingControllerConfig().flush_timeout_ms
         ),
     )
+    # Single typed runtime policy seam: adaptive_vi is the default; the
+    # TEXT_CHUNK_POLICY env var is the explicit fixed rollback. AppConfig
+    # deliberately owns no policy-mode selection (Change A contract).
+    chunk_policy = os.environ.get("TEXT_CHUNK_POLICY", ChunkPolicy.ADAPTIVE_VI.value)
     try:
         orchestrator = StreamOrchestrator(
             llm=llm,
@@ -167,6 +172,7 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
             metrics=metrics,
             fixed_config=fixed_config,
             controller_config=controller_config,
+            chunk_policy=chunk_policy,
             audio_window_callback=d.livekit_publishers.publish
             if d.livekit_publishers is not None
             else None,

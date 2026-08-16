@@ -72,6 +72,7 @@ from .queue import BoundedVideoQueue, CoordinatorMetrics
 
 from ..text_chunker import (
     ChunkDecisionReason,
+    ChunkPolicy,
     FixedChunkPolicyConfig,
     TelemetryCollector,
     TextChunk,
@@ -119,6 +120,7 @@ class StreamOrchestrator:
         controller_config: StreamingControllerConfig | None = None,
         audio_window_callback: AudioWindowCallback | None = None,
         telemetry: TelemetryCollector | None = None,
+        chunk_policy: ChunkPolicy | str = ChunkPolicy.ADAPTIVE_VI,
     ) -> None:
         self._llm = llm
         self._tts = tts
@@ -126,6 +128,9 @@ class StreamOrchestrator:
         self._queue = queue
         self._metrics = metrics
         self._fixed_config = fixed_config or FixedChunkPolicyConfig()
+        self.chunk_policy = (
+            chunk_policy if isinstance(chunk_policy, ChunkPolicy) else ChunkPolicy(chunk_policy)
+        )
         self._min_chars = self._fixed_config.min_chars
         self._target_chars = self._fixed_config.target_chars
         self._max_chars = self._fixed_config.max_chars
@@ -287,6 +292,7 @@ class StreamOrchestrator:
                 min_chars=self._min_chars,
                 target_chars=self._target_chars,
                 max_chars=self._max_chars,
+                policy=self.chunk_policy,
                 telemetry=self._telemetry,
             )
             hints = self._telemetry.to_runtime_hints() if self._telemetry is not None else None
@@ -458,6 +464,7 @@ class StreamOrchestrator:
                 min_chars=self._min_chars,
                 target_chars=self._target_chars,
                 max_chars=self._max_chars,
+                policy=self.chunk_policy,
                 telemetry=self._telemetry,
             )
             hints = self._telemetry.to_runtime_hints() if self._telemetry is not None else None
