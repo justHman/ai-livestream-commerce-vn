@@ -203,7 +203,13 @@ jobs:
       - name: Generate affected-image matrix
         id: gen
         run: |
-          echo "matrix=$(python scripts/ci/build_matrix.py --services '${{ needs.affected-area.outputs.services_json }}')" >> "$GITHUB_OUTPUT"
+          # Heredoc delimiter is required for JSON values in GITHUB_OUTPUT
+          # (a plain `echo name=value` breaks when value contains quotes/braces).
+          python scripts/ci/build_matrix.py --services '${{ needs.affected-area.outputs.services_json }}' > matrix.json
+          echo "matrix<<EOF" >> "$GITHUB_OUTPUT"
+          cat matrix.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "::debug::matrix=$(cat matrix.json)"
 
   container-build:
     needs: [mode, affected-area, service-ci, container-build-matrix]
