@@ -187,33 +187,14 @@ jobs:
       contract: ${{ needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' }}
       coverage: ${{ needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' }}
 
-  # P2-08: the container-build matrix must contain ONLY the affected images.
-  # GitHub's matrix `include` ALWAYS adds entries that don't match a vector
-  # row as new rows, so include-as-lookup cannot filter. This job computes
-  # the exact matrix (service + scope + dockerfile + image + platforms) for
-  # the affected services and hands it to container-build via fromJson.
-  container-build-matrix:
-    runs-on: ubuntu-latest
-    needs: [affected-area]
-    if: ${{ always() && needs.affected-area.result == 'success' }}
-    outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Generate affected-image matrix
-        id: gen
-        run: |
-          # Heredoc delimiter is required for JSON values in GITHUB_OUTPUT
-          # (a plain `echo name=value` breaks when value contains quotes/braces).
-          python scripts/ci/build_matrix.py --services '${{ needs.affected-area.outputs.services_json }}' > matrix.json
-          echo "matrix<<EOF" >> "$GITHUB_OUTPUT"
-          cat matrix.json >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          echo "::debug::matrix=$(cat matrix.json)"
-
   container-build:
-    needs: [mode, affected-area, service-ci, container-build-matrix]
-    if: ${{ always() && needs.mode.result == 'success' && needs.affected-area.outputs.services_json != '[]' && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
+    needs: [mode, affected-area, service-ci]
+    # P2-08: build ONLY the affected images. The static 4-row matrix is the
+    # config lookup; a job-level `if` with the matrix context skips rows whose
+    # service is not in services_json (GitHub evaluates `if` per matrix row).
+    # Matrix-from-output via fromJson was tried and evals empty for reusable
+    # workflows, so the per-row guard is the reliable filter.
+    if: ${{ always() && needs.mode.result == 'success' && needs.affected-area.outputs.services_json != '[]' && contains(fromJson(needs.affected-area.outputs.services_json), matrix.service) && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
     uses: ./.github/workflows/_container-build.yml
     with:
       image: ${{ matrix.image }}
@@ -225,11 +206,31 @@ jobs:
       export_cache: true
     strategy:
       fail-fast: false
-      # Matrix is EXACTLY the affected services (from the compute job); each
-      # row carries service (full id), scope (short cache name), dockerfile,
-      # image, platforms. Docs-only (services_json == '[]') yields zero rows
-      # and the `if:` guard skips the job.
-      matrix: ${{ fromJson(needs.container-build-matrix.outputs.matrix) }}
+      # Static config lookup: service (full area id), scope (short cache
+      # name), dockerfile, image, platforms. Rows for non-affected services
+      # are skipped by the job-level `if` guard above.
+      matrix:
+        include:
+          - service: backend_service
+            scope: backend
+            dockerfile: services/product/backend_service/Dockerfile
+            image: imjusthman/ai-live-backend
+            platforms: linux/arm64
+          - service: llm_service
+            scope: llm
+            dockerfile: services/product/llm_service/Dockerfile
+            image: imjusthman/ai-live-llm
+            platforms: linux/amd64
+          - service: tts_service
+            scope: tts
+            dockerfile: services/product/tts_service/Dockerfile
+            image: imjusthman/ai-live-tts
+            platforms: linux/amd64
+          - service: avatar_service
+            scope: avatar
+            dockerfile: services/product/avatar_service/Dockerfile
+            image: imjusthman/ai-live-avatar
+            platforms: linux/amd64
 
   workbench-check:
     runs-on: ubuntu-latest

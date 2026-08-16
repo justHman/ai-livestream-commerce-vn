@@ -1,4 +1,4 @@
-"""P2-08: container-build matrix must contain ONLY the affected images.
+"""P2-08: container-build must build ONLY the affected images.
 
 The review finding: `.github/workflows/ci.yml` `container-build` guards on
 `services_json != '[]'` but its matrix is a static 4-service `include` — a
@@ -6,19 +6,26 @@ backend-only change still builds llm/tts/avatar images. The OpenSpec spec
 (`ci-container-build-optimization`) says container-build SHALL run for the
 affected images only.
 
-GitHub's matrix `include` ALWAYS adds entries that do not match a vector row
-as brand-new rows, so include-as-lookup cannot filter to affected services.
-The correct pattern is a dedicated compute job (`container-build-matrix`)
-that runs `scripts/ci/build_matrix.py` over the trusted `services_json` and
-hands the exact matrix to `container-build` via
-`strategy.matrix: ${{ fromJson(needs.container-build-matrix.outputs.matrix) }}`.
+Two GitHub matrix mechanisms were tried and rejected:
+1. `include`-as-lookup against a `fromJson(services_json)` vector — GitHub
+   ALWAYS adds include entries that do not match a vector row as brand-new
+   rows, so non-affected services still build.
+2. A compute job emitting the exact matrix via `fromJson(outputs.matrix)` —
+   evals empty for reusable-workflow jobs, so `container-build` fails with an
+   empty-matrix error instead of spawning.
+
+The reliable pattern: a STATIC 4-row config matrix plus a job-level `if` that
+uses the matrix context (`contains(fromJson(services_json), matrix.service)`).
+GitHub evaluates the job `if` per matrix row, so non-affected rows are skipped
+(not built); the gate accepts `skipped`. Each row carries the full service
+area id (`backend_service` — the same id `_python-service-ci.yml` consumes as
+`services/product/<service>` paths) plus a short `scope` for the stable
+per-service Buildx cache key.
 """
 
 from __future__ import annotations
 
 import importlib.util as _util
-import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -35,22 +42,8 @@ load_yaml = _mod.load_file
 
 # Service area ids emitted by detect_changes.py (docstring: "backend_service,
 # llm_service, tts_service, avatar_service") — PRODUCT_AREAS = {s}_service.
-# _python-service-ci.yml consumes services_json as matrix.service for the
-# `services/product/${{ matrix.service }}` path, so the vector uses the FULL
-# names. Each build row carries a `scope` short name (backend, llm, tts,
-# avatar) so the Buildx cache scope stays stable per service and never
-# carries the area id, branch, or SHA.
 SERVICE_FULL_NAMES = ("backend_service", "llm_service", "tts_service", "avatar_service")
-
-
-def _load_build_matrix():
-    spec = _util.spec_from_file_location(
-        "build_matrix", ROOT / "scripts" / "ci" / "build_matrix.py"
-    )
-    module = _util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+SHORT_SCOPES = ("backend", "llm", "tts", "avatar")
 
 
 def _container_build_job() -> dict[str, Any]:
@@ -61,99 +54,48 @@ def _container_build_job() -> dict[str, Any]:
     return job
 
 
-# ── RED: matrix must be derived from affected-area services_json ─────────────
-def test_container_build_matrix_derived_from_compute_job() -> None:
-    """container-build must consume the exact matrix from the compute job."""
-    matrix = _container_build_job()["strategy"]["matrix"]
-    assert matrix == "${{ fromJson(needs.container-build-matrix.outputs.matrix) }}", (
-        "container-build matrix must be fromJson(needs.container-build-matrix.outputs.matrix)"
-    )
+def test_container_build_job_if_filters_by_services_json() -> None:
+    """container-build must guard each matrix row on affected-area output.
 
-
-def test_container_build_matrix_compute_job_runs_build_matrix_script() -> None:
-    """The compute job must derive rows from the trusted services_json."""
-    doc = load_yaml(CI_YML)
-    assert doc is not None
-    job = doc["jobs"]["container-build-matrix"]
-    assert job["needs"] == ["affected-area"], "compute job must depend on affected-area"
-    assert "matrix" in job["outputs"]
-    run = job["steps"][1]["run"]
-    assert "build_matrix.py" in run, "compute job must run scripts/ci/build_matrix.py"
-    assert "needs.affected-area.outputs.services_json" in run, (
-        "compute job must consume services_json"
-    )
-
-
-def test_build_matrix_backend_only_change_builds_only_backend() -> None:
-    """A backend-only change must produce exactly one image job: backend."""
-    module = _load_build_matrix()
-    rows = module.build_matrix(["backend_service"])
-    assert [row["service"] for row in rows] == ["backend_service"]
-    assert all(row["image"] == "imjusthman/ai-live-backend" for row in rows)
-    assert all(row["scope"] == "backend" for row in rows), (
-        "container-build cache scope must stay the short service name (stable per-service cache)"
-    )
-    # Row carries everything _container-build.yml needs.
-    row = rows[0]
-    assert row["dockerfile"] == "services/product/backend_service/Dockerfile"
-    assert row["platforms"] == "linux/arm64"
-
-
-def test_build_matrix_docs_only_change_builds_zero_images() -> None:
-    """Docs-only (services_json == '[]') -> zero image jobs."""
-    module = _load_build_matrix()
-    assert module.build_matrix([]) == []
-
-
-def test_build_matrix_shared_lock_change_builds_zero_images() -> None:
-    """Shared lockfile (uv.lock) -> shared-locks, no product service affected.
-
-    Per the tool's real classification (``detect_affected_areas`` maps
-    ``uv.lock`` to ``shared-locks`` — never a product service), services_json
-    is ``[]`` and no image jobs run; the ``if:`` guard keeps the job skipped
-    and the gate accepts the neutral result.
+    A backend-only change must not schedule llm/tts/avatar image builds; the
+    job-level `if` reads services_json and the matrix context so non-affected
+    rows are skipped.
     """
-    module = _load_build_matrix()
-    assert module.build_matrix([]) == []
-
-
-def test_build_matrix_two_service_change_fans_out_exactly() -> None:
-    """backend + tts changed -> exactly those two image jobs, no others."""
-    module = _load_build_matrix()
-    rows = module.build_matrix(["backend_service", "tts_service"])
-    assert [row["service"] for row in rows] == ["backend_service", "tts_service"]
-    assert all(row["image"] in ("imjusthman/ai-live-backend", "imjusthman/ai-live-tts") for row in rows)
-
-
-def test_build_matrix_covers_all_four_services() -> None:
-    """The config map must cover every canonical product service."""
-    module = _load_build_matrix()
-    rows = module.build_matrix(list(SERVICE_FULL_NAMES))
-    assert [row["service"] for row in rows] == list(SERVICE_FULL_NAMES)
-    # Every entry keeps a short cache scope and a real dockerfile/image.
-    for row in rows:
-        assert row["scope"] in ("backend", "llm", "tts", "avatar")
-        assert row["dockerfile"].startswith("services/product/")
-        assert row["image"].startswith("imjusthman/ai-live-")
-
-
-def test_build_matrix_unknown_service_skipped() -> None:
-    """Unknown service ids are skipped, never cause a broken build row."""
-    module = _load_build_matrix()
-    rows = module.build_matrix(["backend_service", "not_a_service"])
-    assert [row["service"] for row in rows] == ["backend_service"]
-
-
-def test_build_matrix_cli_outputs_json() -> None:
-    """The CLI prints the same matrix the job hands to container-build."""
-    import subprocess
-
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "ci" / "build_matrix.py"), "--services", '["backend_service"]'],
-        capture_output=True,
-        text=True,
-        check=False,
+    job = _container_build_job()
+    if_cond = job.get("if", "")
+    assert "services_json" in if_cond, "container-build if must read services_json"
+    assert "matrix.service" in if_cond, "container-build if must use the matrix context"
+    assert "contains(fromJson" in if_cond, (
+        "container-build if must filter rows via contains(fromJson(services_json), matrix.service)"
     )
-    assert result.returncode == 0, result.stderr
-    rows = json.loads(result.stdout)
-    assert [row["service"] for row in rows] == ["backend_service"]
+
+
+def test_container_build_if_skips_when_no_services() -> None:
+    """Docs-only (services_json == '[]') -> the whole job is skipped."""
+    job = _container_build_job()
+    assert "services_json != '[]'" in job.get("if", ""), (
+        "docs-only must skip the entire container-build job (empty services_json)"
+    )
+
+
+def test_container_build_matrix_covers_all_four_services() -> None:
+    """The static config matrix must cover every canonical product service."""
+    matrix = _container_build_job()["strategy"]["matrix"]
+    include = matrix.get("include", [])
+    assert [entry["service"] for entry in include] == list(SERVICE_FULL_NAMES)
+    for entry in include:
+        # Full service area id (matches services_json / service-ci path).
+        assert entry["service"] in SERVICE_FULL_NAMES
+        # Short cache scope stays stable per service (never area id/branch/SHA).
+        assert entry["scope"] in SHORT_SCOPES
+        assert entry["dockerfile"].startswith("services/product/")
+        assert entry["image"].startswith("imjusthman/ai-live-")
+        assert entry["platforms"]
+
+
+def test_container_build_rows_have_all_build_inputs() -> None:
+    """Each matrix row carries everything _container-build.yml needs."""
+    matrix = _container_build_job()["strategy"]["matrix"]
+    for entry in matrix["include"]:
+        for key in ("service", "scope", "dockerfile", "image", "platforms"):
+            assert entry.get(key), f"matrix row {entry['service']} missing {key!r}"
