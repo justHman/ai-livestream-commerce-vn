@@ -6,21 +6,19 @@ backend-only change still builds llm/tts/avatar images. The OpenSpec spec
 (`ci-container-build-optimization`) says container-build SHALL run for the
 affected images only.
 
-Two GitHub matrix mechanisms were tried and rejected:
+GitHub matrix filtering attempts that were tried and rejected:
 1. `include`-as-lookup against a `fromJson(services_json)` vector — GitHub
-   ALWAYS adds include entries that do not match a vector row as brand-new
-   rows, so non-affected services still build.
+   ALWAYS adds include entries that do not match a vector row as new rows.
 2. A compute job emitting the exact matrix via `fromJson(outputs.matrix)` —
-   evals empty for reusable-workflow jobs, so `container-build` fails with an
-   empty-matrix error instead of spawning.
+   evals empty for reusable-workflow jobs.
+3. `matrix.service` in the CALLER job `if` — the matrix context is not
+   allowed in a job-level `if` that calls a reusable workflow.
 
-The reliable pattern: a STATIC 4-row config matrix plus a job-level `if` that
-uses the matrix context (`contains(fromJson(services_json), matrix.service)`).
-GitHub evaluates the job `if` per matrix row, so non-affected rows are skipped
-(not built); the gate accepts `skipped`. Each row carries the full service
-area id (`backend_service` — the same id `_python-service-ci.yml` consumes as
-`services/product/<service>` paths) plus a short `scope` for the stable
-per-service Buildx cache key.
+The working pattern: a STATIC 4-row config matrix, each row passing
+`enabled: ${{ contains(fromJson(services_json), matrix.service) }}` to the
+reusable workflow, whose build job guards on `if: ${{ inputs.enabled }}`
+(inputs ARE allowed in a reusable-workflow job `if`). Non-affected rows are
+skipped inside the reusable workflow; the gate accepts `skipped`.
 """
 
 from __future__ import annotations
@@ -31,6 +29,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
+CB_YML = ROOT / ".github" / "workflows" / "_container-build.yml"
 
 _gha_yaml = _util.spec_from_file_location(
     "_gha_yaml",
@@ -54,23 +53,21 @@ def _container_build_job() -> dict[str, Any]:
     return job
 
 
-def test_container_build_job_if_filters_by_services_json() -> None:
-    """container-build must guard each matrix row on affected-area output.
+def test_container_build_passes_enabled_per_row() -> None:
+    """Each matrix row must pass `enabled` derived from services_json.
 
-    A backend-only change must not schedule llm/tts/avatar image builds; the
-    job-level `if` reads services_json and the matrix context so non-affected
-    rows are skipped.
+    `contains(fromJson(services_json), matrix.service)` — GitHub evaluates
+    `with` per matrix row, so non-affected services get enabled=false and are
+    skipped inside the reusable workflow.
     """
     job = _container_build_job()
-    if_cond = job.get("if", "")
-    assert "services_json" in if_cond, "container-build if must read services_json"
-    assert "matrix.service" in if_cond, "container-build if must use the matrix context"
-    assert "contains(fromJson" in if_cond, (
-        "container-build if must filter rows via contains(fromJson(services_json), matrix.service)"
+    enabled = job["with"].get("enabled", "")
+    assert "contains(fromJson(needs.affected-area.outputs.services_json), matrix.service)" in enabled, (
+        "container-build must pass enabled = (service in services_json) per matrix row"
     )
 
 
-def test_container_build_if_skips_when_no_services() -> None:
+def test_container_build_job_if_skips_when_no_services() -> None:
     """Docs-only (services_json == '[]') -> the whole job is skipped."""
     job = _container_build_job()
     assert "services_json != '[]'" in job.get("if", ""), (
@@ -84,9 +81,7 @@ def test_container_build_matrix_covers_all_four_services() -> None:
     include = matrix.get("include", [])
     assert [entry["service"] for entry in include] == list(SERVICE_FULL_NAMES)
     for entry in include:
-        # Full service area id (matches services_json / service-ci path).
         assert entry["service"] in SERVICE_FULL_NAMES
-        # Short cache scope stays stable per service (never area id/branch/SHA).
         assert entry["scope"] in SHORT_SCOPES
         assert entry["dockerfile"].startswith("services/product/")
         assert entry["image"].startswith("imjusthman/ai-live-")
@@ -99,3 +94,27 @@ def test_container_build_rows_have_all_build_inputs() -> None:
     for entry in matrix["include"]:
         for key in ("service", "scope", "dockerfile", "image", "platforms"):
             assert entry.get(key), f"matrix row {entry['service']} missing {key!r}"
+
+
+def test_reusable_workflow_build_job_guards_on_enabled() -> None:
+    """_container-build.yml's build job must skip when enabled is false.
+
+    This is the actual filter: inputs ARE allowed in a reusable-workflow job
+    `if` (the caller's matrix context is not), so non-affected rows are
+    skipped here.
+    """
+    doc = load_yaml(CB_YML)
+    assert doc is not None, "_container-build.yml must parse"
+    build_job = doc["jobs"]["build"]
+    assert "inputs.enabled" in build_job.get("if", ""), (
+        "reusable build job must guard on if: ${{ inputs.enabled }}"
+    )
+
+
+def test_reusable_workflow_declares_enabled_input() -> None:
+    """The reusable workflow must declare the `enabled` input (default true)."""
+    doc = load_yaml(CB_YML)
+    assert doc is not None
+    inputs = doc["on"]["workflow_call"]["inputs"]
+    assert "enabled" in inputs
+    assert inputs["enabled"].get("default") is True, "enabled must default to true"

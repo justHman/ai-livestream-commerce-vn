@@ -190,11 +190,10 @@ jobs:
   container-build:
     needs: [mode, affected-area, service-ci]
     # P2-08: build ONLY the affected images. The static 4-row matrix is the
-    # config lookup; a job-level `if` with the matrix context skips rows whose
-    # service is not in services_json (GitHub evaluates `if` per matrix row).
-    # Matrix-from-output via fromJson was tried and evals empty for reusable
-    # workflows, so the per-row guard is the reliable filter.
-    if: ${{ always() && needs.mode.result == 'success' && needs.affected-area.outputs.services_json != '[]' && contains(fromJson(needs.affected-area.outputs.services_json), matrix.service) && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
+    # config lookup; each row passes `enabled` = (service in services_json) to
+    # the reusable workflow, whose build job `if: inputs.enabled` skips
+    # non-affected rows (inputs are allowed in reusable job if; matrix is not).
+    if: ${{ always() && needs.mode.result == 'success' && needs.affected-area.outputs.services_json != '[]' && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
     uses: ./.github/workflows/_container-build.yml
     with:
       image: ${{ matrix.image }}
@@ -204,11 +203,12 @@ jobs:
       platforms: ${{ matrix.platforms }}
       push: false
       export_cache: true
+      enabled: ${{ contains(fromJson(needs.affected-area.outputs.services_json), matrix.service) }}
     strategy:
       fail-fast: false
       # Static config lookup: service (full area id), scope (short cache
       # name), dockerfile, image, platforms. Rows for non-affected services
-      # are skipped by the job-level `if` guard above.
+      # are skipped inside the reusable workflow via `enabled`.
       matrix:
         include:
           - service: backend_service
