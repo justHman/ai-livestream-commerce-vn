@@ -90,6 +90,9 @@ class FakeProvider:
             supported_response_formats=("pcm", "wav"),
         )
 
+    def validate_request(self, request: ProviderRequest) -> None:
+        """Pre-admission capability check mirroring the real provider (P1-07)."""
+
     def batch_key(self, request: ProviderRequest):
         return "k"
 
@@ -317,3 +320,34 @@ def test_runtime_path_preserves_tracing_headers(monkeypatch) -> None:
     assert resp.headers["x-session-id"] == "sess-t"
     assert resp.headers["x-utterance-id"] == "utt-t"
     assert resp.headers["x-chunk-seq"] == "3"
+
+
+# ── P1-07: unsupported style -> 4xx pre-queue; valid sibling still works ──────
+def test_speech_unsupported_style_returns_4xx_before_queueing(monkeypatch) -> None:
+    """P1-07: POST /v1/speech with style 'bogus' returns a 4xx, not a 5xx.
+
+    The runtime's admission validator rejects the request BEFORE it enters the
+    pending population, so the route surfaces the stable provider domain error
+    (CapabilityError -> 400) instead of the batch path KeyError (500) that
+    would fail unrelated siblings.
+    """
+    from tts.providers.errors import CapabilityError
+
+    clock = FakeClock()
+    provider = FakeProvider()
+    app = _prepare_app(monkeypatch, provider=provider)
+    start_ticking(clock)
+
+    def reject_bogus(request):
+        if request.style == "bogus":
+            raise CapabilityError("unsupported style 'bogus'")
+
+    with TestClient(app) as client:
+        runtime = _make_runtime(clock, provider)
+        runtime._admission.validate = reject_bogus
+        app.state.runtime = runtime
+        resp = client.post("/v1/speech", json=_payload(style="bogus"))
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"].startswith("provider_")
+    assert len(provider.batch_calls) == 0  # never reached a provider batch
+    assert runtime.pending_depth() == 0  # never entered the queue

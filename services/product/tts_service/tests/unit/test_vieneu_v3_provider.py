@@ -325,6 +325,51 @@ async def test_unsupported_style_raises_capability_error(fake_tts) -> None:
         await provider.synthesize(make_request(style="vui_ve"))
 
 
+# ── P1-07: batch-path validation parity with single synthesis ────────────────
+async def test_batch_rejects_unsupported_style_before_engine_rows(fake_tts) -> None:
+    """P1-07: batch path validates EVERY member before building engine rows.
+
+    An unsupported style must raise the typed CapabilityError (4xx), not a
+    KeyError from ``_build_engine_request``, and the batch engine must never
+    see the invalid request.
+    """
+    provider = make_provider(fake_tts)
+    with pytest.raises(CapabilityError, match="unsupported style"):
+        await provider.synthesize_batch(
+            [
+                make_request(request_id="req-good", style="natural"),
+                make_request(request_id="req-bogus", style="bogus"),
+            ]
+        )
+    assert fake_tts.batch_engine.calls == []
+
+
+async def test_batch_rejects_unsupported_cue_before_engine_rows(fake_tts) -> None:
+    """P1-07: unsupported expressive cue fails the batch with a typed 4xx."""
+    provider = make_provider(fake_tts)
+    with pytest.raises(CapabilityError, match="unsupported expressive cue"):
+        await provider.synthesize_batch(
+            [
+                make_request(request_id="req-good", input_text="Xin chào"),
+                make_request(request_id="req-cue", input_text="Xin chào [hát]"),
+            ]
+        )
+    assert fake_tts.batch_engine.calls == []
+
+
+async def test_validate_request_exposes_provider_pre_admission_check(fake_tts) -> None:
+    """P1-07: the provider exposes a public pre-admission validator.
+
+    ``validate_request`` is the callable the lifespan injects into
+    ``AdmissionController`` — it must reject unsupported style/cue with the
+    same typed 4xx error the single-synthesis path raises.
+    """
+    provider = make_provider(fake_tts)
+    with pytest.raises(CapabilityError, match="unsupported style"):
+        provider.validate_request(make_request(style="bogus"))
+    provider.validate_request(make_request(style="natural"))  # no raise
+
+
 async def test_supported_cue_passes(fake_tts) -> None:
     provider = make_provider(fake_tts)
     result = await provider.synthesize(make_request(input_text="Xin chào [cười]"))

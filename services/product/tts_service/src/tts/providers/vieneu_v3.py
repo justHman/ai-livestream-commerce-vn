@@ -191,8 +191,7 @@ class VieNeuV3TurboProvider:
 
     async def synthesize(self, request: ProviderRequest) -> AudioResult:
         """Synthesize one request via the SDK single-inference path."""
-        self._validate_style(request.style)
-        self._validate_cues(request.input_text)
+        self.validate_request(request)
         payload = self._resolve_profile(request)
         try:
             wav = await asyncio.to_thread(
@@ -212,6 +211,17 @@ class VieNeuV3TurboProvider:
             ) from exc
         return self._to_result(request, np.asarray(wav, dtype=np.float32).reshape(-1))
 
+    def validate_request(self, request: ProviderRequest) -> None:
+        """Pre-admission capability check (P1-07): style + cue validation.
+
+        Raises ``CapabilityError`` (4xx) for unsupported style or expressive
+        cue. Wired into ``AdmissionController`` by the lifespan so invalid
+        client input is rejected BEFORE it enters the pending population or
+        joins a provider batch.
+        """
+        self._validate_style(request.style)
+        self._validate_cues(request.input_text)
+
     async def synthesize_batch(self, requests: list[ProviderRequest]) -> list[ProviderResult]:
         """Mixed-voice static batch via the SDK batch engine; order preserved.
 
@@ -222,6 +232,13 @@ class VieNeuV3TurboProvider:
         """
         if not requests:
             return []
+        # P1-07: batch-path validation parity with single synthesis. Validate
+        # EVERY member BEFORE building engine rows so an unsupported style/cue
+        # fails fast with a typed CapabilityError instead of a KeyError inside
+        # ``_build_engine_request`` — one invalid member must not fail the
+        # whole batch.
+        for request in requests:
+            self.validate_request(request)
         if self._backend != "pytorch":
             results = [await self.synthesize(request) for request in requests]
             return results
