@@ -2,9 +2,11 @@
 #
 # Reusable workflow (underscore prefix, workflow_call only). Runs ruff format/
 # lint, typecheck (pyright), unit tests, and — only when the calling mode
-# requests them — integration, contract and coverage suites. Every skipped
-# check reports a neutral success so the aggregate `CI / gate` never waits on
-# a job that was deliberately not run (design §4, 3.3).
+# requests them — integration, contract and coverage suites. Pytest steps
+# propagate non-zero exits: a red test fails the job (no `|| true` swallow),
+# and the coverage gate enforces --cov-fail-under=80 when enabled. Every
+# skipped check reports a neutral success so the aggregate `CI / gate` never
+# waits on a job that was deliberately not run (design §4, 3.3).
 #
 # Test matrix per mode lives in scripts/ci/test_matrix.json (committed 1.59);
 # this workflow is the execution layer honoring it. Product services use
@@ -73,22 +75,19 @@ jobs:
         run: uvx pyright --pythonpath .venv/bin/python src tests
         working-directory: services/product/${{ matrix.service }}
       - name: Unit tests
-        run: >
-          ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=no || true
-          --ignore=tests/integration
-          --ignore=tests/contract
+        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --ignore=tests/integration --ignore=tests/contract
         working-directory: services/product/${{ matrix.service }}
       - name: Integration tests
         if: ${{ inputs.integration }}
-        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=no || true
+        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short
         working-directory: services/product/${{ matrix.service }}
       - name: Contract tests
         if: ${{ inputs.contract }}
-        run: ./.venv/bin/python -m pytest tests/contract -q -p no:cacheprovider --tb=no || true
+        run: ./.venv/bin/python -m pytest tests/contract -q -p no:cacheprovider --tb=short
         working-directory: services/product/${{ matrix.service }}
       - name: Coverage gate
         if: ${{ inputs.coverage }}
-        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=no || true --cov-fail-under=80
+        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --cov=${{ matrix.service }} --cov-fail-under=80
         working-directory: services/product/${{ matrix.service }}
 
   neutral-skip:
