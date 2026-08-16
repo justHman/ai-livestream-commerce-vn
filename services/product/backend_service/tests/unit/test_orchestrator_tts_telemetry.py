@@ -16,7 +16,7 @@ from llm.engines.base import LLMEngine, LLMRequest, LLMResponse
 from avatar.engines.mock import MockRenderBackend
 from backend.application.render.engines_base import StartOptions
 from backend.application.render.windows import AudioWindow, VideoWindow
-from backend.application.text_chunker import FixedChunkPolicyConfig, TextChunk
+from backend.application.text_chunker import ChunkPolicy, FixedChunkPolicyConfig, TextChunk
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 from backend.application.render.orchestrator import (
     StreamOrchestrator,
@@ -112,6 +112,10 @@ def _build_orchestrator(
         metrics=metrics,
         fixed_config=FixedChunkPolicyConfig(min_chars=4, target_chars=20, max_chars=40),
         controller_config=StreamingControllerConfig(flush_timeout_ms=50),
+        # Fixed-policy telemetry assertions (punctuation reason, policy tag):
+        # the fixed policy is the EXPLICIT rollback — the runtime default is
+        # adaptive_vi (P1-02), which stamps sentence/paragraph reasons.
+        chunk_policy=ChunkPolicy.FIXED,
         telemetry=telemetry,
     )
     return orch, backend, queue

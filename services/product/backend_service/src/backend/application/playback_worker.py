@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .playback_queue import PlaybackCancelled, PlaybackQueue, new_item
-from .text_chunker import FixedChunkPolicyConfig, TextChunker
+from .text_chunker import ChunkPolicy, FixedChunkPolicyConfig, TextChunker
 
 __all__ = [
     "PlaybackWorker",
@@ -31,13 +31,16 @@ class PlaybackWorkerConfig:
 
     The character thresholds source their defaults from the canonical
     ``FixedChunkPolicyConfig`` (one typed source; no duplicated defaults).
-    The realtime flush deadline is owned by ``StreamingControllerConfig`` at
-    the orchestration boundary, not here.
+    ``chunk_policy`` is the single typed runtime policy seam: adaptive_vi by
+    default, ``fixed`` the explicit rollback. The realtime flush deadline is
+    owned by ``StreamingControllerConfig`` at the orchestration boundary,
+    not here.
     """
 
     min_chars: int = FixedChunkPolicyConfig().min_chars
     target_chars: int = FixedChunkPolicyConfig().target_chars
     max_chars: int = FixedChunkPolicyConfig().max_chars
+    chunk_policy: ChunkPolicy | str = ChunkPolicy.ADAPTIVE_VI
     max_queue_windows: int = 5
     transient_retry_count: int = 1
 
@@ -56,12 +59,18 @@ class PlaybackWorker:
 
     def chunker(self, session_id: str, utterance_id: str) -> TextChunker:
         """Fresh chunker for one utterance."""
+        policy = (
+            self.config.chunk_policy
+            if isinstance(self.config.chunk_policy, ChunkPolicy)
+            else ChunkPolicy(self.config.chunk_policy)
+        )
         return TextChunker(
             session_id=session_id,
             utterance_id=utterance_id,
             min_chars=self.config.min_chars,
             target_chars=self.config.target_chars,
             max_chars=self.config.max_chars,
+            policy=policy,
         )
 
     def queue(self, session_id: str) -> PlaybackQueue:
