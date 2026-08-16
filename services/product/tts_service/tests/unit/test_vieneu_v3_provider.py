@@ -627,14 +627,13 @@ async def test_validate_request_rejects_missing_profile(fake_tts) -> None:
     """NEW-TTS-02: a nonexistent voice profile must be rejected by
     pre-admission validation (typed 4xx ProfileNotFoundError) so it never
     poisons a mixed-voice batch at inference time."""
+
     def loader(voice_profile_id: str, tenant_id: str):
         raise ProfileNotFoundError("nope")
 
     provider = make_provider(fake_tts, profile_loader=loader)
     with pytest.raises(ProfileNotFoundError):
-        provider.validate_request(
-            make_request(request_id="req-bad", voice_profile_id="vp-missing")
-        )
+        provider.validate_request(make_request(request_id="req-bad", voice_profile_id="vp-missing"))
 
 
 async def test_validate_request_rejects_cross_tenant_profile(fake_tts) -> None:

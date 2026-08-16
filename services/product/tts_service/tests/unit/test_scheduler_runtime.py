@@ -564,9 +564,7 @@ async def test_missing_profile_rejected_pre_admission_sibling_reaches_provider(
         clock=clock.now,
     )
     with pytest.raises(ProfileNotFoundError):
-        runtime._admission.try_admit(
-            _request("bad", voice_profile_id="vp-missing"), clock.now()
-        )
+        runtime._admission.try_admit(_request("bad", voice_profile_id="vp-missing"), clock.now())
     assert runtime.pending_depth() == 0  # rejected pre-queue
     tasks = await _submit(
         runtime,

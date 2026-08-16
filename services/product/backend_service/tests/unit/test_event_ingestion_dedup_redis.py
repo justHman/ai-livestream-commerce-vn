@@ -166,7 +166,9 @@ async def test_cross_process_lock_timeout_raises_typed_error() -> None:
     store = RedisSessionStore(client=fake)
     await store.set("s1", {"status": "active"})
     reducer = _RecordingReducer()
-    service = PlatformEventIngestionService(store=store, reducer=reducer, lock_acquire_timeout_seconds=0.05)
+    service = PlatformEventIngestionService(
+        store=store, reducer=reducer, lock_acquire_timeout_seconds=0.05
+    )
     assert await store.acquire_session_lock("s1", "holder-token", ttl_seconds=10)
 
     now = time.time()
@@ -235,8 +237,6 @@ def test_sessions_events_lock_timeout_returns_503() -> None:
     from backend.main import create_app
 
     with TestClient(create_app(config=config, deps=deps)) as client:
-        r = client.post(
-            "/api/v1/sessions/s1/events", json={"events": [_event("e1", text="hello")]}
-        )
+        r = client.post("/api/v1/sessions/s1/events", json={"events": [_event("e1", text="hello")]})
 
     assert r.status_code == 503
