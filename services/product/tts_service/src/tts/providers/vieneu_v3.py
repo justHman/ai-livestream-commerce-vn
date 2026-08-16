@@ -259,8 +259,46 @@ class VieNeuV3TurboProvider:
             results.append(self._to_result(request, wav))
         return results
 
-    def enroll_voice(self, reference_audio: bytes, options: dict) -> object:
-        raise ProviderUnavailableError("VieNeu provider enrollment is not wired yet (cluster 5)")
+    def enroll_voice(self, reference_audio: bytes, options: dict) -> dict:
+        """Enroll a cloned voice via the SDK's one-time ``encode_reference``.
+
+        Provider-owned enrollment seam (P1-05): writes the reference WAV to a
+        temp file and calls ``tts.encode_reference(ref_path, denoise=True)``
+        -> ``(speaker_emb, ref_codes)``, the canonical VieNeu enrollment
+        surface (SDK surface notes). The returned provider-private dict is
+        encoded by the voice service's payload schema before persistence —
+        the raw embedding never crosses the API boundary.
+
+        The SDK import is deferred and errors map to the stable
+        ``ProviderUnavailableError``/``ProviderInferenceError`` taxonomy:
+        an offline box (no ``vieneu`` wheel) fails closed here, exactly like
+        synthesis does. Offline integration tests inject a fake provider, so
+        the wiring contract is proven without the SDK.
+        """
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            handle.write(reference_audio)
+            ref_path = handle.name
+        try:
+            try:
+                speaker_emb, ref_codes = self._tts.encode_reference(
+                    ref_path, denoise=bool(options.get("denoise", True))
+                )
+            except ProviderUnavailableError:
+                raise
+            except Exception as exc:
+                raise ProviderInferenceError(
+                    "VieNeu voice enrollment failed for the reference audio"
+                ) from exc
+        finally:
+            import os
+
+            os.unlink(ref_path)
+        return {
+            "speaker_emb": speaker_emb,
+            "ref_codes": ref_codes,
+        }
 
     # ── helpers ──────────────────────────────────────────────────────────────
     @staticmethod
