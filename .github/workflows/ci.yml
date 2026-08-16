@@ -187,8 +187,26 @@ jobs:
       contract: ${{ needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' }}
       coverage: ${{ needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' }}
 
+  # P2-08: the container-build matrix must contain ONLY the affected images.
+  # GitHub's matrix `include` ALWAYS adds entries that don't match a vector
+  # row as new rows, so include-as-lookup cannot filter. This job computes
+  # the exact matrix (service + scope + dockerfile + image + platforms) for
+  # the affected services and hands it to container-build via fromJson.
+  container-build-matrix:
+    runs-on: ubuntu-latest
+    needs: [affected-area]
+    if: ${{ always() && needs.affected-area.result == 'success' }}
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate affected-image matrix
+        id: gen
+        run: |
+          echo "matrix=$(python scripts/ci/build_matrix.py --services '${{ needs.affected-area.outputs.services_json }}')" >> "$GITHUB_OUTPUT"
+
   container-build:
-    needs: [mode, affected-area, service-ci]
+    needs: [mode, affected-area, service-ci, container-build-matrix]
     if: ${{ always() && needs.mode.result == 'success' && needs.affected-area.outputs.services_json != '[]' && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
     uses: ./.github/workflows/_container-build.yml
     with:
@@ -201,39 +219,11 @@ jobs:
       export_cache: true
     strategy:
       fail-fast: false
-      # P2-08: the matrix is DERIVED from the affected-area output — the
-      # `service` vector is the trusted services_json (FULL service-area ids:
-      # backend_service, llm_service, tts_service, avatar_service — the same
-      # ids _python-service-ci.yml consumes as `services/product/<service>`
-      # paths), and the include entries act as a lookup table keyed on those
-      # SAME full ids. Each entry also carries a `scope` short name (backend,
-      # llm, tts, avatar) so the Buildx cache scope stays stable per service
-      # and never carries the area id. A backend-only change builds only
-      # backend; docs-only (services_json == '[]') yields zero rows and the
-      # `if:` guard skips the job.
-      matrix:
-        service: ${{ fromJson(needs.affected-area.outputs.services_json) }}
-        include:
-          - service: backend_service
-            scope: backend
-            dockerfile: services/product/backend_service/Dockerfile
-            image: imjusthman/ai-live-backend
-            platforms: linux/arm64
-          - service: llm_service
-            scope: llm
-            dockerfile: services/product/llm_service/Dockerfile
-            image: imjusthman/ai-live-llm
-            platforms: linux/amd64
-          - service: tts_service
-            scope: tts
-            dockerfile: services/product/tts_service/Dockerfile
-            image: imjusthman/ai-live-tts
-            platforms: linux/amd64
-          - service: avatar_service
-            scope: avatar
-            dockerfile: services/product/avatar_service/Dockerfile
-            image: imjusthman/ai-live-avatar
-            platforms: linux/amd64
+      # Matrix is EXACTLY the affected services (from the compute job); each
+      # row carries service (full id), scope (short cache name), dockerfile,
+      # image, platforms. Docs-only (services_json == '[]') yields zero rows
+      # and the `if:` guard skips the job.
+      matrix: ${{ fromJson(needs.container-build-matrix.outputs.matrix) }}
 
   workbench-check:
     runs-on: ubuntu-latest
