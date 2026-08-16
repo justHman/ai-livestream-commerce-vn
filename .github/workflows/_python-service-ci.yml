@@ -60,7 +60,9 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - name: Sync service environment
-        run: uv sync --frozen --group dev --no-cache
+        # tts_service additionally installs its optional vieneu extra so the
+        # real provider (and its provider tests) run in CI instead of erroring.
+        run: uv sync --frozen --group dev --no-cache ${{ matrix.service == 'tts_service' ? '--extra vieneu' : '' }}
         working-directory: services/product/${{ matrix.service }}
       - name: Format check
         run: uvx ruff format --check --no-cache src tests

@@ -913,7 +913,14 @@ def test_windows_job_assign_failure_fallback_kills_tree(
 
     taskkill_called: list[int] = []
     process = type(
-        "Proc", (), {"pid": 9999, "poll": lambda self: None, "kill": lambda self: None}
+        "Proc",
+        (),
+        {
+            "pid": 9999,
+            "poll": lambda self: None,
+            "kill": lambda self: None,
+            "wait": lambda self, timeout=None: 0,
+        },
     )()
 
     def fake_popen(*args, **kwargs):
@@ -952,7 +959,14 @@ def test_windows_job_assign_failure_taskkill_fallback_status(
     from tts.observability.logging import platform_collector
 
     process = type(
-        "Proc", (), {"pid": 9999, "poll": lambda self: None, "kill": lambda self: None}
+        "Proc",
+        (),
+        {
+            "pid": 9999,
+            "poll": lambda self: None,
+            "kill": lambda self: None,
+            "wait": lambda self, timeout=None: 0,
+        },
     )()
 
     def fake_popen(*args, **kwargs):
@@ -987,7 +1001,14 @@ def test_windows_job_assign_failure_non_nt_skips_fallback(
     from tts.observability.logging import platform_collector
 
     process = type(
-        "Proc", (), {"pid": 9999, "poll": lambda self: None, "kill": lambda self: None}
+        "Proc",
+        (),
+        {
+            "pid": 9999,
+            "poll": lambda self: None,
+            "kill": lambda self: None,
+            "wait": lambda self, timeout=None: 0,
+        },
     )()
 
     def fake_popen(*args, **kwargs):
@@ -1003,5 +1024,6 @@ def test_windows_job_assign_failure_non_nt_skips_fallback(
     monkeypatch.setattr(platform_collector, "_close_windows_job", lambda job: None)
     monkeypatch.setattr(platform_collector.subprocess, "Popen", fake_popen)
 
-    with pytest.raises(platform_collector.ProcessCleanupError, match="assign failed"):
-        platform_collector.run_command(["prog"], service="livekit")
+    # On non-Windows no job is created, so the assign-failure/taskkill path
+    # is skipped: run_command completes and returns the child exit code.
+    assert platform_collector.run_command(["prog"], service="livekit") == 0

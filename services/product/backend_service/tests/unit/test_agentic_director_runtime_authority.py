@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import typing
+
 import pytest
 
 from backend.application.agentic_director.runtime_authority import (
@@ -91,7 +93,9 @@ def test_runtime_authority_protocol_matches_backend_owned_operations():
 
 def test_authority_exposes_only_backend_owned_operations():
     assert isinstance(FakeAuthority(), RuntimeAuthority)
-    assert sorted(RuntimeAuthority.__protocol_attrs__) == [
+    # Public API, stable across Python versions (the internal __protocol_attrs__
+    # differs between 3.11 CI and 3.14 local).
+    assert sorted(typing.get_protocol_members(RuntimeAuthority)) == [
         "is_within_budget",
         "record_metric",
         "revalidate_volatile_evidence",
