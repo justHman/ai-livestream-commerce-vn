@@ -212,15 +212,19 @@ class VieNeuV3TurboProvider:
         return self._to_result(request, np.asarray(wav, dtype=np.float32).reshape(-1))
 
     def validate_request(self, request: ProviderRequest) -> None:
-        """Pre-admission capability check (P1-07): style + cue validation.
+        """Pre-admission capability check (P1-07, NEW-TTS-02): style + cue +
+        profile validation.
 
         Raises ``CapabilityError`` (4xx) for unsupported style or expressive
-        cue. Wired into ``AdmissionController`` by the lifespan so invalid
-        client input is rejected BEFORE it enters the pending population or
-        joins a provider batch.
+        cue, and ``ProfileNotFoundError`` (4xx) for a missing/cross-tenant
+        voice profile. Wired into ``AdmissionController`` by the lifespan so
+        invalid client input is rejected BEFORE it enters the pending
+        population or joins a provider batch — an invalid profile must not
+        fail a valid sibling at batch-inference time.
         """
         self._validate_style(request.style)
         self._validate_cues(request.input_text)
+        self._validate_profile(request)
 
     async def synthesize_batch(self, requests: list[ProviderRequest]) -> list[ProviderResult]:
         """Mixed-voice static batch via the SDK batch engine; order preserved.
@@ -334,6 +338,34 @@ class VieNeuV3TurboProvider:
             raise CapabilityError(
                 f"unsupported expressive cue in text; supported: {', '.join(SUPPORTED_CUES)}"
             )
+
+    def _validate_profile(self, request: ProviderRequest) -> None:
+        """Pre-admission profile check (NEW-TTS-02): the profile must resolve
+        for this tenant, and non-preset profiles must be cloned.
+
+        A nonexistent or cross-tenant profile raises ``ProfileNotFoundError``
+        (4xx) before the request enters the pending population, so a bad
+        profile can never ride into a mixed-voice batch and fail a valid
+        sibling. Mirrors ``_resolve_profile`` without decoding the payload.
+        """
+        voice_profile_id = request.voice_profile_id
+        if voice_profile_id == "default" or not voice_profile_id:
+            return
+        if self._profile_loader is None:
+            raise ProfileNotFoundError(
+                f"voice profile {voice_profile_id!r} not found (profile service not wired)"
+            )
+        profile, _ = self._profile_loader(voice_profile_id, request.tenant_id)
+        if profile.tenant_id != request.tenant_id:
+            # Cross-tenant must be invisible: never leak another tenant's voice.
+            raise ProfileNotFoundError(
+                f"voice profile {voice_profile_id!r} not found for tenant {request.tenant_id!r}"
+            )
+        if not profile.provider_payload_location.startswith("preset://"):
+            if profile.profile_kind != "cloned":
+                raise ProfileNotFoundError(
+                    f"voice profile {voice_profile_id!r} has no resolvable payload"
+                )
 
     def _resolve_profile(self, request: ProviderRequest) -> dict:
         voice_profile_id = request.voice_profile_id
