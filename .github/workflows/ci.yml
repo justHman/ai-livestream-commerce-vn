@@ -194,7 +194,7 @@ jobs:
     with:
       image: ${{ matrix.image }}
       tag: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || format('ci-{0}', github.sha) }}
-      scope: ${{ matrix.service }}
+      scope: ${{ matrix.scope }}
       dockerfile: ${{ matrix.dockerfile }}
       platforms: ${{ matrix.platforms }}
       push: false
@@ -202,27 +202,35 @@ jobs:
     strategy:
       fail-fast: false
       # P2-08: the matrix is DERIVED from the affected-area output — the
-      # `service` vector is the trusted services_json, and the include entries
-      # act as a lookup table (GitHub enriches each vector row with the include
-      # entry matching its service). A backend-only change builds only backend;
-      # docs-only (services_json == '[]') yields zero rows and the `if:` guard
-      # skips the job. Cache scope stays the short service name.
+      # `service` vector is the trusted services_json (FULL service-area ids:
+      # backend_service, llm_service, tts_service, avatar_service — the same
+      # ids _python-service-ci.yml consumes as `services/product/<service>`
+      # paths), and the include entries act as a lookup table keyed on those
+      # SAME full ids. Each entry also carries a `scope` short name (backend,
+      # llm, tts, avatar) so the Buildx cache scope stays stable per service
+      # and never carries the area id. A backend-only change builds only
+      # backend; docs-only (services_json == '[]') yields zero rows and the
+      # `if:` guard skips the job.
       matrix:
         service: ${{ fromJson(needs.affected-area.outputs.services_json) }}
         include:
-          - service: backend
+          - service: backend_service
+            scope: backend
             dockerfile: services/product/backend_service/Dockerfile
             image: imjusthman/ai-live-backend
             platforms: linux/arm64
-          - service: llm
+          - service: llm_service
+            scope: llm
             dockerfile: services/product/llm_service/Dockerfile
             image: imjusthman/ai-live-llm
             platforms: linux/amd64
-          - service: tts
+          - service: tts_service
+            scope: tts
             dockerfile: services/product/tts_service/Dockerfile
             image: imjusthman/ai-live-tts
             platforms: linux/amd64
-          - service: avatar
+          - service: avatar_service
+            scope: avatar
             dockerfile: services/product/avatar_service/Dockerfile
             image: imjusthman/ai-live-avatar
             platforms: linux/amd64

@@ -29,10 +29,14 @@ _mod = _util.module_from_spec(_gha_yaml)
 _gha_yaml.loader.exec_module(_mod)
 load_yaml = _mod.load_file
 
-# Short service names: the affected-area step emits `backend`, `llm`, `tts`,
-# `avatar` (proven by _python-service-ci.yml consuming the same services_json
-# as matrix.service for `services/product/${{ matrix.service }}` paths).
-SERVICE_SHORT_NAMES = ("backend", "llm", "tts", "avatar")
+# Service area ids emitted by detect_changes.py (docstring: "backend_service,
+# llm_service, tts_service, avatar_service") — PRODUCT_AREAS = {s}_service.
+# _python-service-ci.yml consumes services_json as matrix.service for the
+# `services/product/${{ matrix.service }}` path, so the vector uses the FULL
+# names. The container-build include lookup must key on the SAME full names,
+# and each entry carries a `scope` short name for the stable per-service
+# Buildx cache scope (cache must not change when a service name does).
+SERVICE_FULL_NAMES = ("backend_service", "llm_service", "tts_service", "avatar_service")
 
 
 def _container_build_job() -> dict[str, Any]:
@@ -76,9 +80,12 @@ def test_container_build_matrix_derived_from_services_json() -> None:
 def test_container_build_backend_only_change_builds_only_backend() -> None:
     """A backend-only change must produce exactly one image job: backend."""
     matrix = _container_build_job()["strategy"]["matrix"]
-    rows = _expand(matrix, ["backend"])
-    assert [row["service"] for row in rows] == ["backend"]
+    rows = _expand(matrix, ["backend_service"])
+    assert [row["service"] for row in rows] == ["backend_service"]
     assert all(row["image"] == "imjusthman/ai-live-backend" for row in rows)
+    assert all(row["scope"] == "backend" for row in rows), (
+        "container-build cache scope must stay the short service name (stable per-service cache)"
+    )
 
 
 def test_container_build_docs_only_change_builds_zero_images() -> None:
@@ -104,15 +111,18 @@ def test_container_build_shared_lock_change_builds_zero_images() -> None:
 def test_container_build_two_service_change_fans_out_exactly() -> None:
     """backend + tts changed -> exactly those two image jobs, no others."""
     matrix = _container_build_job()["strategy"]["matrix"]
-    rows = _expand(matrix, ["backend", "tts"])
-    assert [row["service"] for row in rows] == ["backend", "tts"]
+    rows = _expand(matrix, ["backend_service", "tts_service"])
+    assert [row["service"] for row in rows] == ["backend_service", "tts_service"]
 
 
 def test_container_build_include_covers_all_four_services() -> None:
     """The include lookup table must cover every canonical product service."""
     matrix = _container_build_job()["strategy"]["matrix"]
     include = matrix.get("include", [])
-    assert [entry["service"] for entry in include] == ["backend", "llm", "tts", "avatar"]
-    assert all(entry["service"] in SERVICE_SHORT_NAMES for entry in include), (
-        "include entries must key on short service names from services_json"
+    assert [entry["service"] for entry in include] == list(SERVICE_FULL_NAMES), (
+        "include entries must key on the FULL service names emitted by services_json"
     )
+    assert all(entry["service"] in SERVICE_FULL_NAMES for entry in include)
+    # Every entry keeps a short cache scope so the Buildx cache key stays
+    # stable per service (never includes branch/SHA, never renames on area id).
+    assert all(entry["scope"] in ("backend", "llm", "tts", "avatar") for entry in include)
