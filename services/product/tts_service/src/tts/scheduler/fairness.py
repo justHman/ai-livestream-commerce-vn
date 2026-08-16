@@ -114,6 +114,14 @@ class FairnessSelector:
         aged_normal = self._oldest_aged_normal(eligible)
         if aged_normal is not None:
             selected.append(aged_normal)
+            # Exclude the reserved request from the eligibility snapshot so
+            # the tier loop cannot select it again in the same round
+            # (NEW-TTS-01). The snapshot is throwaway; the real
+            # ``PendingPopulation`` is never mutated.
+            key = (aged_normal.session_id, aged_normal.synthesis_request.priority)
+            reserved = eligible.get(key)
+            if reserved is not None:
+                reserved.aged.remove(aged_normal)
         for priority in (Priority.HIGH, Priority.NORMAL):
             if len(selected) >= limit:
                 break

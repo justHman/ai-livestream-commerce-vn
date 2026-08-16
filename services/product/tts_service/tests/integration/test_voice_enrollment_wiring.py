@@ -94,9 +94,9 @@ class FakeEnrollingProvider:
     # --- pre-admission validation (P1-07) ---
     def validate_request(self, request: ProviderRequest) -> None:
         if request.style not in self.capabilities().supported_styles:
-            from tts.providers.errors import ProviderValidationError
+            from tts.providers.errors import CapabilityError
 
-            raise ProviderValidationError(f"unsupported style: {request.style}")
+            raise CapabilityError(f"unsupported style: {request.style}")
 
     def profile_loader(self, voice_profile_id: str, tenant_id: str):
         from tts.voices.store import ProfileNotFoundError

@@ -35,7 +35,7 @@ from tts.providers.models import (
     SynthesisRequest,
 )
 from tts.scheduler.admission import AdmissionController
-from tts.scheduler.fairness import FairnessSelector, PendingPopulation
+from tts.scheduler.fairness import FairnessConfig, FairnessSelector, PendingPopulation
 from tts.scheduler.runtime import SchedulerRuntime
 
 NOW = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
@@ -436,3 +436,145 @@ async def test_runtime_validates_before_admission_and_sibling_completes() -> Non
     result = await asyncio.wait_for(tasks[0], timeout=5)
     assert result.request_id == "good"
     assert provider.batch_calls == [(("fake", 0.8), ("good",))]
+
+
+# ── NEW-TTS-01: aging reserve must not duplicate a member in one batch ────────
+async def test_aged_normal_reserve_not_duplicated_in_dispatch_batch() -> None:
+    """NEW-TTS-01: the aging reserve must exclude its pick from the eligible
+    snapshot so the NORMAL tier cannot select it again — a duplicated member
+    crashes ``_dispatch_group.remove`` and double-frees admission capacity."""
+    clock = FakeClock()
+    provider = FakeProvider(max_batch_size=4)
+    runtime = SchedulerRuntime(
+        population=PendingPopulation(),
+        admission=AdmissionController(512, 64),
+        selector=FairnessSelector(FairnessConfig(aging_threshold_ms=10)),
+        provider=provider,
+        config=_config(max_batch_size=4, coalesce_window_ms=1),
+        clock=clock.now,
+    )
+    aged = await _submit(runtime, _request("n0", session_id="sess-n"))
+    clock.advance(0.2)  # n0 ages past the 10 ms aging threshold
+    fresh = await _submit(
+        runtime,
+        _request("n1", session_id="sess-n"),
+        _request("h0", session_id="sess-h", priority=Priority.HIGH),
+    )
+    await _settle(clock)
+    results = await asyncio.wait_for(asyncio.gather(*(aged + fresh)), timeout=5)
+    assert sorted(r.request_id for r in results) == ["h0", "n0", "n1"]
+    assert len(provider.batch_calls) == 1
+    batch_ids = provider.batch_calls[0][1]
+    assert len(batch_ids) == len(set(batch_ids))  # no duplicate provider row
+    assert runtime._admission.global_pending == 0  # capacity released exactly once
+
+
+# ── NEW-TTS-02: invalid profile rejected pre-admission, sibling alone reaches
+# ── the provider ──────────────────────────────────────────────────────────────
+async def test_missing_profile_rejected_pre_admission_sibling_reaches_provider(
+    monkeypatch,
+) -> None:
+    """NEW-TTS-02: a nonexistent voice profile is rejected by pre-admission
+    validation (typed 4xx ProfileNotFoundError) BEFORE it joins the pending
+    population; the valid sibling alone reaches the provider and completes
+    exactly once. On the current bug the invalid request rides into the
+    mixed-voice provider batch and its profile-resolution error fails the
+    whole group (valid sibling included)."""
+    from tts.providers.errors import ProfileNotFoundError
+    from tts.providers.vieneu_v3 import VieNeuV3TurboProvider
+    from tts.voices.models import VoiceProfile
+    from tts.voices.payloads import encode_vieneu_payload
+
+    class _Engine:
+        def _resolve_style_id(self, style: str) -> int:
+            return 0
+
+    class _BatchEngine:
+        def __init__(self) -> None:
+            self.rows: list[list[dict]] = []
+
+        def generate_batch(
+            self,
+            requests: list[dict],
+            *,
+            temperature: float = 0.8,
+            top_k: int = 25,
+            top_p: float = 0.95,
+            repetition_penalty: float = 1.2,
+            max_new_frames: int = 300,
+            use_cudagraph: bool = False,
+        ) -> list[np.ndarray]:
+            self.rows.append(requests)
+            return [np.zeros(4800, dtype=np.float32) for _ in requests]
+
+    class _TTS:
+        backend = "pytorch"
+
+        def __init__(self) -> None:
+            self.engine = _Engine()
+            self.batch_engine = _BatchEngine()
+            self.preset_voices = {"default": {"speaker_emb": np.zeros(192, dtype=np.float32)}}
+            self._default_voice = "default"
+
+        def get_preset_voice(self, name=None):
+            voice = name or self._default_voice
+            if voice not in self.preset_voices:
+                raise ValueError(f"Voice '{voice}' not found")
+            return self.preset_voices[voice]
+
+        def infer(self, text: str, **kwargs):
+            return np.zeros(4800, dtype=np.float32)
+
+        def _get_batch_engine(self):
+            return self.batch_engine
+
+    def loader(voice_profile_id: str, tenant_id: str):
+        if voice_profile_id == "vp-good":
+            profile = VoiceProfile(
+                voice_profile_id="vp-good",
+                tenant_id=tenant_id,
+                provider_name="vieneu_v3",
+                provider_model_revision="rev",
+                profile_kind="cloned",
+                display_name="clone",
+                provider_payload_location="",
+            )
+            payload = encode_vieneu_payload(
+                model_revision="rev", speaker_emb=[0.1] * 192, ref_codes=[0.2] * 62
+            )
+            return profile, payload
+        raise ProfileNotFoundError(f"voice profile {voice_profile_id!r} not found")
+
+    monkeypatch.setattr("vieneu.Vieneu", lambda mode, **kw: _TTS())
+    config = RuntimeConfig(
+        provider="vieneu_v3",
+        accelerator="cpu",
+        model_revision="rev",
+        max_batch_size=4,
+        coalesce_window_ms=1,
+    )
+    provider = VieNeuV3TurboProvider(config, profile_loader=loader)
+    clock = FakeClock()
+    runtime = SchedulerRuntime(
+        population=PendingPopulation(),
+        admission=AdmissionController(512, 64, validate=provider.validate_request),
+        selector=FairnessSelector(),
+        provider=provider,
+        config=config,
+        clock=clock.now,
+    )
+    with pytest.raises(ProfileNotFoundError):
+        runtime._admission.try_admit(
+            _request("bad", voice_profile_id="vp-missing"), clock.now()
+        )
+    assert runtime.pending_depth() == 0  # rejected pre-queue
+    tasks = await _submit(
+        runtime,
+        _request("good", voice_profile_id="vp-good", tenant_id="tenant-a"),
+    )
+    await _settle(clock)
+    result = await asyncio.wait_for(tasks[0], timeout=5)
+    assert result.request_id == "good"
+    # only the valid sibling reached the provider: exactly one batch, one row
+    assert len(provider._tts.batch_engine.rows) == 1
+    assert len(provider._tts.batch_engine.rows[0]) == 1
