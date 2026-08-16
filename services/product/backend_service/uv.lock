@@ -165,6 +165,7 @@ dependencies = [
     { name = "numba" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pyjwt" },
 ]
 
 [package.metadata]
@@ -172,6 +173,7 @@ requires-dist = [
     { name = "fastapi" },
     { name = "numba", specifier = ">=0.60" },
     { name = "numpy" },
+    { name = "pyjwt", specifier = ">=2.13.0" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "torch", marker = "extra == 'cosyvoice'" },
     { name = "torch", marker = "extra == 'transformers'" },
