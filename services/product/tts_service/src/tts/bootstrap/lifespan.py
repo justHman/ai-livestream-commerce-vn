@@ -79,9 +79,17 @@ def _build_runtime(app: FastAPI, provider) -> object | None:
     if provider is None:
         return None
     cfg = app.state.runtime_config
+    # P1-07: pre-admission validation from the provider. Unsupported client
+    # input (style/cue/format) raises a typed 4xx ProviderError BEFORE any
+    # capacity is consumed, so one invalid request can never fail an entire
+    # provider batch of unrelated siblings.
     return SchedulerRuntime(
         population=PendingPopulation(),
-        admission=AdmissionController(cfg.global_pending_limit, cfg.per_session_pending_limit),
+        admission=AdmissionController(
+            cfg.global_pending_limit,
+            cfg.per_session_pending_limit,
+            validate=provider.validate_request,
+        ),
         selector=FairnessSelector(),
         provider=provider,
         config=cfg,

@@ -201,7 +201,14 @@ jobs:
       export_cache: true
     strategy:
       fail-fast: false
+      # P2-08: the matrix is DERIVED from the affected-area output — the
+      # `service` vector is the trusted services_json, and the include entries
+      # act as a lookup table (GitHub enriches each vector row with the include
+      # entry matching its service). A backend-only change builds only backend;
+      # docs-only (services_json == '[]') yields zero rows and the `if:` guard
+      # skips the job. Cache scope stays the short service name.
       matrix:
+        service: ${{ fromJson(needs.affected-area.outputs.services_json) }}
         include:
           - service: backend
             dockerfile: services/product/backend_service/Dockerfile
