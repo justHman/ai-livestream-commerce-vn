@@ -10,7 +10,20 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-__all__ = ["SessionStore"]
+__all__ = ["SessionLockTimeout", "SessionStore"]
+
+
+class SessionLockTimeout(Exception):
+    """Bounded wait for the per-session lock expired (P1-04).
+
+    Raised by stores that provide a distributed ``with_session_lock`` when the
+    lock cannot be acquired within ``acquire_timeout_seconds``. Callers must
+    treat this as a 503 (session busy) and never proceed unlocked.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(f"timed out acquiring session lock: {session_id}")
+        self.session_id = session_id
 
 
 class SessionStore(ABC):

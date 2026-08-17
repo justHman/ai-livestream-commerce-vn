@@ -220,7 +220,7 @@ def _run_sweep(
     requests = [
         _request(seq, corpus[seq % len(corpus)], voice_profile_id) for seq in range(samples)
     ]
-    started = time.monotonic()
+    started = time.perf_counter()
     # Chunk into provider batches and dispatch sequentially — exactly how the
     # scheduler drives a saturated lane.
     results: list[ProviderResult] = []
@@ -228,19 +228,30 @@ def _run_sweep(
         results.extend(
             asyncio.run(provider.synthesize_batch(requests[offset : offset + batch_size]))
         )
-    wall_seconds = time.monotonic() - started
+    wall_seconds = time.perf_counter() - started
     audio_seconds = sum(r.duration_ms / 1000.0 for r in results)
-    rtf = audio_seconds / wall_seconds if wall_seconds else 0.0
+    # Round wall/audio FIRST, then derive rtf from those exact emitted values so
+    # the JSON is self-consistent: a downstream consumer recomputing
+    # audio_seconds / wall_seconds must reproduce the same rtf. Deriving rtf
+    # from the unrounded values made it drift from the emitted (rounded) fields
+    # at millisecond-scale fake-mode wall times (~5 ms on fast CI runners),
+    # which flaked test_rtf_matches_audio_over_wall.
+    # perf_counter (not monotonic): Windows monotonic has ~15.6 ms tick
+    # resolution, which zeroed fast no-sleep sweeps; perf_counter is 100 ns on
+    # both Windows and Linux.
+    wall_rounded = round(wall_seconds, 6)
+    audio_rounded = round(audio_seconds, 6)
+    rtf = audio_rounded / wall_rounded if wall_rounded else 0.0
     return [
         {
             "backend": getattr(provider, "backend", "fake"),
             "batch_size": batch_size,
             "items": len(requests),
-            "wall_seconds": round(wall_seconds, 6),
-            "audio_seconds": round(audio_seconds, 6),
+            "wall_seconds": wall_rounded,
+            "audio_seconds": audio_rounded,
             "rtf": round(rtf, 6),
             "realtime_x": round(rtf, 6),
-            "items_per_second": round(len(requests) / wall_seconds, 3) if wall_seconds else 0.0,
+            "items_per_second": round(len(requests) / wall_rounded, 3) if wall_rounded else 0.0,
         }
     ]
 

@@ -25,7 +25,9 @@ class FairnessConfig:
 
     ``aging_threshold_ms`` is the wait time that promotes a request into the
     aging queue; ``quantum`` is the DRR credit per round; the aging boost is
-    the extra credit an aged session gets per selection round.
+    the extra credit an aged session gets per selection round. The cross-tier
+    reserve (P1-06) is fixed at one slot per round — aged NORMAL work is
+    guaranteed progress without a knob that could be misconfigured.
     """
 
     aging_threshold_ms: int = 5_000
@@ -103,11 +105,46 @@ class FairnessSelector:
         if limit <= 0:
             return selected
         eligible = self._eligible(population, now)
+        # Cross-tier aging reserve (P1-06): with >= limit HIGH requests arriving
+        # every round, NORMAL would starve forever — the aging boost only reorders
+        # within a tier and never reserves a slot against HIGH. Reserve one slot
+        # per round for the oldest aged NORMAL request: bounded progress, no batch
+        # preemption (the selector stays pure; HIGH still wins before the aging
+        # bound kicks in).
+        aged_normal = self._oldest_aged_normal(eligible)
+        if aged_normal is not None:
+            selected.append(aged_normal)
+            # Exclude the reserved request from the eligibility snapshot so
+            # the tier loop cannot select it again in the same round
+            # (NEW-TTS-01). The snapshot is throwaway; the real
+            # ``PendingPopulation`` is never mutated.
+            key = (aged_normal.session_id, aged_normal.synthesis_request.priority)
+            reserved = eligible.get(key)
+            if reserved is not None:
+                reserved.aged.remove(aged_normal)
         for priority in (Priority.HIGH, Priority.NORMAL):
             if len(selected) >= limit:
                 break
             selected.extend(self._select_tier(eligible, priority, limit - len(selected)))
         return selected
+
+    # ── cross-tier aging reserve (P1-06) ─────────────────────────────────────
+    def _oldest_aged_normal(
+        self, eligible: dict[tuple[str, Priority], "_SessionQueue"]
+    ) -> Optional[PendingRequest]:
+        """Oldest aged NORMAL request across sessions, or None (one per round).
+
+        Reading ``queue.aged[0]`` keeps per-session FIFO: within a session the
+        oldest request of the aging queue is picked. The selector never mutates
+        the population — this only peeks at the eligibility snapshot.
+        """
+        aged: list[PendingRequest] = []
+        for (session_id, priority), queue in eligible.items():
+            if priority is Priority.NORMAL and queue.aged:
+                aged.append(queue.aged[0])
+        if not aged:
+            return None
+        return min(aged, key=lambda request: request.admitted_at or datetime.min)
 
     # ── tier selection (DRR) ─────────────────────────────────────────────────
     def _select_tier(

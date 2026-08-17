@@ -52,6 +52,12 @@ class BootstrapContainer:
     director: DirectorRuntime | None = None
     coordinator: DirectorCoordinator | None = None
 
+    # -- Fast lane (agentic-live-director, P0-01) --
+    # One FastReducer serves ALL sessions (not per-session); the lifespan
+    # starts its reducer-loop task and cancels it at shutdown.
+    reducer: Any = None  # FastReducer or None
+    reducer_loop_task: Any = None  # asyncio.Task or None (set by the lifespan)
+
     # -- Optional infrastructure --
     pg_store: Any = None  # PostgresRuntimeStore or None
     livekit_publishers: LiveKitPublisherRegistry | None = None
@@ -88,6 +94,7 @@ def create_container(
     engine_manager: EngineManager | None = None,
     director: DirectorRuntime | None = None,
     coordinator: DirectorCoordinator | None = None,
+    reducer: Any = None,
     pg_store: Any = None,
     livekit_publishers: LiveKitPublisherRegistry | None = None,
     hub: ControlHub | None = None,
@@ -113,6 +120,7 @@ def create_container(
         engine_manager=engine_manager,
         director=director,
         coordinator=coordinator,
+        reducer=reducer,
         pg_store=pg_store,
         livekit_publishers=livekit_publishers,
         hub=hub or ControlHub(),

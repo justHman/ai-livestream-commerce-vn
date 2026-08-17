@@ -113,6 +113,28 @@ async def test_validation_runs_before_overload_check() -> None:
         controller.try_admit(_request(request_id="req-1"), NOW)
 
 
+# ── P1-07: provider-style rejection never consumes capacity ──────────────────
+async def test_style_rejection_does_not_enter_pending() -> None:
+    """P1-07: admission with a validator rejects style 'bogus' pre-queue.
+
+    The rejection must surface the typed 4xx domain error (CapabilityError)
+    and the pending depth must stay zero — the invalid request never enters
+    the pending population. The validator is the wiring seam: ``_build_runtime``
+    injects it from the provider so the route never sees a 5xx from the batch
+    path for an unsupported style.
+    """
+
+    def reject_bogus(request: SynthesisRequest) -> None:
+        if request.style == "bogus":
+            raise CapabilityError("unsupported style 'bogus'")
+
+    controller = _controller(validate=reject_bogus)
+    with pytest.raises(CapabilityError, match="bogus"):
+        controller.try_admit(_request(request_id="req-1", style="bogus"), NOW)
+    assert controller.global_pending == 0
+    assert controller.session_pending("sess-1") == 0
+
+
 # ── duplicate request IDs (8.7) ──────────────────────────────────────────────
 async def test_duplicate_request_id_rejected() -> None:
     controller = _controller()

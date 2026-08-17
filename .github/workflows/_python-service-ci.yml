@@ -2,9 +2,11 @@
 #
 # Reusable workflow (underscore prefix, workflow_call only). Runs ruff format/
 # lint, typecheck (pyright), unit tests, and — only when the calling mode
-# requests them — integration, contract and coverage suites. Every skipped
-# check reports a neutral success so the aggregate `CI / gate` never waits on
-# a job that was deliberately not run (design §4, 3.3).
+# requests them — integration, contract and coverage suites. Pytest steps
+# propagate non-zero exits: a red test fails the job (no `|| true` swallow),
+# and the coverage gate enforces --cov-fail-under=80 when enabled. Every
+# skipped check reports a neutral success so the aggregate `CI / gate` never
+# waits on a job that was deliberately not run (design §4, 3.3).
 #
 # Test matrix per mode lives in scripts/ci/test_matrix.json (committed 1.59);
 # this workflow is the execution layer honoring it. Product services use
@@ -60,6 +62,12 @@ jobs:
       - name: Sync service environment
         run: uv sync --frozen --group dev --no-cache
         working-directory: services/product/${{ matrix.service }}
+      # tts_service additionally installs its optional vieneu extra so the real
+      # provider (and its provider tests) run in CI instead of ModuleNotFoundError.
+      - name: Sync tts provider extras
+        if: ${{ matrix.service == 'tts_service' }}
+        run: uv sync --frozen --group dev --no-cache --extra vieneu
+        working-directory: services/product/${{ matrix.service }}
       - name: Format check
         run: uvx ruff format --check --no-cache src tests
         working-directory: services/product/${{ matrix.service }}
@@ -73,22 +81,25 @@ jobs:
         run: uvx pyright --pythonpath .venv/bin/python src tests
         working-directory: services/product/${{ matrix.service }}
       - name: Unit tests
-        run: >
-          ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=no || true
-          --ignore=tests/integration
-          --ignore=tests/contract
+        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --ignore=tests/integration --ignore=tests/contract
         working-directory: services/product/${{ matrix.service }}
       - name: Integration tests
         if: ${{ inputs.integration }}
-        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=no || true
+        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short
         working-directory: services/product/${{ matrix.service }}
       - name: Contract tests
         if: ${{ inputs.contract }}
-        run: ./.venv/bin/python -m pytest tests/contract -q -p no:cacheprovider --tb=no || true
+        run: ./.venv/bin/python -m pytest tests/contract -q -p no:cacheprovider --tb=short
         working-directory: services/product/${{ matrix.service }}
       - name: Coverage gate
         if: ${{ inputs.coverage }}
-        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=no || true --cov-fail-under=80
+        # --cov with no target reads [tool.coverage.run] source from the service
+        # pyproject (e.g. "backend", not the service dir name "backend_service").
+        # The service pyproject addopts ignore integration/contract by default;
+        # override them here so the coverage gate measures unit + integration
+        # (CI runs both), matching the real tested surface. Contract suites are
+        # subprocess drift checks, not coverage contributors — kept ignored.
+        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --override-ini "addopts=" --ignore=tests/contract --cov --cov-fail-under=80
         working-directory: services/product/${{ matrix.service }}
 
   neutral-skip:

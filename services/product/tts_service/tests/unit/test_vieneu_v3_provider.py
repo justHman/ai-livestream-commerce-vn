@@ -217,7 +217,7 @@ async def test_synthesize_cloned_profile_via_loader(fake_tts) -> None:
 
     profile = VoiceProfile(
         voice_profile_id="vp-1",
-        tenant_id="sess-1",
+        tenant_id="default",  # request tenant (SynthesisRequest.tenant_id)
         provider_name="vieneu_v3",
         provider_model_revision="rev",
         profile_kind="cloned",
@@ -247,7 +247,7 @@ async def test_synthesize_preset_profile_via_loader(fake_tts) -> None:
 
     profile = VoiceProfile(
         voice_profile_id="vp-preset",
-        tenant_id="sess-1",
+        tenant_id="default",  # request tenant
         provider_name="vieneu_v3",
         provider_model_revision="rev",
         profile_kind="preset",
@@ -277,7 +277,7 @@ async def test_synthesize_unknown_preset_raises_not_found(fake_tts) -> None:
 
     profile = VoiceProfile(
         voice_profile_id="vp-ghost",
-        tenant_id="sess-1",
+        tenant_id="default",  # request tenant
         provider_name="vieneu_v3",
         provider_model_revision="rev",
         profile_kind="preset",
@@ -323,6 +323,51 @@ async def test_unsupported_style_raises_capability_error(fake_tts) -> None:
     provider = make_provider(fake_tts)
     with pytest.raises(CapabilityError):
         await provider.synthesize(make_request(style="vui_ve"))
+
+
+# ── P1-07: batch-path validation parity with single synthesis ────────────────
+async def test_batch_rejects_unsupported_style_before_engine_rows(fake_tts) -> None:
+    """P1-07: batch path validates EVERY member before building engine rows.
+
+    An unsupported style must raise the typed CapabilityError (4xx), not a
+    KeyError from ``_build_engine_request``, and the batch engine must never
+    see the invalid request.
+    """
+    provider = make_provider(fake_tts)
+    with pytest.raises(CapabilityError, match="unsupported style"):
+        await provider.synthesize_batch(
+            [
+                make_request(request_id="req-good", style="natural"),
+                make_request(request_id="req-bogus", style="bogus"),
+            ]
+        )
+    assert fake_tts.batch_engine.calls == []
+
+
+async def test_batch_rejects_unsupported_cue_before_engine_rows(fake_tts) -> None:
+    """P1-07: unsupported expressive cue fails the batch with a typed 4xx."""
+    provider = make_provider(fake_tts)
+    with pytest.raises(CapabilityError, match="unsupported expressive cue"):
+        await provider.synthesize_batch(
+            [
+                make_request(request_id="req-good", input_text="Xin chào"),
+                make_request(request_id="req-cue", input_text="Xin chào [hát]"),
+            ]
+        )
+    assert fake_tts.batch_engine.calls == []
+
+
+async def test_validate_request_exposes_provider_pre_admission_check(fake_tts) -> None:
+    """P1-07: the provider exposes a public pre-admission validator.
+
+    ``validate_request`` is the callable the lifespan injects into
+    ``AdmissionController`` — it must reject unsupported style/cue with the
+    same typed 4xx error the single-synthesis path raises.
+    """
+    provider = make_provider(fake_tts)
+    with pytest.raises(CapabilityError, match="unsupported style"):
+        provider.validate_request(make_request(style="bogus"))
+    provider.validate_request(make_request(style="natural"))  # no raise
 
 
 async def test_supported_cue_passes(fake_tts) -> None:
@@ -405,7 +450,7 @@ async def test_batch_mixed_presets_per_row_voice_and_result_ids(fake_tts) -> Non
     }
     profile_b = VoiceProfile(
         voice_profile_id="vp-preset-b",
-        tenant_id="sess-2",
+        tenant_id="default",  # request tenant
         provider_name="vieneu_v3",
         provider_model_revision="rev",
         profile_kind="preset",
@@ -439,8 +484,8 @@ async def test_batch_mixed_presets_per_row_voice_and_result_ids(fake_tts) -> Non
 
 async def test_batch_mixed_cloned_profiles_per_row_anchor(fake_tts) -> None:
     profiles = {
-        "vp-a": make_cloned_profile("vp-a", "sess-1", 0.1),
-        "vp-b": make_cloned_profile("vp-b", "sess-2", 0.9),
+        "vp-a": make_cloned_profile("vp-a", "default", 0.1),
+        "vp-b": make_cloned_profile("vp-b", "default", 0.9),
     }
 
     def loader(voice_profile_id: str, tenant_id: str):
@@ -466,14 +511,14 @@ async def test_batch_mixed_cloned_profiles_per_row_anchor(fake_tts) -> None:
 async def test_batch_mixed_preset_and_cloned(fake_tts) -> None:
     from tts.voices.models import VoiceProfile
 
-    profile_b, payload_b = make_cloned_profile("vp-b", "sess-2", 0.9)
+    profile_b, payload_b = make_cloned_profile("vp-b", "default", 0.9)
     fake_tts.preset_voices["Minh Anh"] = {
         "speaker_emb": np.full(192, 0.5, dtype=np.float32),
         "codes": np.full(62, 5, dtype=np.int64),
     }
     profile_preset = VoiceProfile(
         voice_profile_id="vp-preset",
-        tenant_id="sess-1",
+        tenant_id="default",
         provider_name="vieneu_v3",
         provider_model_revision="rev",
         profile_kind="preset",
@@ -575,3 +620,36 @@ async def test_batch_onnx_falls_back_to_single_path(fake_tts) -> None:
 async def test_batch_empty_returns_no_results(fake_tts) -> None:
     provider = make_provider(fake_tts)
     assert await provider.synthesize_batch([]) == []
+
+
+# ── NEW-TTS-02: pre-admission profile validation ──────────────────────────────
+async def test_validate_request_rejects_missing_profile(fake_tts) -> None:
+    """NEW-TTS-02: a nonexistent voice profile must be rejected by
+    pre-admission validation (typed 4xx ProfileNotFoundError) so it never
+    poisons a mixed-voice batch at inference time."""
+
+    def loader(voice_profile_id: str, tenant_id: str):
+        raise ProfileNotFoundError("nope")
+
+    provider = make_provider(fake_tts, profile_loader=loader)
+    with pytest.raises(ProfileNotFoundError):
+        provider.validate_request(make_request(request_id="req-bad", voice_profile_id="vp-missing"))
+
+
+async def test_validate_request_rejects_cross_tenant_profile(fake_tts) -> None:
+    """NEW-TTS-02: a cross-tenant profile is invisible at pre-admission
+    validation (ProfileNotFoundError), matching the store's tenant scoping."""
+    profile, _ = make_cloned_profile("vp-other", "tenant-other", 0.9)
+
+    def loader(voice_profile_id: str, tenant_id: str):
+        return profile, {}
+
+    provider = make_provider(fake_tts, profile_loader=loader)
+    with pytest.raises(ProfileNotFoundError):
+        provider.validate_request(
+            make_request(
+                request_id="req-bad",
+                voice_profile_id="vp-other",
+                tenant_id="tenant-a",
+            )
+        )

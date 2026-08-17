@@ -21,10 +21,23 @@ Lives below the HTTP transport: the /events route validates the request
 
 Only the coordinator path performs semantic reduction; the service never
 branches on ``platform``.
+
+Concurrency: the read -> decide -> write dedup critical section in
+``ingest()`` is serialized per session. Redis-backed stores provide a
+distributed per-session lock (``with_session_lock`` — Redis ``SET NX``), and
+the WHOLE section runs under it, so concurrent ``/events`` for the same
+session across processes (rolling deploy ``deployment_maximum_percent=200``,
+autoscale, operator) cannot both accept the same ``event_id`` AND concurrent
+metadata updates (viewers/signals/pending_platform_chat) are never lost
+(P1-04). In-memory stores (single-process by construction) keep the
+per-session ``asyncio.Lock`` fallback. A lock-acquisition timeout raises
+``SessionLockTimeout`` (the HTTP route maps it to 503); the batch is never
+processed unlocked.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from enum import Enum
@@ -84,6 +97,7 @@ class PlatformEventIngestionService:
         unique_viewer_key_fn: Callable[[PlatformEvent], Optional[str]] = _default_unique_viewer_key,
         now_fn: Optional[Callable[[], float]] = None,
         reducer: Any = None,
+        lock_acquire_timeout_seconds: float = 2.0,
     ) -> None:
         self._store = store
         self._pg_store = pg_store
@@ -95,6 +109,13 @@ class PlatformEventIngestionService:
         self._dedup_max_ids = dedup_max_ids
         self._unique_viewer_key_fn = unique_viewer_key_fn
         self._now = now_fn or time.time
+        self._lock_acquire_timeout_seconds = lock_acquire_timeout_seconds
+        # Per-session in-process ingress lock: serializes the read -> decide ->
+        # write dedup critical section within one process. Redis-backed stores
+        # REPLACE this with a distributed SET NX lock in ingest() so sessions
+        # coordinate across processes; the memory fallback is single-process by
+        # construction (P1-04).
+        self._ingest_locks: dict[str, asyncio.Lock] = {}
         # Sanitized rejection counters (no raw viewer content), observable via stats().
         self._rejection_counts: dict[str, int] = {}
         self._accepted_count: int = 0
@@ -324,7 +345,27 @@ class PlatformEventIngestionService:
         """Process a bounded batch; returns the per-event result list + counts.
 
         Raises KeyError when the session is unknown (no meta, no coordinator).
+        Raises SessionLockTimeout when a Redis-backed store's distributed
+        per-session lock cannot be acquired in time — the batch is never
+        processed unlocked (route maps to 503).
+
+        The read -> decide -> write critical section is serialized per session
+        (P1-04): Redis-backed stores coordinate it across processes via a
+        ``SET NX`` distributed lock (``with_session_lock``); the in-process
+        ``asyncio.Lock`` remains only for single-process memory stores.
         """
+        distributed = getattr(self._store, "with_session_lock", None)
+        if distributed is not None:
+            async with distributed(
+                session_id, acquire_timeout_seconds=self._lock_acquire_timeout_seconds
+            ):
+                return await self._ingest_locked(session_id, events)
+        lock = self._ingest_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            return await self._ingest_locked(session_id, events)
+
+    async def _ingest_locked(self, session_id: str, events: list[PlatformEvent]) -> dict:
+        """The locked critical section: existence check -> load -> decide -> write."""
         if not await self._session_exists(session_id):
             raise KeyError(session_id)
         meta = await self._load_meta(session_id)

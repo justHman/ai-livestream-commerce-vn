@@ -189,3 +189,22 @@
 - [x] 15.14 Run `git diff --check` and the repository's relevant static/type checks.
 - [x] 15.15 Run `openspec validate approved-script-authoring-pipeline` and confirm Change A strict validation/PASS evidence referenced by the dependency gate is still current.
 - [x] 15.16 Update capability/runbook/API documentation and record Change B readiness evidence only after every architecture audit and behavioral gate above passes.
+
+## 16. Production scope decision (recorded 2026-08-16, post-apply re-review NEW-SCRIPT-01)
+
+The post-apply independent re-review (NEW-SCRIPT-01, HIGH) flagged that the
+`/api/v1/script-sets` authoring surface is not composed in the production
+backend container: `backend.bootstrap.app_factory._build_container()` does not
+construct a `script_authoring_service`, and `application/script_authoring/service.py`
+defines only the `ScriptAuthoringService` **Protocol** (no concrete production
+implementation, no `repositories.py`, no `db/sql/` migrations, no composition
+wiring). In production the router returns **501 "script authoring not enabled"**.
+
+**Decision (recorded, no production code change):** for this release, the
+approved-script authoring surface is explicitly **scoped OUT of production**.
+The 501 is the intended gated state for MVP — consistent with this change's
+spec ("no production-ready claim for approved-script runtime integration SHALL
+be made"). A concrete `ScriptAuthoringService` implementation + SQL-backed
+repositories + migrations + container composition is deferred to a follow-up
+change and is NOT part of this release gate. Reviewers SHOULD treat
+`create_app() → POST /api/v1/script-sets → 501` as the accepted MVP behavior.

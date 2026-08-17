@@ -49,6 +49,11 @@ on:
         description: "export per-service gha cache even when push is false (PR verification builds)"
         type: boolean
         required: true
+      enabled:
+        description: "false skips the build job (P2-08: non-affected service in a PR)"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -56,6 +61,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # P2-08: the caller (ci.yml) passes enabled=false for services not in
+    # services_json, so a backend-only PR does not build llm/tts/avatar.
+    # inputs are allowed in a reusable-workflow job `if` (matrix is not).
+    if: ${{ inputs.enabled }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

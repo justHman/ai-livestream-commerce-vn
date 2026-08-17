@@ -4,6 +4,7 @@ aging/starvation protection (Change T tasks 9.1-9.6, tests 9.7/9.8)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 
 from tts.providers.models import Priority, SynthesisRequest
@@ -141,6 +142,33 @@ async def test_normal_progress_under_sustained_high_with_aging() -> None:
     assert normal_index >= 64  # high drains first, but normal is still selected
 
 
+async def test_aged_normal_selected_within_bounded_rounds_under_sustained_high() -> None:
+    """P1-06: NORMAL must not starve while >= limit HIGH requests arrive every round.
+
+    One NORMAL request admitted at t=0 ages past the 100 ms threshold; each
+    dispatch round adds 4 fresh HIGH requests and selects up to 4. Without a
+    cross-tier aging reserve the NORMAL is never selected (HIGH always fills
+    the limit) — the review finding this test encodes.
+    """
+    selector = FairnessSelector(FairnessConfig(aging_threshold_ms=100, quantum=8, aging_boost=16))
+    population = PendingPopulation()
+    _fill(population, [_pending("N", 0, wait_ms=500)])
+    selected_round: Optional[int] = None
+    for round_no in range(3):
+        _fill(
+            population,
+            [_pending(f"H{round_no}", i, priority=Priority.HIGH) for i in range(4)],
+        )
+        now = NOW + timedelta(milliseconds=500)
+        selected = selector.select_candidates(population, 4, now)
+        if any(request.request_id == "N-0" for request in selected):
+            selected_round = round_no
+            break
+        for request in selected:
+            population.remove(request)
+    assert selected_round is not None, "aged NORMAL starved across 3 dispatch rounds"
+
+
 async def test_aged_normal_boosted_in_same_tier() -> None:
     selector = FairnessSelector(FairnessConfig(aging_threshold_ms=5_000, quantum=1, aging_boost=4))
     population = PendingPopulation()
@@ -158,3 +186,23 @@ async def test_fresh_sessions_share_slots_with_aging() -> None:
     selected = _select(selector, population, 3)
     assert "B-0" in selected
     assert len({rid.split("-")[0] for rid in selected}) == 2
+
+
+# ── NEW-TTS-01: the aging reserve must not double-select a request ────────────
+async def test_aged_normal_not_selected_twice_within_limit() -> None:
+    """NEW-TTS-01: the cross-tier aging reserve must not double-select an aged
+    NORMAL request in the same round.
+
+    With H0=HIGH, N0=aged NORMAL (wait >= aging_threshold), N1=fresh NORMAL and
+    limit=4, the reserve picks N0 and the NORMAL tier must not pick N0 again —
+    a duplicated member crashes ``_dispatch_group.remove`` and double-counts
+    admission capacity.
+    """
+    selector = FairnessSelector(FairnessConfig(aging_threshold_ms=5_000))
+    population = PendingPopulation()
+    _fill(population, [_pending("H", 0, priority=Priority.HIGH)])
+    _fill(population, [_pending("N", 0, wait_ms=6_000), _pending("N", 1)])
+    ids = _select(selector, population, 4)
+    assert len(ids) == len(set(ids))  # no duplicate request in one batch
+    assert ids.count("N-0") == 1  # aged NORMAL reserved at most once
+    assert "H-0" in ids

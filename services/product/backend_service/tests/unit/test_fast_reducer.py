@@ -188,3 +188,74 @@ async def test_wait_for_work_returns_at_deadline_without_extra_notify() -> None:
     now[0] = t0 + 0.3
     # deadline == now: the next loop iteration returns immediately.
     await asyncio.wait_for(reducer.wait_for_work("s1"), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_work_holds_until_deadline_when_event_preset() -> None:
+    """P1-03: an already-set wake event must not cut the coalescing wait short.
+
+    The waiter must sleep the FULL microbatch window from the first pending
+    comment, even though ``notify_new_events`` set the wake event before the
+    waiter started (the set event satisfies ``wait_for(event.wait())``
+    instantly, returning early and processing nearly one-by-one).
+    """
+    reducer, _, now = _make_reducer(wait_ms=200)
+    t0 = now[0]
+    reducer.notify_new_events("s1", _comment("c1", "hi", t0))
+    waiter = asyncio.create_task(reducer.wait_for_work("s1"))
+    await asyncio.sleep(0.02)  # let the waiter clear the stale wake and enter the bounded wait
+
+    now[0] = t0 + 0.1
+    await asyncio.sleep(0.02)
+    assert not waiter.done(), "waiter returned before the coalescing deadline"
+
+    now[0] = t0 + 0.19
+    await asyncio.sleep(0.02)
+    assert not waiter.done(), "waiter returned before the coalescing deadline"
+
+    now[0] = t0 + 0.201
+    await asyncio.wait_for(waiter, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_work_second_notify_does_not_move_deadline() -> None:
+    """P1-03: the deadline anchors on the FIRST pending item only."""
+    reducer, _, now = _make_reducer(wait_ms=200)
+    t0 = now[0]
+    reducer.notify_new_events("s1", _comment("c1", "first", t0))
+    waiter = asyncio.create_task(reducer.wait_for_work("s1"))
+    await asyncio.sleep(0.02)
+
+    now[0] = t0 + 0.1
+    reducer.notify_new_events("s1", _comment("c2", "second", now[0]))
+    await asyncio.sleep(0.02)
+    assert not waiter.done(), "waiter returned before the coalescing deadline"
+
+    deadline = reducer.pending_deadline("s1", now[0])
+    assert deadline == t0 + 0.2  # unchanged by the later notify
+
+    now[0] = t0 + 0.201
+    await asyncio.wait_for(waiter, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_work_batch_holds_both_comments_one_embed_call() -> None:
+    """P1-03: coalescing means the drained batch embeds ONCE for both comments."""
+    reducer, embedder, now = _make_reducer(wait_ms=200)
+    t0 = now[0]
+    reducer.notify_new_events("s1", _comment("c1", "first", t0))
+    waiter = asyncio.create_task(reducer.wait_for_work("s1"))
+    await asyncio.sleep(0.02)
+
+    now[0] = t0 + 0.1
+    reducer.notify_new_events("s1", _comment("c2", "second", now[0]))
+    await asyncio.sleep(0.02)
+    assert not waiter.done(), "waiter returned before the coalescing deadline"
+
+    now[0] = t0 + 0.201
+    await asyncio.wait_for(waiter, timeout=0.5)
+
+    batch = await reducer.run_once("s1", now[0])
+    assert [c.event_id for c in batch] == ["c1", "c2"]
+    assert embedder.calls == [["first", "second"]]
+    assert reducer.stats("s1")["embed_calls"] == 1
