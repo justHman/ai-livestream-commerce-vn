@@ -402,7 +402,7 @@ class StreamOrchestrator:
             # is consumed in place (cancel stays responsive), duration is
             # accumulated per window, and the record lands on both the normal
             # and error completions of the loop (cancel path skips it).
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             audio_duration_ms = 0
             try:
                 for audio_window in self._tts.stream_audio(
@@ -433,9 +433,9 @@ class StreamOrchestrator:
                         session_id=session_id,
                         bridge=bridge,
                     )
-                self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+                self._record_tts_timing(time.perf_counter() - t0, audio_duration_ms)
                 raise
-            self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+            self._record_tts_timing(time.perf_counter() - t0, audio_duration_ms)
             if pending is not None:
                 if hold_last:
                     held_windows.append(pending)
@@ -562,7 +562,7 @@ class StreamOrchestrator:
         cancellation returns early without delivering.
         """
         pending: AudioWindow | None = None
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         audio_duration_ms = 0
         try:
             for audio_window in self._tts.stream_audio(
@@ -593,9 +593,9 @@ class StreamOrchestrator:
                     session_id=session_id,
                     bridge=bridge,
                 )
-            self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+            self._record_tts_timing(time.perf_counter() - t0, audio_duration_ms)
             raise
-        self._record_tts_timing(time.monotonic() - t0, audio_duration_ms)
+        self._record_tts_timing(time.perf_counter() - t0, audio_duration_ms)
         if pending is not None:
             self._deliver_audio_window(
                 pending,
