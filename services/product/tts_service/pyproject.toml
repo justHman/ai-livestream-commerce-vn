@@ -8,7 +8,6 @@ dependencies = [
     "numpy",
     "fastapi",
     "numba>=0.60",
-    "pyjwt>=2.13.0",
 ]
 
 [project.optional-dependencies]
@@ -18,7 +17,14 @@ vieneu = ["vieneu==3.2.4"]
 test = ["pytest"]
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "httpx",
+    "PyJWT",
+    "numpy>=2.4.6",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

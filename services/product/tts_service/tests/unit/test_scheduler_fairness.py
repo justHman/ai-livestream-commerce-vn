@@ -186,3 +186,23 @@ async def test_fresh_sessions_share_slots_with_aging() -> None:
     selected = _select(selector, population, 3)
     assert "B-0" in selected
     assert len({rid.split("-")[0] for rid in selected}) == 2
+
+
+# ── NEW-TTS-01: the aging reserve must not double-select a request ────────────
+async def test_aged_normal_not_selected_twice_within_limit() -> None:
+    """NEW-TTS-01: the cross-tier aging reserve must not double-select an aged
+    NORMAL request in the same round.
+
+    With H0=HIGH, N0=aged NORMAL (wait >= aging_threshold), N1=fresh NORMAL and
+    limit=4, the reserve picks N0 and the NORMAL tier must not pick N0 again —
+    a duplicated member crashes ``_dispatch_group.remove`` and double-counts
+    admission capacity.
+    """
+    selector = FairnessSelector(FairnessConfig(aging_threshold_ms=5_000))
+    population = PendingPopulation()
+    _fill(population, [_pending("H", 0, priority=Priority.HIGH)])
+    _fill(population, [_pending("N", 0, wait_ms=6_000), _pending("N", 1)])
+    ids = _select(selector, population, 4)
+    assert len(ids) == len(set(ids))  # no duplicate request in one batch
+    assert ids.count("N-0") == 1  # aged NORMAL reserved at most once
+    assert "H-0" in ids

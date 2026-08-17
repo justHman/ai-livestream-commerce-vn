@@ -42,6 +42,9 @@ vllm = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "pyjwt" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -63,6 +66,8 @@ provides-extras = ["llamacpp", "sglang", "transformers", "vllm", "test"]
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx" },
+    { name = "numpy", specifier = ">=2.3.5" },
+    { name = "pyjwt" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
