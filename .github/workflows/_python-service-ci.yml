@@ -93,7 +93,13 @@ jobs:
         working-directory: services/product/${{ matrix.service }}
       - name: Coverage gate
         if: ${{ inputs.coverage }}
-        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --cov=${{ matrix.service }} --cov-fail-under=80
+        # --cov with no target reads [tool.coverage.run] source from the service
+        # pyproject (e.g. "backend", not the service dir name "backend_service").
+        # The service pyproject addopts ignore integration/contract by default;
+        # override them here so the coverage gate measures unit + integration
+        # (CI runs both), matching the real tested surface. Contract suites are
+        # subprocess drift checks, not coverage contributors — kept ignored.
+        run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --override-ini "addopts=" --ignore=tests/contract --cov --cov-fail-under=80
         working-directory: services/product/${{ matrix.service }}
 
   neutral-skip:
