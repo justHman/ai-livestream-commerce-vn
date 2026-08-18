@@ -123,6 +123,62 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
             await asyncio.sleep(delay)
 
 
+async def _connect_authoring(container: BootstrapContainer) -> None:
+    """Connect the Change B authoring repositories with bounded retries.
+
+    The script_* tables are owned by ``_connect_postgres``'s apply_schema, so
+    this stage only establishes the authoring pool. When the composition wired
+    no service (no DATABASE_URL) the authoring surface stays 501; failures log
+    and the server remains bootable, mirroring ``_connect_postgres``.
+    """
+    service = getattr(container, "script_authoring_service", None)
+    if service is None:
+        return
+    repos = getattr(service, "_repos", None)
+    if repos is None or not getattr(repos, "enabled", False):
+        return
+    for attempt in range(_STARTUP_ATTEMPTS):
+        try:
+            connect = repos.connect
+            if inspect.iscoroutinefunction(connect):
+                await connect()
+            else:
+                await asyncio.to_thread(connect)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            close = getattr(repos, "close", None)
+            if close is not None:
+                try:
+                    if inspect.iscoroutinefunction(close):
+                        await close()
+                    else:
+                        await asyncio.to_thread(close)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as close_exc:
+                    logger.warning(
+                        "Bootstrap script-authoring cleanup failed after startup attempt=%s error_type=%s",
+                        attempt + 1,
+                        type(close_exc).__name__,
+                    )
+            if attempt == _STARTUP_ATTEMPTS - 1:
+                logger.error(
+                    "Bootstrap script-authoring startup failed after %s attempts error_type=%s",
+                    _STARTUP_ATTEMPTS,
+                    type(exc).__name__,
+                )
+                return
+            delay = _STARTUP_RETRY_DELAYS[attempt]
+            logger.warning(
+                "Bootstrap script-authoring startup failed attempt=%s retry_in_seconds=%s",
+                attempt + 1,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+
 # -- Shutdown --------------------------------------------------------
 
 
@@ -230,6 +286,17 @@ async def _shutdown(container: BootstrapContainer) -> None:
             if close is not None:
                 await _call_cleanup(close, async_method=inspect.iscoroutinefunction(close))
 
+    async def close_authoring() -> None:
+        service = getattr(container, "script_authoring_service", None)
+        if service is None:
+            return
+        repos = getattr(service, "_repos", None)
+        if repos is None or not getattr(repos, "enabled", False):
+            return
+        close = getattr(repos, "close", None)
+        if close is not None:
+            await _call_cleanup(close, async_method=inspect.iscoroutinefunction(close))
+
     stages = (
         ("orchestrators", stop_session_pipeline),
         ("coordinator", stop_coordinator),
@@ -237,6 +304,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
         ("livekit.stop_all", stop_livekit),
         ("render.stop_all", stop_backend),
         ("clients.close", close_clients),
+        ("authoring", close_authoring),
         ("postgres", close_postgres),
     )
     for name, operation in stages:
@@ -252,6 +320,7 @@ def build_lifespan(container: BootstrapContainer):
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await _connect_postgres(container)
+        await _connect_authoring(container)
         _start_reducer_loop(container)
         try:
             yield

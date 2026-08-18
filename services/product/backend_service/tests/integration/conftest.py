@@ -7,7 +7,7 @@ env mutation). ``make_deps`` builds the legacy deps-shaped object that
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, AsyncIterator, Iterator
 
 import pytest
 
@@ -16,6 +16,8 @@ from backend.application.db import InMemorySessionStore
 from backend.application.render.mock import MockRenderBackend
 from backend.config import AppConfig
 from backend.engine_manager import EngineManager
+
+from .pg_harness import TestPostgres
 
 
 def make_deps(
@@ -64,3 +66,31 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SESSION_STORE", "memory")
     monkeypatch.setenv("DIRECTOR_ENABLED", "0")
     monkeypatch.setenv("APP_ENV", "dev")
+
+
+# ── embedded PostgreSQL (portable binaries, no Docker) ──────────────────────
+
+
+@pytest.fixture(scope="session")
+def pg_server() -> Iterator[TestPostgres]:
+    """One ephemeral PostgreSQL server for the whole integration session."""
+    server = TestPostgres()
+    server.start()
+    try:
+        yield server
+    finally:
+        server.stop()
+
+
+@pytest.fixture
+async def pg_url(pg_server: TestPostgres) -> AsyncIterator[str]:
+    """Isolated database per test; drops it on teardown.
+
+    Async so create/drop never need ``asyncio.run()`` inside a pytest-asyncio
+    test (which would conflict with the running event loop).
+    """
+    dsn = await pg_server.create_database()
+    try:
+        yield dsn
+    finally:
+        await pg_server.drop_database(dsn)
