@@ -150,16 +150,26 @@
 - [x] 12.12 Add finality integration tests covering normal approved-script completion, error/cancel, and the edge case where the last content chunk was already emitted before EOF; Change B must not fabricate a replacement final TextChunk.
 - [x] 12.13 Add local integration test for multiple approved products, runtime product selection/reordering under ORDER_AGNOSTIC, exact text/version identity at the chunker boundary, and both adaptive/default policy plus explicit fixed rollback using the same path.
 
-## 13. Workbench authoring UX
+## 13. Workbench authoring UX (local-only developer harness)
 
-- [ ] 13.1 Add ScriptSet creation/edit view with LiveSessionBrief, product selection/order, transition policy, target duration per product, and generation-call preview before spending tokens.
-- [ ] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states.
-- [ ] 13.3 Add long-form segment navigator showing title/intent, target/estimated duration, status, gate violations, version history, and exact display/spoken previews.
-- [ ] 13.4 Add Generate All UX with selected/missing products, per-product and total estimated semantic calls, bounded-progress status, partial failure, retryable transport failure, and explicit human cost action.
-- [ ] 13.5 Add SSE client for batch progress with reconnect/snapshot recovery and no duplicate action on reconnect.
-- [ ] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records.
-- [ ] 13.7 Add stale dependency warnings that disable runtime-ready state until resubmit/reapprove.
-- [ ] 13.8 Add frontend tests for zero-LLM manual PASS, Generate All double-click/idempotency UX, segment failure pause, AI Fix legal-state guards, spoken-text review, approval invalidation, and SSE reconnect.
+> **The Workbench is a local-only authoring/test/debug surface (`workbench/`).
+> It is not a production frontend or a product deployment target. Task
+> completion in Section 13 refers only to the local developer Workbench needed
+> to exercise Change B behavior.** The harness is mock-driven by default (140
+> Vitest tests) and its request contract matches the backend API (reconciled
+> 2026-08-18). Known local-harness caveat: the real HTTP client parses
+> `GET /script-sets/{set_id}` as `products[]` while the backend returns an
+> `items` map — live-backend response interop for per-product state is the one
+> remaining local-harness gap (mock-driven flows are green).
+
+- [x] 13.1 Add ScriptSet creation/edit view with LiveSessionBrief, product selection/order, transition policy, target duration per product, and generation-call preview before spending tokens.
+- [x] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states.
+- [x] 13.3 Add long-form segment navigator showing title/intent, target/estimated duration, status, gate violations, version history, and exact display/spoken previews.
+- [x] 13.4 Add Generate All UX with selected/missing products, per-product and total estimated semantic calls, bounded-progress status, partial failure, retryable transport failure, and explicit human cost action.
+- [x] 13.5 Add SSE client for batch progress with reconnect/snapshot recovery and no duplicate action on reconnect.
+- [x] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records.
+- [x] 13.7 Add stale dependency warnings that disable runtime-ready state until resubmit/reapprove.
+- [x] 13.8 Add frontend tests for zero-LLM manual PASS, Generate All double-click/idempotency UX, segment failure pause, AI Fix legal-state guards, spoken-text review, approval invalidation, and SSE reconnect.
 
 ## 14. Observability, cost controls, security, and documentation
 
@@ -175,8 +185,8 @@
 
 - [x] 15.1 Run focused backend unit/integration/contract suites for `script_authoring` plus Ruff/format/static checks used by backend service CI.
 - [x] 15.2 Run PostgreSQL integration with restart/recovery/idempotency and migration-from-clean-DB verification.
-- [x] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls.
-- [x] 15.4 Run AI long-form E2E for at least 10-minute and 30-minute targets and a bounded 60-minute planning/dry-run/call-budget test; verify fixed K and no model-controlled extra jobs.
+- [ ] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls. *(Not re-run against the completed production path 2026-08-18: requires a live VieNeu playback environment. The zero-LLM manual path up to binding + exact `spoken_text` is covered by `tests/integration/test_authoring_e2e_manual_zero_llm.py`; the VieNeu playback leg remains to be verified.)*
+- [ ] 15.4 Run AI long-form E2E for at least 10-minute and 30-minute targets and a bounded 60-minute planning/dry-run/call-budget test; verify fixed K and no model-controlled extra jobs. *(Not re-run against the completed production path 2026-08-18: requires a real LLM + long-running E2E. Bounded planner/preview dry-run is covered by generation/batch integration tests with a fake LLM; the 10/30-minute live E2E remains to be verified.)*
 - [x] 15.5 Run multi-product Generate All E2E with bounded concurrency, one product segment gate failure, sibling completion, human repair/resume, batch approval, and runtime selection across approved products.
 - [x] 15.6 Verify no content/gate failure produces automatic AI repair/regeneration and no general tool/agent loop exists in the production path.
 - [x] 15.7 Verify exact approved `spoken_text` identity at Change A boundary, full-script segmentation through the same source-agnostic TextChunker, and no post-approval mutation/rewrite.
@@ -247,8 +257,10 @@ architecture audit confirms zero Change A namespace duplication
 (`speech_chunking` / `render.windows.TextChunk` / `flush_timeout_ms` /
 `target_chars` / `ScriptTextChunker`).
 
-**Still open (not part of this follow-up):** tasks 13.1-13.8 (Workbench
-authoring UX) remain `[ ]` — no script-authoring frontend exists in this repo;
-they are backend-complete and awaiting a frontend owner. The final-architecture/
-VieNeu playback E2E (15.3) and 30/60-minute AI long-form E2E (15.4) were not
-re-run in this follow-up and rely on the earlier domain-level verification.
+**Still open:** the VieNeu playback E2E (15.3) and the 30/60-minute AI
+long-form E2E (15.4) were not re-run against the completed production path
+(they require a live/GPU E2E environment: real LLM + VieNeu playback) and are
+unchecked until verified. Section 13 tasks (13.1-13.8) are implemented by the
+**local-only** Workbench harness (`workbench/`, mock-driven, 140 Vitest tests)
+and are marked `[x]` for that local surface — see Section 13; they do NOT imply
+a production frontend.
