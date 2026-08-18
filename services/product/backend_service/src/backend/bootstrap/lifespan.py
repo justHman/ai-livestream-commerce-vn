@@ -69,8 +69,9 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
 
     ``CancelledError`` propagates immediately; other failures log and retry
     up to ``_STARTUP_ATTEMPTS`` at ``_STARTUP_RETRY_DELAYS``; on exhaustion the
-    store is closed and the error is logged (server remains bootable, and
-    readiness reports the failure honestly).
+    store is closed. In production the final failure is re-raised (fail-fast —
+    the app must not boot with an unreachable DB); otherwise the error is
+    logged and the server remains bootable (readiness reports it honestly).
     """
     pg = container.pg_store
     if pg is None or not getattr(pg, "enabled", False):
@@ -113,6 +114,8 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
                     _STARTUP_ATTEMPTS,
                     type(exc).__name__,
                 )
+                if container.config.app_env == "production":
+                    raise exc
                 return
             delay = _STARTUP_RETRY_DELAYS[attempt]
             logger.warning(
@@ -128,8 +131,10 @@ async def _connect_authoring(container: BootstrapContainer) -> None:
 
     The script_* tables are owned by ``_connect_postgres``'s apply_schema, so
     this stage only establishes the authoring pool. When the composition wired
-    no service (no DATABASE_URL) the authoring surface stays 501; failures log
-    and the server remains bootable, mirroring ``_connect_postgres``.
+    no service (no DATABASE_URL) the authoring surface stays 501. On retry
+    exhaustion the final failure is re-raised in production (fail-fast);
+    otherwise failures log and the server remains bootable, mirroring
+    ``_connect_postgres``.
     """
     service = getattr(container, "script_authoring_service", None)
     if service is None:
@@ -169,6 +174,8 @@ async def _connect_authoring(container: BootstrapContainer) -> None:
                     _STARTUP_ATTEMPTS,
                     type(exc).__name__,
                 )
+                if container.config.app_env == "production":
+                    raise exc
                 return
             delay = _STARTUP_RETRY_DELAYS[attempt]
             logger.warning(
@@ -297,6 +304,25 @@ async def _shutdown(container: BootstrapContainer) -> None:
         if close is not None:
             await _call_cleanup(close, async_method=inspect.iscoroutinefunction(close))
 
+    async def drain_authoring() -> None:
+        """Drain Script Authoring background jobs before any pool closes.
+
+        HIGH-1: MUST run before ``close_authoring``. Awaited directly (not
+        under the per-stage timeout) — cutting the drain short would leave a
+        still-running job to race ``repos.close()``, the exact hang it
+        prevents. The drain itself is bounded (configurable graceful window,
+        then cancel + await stragglers).
+        """
+        service = getattr(container, "script_authoring_service", None)
+        if service is None:
+            return
+        drain = getattr(service, "drain", None)
+        if drain is not None:
+            await _call_cleanup(drain, async_method=inspect.iscoroutinefunction(drain))
+
+    # Drain Script Authoring background jobs BEFORE the authoring/postgres
+    # close stages so no owned task races the pool close (HIGH-1).
+    await drain_authoring()
     stages = (
         ("orchestrators", stop_session_pipeline),
         ("coordinator", stop_coordinator),
@@ -319,9 +345,15 @@ def build_lifespan(container: BootstrapContainer):
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        await _connect_postgres(container)
-        await _connect_authoring(container)
-        _start_reducer_loop(container)
+        try:
+            await _connect_postgres(container)
+            await _connect_authoring(container)
+            _start_reducer_loop(container)
+        except Exception:
+            # Production startup is fail-fast: tear down any partially
+            # initialized resource before the boot error propagates.
+            await _shutdown(container)
+            raise
         try:
             yield
         finally:

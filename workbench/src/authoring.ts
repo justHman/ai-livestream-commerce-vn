@@ -16,9 +16,14 @@ import {
   type ScriptEvent,
   type ScriptItemState,
   type ScriptSet,
+  type ScriptSetInput,
+  type TransitionPolicy,
 } from "./scriptSets";
 
 // ---------------- Reducer state ----------------
+
+/** Human actor stamped on approval records (backend ApproveReq.actor). */
+export const AUTHORING_ACTOR = "operator";
 
 export interface ProductTargets {
   [productId: string]: number;
@@ -27,6 +32,8 @@ export interface ProductTargets {
 export interface AuthoringState {
   scriptSet: ScriptSet | null;
   setId: string;
+  name: string;
+  transitionPolicy: TransitionPolicy;
   brief: LiveSessionBrief;
   productIds: string[];
   targets: ProductTargets;
@@ -52,7 +59,9 @@ export function initialStateAuthoring(): AuthoringState {
   return {
     scriptSet: null,
     setId: "",
-    brief: { shop_name: "", host_name: "", persona: "", selling_style: "", transition_policy: "ORDER_AGNOSTIC" },
+    name: "",
+    transitionPolicy: "ORDER_AGNOSTIC",
+    brief: { title: "", host_name: "", shop_name: "", note: "" },
     productIds: [],
     targets: {},
     preview: null,
@@ -241,8 +250,8 @@ export async function createSetFlow(deps: FlowDeps): Promise<void> {
   const { client, state, dispatch } = deps;
   const productIds = state.productIds.filter((id) => id.trim());
   dispatch({ type: "AUTHORING_ERRORS", errors: [] });
-  if (!state.brief.shop_name.trim() || !state.brief.host_name.trim()) {
-    dispatch({ type: "AUTHORING_STATUS", status: "Thiếu tên shop hoặc tên MC trong brief.", errors: ["brief: cần tên shop và tên MC."] });
+  if (!state.name.trim() || !state.brief.title.trim()) {
+    dispatch({ type: "AUTHORING_STATUS", status: "Thiếu tên ScriptSet hoặc tiêu đề brief.", errors: ["name/brief.title: cần tên ScriptSet và tiêu đề brief."] });
     return;
   }
   if (!productIds.length) {
@@ -251,7 +260,18 @@ export async function createSetFlow(deps: FlowDeps): Promise<void> {
   }
   setBusy(deps, "save", true);
   try {
-    const set = await client.createScriptSet({ brief: state.brief, product_ids: productIds });
+    const input: ScriptSetInput = {
+      name: state.name.trim(),
+      transition_policy: state.transitionPolicy,
+      product_ids: productIds,
+      brief: {
+        title: state.brief.title.trim(),
+        host_name: state.brief.host_name,
+        shop_name: state.brief.shop_name,
+        note: state.brief.note,
+      },
+    };
+    const set = await client.createScriptSet(input);
     const targets: ProductTargets = {};
     for (const id of productIds) targets[id] = state.targets[id] ?? MIN_TARGET_DURATION_S;
     dispatch({
@@ -350,9 +370,12 @@ export async function generateAllFlow(deps: FlowDeps): Promise<AcceptedJob | nul
     return null;
   }
   setBusy(deps, "generate-all", true);
-  const key = idempotencyKey({ setId: state.setId, revision: state.scriptSet?.revision, products });
+  // Backend batch takes ONE target_duration_s for the whole product set.
+  const productIds = products.map((p) => p.product_id);
+  const targetDurationS = clampDuration(state.targets[productIds[0]!]);
+  const key = idempotencyKey({ setId: state.setId, revision: state.scriptSet?.revision, product_ids: productIds, target_duration_s: targetDurationS });
   try {
-    const job = await client.generateBatch(state.setId, { products }, key);
+    const job = await client.generateBatch(state.setId, { product_ids: productIds, target_duration_s: targetDurationS }, key);
     dispatch({ type: "AUTHORING_BATCH", value: { batchId: job.batch_id ?? null, status: "running", estimated_calls: estimate, transportRetrying: false, lastError: null } });
     dispatch({ type: "AUTHORING_STATUS", status: `Generate All đã khởi động (batch ${job.batch_id ?? "?"}), ~${estimate} semantic calls.`, errors: [] });
     return job;
@@ -383,9 +406,19 @@ export async function approveBatchFlow(deps: FlowDeps): Promise<void> {
     dispatch({ type: "AUTHORING_STATUS", status: "Chọn ít nhất một bản REVIEWABLE để duyệt.", errors: ["approve: chưa chọn phiên bản nào."] });
     return;
   }
+  const items = state.scriptSet?.products ?? [];
+  const versionIds: Record<string, string> = {};
+  for (const id of ids) {
+    const versionId = items.find((p) => p.product_id === id)?.current_version?.version_id;
+    if (!versionId) {
+      dispatch({ type: "AUTHORING_STATUS", status: `Approve batch thất bại: ${id} chưa có version để duyệt.`, errors: [`approve: ${id} thiếu current_version.`] });
+      return;
+    }
+    versionIds[id] = versionId;
+  }
   setBusy(deps, "approve", true);
   try {
-    const result = await client.approveBatch(state.setId, ids);
+    const result = await client.approveBatch(state.setId, ids, versionIds, AUTHORING_ACTOR);
     dispatch({ type: "AUTHORING_STATUS", status: `Đã duyệt ${result.approvals.length} phiên bản.`, errors: [] });
     await loadSetFlow(deps, state.setId);
   } catch (error) {
@@ -403,13 +436,15 @@ export function createMockScriptClient(): ScriptClient {
   const sets = new Map<string, ScriptSet>();
   let seq = 0;
 
-  function newScriptSet(input: { brief: LiveSessionBrief; product_ids: string[] }): ScriptSet {
+  function newScriptSet(input: ScriptSetInput): ScriptSet {
     seq += 1;
     const id = `sets-mock-${seq}`;
     const set: ScriptSet = {
       id,
+      name: input.name,
       revision: 1,
-      brief: input.brief,
+      transition_policy: input.transition_policy ?? "ORDER_AGNOSTIC",
+      brief: input.brief ?? { title: "", host_name: "", shop_name: "", note: "" },
       products: input.product_ids.map((productId, index) => {
         const names: Record<string, string> = {
           P001: "Kem chống nắng La Roche-Posay SPF50+",
@@ -496,8 +531,11 @@ export function createMockScriptClient(): ScriptClient {
       const set = sets.get(setId);
       if (!set) throw new Error("not found");
       set.brief = patch.brief ?? set.brief;
+      if (patch.transition_policy) set.transition_policy = patch.transition_policy;
       if (patch.product_ids) {
-        set.products = patch.product_ids.map((id) => set.products.find((p) => p.product_id === id) ?? newScriptSet({ brief: set.brief, product_ids: [id] }).products[0]!);
+        set.products = patch.product_ids.map(
+          (id) => set.products.find((p) => p.product_id === id) ?? newScriptSet({ name: set.name, transition_policy: set.transition_policy, product_ids: [id], brief: set.brief }).products[0]!,
+        );
       }
       touch(set);
       return structuredClone(set);
@@ -637,34 +675,37 @@ export function createMockScriptClient(): ScriptClient {
       touch(set);
       return { status: "accepted", workflow_id: `wf-fix-${productId}` };
     },
-    async approveProduct(setId, productId) {
+    async approveProduct(setId, productId, versionId, actor) {
       const set = sets.get(setId);
       if (!set) throw new Error("not found");
       const item = set.products.find((p) => p.product_id === productId);
       if (!item) throw new Error("not found");
       if (item.state !== "REVIEWABLE" || !item.current_version) throw new Error("409: chỉ duyệt phiên bản REVIEWABLE");
+      if (versionId !== item.current_version.version_id) throw new Error("409: version_id không khớp phiên bản hiện tại");
       const approval = {
         approval_id: `appr-${productId}-${item.approvals.length + 1}`,
-        version_id: item.current_version.version_id,
+        version_id: versionId,
         version: item.current_version.version,
-        approved_by: "operator",
+        approved_by: actor,
         approved_at: new Date().toISOString(),
-        approval_hash: `hash-${item.current_version.version_id}`,
+        approval_hash: `hash-${versionId}`,
       };
       item.approvals.push(approval);
-      item.approved_version_id = item.current_version.version_id;
+      item.approved_version_id = versionId;
       item.approved_revision = item.current_version.version;
       item.state = "APPROVED";
       item.current_version.state = "APPROVED";
       touch(set);
       return { approval, state: "APPROVED" };
     },
-    async approveBatch(setId, productIds) {
+    async approveBatch(setId, productIds, versionIds, actor) {
       const set = sets.get(setId);
       if (!set) throw new Error("not found");
       const approvals = [];
       for (const productId of productIds) {
-        const result = await client.approveProduct(setId, productId);
+        const versionId = versionIds[productId];
+        if (!versionId) throw new Error("409: thiếu version_id để duyệt");
+        const result = await client.approveProduct(setId, productId, versionId, actor);
         approvals.push(result.approval);
       }
       return { approvals };
@@ -672,8 +713,8 @@ export function createMockScriptClient(): ScriptClient {
     async generateBatch(setId, req, _key) {
       const set = sets.get(setId);
       if (!set) throw new Error("not found");
-      for (const product of req.products) {
-        await client.generateProduct(setId, product.product_id, product.target_duration_s, _key);
+      for (const productId of req.product_ids) {
+        await client.generateProduct(setId, productId, req.target_duration_s, _key);
       }
       return { status: "accepted", batch_id: `batch-mock-${++seq}` };
     },
