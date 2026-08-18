@@ -22,9 +22,14 @@ Design decisions:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import queue
-from collections.abc import AsyncIterator, Sequence
+import re
+from collections import deque
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, NoReturn
 
 from backend.application.script_authoring.approval import (
@@ -45,20 +50,61 @@ from backend.application.script_authoring.gate.engine import (
 )
 from backend.application.script_authoring.gate.registry import ScriptRuleRegistry
 from backend.application.script_authoring.gate.results import GateRunResult, RuleViolation
+from backend.application.script_authoring.generation.batch import (
+    BatchOrchestratorConfig,
+    BatchRequest,
+    BatchScriptGenerationOrchestrator,
+    BatchState,
+    IdempotencyRegistry,
+    recover_batch,
+    request_fingerprint,
+)
 from backend.application.script_authoring.generation.calibration import (
     GenerationBudgetCalibration,
     GenerationBudgetError,
 )
+from backend.application.script_authoring.generation.continuity import ContinuityState
+from backend.application.script_authoring.generation.context_builder import (
+    AuthoritativeContext,
+)
+from backend.application.script_authoring.generation.driver import WorkflowDriver
+from backend.application.script_authoring.generation.intent import (
+    ScriptIntent as GenScriptIntent,
+    build_transition_context,
+)
+from backend.application.script_authoring.generation.planner import (
+    AuthoritativeContext as PlannerAuthoritativeContext,
+    PlanRejectionError,
+    ProductScriptPlanner,
+)
 from backend.application.script_authoring.generation.preview import (
     preview_product as compute_product_preview,
 )
+from backend.application.script_authoring.generation.prompt_builder import (
+    build_generate_prompt,
+    build_repair_prompt,
+)
+from backend.application.script_authoring.generation.segment_generator import (
+    SegmentGenerationResult,
+    SegmentStepOutcome,
+)
+from backend.application.script_authoring.generation.skill_loader import SkillLoader
 from backend.application.script_authoring.models import (
     Approval,
     GateRun,
     GateViolation,
+    GenerationBatch,
+    GenerationBatchStatus,
+    GenerationFingerprint,
+    GenerationJob,
+    GenerationJobStatus,
     LiveSessionBrief,
+    ProductScriptPlan,
+    ScriptIntent,
     ScriptItem,
+    ScriptSegment,
     ScriptSet,
+    ScriptSource,
     ScriptState,
     ScriptVersion,
     new_id,
@@ -69,7 +115,10 @@ from backend.application.script_authoring.repositories import (
 )
 from backend.application.script_authoring.service import ScriptAuthoringError
 from backend.application.script_authoring.state import IllegalTransitionError
-from backend.application.script_authoring.workflow import ProductGenerationWorkflow
+from backend.application.script_authoring.workflow import (
+    InvalidFixStateError,
+    ProductGenerationWorkflow,
+)
 from backend.config import ScriptAuthoringConfig
 
 __all__ = ["ScriptAuthoringServiceImpl"]
@@ -79,23 +128,139 @@ class _SyncPersistBridge:
     """Thread-safe sink for the FSM's synchronous ``persist`` hook.
 
     The FSM calls ``persist(item)`` after every persisted change; the service
-    drains the queue once per command and writes the collected items inside a
-    single repository transaction.
+    drains the queue once per command and writes the collected artifacts
+    (items / plans / segments / versions / gate runs) inside a single
+    repository transaction. Thread-safe so a background driver (B6) can
+    enqueue from a worker while the async loop drains.
     """
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[ScriptItem] = queue.Queue()
+        self._queue: queue.Queue[Any] = queue.Queue()
 
-    def __call__(self, item: ScriptItem) -> None:
-        self._queue.put(item)
+    def __call__(self, artifact: Any) -> None:
+        self._queue.put(artifact)
 
-    def drain(self) -> list[ScriptItem]:
-        items: list[ScriptItem] = []
+    def drain(self) -> list[Any]:
+        artifacts: list[Any] = []
         while True:
             try:
-                items.append(self._queue.get_nowait())
+                artifacts.append(self._queue.get_nowait())
             except queue.Empty:
-                return items
+                return artifacts
+
+
+class _EventEmittingDriver:
+    """WorkflowDriver proxy that emits fine-grained SSE phase events.
+
+    The batch orchestrator drives the driver protocol (``step`` /
+    ``is_terminal`` / ``snapshot`` / ``restore``) but only knows product-level
+    lifecycle; this proxy derives the contract's ``product.planning_started`` /
+    ``product.plan_ready`` / ``segment.gate_passed`` / ``product.reviewable`` /
+    ``product.failed`` events from the FSM state changes of each step. For the
+    single-product path ``emit`` is a no-op so the wrapper is inert.
+    """
+
+    def __init__(self, driver: WorkflowDriver, emit, batch_id) -> None:
+        self._driver = driver
+        self._emit = emit
+        # batch_id may be a fixed string or a callable (the batch orchestrator
+        # generates its own batch id during start(); callers resolve lazily).
+        self._batch_id = batch_id
+        self.product_id = driver.product_id
+
+    def _bid(self) -> str:
+        return self._batch_id() if callable(self._batch_id) else self._batch_id
+
+    def step(self) -> bool:
+        wf = self._driver.workflow
+        before = wf.item.state
+        segments_before = len(wf.segments)
+        more = self._driver.step()
+        after = wf.item.state
+        pid = self.product_id
+        bid = self._bid()
+        if before is ScriptState.EMPTY and after is ScriptState.PLANNING:
+            self._emit(
+                "product.planning_started",
+                {"batch_id": bid, "product_id": pid},
+            )
+        elif before is ScriptState.PLANNING and after is ScriptState.GENERATING:
+            self._emit(
+                "product.plan_ready",
+                {
+                    "batch_id": bid,
+                    "product_id": pid,
+                    "plan_segment_count": wf.plan_segment_count,
+                },
+            )
+        elif (
+            before is ScriptState.GENERATING
+            and after is ScriptState.GENERATING
+            and len(wf.segments) > segments_before
+        ):
+            self._emit(
+                "segment.gate_passed",
+                {
+                    "batch_id": bid,
+                    "product_id": pid,
+                    "segment_index": len(wf.segments) - 1,
+                },
+            )
+        elif after is ScriptState.REVIEWABLE:
+            self._emit("product.reviewable", {"batch_id": bid, "product_id": pid})
+        elif after in (ScriptState.GATE_FAILED, ScriptState.FAILED):
+            self._emit("product.failed", {"batch_id": bid, "product_id": pid})
+        return more
+
+    def is_terminal(self) -> bool:
+        return self._driver.is_terminal()
+
+    def snapshot(self) -> dict:
+        return self._driver.snapshot()
+
+    def restore(self, state: dict) -> None:
+        self._driver.restore(state)
+
+    @property
+    def workflow(self):
+        return self._driver.workflow
+
+
+class _RegenWorkflow:
+    """Minimal workflow-shaped holder for the manual regenerate failure path."""
+
+    def __init__(self, item: ScriptItem) -> None:
+        self.item = item
+        self.last_error: str | None = None
+
+
+class DbIdempotencyRegistry(IdempotencyRegistry):
+    """``IdempotencyRegistry`` backed by the SQL idempotency table (task 10.6).
+
+    The orchestrator's registry protocol is synchronous, so this class reads
+    from the injected in-memory store and asynchronously flushes ``register``
+    to Postgres. The service seeds the store from the DB before starting a
+    batch and performs an explicit synchronous register before returning, so
+    the mapping survives restart (``ON CONFLICT DO NOTHING`` keeps first-wins).
+    """
+
+    def __init__(self, repo, store: dict | None = None) -> None:
+        super().__init__(store=store)
+        self._repo = repo
+
+    def register(self, fingerprint: str, batch_id: str) -> None:
+        super().register(fingerprint, batch_id)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._flush(fingerprint, batch_id))
+
+    async def _flush(self, fingerprint: str, batch_id: str) -> None:
+        try:
+            await self._repo.register(fingerprint, batch_id)
+        except Exception:
+            pass  # the service performs an explicit synchronous register too
 
 
 @dataclass(frozen=True)
@@ -160,10 +325,13 @@ def _approval_dependencies_dict(deps: ApprovalDependencies) -> dict[str, Any]:
 
 
 class ScriptAuthoringServiceImpl:
-    """Zero-LLM concrete ``ScriptAuthoringService`` (Change B, B4).
+    """Concrete ``ScriptAuthoringService`` over SQL repositories (Change B).
 
-    All commands are async; AI generation commands raise ``llm_unavailable``
-    until B5/B6 wires the generator/regenerator/fixer/batch scheduler.
+    B4 implemented the manual zero-LLM core; B6 replaces the AI-method stubs
+    with real long-form generation (one product), segment regeneration, AI fix,
+    and multi-product batch orchestration over the injected ``EngineManager``.
+    When ``engine_manager`` is None (or the LLM is unavailable) the four AI
+    commands raise ``llm_unavailable``; batch reads / SSE never do.
     """
 
     def __init__(
@@ -172,10 +340,18 @@ class ScriptAuthoringServiceImpl:
         *,
         config: ScriptAuthoringConfig | None = None,
         gate: ScriptGate | None = None,
+        engine_manager: Any | None = None,
     ) -> None:
         self._repos = repos
         self._config = config or ScriptAuthoringConfig()
         self._gate = gate or self._default_gate()
+        self._engine_manager = engine_manager
+        # In-process batch orchestrators keyed by batch id (B6) so cancel_batch
+        # finds a running batch; otherwise it recovers from persisted state.
+        self._active_orchestrators: dict[str, BatchScriptGenerationOrchestrator] = {}
+        self._batch_persist_queues: dict[str, queue.Queue[BatchState]] = {}
+        self._batch_artifact_bridges: dict[str, _SyncPersistBridge] = {}
+        self._event_rings: dict[str, deque] = {}
 
     # ── construction / helpers ───────────────────────────────────────
 
@@ -293,7 +469,419 @@ class ScriptAuthoringServiceImpl:
             raise ScriptAuthoringError("stale_revision", str(exc)) from exc
 
     def _raise_llm_unavailable(self) -> NoReturn:
-        raise ScriptAuthoringError("llm_unavailable", "AI generation is not available yet (B5/B6)")
+        raise ScriptAuthoringError("llm_unavailable", "LLM engine is not available")
+
+    def _require_llm(self) -> Callable[[str], str]:
+        """Return the sync ``(text) -> str`` LLM callable or raise 503.
+
+        Decision 1: unavailable when there is no engine manager, the engine is
+        ``none``/empty, the last load failed, or no callable is bound.
+        """
+        em = self._engine_manager
+        if em is None:
+            self._raise_llm_unavailable()
+        if em.llm_cfg.get("engine") in ("none", "", None):
+            self._raise_llm_unavailable()
+        if em.llm_failed:
+            self._raise_llm_unavailable()
+        fn = em.get_llm_fn()
+        if fn is None:
+            self._raise_llm_unavailable()
+        return fn
+
+    def _safe_llm(self) -> Callable[[str], str] | None:
+        """Non-raising ``_require_llm`` for recovery paths (returns None)."""
+        try:
+            return self._require_llm()
+        except ScriptAuthoringError:
+            return None
+
+    # ── B6 generation helpers ──────────────────────────────────────────
+
+    def _event_ring(self, batch_id: str) -> deque:
+        ring = self._event_rings.get(batch_id)
+        if ring is None:
+            # Retention window is seconds; bound the ring to a sane event cap.
+            maxlen = max(64, self._config.sse_retention_seconds // 10)
+            ring = deque(maxlen=maxlen)
+            self._event_rings[batch_id] = ring
+        return ring
+
+    @staticmethod
+    def _map_batch_event(event: str) -> str | None:
+        """Map orchestrator events to the SSE contract (task 11.10).
+
+        ``product.started``/``product.completed`` are dropped — the workflow
+        driver emits the finer-grained ``product.*``/``segment.*`` events.
+        """
+        if event in ("product.started", "product.completed"):
+            return None
+        return {
+            "batch.started": "batch.progress",
+            "product.failed": "product.failed",
+            "batch.completed": "batch.completed",
+            "batch.partial_completed": "batch.completed",
+            "batch.failed": "batch.error",
+            "batch.cancelled": "batch.cancelled",
+        }.get(event, event)
+
+    def _batch_sink(self, batch_id: str, ring: deque, event: str, payload: dict) -> None:
+        mapped = self._map_batch_event(event)
+        if mapped is None:
+            return
+        ring.append({"event": mapped, "data": json.dumps(payload)})
+
+    @staticmethod
+    def _job_status_for(state: ScriptState) -> GenerationJobStatus:
+        if state in (ScriptState.REVIEWABLE, ScriptState.APPROVED):
+            return GenerationJobStatus.COMPLETED
+        if state in (ScriptState.FAILED, ScriptState.GATE_FAILED, ScriptState.CANCELLED):
+            return GenerationJobStatus.FAILED
+        return GenerationJobStatus.RUNNING
+
+    def _skill_loader(self) -> SkillLoader:
+        path = self._config.skill_path
+        if path:
+            try:
+                return SkillLoader(Path(path))
+            except Exception:
+                pass
+        return SkillLoader()
+
+    def _skill_text(self) -> str:
+        return self._skill_loader().content()
+
+    def _generation_fingerprint(self) -> GenerationFingerprint:
+        em = self._engine_manager
+        model = em.llm_cfg.get("model", "") if em is not None else ""
+        skill_version = self._config.expected_skill_version
+        try:
+            skill_version = self._skill_loader().skill_version() or skill_version
+        except Exception:
+            pass
+        return GenerationFingerprint(model=model, skill_version=skill_version)
+
+    def _model_fingerprint(self) -> str:
+        em = self._engine_manager
+        if em is None:
+            return ""
+        model = em.llm_cfg.get("model", "") or ""
+        return f"{em.llm_cfg.get('engine', '')}:{model}"
+
+    def _make_loaders(self, items, segments, versions):
+        def load_item(item_id: str) -> ScriptItem:
+            for item in items.values():
+                if item.id == item_id:
+                    return item
+            raise KeyError(item_id)
+
+        def load_segment(segment_id: str) -> ScriptSegment:
+            segment = segments.get(segment_id)
+            if segment is None:
+                raise KeyError(segment_id)
+            return segment
+
+        def load_version(version_id: str) -> ScriptVersion:
+            version = versions.get(version_id)
+            if version is None:
+                raise KeyError(version_id)
+            return version
+
+        return load_item, load_segment, load_version
+
+    def _build_planning_prompt(
+        self, skill_text: str, item: ScriptItem, target_duration_s: int
+    ) -> str:
+        return "\n".join(
+            [
+                "TASK: PLAN_THE_SCRIPT_SEGMENTS",
+                skill_text.strip() or "(no sales skill provided)",
+                f"Plan a Vietnamese livestream sales script for product {item.product_id} "
+                f"with a target spoken duration of {target_duration_s} seconds.",
+                "Output exactly one section per line in this format:",
+                "<index>. <title>|<intent>|<target_duration_s>",
+                "Return only the plan lines.",
+            ]
+        )
+
+    def _parse_plan_sections(self, raw: str) -> list[dict]:
+        """Parse the model's plan lines into ``{title, intent, target_duration_s}``.
+
+        Lines that do not match the ``title|intent|duration`` shape are skipped;
+        an entirely unparseable response yields an empty list, which the
+        ``plan_generate`` closure turns into a deterministic failure.
+        """
+        sections: list[dict] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in line.split("|")]
+            if len(parts) != 3:
+                continue
+            title = re.sub(r"^\d+\s*[.:-]\s*", "", parts[0])
+            intent = parts[1]
+            try:
+                duration = int(parts[2])
+            except ValueError:
+                continue
+            if not title or not intent or duration <= 0:
+                continue
+            sections.append({"title": title, "intent": intent, "target_duration_s": duration})
+        return sections
+
+    def _make_plan_generate(self, item, script_set, target_duration_s, llm_fn, *, emit):
+        planner = ProductScriptPlanner(self._calibration())
+        skill_text = self._skill_text()
+
+        def plan_generate():
+            prompt = self._build_planning_prompt(skill_text, item, target_duration_s)
+            raw = llm_fn(prompt)
+            sections = self._parse_plan_sections(raw)
+            if not sections:
+                raise PlanRejectionError("no parseable plan sections in model output")
+            plan = planner.plan(
+                item.product_id,
+                float(target_duration_s),
+                PlannerAuthoritativeContext(
+                    product_id=item.product_id, fact_ids=frozenset(), objection_ids=frozenset()
+                ),
+                sections,
+            )
+            candidates = [
+                {
+                    "title": s.topic,
+                    "intent": s.intent,
+                    "target_duration_s": int(s.target_duration_s),
+                }
+                for s in plan.segments
+            ]
+            return len(candidates), candidates
+
+        return plan_generate
+
+    def _make_segment_generate(self, item, script_set, target_duration_s, llm_fn, *, emit):
+        skill_text = self._skill_text()
+        transition = build_transition_context(script_set.brief.transition_policy)
+        gen_intent = GenScriptIntent(intent="selling", target_duration_s=target_duration_s)
+
+        def segment_generate(index: int, continuity: ContinuityState) -> SegmentStepOutcome:
+            emit("segment.started", {"product_id": item.product_id, "segment_index": index})
+            parts = build_generate_prompt(
+                skill_text,
+                generation_constraints=[],
+                context=AuthoritativeContext(),
+                duration_s=target_duration_s,
+                intent=gen_intent,
+                transition=transition,
+                segment_index=index,
+                continuity=continuity,
+            )
+            prompt = "\n\n".join(filter(None, [parts.system, parts.context, parts.user]))
+            raw = llm_fn(prompt)
+            if not raw or not raw.strip():
+                return SegmentStepOutcome(index=index, state=continuity, error="empty model output")
+            return SegmentStepOutcome(
+                index=index,
+                state=continuity,
+                result=SegmentGenerationResult(
+                    segment_index=index, display_text=raw, spoken_text=raw
+                ),
+            )
+
+        return segment_generate
+
+    def _build_driver(
+        self,
+        item: ScriptItem,
+        script_set: ScriptSet,
+        target_duration_s: int,
+        llm_fn: Callable[[str], str] | None,
+        bridge: _SyncPersistBridge,
+        *,
+        emit,
+        batch_id: str,
+        loaders,
+    ):
+        context = ScriptGateContext(
+            transition_policy=script_set.brief.transition_policy, facts=ProductFacts()
+        )
+
+        def segment_gate(text: str) -> GateRunResult:
+            return self._gate.run_segment(text, context)
+
+        def full_gate(segments: Sequence[str]) -> GateRunResult:
+            return self._gate.run_full_script(list(segments), context)
+
+        workflow = ProductGenerationWorkflow(
+            item=item,
+            segment_gate=segment_gate,
+            full_gate=full_gate,
+            persist=bridge,
+            generate=lambda *a, **k: None,  # AI-enabled marker; driver calls closures
+        )
+        workflow.target_duration_s = target_duration_s
+        plan_generate = self._make_plan_generate(
+            item, script_set, target_duration_s, llm_fn, emit=emit
+        )
+        segment_generate = self._make_segment_generate(
+            item, script_set, target_duration_s, llm_fn, emit=emit
+        )
+        driver = WorkflowDriver(
+            product_id=item.product_id,
+            workflow=workflow,
+            plan_generate=plan_generate,
+            segment_generate=segment_generate,
+            persist=bridge,
+            load_item=loaders[0],
+            load_segment=loaders[1],
+            load_version=loaders[2],
+            fingerprint=self._generation_fingerprint(),
+        )
+        return _EventEmittingDriver(driver, emit, batch_id)
+
+    async def _drain_artifacts(
+        self,
+        bridge: _SyncPersistBridge,
+        revisions: dict[str, int],
+        existing_versions: set[str],
+    ) -> None:
+        """Persist one drain of driver artifacts in a single transaction.
+
+        Gotcha (a): a ``ProductScriptPlan``'s embedded placeholder segments are
+        NOT inserted — only the plan row is written (deep copy with
+        ``segments=[]``); the real content segments are inserted separately by
+        the drain, avoiding the ``(plan_id, segment_index, version)`` unique
+        violation. Order: plan -> segments -> gate runs -> versions -> item.
+        """
+        artifacts = bridge.drain()
+        if not artifacts:
+            return
+        items: dict[str, ScriptItem] = {}
+        plans: list[ProductScriptPlan] = []
+        segments: list[ScriptSegment] = []
+        versions: list[ScriptVersion] = []
+        gate_runs: list[GateRun] = []
+        for artifact in artifacts:
+            if isinstance(artifact, ScriptItem):
+                items[artifact.id] = artifact
+            elif isinstance(artifact, ProductScriptPlan):
+                plans.append(artifact)
+            elif isinstance(artifact, ScriptSegment):
+                segments.append(artifact)
+            elif isinstance(artifact, ScriptVersion):
+                versions.append(artifact)
+            elif isinstance(artifact, GateRun):
+                gate_runs.append(artifact)
+        if not (items or plans or segments or versions or gate_runs):
+            return
+        try:
+            async with self._repos.transaction() as conn:
+                for plan in plans:
+                    await self._repos.plans.insert(
+                        plan.model_copy(update={"segments": []}), conn=conn
+                    )
+                for segment in segments:
+                    await self._repos.segments.insert(segment, conn=conn)
+                for run in gate_runs:
+                    await self._repos.gate_runs.insert(run, conn=conn)
+                for version in versions:
+                    if version.id not in existing_versions:
+                        await self._repos.versions.insert(version, conn=conn)
+                        existing_versions.add(version.id)
+                for item in items.values():
+                    expected = revisions.get(item.id)
+                    if expected is None:
+                        continue
+                    await self._repos.items.update(item, expected_revision=expected, conn=conn)
+                    revisions[item.id] = expected + 1
+        except StaleRevisionError as exc:
+            raise ScriptAuthoringError("stale_revision", str(exc)) from exc
+
+    async def _create_job(
+        self,
+        item: ScriptItem,
+        set_id: str,
+        product_id: str,
+        intent: ScriptIntent,
+        target_duration_s: int,
+        idempotency_key: str,
+    ) -> GenerationJob:
+        """Insert a minimal batch row + the job row (the job's ``batch_id`` FK
+        references ``script_generation_batches``)."""
+        batch = GenerationBatch(
+            id=new_id("batch"),
+            script_set_id=set_id,
+            status=GenerationBatchStatus.QUEUED,
+            product_ids=[product_id],
+            job_ids=[],
+            estimated_semantic_calls=0,
+            idempotency_key=idempotency_key,
+        )
+        batch_state = BatchState(
+            batch_id=batch.id,
+            script_set_id=set_id,
+            status="queued",
+            requested_products=[product_id],
+        )
+        job = GenerationJob(
+            id=new_id("job"),
+            batch_id=batch.id,
+            script_item_id=item.id,
+            product_id=product_id,
+            intent=intent,
+            status=GenerationJobStatus.RUNNING,
+            target_duration_s=target_duration_s,
+            fingerprint=self._generation_fingerprint(),
+            idempotency_key=idempotency_key,
+        )
+        async with self._repos.transaction() as conn:
+            await self._repos.batches.insert(batch, state=batch_state, conn=conn)
+            await self._repos.jobs.insert(job, conn=conn)
+        return job
+
+    async def _update_job(self, job: GenerationJob, workflow, status: GenerationJobStatus) -> None:
+        job.status = status
+        job.plan_id = workflow.plan_id
+        job.plan_segment_count = workflow.plan_segment_count
+        job.current_segment_index = workflow.current_segment_index
+        await self._repos.jobs.update(job)
+
+    @staticmethod
+    def _land_failed(workflow, message: str, bridge: _SyncPersistBridge) -> None:
+        workflow.item.state = ScriptState.FAILED
+        workflow.last_error = message
+        bridge(workflow.item)
+
+    async def _drain_batch_persists(
+        self, batch_id: str, persist_queue: queue.Queue[BatchState]
+    ) -> None:
+        """Persist queued ``BatchState`` snapshots with a live revision guard.
+
+        The orchestrator bumps ``BatchState.revision`` only on ``start`` /
+        ``cancel`` while the SQL ``update_state`` advances the row revision on
+        every write, so each queued snapshot is aligned to the current row
+        revision before it is applied (read-fresh + set ``revision`` = row+1).
+        A concurrent drain that already applied a snapshot is skipped.
+        """
+        states: list[BatchState] = []
+        while True:
+            try:
+                states.append(persist_queue.get_nowait())
+            except queue.Empty:
+                break
+        for queued in states:
+            try:
+                result = await self._repos.batches.get(batch_id)
+                if result is None:
+                    continue
+                _batch, current = result
+                queued.revision = current.revision + 1
+                await self._repos.batches.update_state(
+                    batch_id, state=queued, expected_revision=current.revision
+                )
+            except StaleRevisionError:
+                continue  # a concurrent drain already applied this snapshot
 
     # ── ScriptSet aggregate (task 11.2) ──────────────────────────────
 
@@ -598,7 +1186,7 @@ class ScriptAuthoringServiceImpl:
             )
         return {"ok": True, "approvals": approvals}
 
-    # ── AI generation / batch (B5/B6) ────────────────────────────────
+    # ── AI generation / batch (B6) ───────────────────────────────────
 
     async def start_generation(
         self,
@@ -609,7 +1197,25 @@ class ScriptAuthoringServiceImpl:
         intent: str,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
-        self._raise_llm_unavailable()
+        script_set = await self._repos.script_sets.get(set_id)
+        if script_set is None:
+            self._raise_not_found("script set", set_id)
+        item = await self._repos.items.get_by_product(set_id, product_id)
+        if item is None:
+            self._raise_not_found("product script", product_id)
+        op_intent = ScriptIntent.GENERATE_LONG_FORM
+        existing = await self._repos.jobs.find_by_idempotency(
+            item.id, op_intent.value, idempotency_key
+        )
+        if existing is not None:
+            return {"workflow_id": existing.id, "idempotent": True}
+        llm_fn = self._require_llm()
+        self._calibration().segment_count_for(target_duration_s)  # bounds check
+        job = await self._create_job(
+            item, set_id, product_id, op_intent, target_duration_s, idempotency_key
+        )
+        asyncio.create_task(self._run_generation_job(job, item, script_set, llm_fn))
+        return {"workflow_id": job.id, "product_id": product_id, "status": "queued"}
 
     async def regenerate_segment(
         self,
@@ -619,7 +1225,39 @@ class ScriptAuthoringServiceImpl:
         segment_index: int,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
-        self._raise_llm_unavailable()
+        script_set = await self._repos.script_sets.get(set_id)
+        if script_set is None:
+            self._raise_not_found("script set", set_id)
+        item = await self._repos.items.get_by_product(set_id, product_id)
+        if item is None:
+            self._raise_not_found("product script", product_id)
+        if item.state not in (ScriptState.GATE_FAILED, ScriptState.DRAFT):
+            raise ScriptAuthoringError(
+                "illegal_transition",
+                f"cannot regenerate segment {segment_index} in state {item.state.name}",
+            )
+        llm_fn = self._require_llm()
+        op_intent = ScriptIntent.REGENERATE_SEGMENT
+        existing = await self._repos.jobs.find_by_idempotency(
+            item.id, op_intent.value, idempotency_key
+        )
+        if existing is not None:
+            return {
+                "workflow_id": existing.id,
+                "product_id": product_id,
+                "segment_index": segment_index,
+                "idempotent": True,
+            }
+        plan = await self._repos.plans.get_latest(item.id)
+        target = plan.target_duration_s if plan is not None else self._config.min_target_duration_s
+        job = await self._create_job(item, set_id, product_id, op_intent, target, idempotency_key)
+        asyncio.create_task(self._run_regenerate_job(job, item, script_set, segment_index, llm_fn))
+        return {
+            "workflow_id": job.id,
+            "product_id": product_id,
+            "segment_index": segment_index,
+            "status": "queued",
+        }
 
     async def fix_with_ai(
         self,
@@ -628,7 +1266,41 @@ class ScriptAuthoringServiceImpl:
         product_id: str,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
-        self._raise_llm_unavailable()
+        script_set = await self._repos.script_sets.get(set_id)
+        if script_set is None:
+            self._raise_not_found("script set", set_id)
+        item = await self._repos.items.get_by_product(set_id, product_id)
+        if item is None:
+            self._raise_not_found("product script", product_id)
+        if item.current_version_id is None:
+            raise ScriptAuthoringError("fix_not_eligible", "AI fix requires a gate-failed version")
+        current_version = await self._repos.versions.get(item.current_version_id)
+        if current_version is None:
+            raise ScriptAuthoringError("fix_not_eligible", "current draft version is missing")
+        workflow = self._make_workflow(
+            item, current_version, _SyncPersistBridge(), script_set.brief.transition_policy
+        )
+        try:
+            workflow.fix_eligible()
+        except InvalidFixStateError as exc:
+            raise ScriptAuthoringError("fix_not_eligible", str(exc)) from exc
+        llm_fn = self._require_llm()
+        op_intent = ScriptIntent.FIX_FAILED
+        existing = await self._repos.jobs.find_by_idempotency(
+            item.id, op_intent.value, idempotency_key
+        )
+        if existing is not None:
+            return {"workflow_id": existing.id, "product_id": product_id, "idempotent": True}
+        job = await self._create_job(
+            item,
+            set_id,
+            product_id,
+            op_intent,
+            self._config.min_target_duration_s,
+            idempotency_key,
+        )
+        asyncio.create_task(self._run_fix_job(job, item, script_set, current_version, llm_fn))
+        return {"workflow_id": job.id, "product_id": product_id, "status": "queued"}
 
     async def start_batch_generation(
         self,
@@ -638,19 +1310,482 @@ class ScriptAuthoringServiceImpl:
         target_duration_s: int,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
-        self._raise_llm_unavailable()
+        script_set = await self._repos.script_sets.get(set_id)
+        if script_set is None:
+            self._raise_not_found("script set", set_id)
+        items: dict[str, ScriptItem] = {}
+        for pid in product_ids:
+            item = await self._repos.items.get_by_product(set_id, pid)
+            if item is None:
+                self._raise_not_found("product script", pid)
+            items[pid] = item
+        existing_batch = await self._repos.batches.find_by_idempotency(set_id, idempotency_key)
+        if existing_batch is not None:
+            return {
+                "batch_id": existing_batch.id,
+                "workflow_summary": {"products": [], "estimated_semantic_calls_total": 0},
+                "status": existing_batch.status.value,
+                "idempotent": True,
+            }
+        llm_fn = self._require_llm()
+        self._calibration().segment_count_for(target_duration_s)  # bounds check
+        req = BatchRequest(
+            script_set_id=set_id,
+            script_set_revision=script_set.revision,
+            requested_products=tuple(product_ids),
+            target_durations=tuple((pid, float(target_duration_s)) for pid in product_ids),
+            max_product_concurrency=self._config.max_concurrent_products,
+            max_attempts=self._config.provider_max_attempts,
+            model_fingerprint=self._model_fingerprint(),
+            client_key=idempotency_key,
+        )
+        fingerprint = request_fingerprint(req)
+        existing_id = await self._repos.idempotency.get(fingerprint)
+        if existing_id is not None:
+            existing = await self._repos.batches.get(existing_id)
+            if existing is not None:
+                batch, state = existing
+                return {
+                    "batch_id": batch.id,
+                    "workflow_summary": {"products": [], "estimated_semantic_calls_total": 0},
+                    "status": state.status,
+                    "idempotent": True,
+                }
+        # Bind the per-batch runtime structures BEFORE starting the orchestrator
+        # so its persist / event sinks and the driver factory close over them.
+        # The orchestrator generates its own batch id during start(); the ring /
+        # event sink resolve it lazily so the SSE ring is keyed by the same id
+        # that is persisted in the batch row.
+        bridge = _SyncPersistBridge()
+        persist_queue: queue.Queue[BatchState] = queue.Queue()
+        batch_holder: dict[str, str] = {}
+
+        def _batch_id() -> str:
+            return batch_holder.get("batch_id", "")
+
+        def event_sink(event: str, payload: dict) -> None:
+            bid = _batch_id()
+            self._batch_sink(bid, self._event_ring(bid), event, payload)
+
+        def create_workflow(product_id: str, target: float):
+            item = items[product_id]
+            return self._build_driver(
+                item,
+                script_set,
+                int(target),
+                llm_fn,
+                bridge,
+                emit=event_sink,
+                batch_id=_batch_id,
+                loaders=self._make_loaders(items, {}, {}),
+            )
+
+        orch = BatchScriptGenerationOrchestrator(
+            create_workflow,
+            config=BatchOrchestratorConfig(
+                max_product_concurrency=self._config.max_concurrent_products,
+                max_attempts=self._config.provider_max_attempts,
+                model_fingerprint=self._model_fingerprint(),
+            ),
+            event_sink=event_sink,
+            persist=lambda state: persist_queue.put(state.model_copy(deep=True)),
+            idempotency=DbIdempotencyRegistry(self._repos.idempotency),
+        )
+        state, created = orch.start(req)
+        batch_holder["batch_id"] = state.batch_id
+        self._event_ring(state.batch_id)  # ensure the ring exists for SSE
+        batch = GenerationBatch(
+            id=state.batch_id,
+            script_set_id=set_id,
+            status=GenerationBatchStatus.QUEUED,
+            product_ids=list(state.requested_products),
+            job_ids=[],
+            estimated_semantic_calls=state.planned_semantic_calls,
+            idempotency_key=idempotency_key,
+        )
+        async with self._repos.transaction() as conn:
+            await self._repos.batches.insert(batch, state=state, conn=conn)
+        await self._repos.idempotency.register(fingerprint, state.batch_id)
+        self._active_orchestrators[state.batch_id] = orch
+        self._batch_persist_queues[state.batch_id] = persist_queue
+        self._batch_artifact_bridges[state.batch_id] = bridge
+        revisions = {item.id: item.revision for item in items.values()}
+        asyncio.create_task(
+            self._run_batch_job(state.batch_id, orch, persist_queue, bridge, revisions, set())
+        )
+        return {
+            "batch_id": state.batch_id,
+            "workflow_summary": state.preview,
+            "status": "queued",
+        }
 
     async def get_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None:
-        self._raise_llm_unavailable()
+        result = await self._repos.batches.get(batch_id)
+        if result is None:
+            self._raise_not_found("generation batch", batch_id)
+        _batch, state = result
+        return {
+            "batch_id": batch_id,
+            "status": state.status,
+            "product_ids": list(state.requested_products),
+        }
 
     async def cancel_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None:
-        self._raise_llm_unavailable()
+        result = await self._repos.batches.get(batch_id)
+        if result is None:
+            self._raise_not_found("generation batch", batch_id)
+        _batch, state = result
+        if state.status not in ("running", "queued"):
+            raise ScriptAuthoringError(
+                "illegal_transition", f"cannot cancel batch in state {state.status}"
+            )
+        orch = self._active_orchestrators.get(batch_id)
+        persist_queue = self._batch_persist_queues.get(batch_id)
+        bridge = self._batch_artifact_bridges.get(batch_id)
+        if orch is None:
+            orch, persist_queue, bridge = await self._recover_orchestrator(batch_id, set_id)
+        if orch is not None:
+            try:
+                orch.cancel()
+            except Exception:
+                pass
+        # The cancelled snapshot (and any queued step snapshots) are persisted
+        # by _drain_batch_persists with a live revision guard.
+        if persist_queue is not None:
+            try:
+                await self._drain_batch_persists(batch_id, persist_queue)
+            except Exception:
+                pass
+        # Drain any enqueued artifact writes so the item rows reflect cancels.
+        if bridge is not None:
+            try:
+                revisions = await self._current_item_revisions(batch_id)
+                await self._drain_artifacts(bridge, revisions, set())
+            except Exception:
+                pass
+        return {"batch_id": batch_id, "status": "cancelling"}
 
     async def get_batch_events_snapshot(self, *, set_id: str, batch_id: str) -> str | None:
-        self._raise_llm_unavailable()
+        result = await self._repos.batches.get(batch_id)
+        if result is None:
+            return None
+        _batch, state = result
+        return json.dumps(
+            {
+                "batch_id": batch_id,
+                "set_id": set_id,
+                "status": state.status,
+                "revision": state.revision,
+            }
+        )
 
     async def stream_batch_events(
         self, *, set_id: str, batch_id: str
     ) -> AsyncIterator[dict[str, str]]:
-        self._raise_llm_unavailable()
-        yield  # pragma: no cover - unreachable; keeps this an async generator
+        if await self._repos.batches.get(batch_id) is None:
+            return
+        ring = self._event_ring(batch_id)
+        consumed = 0
+        while True:
+            while consumed < len(ring):
+                event = ring[consumed]
+                consumed += 1
+                yield event
+            if any(
+                e["event"] in ("batch.completed", "batch.cancelled", "batch.error") for e in ring
+            ):
+                return
+            if await self._repos.batches.get(batch_id) is None:
+                yield {
+                    "event": "batch.error",
+                    "data": json.dumps(
+                        {"set_id": set_id, "batch_id": batch_id, "code": "not_found"}
+                    ),
+                }
+                return
+            await asyncio.sleep(0.05)
+
+    # ── B6 background jobs ────────────────────────────────────────────
+
+    async def _run_generation_job(
+        self, job: GenerationJob, item: ScriptItem, script_set: ScriptSet, llm_fn
+    ) -> None:
+        # ponytail: the sync llm_fn blocks the event loop during each call —
+        # acceptable for B6 (echo/mock LLM). Real LLMs must move to
+        # asyncio.to_thread with a separate drain task.
+        bridge = _SyncPersistBridge()
+        driver = self._build_driver(
+            item,
+            script_set,
+            job.target_duration_s,
+            llm_fn,
+            bridge,
+            emit=lambda *a, **k: None,
+            batch_id="",
+            loaders=self._make_loaders({item.id: item}, {}, {}),
+        )
+        revisions = {item.id: item.revision}
+        existing_versions: set[str] = set()
+        try:
+            while driver.step():
+                await self._drain_artifacts(bridge, revisions, existing_versions)
+                await self._update_job(job, driver.workflow, self._job_status_for(item.state))
+                await asyncio.sleep(0)
+            await self._drain_artifacts(bridge, revisions, existing_versions)
+            await self._update_job(job, driver.workflow, self._job_status_for(item.state))
+        except Exception as exc:
+            # Deterministic failure: land the item FAILED and record the job.
+            try:
+                self._land_failed(driver.workflow, str(exc) or type(exc).__name__, bridge)
+                await self._drain_artifacts(bridge, revisions, existing_versions)
+            except Exception:
+                pass
+            try:
+                await self._update_job(job, driver.workflow, GenerationJobStatus.FAILED)
+            except Exception:
+                pass
+
+    async def _run_regenerate_job(
+        self, job, item: ScriptItem, script_set: ScriptSet, segment_index: int, llm_fn
+    ) -> None:
+        bridge = _SyncPersistBridge()
+        revisions = {item.id: item.revision}
+        existing_versions: set[str] = set()
+        try:
+            plan = await self._repos.plans.get_latest(item.id)
+            if plan is None:
+                raise ValueError("no plan to regenerate a segment from")
+            segments = await self._repos.segments.list_by_plan(plan.id)
+            if segment_index < 0 or segment_index >= len(segments):
+                raise ValueError(f"segment index {segment_index} out of range")
+            current_segment = segments[segment_index]
+            parts = build_generate_prompt(
+                self._skill_text(),
+                generation_constraints=[],
+                context=AuthoritativeContext(),
+                duration_s=plan.target_duration_s,
+                intent=GenScriptIntent(intent="selling", target_duration_s=plan.target_duration_s),
+                transition=build_transition_context(script_set.brief.transition_policy),
+                plan={"product_id": item.product_id, "plan_id": plan.id},
+                segment_index=segment_index,
+            )
+            prompt = "\n\n".join(filter(None, [parts.system, parts.context, parts.user]))
+            raw = llm_fn(prompt)
+            if not raw or not raw.strip():
+                raise ValueError("regenerated segment text is empty")
+            new_segment = ScriptSegment(
+                id=new_id("segment"),
+                script_item_id=item.id,
+                plan_id=plan.id,
+                segment_index=segment_index,
+                title=current_segment.title,
+                intent=current_segment.intent,
+                target_duration_s=current_segment.target_duration_s,
+                display_text=raw,
+                spoken_text=raw,
+                status=ScriptState.DRAFT,
+                version=current_segment.version + 1,
+            )
+            ordered = list(segments)
+            ordered[segment_index] = new_segment
+            context = ScriptGateContext(
+                transition_policy=script_set.brief.transition_policy, facts=ProductFacts()
+            )
+            result = self._gate.run_full_script([s.spoken_text for s in ordered], context)
+            run = GateRun(
+                id=new_id("gate_run"),
+                script_item_id=item.id,
+                full=True,
+                passed=result.passed,
+                violations=[_to_gate_violation(v) for v in result.violations],
+                rule_set_fingerprint=result.fingerprint.hexdigest,
+                script_version_id=None,
+            )
+            versions = await self._repos.versions.list_by_item(item.id)
+            version = ScriptVersion(
+                id=new_id("script_version"),
+                script_item_id=item.id,
+                version=len(versions) + 1,
+                state=ScriptState.REVIEWABLE if result.passed else ScriptState.GATE_FAILED,
+                source=ScriptSource.AI_REGENERATE,
+                display_text="\n\n".join(s.display_text for s in ordered),
+                spoken_text="\n\n".join(s.spoken_text for s in ordered),
+                segment_version_ids=[s.id for s in ordered],
+                gate_run_id=run.id,
+            )
+            item.state = ScriptState.REVIEWABLE if result.passed else ScriptState.GATE_FAILED
+            item.current_version_id = version.id
+            bridge(new_segment)
+            bridge(run)
+            bridge(version)
+            bridge(item)
+            await self._drain_artifacts(bridge, revisions, existing_versions)
+            job.status = (
+                GenerationJobStatus.COMPLETED if result.passed else GenerationJobStatus.FAILED
+            )
+            job.plan_id = plan.id
+            job.plan_segment_count = len(segments)
+            job.current_segment_index = segment_index
+            await self._repos.jobs.update(job)
+        except Exception as exc:
+            try:
+                self._land_failed(_RegenWorkflow(item), str(exc) or type(exc).__name__, bridge)
+                await self._drain_artifacts(bridge, revisions, existing_versions)
+            except Exception:
+                pass
+            try:
+                await self._repos.jobs.update(job)
+            except Exception:
+                pass
+
+    async def _run_fix_job(
+        self, job, item: ScriptItem, script_set: ScriptSet, current_version, llm_fn
+    ) -> None:
+        bridge = _SyncPersistBridge()
+        workflow = self._make_workflow(
+            item, current_version, bridge, script_set.brief.transition_policy
+        )
+        workflow.generate = self._make_fix_generate(
+            current_version, llm_fn, await self._failed_rule_ids(item.id)
+        )
+        try:
+            workflow.apply_ai_fix()
+        except Exception:
+            pass  # apply_ai_fix persists the item FAILED on provider failure
+        await self._persist_workflow(
+            workflow, bridge, item_revision=item.revision, existing_version_ids={current_version.id}
+        )
+        job.status = (
+            GenerationJobStatus.COMPLETED
+            if item.state is ScriptState.DRAFT
+            else GenerationJobStatus.FAILED
+        )
+        await self._repos.jobs.update(job)
+
+    def _make_fix_generate(self, current_version, llm_fn, failed_rules):
+        failed_ids = [rule_id for rule_id, _message in failed_rules]
+        instructions = [message for _rule_id, message in failed_rules]
+        if not failed_ids:
+            failed_ids = ["REVIEW"]
+            instructions = ["Review the script and fix any remaining issues."]
+        parts = build_repair_prompt(
+            source_text=current_version.spoken_text,
+            failed_rule_ids=failed_ids,
+            rule_repair_instructions=instructions,
+            authoritative_facts=AuthoritativeContext(),
+        )
+        prompt = "\n\n".join(filter(None, [parts.system, parts.context, parts.user]))
+
+        def generate():
+            raw = llm_fn(prompt)
+            return SegmentGenerationResult(segment_index=0, display_text=raw, spoken_text=raw)
+
+        return generate
+
+    async def _failed_rule_ids(self, item_id: str) -> list[tuple[str, str]]:
+        runs = await self._repos.gate_runs.list_by_item(item_id)
+        if not runs:
+            return []
+        last = runs[-1]
+        return [(violation.rule_id, violation.message) for violation in last.violations]
+
+    async def _run_batch_job(
+        self,
+        batch_id: str,
+        orch: BatchScriptGenerationOrchestrator,
+        persist_queue: queue.Queue[BatchState],
+        bridge: _SyncPersistBridge,
+        revisions: dict[str, int],
+        existing_versions: set[str],
+    ) -> None:
+        # ponytail: the sync llm_fn blocks the event loop during each driver
+        # step — acceptable for B6 (echo/mock LLM). Real LLMs must move to
+        # asyncio.to_thread with a separate drain task.
+        try:
+            while True:
+                state = orch.step()
+                await self._drain_artifacts(bridge, revisions, existing_versions)
+                await self._drain_batch_persists(batch_id, persist_queue)
+                if state.status in ("completed", "partial_completed", "failed", "cancelled"):
+                    break
+                await asyncio.sleep(0.02)
+        except Exception:
+            pass  # failures are already persisted into per-product BatchState rows
+
+    async def _current_item_revisions(self, batch_id: str) -> dict[str, int]:
+        result = await self._repos.batches.get(batch_id)
+        if result is None:
+            return {}
+        _batch, state = result
+        revisions: dict[str, int] = {}
+        for pid in state.requested_products:
+            item = await self._repos.items.get_by_product(state.script_set_id, pid)
+            if item is not None:
+                revisions[item.id] = item.revision
+        return revisions
+
+    async def _recover_orchestrator(self, batch_id: str, set_id: str):
+        """Rebuild a cancelled batch from persisted state (task 10.8).
+
+        Pre-loads the item / segment / version rows referenced by each
+        workflow snapshot so the driver's sync loaders are pure dict lookups
+        (no sync-over-async from the event-loop thread).
+        """
+        result = await self._repos.batches.get(batch_id)
+        if result is None:
+            return None, None, None
+        _batch, state = result
+        script_set = await self._repos.script_sets.get(set_id)
+        if script_set is None:
+            return None, None, None
+        items: dict[str, ScriptItem] = {}
+        for pid in state.requested_products:
+            item = await self._repos.items.get_by_product(set_id, pid)
+            if item is not None:
+                items[pid] = item
+        segments: dict[str, ScriptSegment] = {}
+        versions: dict[str, ScriptVersion] = {}
+        for product_state in state.products.values():
+            snap = product_state.workflow_snapshot or {}
+            for entry in snap.get("segment_versions", []):
+                seg = await self._repos.segments.get(entry["id"])
+                if seg is not None:
+                    segments[seg.id] = seg
+            for version_id in snap.get("version_ids", []):
+                ver = await self._repos.versions.get(version_id)
+                if ver is not None:
+                    versions[ver.id] = ver
+        llm_fn = self._safe_llm()
+        bridge = _SyncPersistBridge()
+        persist_queue: queue.Queue[BatchState] = queue.Queue()
+        ring = self._event_ring(batch_id)
+
+        def create_workflow(product_id: str, target: float):
+            item = items[product_id]
+            return self._build_driver(
+                item,
+                script_set,
+                int(target),
+                llm_fn,
+                bridge,
+                emit=lambda event, payload: self._batch_sink(batch_id, ring, event, payload),
+                batch_id=batch_id,
+                loaders=self._make_loaders(items, segments, versions),
+            )
+
+        orch = BatchScriptGenerationOrchestrator(
+            create_workflow,
+            config=BatchOrchestratorConfig(
+                max_product_concurrency=self._config.max_concurrent_products,
+                max_attempts=self._config.provider_max_attempts,
+                model_fingerprint=self._model_fingerprint(),
+            ),
+            event_sink=lambda event, payload: self._batch_sink(batch_id, ring, event, payload),
+            persist=lambda s: persist_queue.put(s.model_copy(deep=True)),
+            idempotency=DbIdempotencyRegistry(self._repos.idempotency),
+        )
+        recover_batch(orch, state)
+        self._active_orchestrators[batch_id] = orch
+        self._batch_persist_queues[batch_id] = persist_queue
+        self._batch_artifact_bridges[batch_id] = bridge
+        return orch, persist_queue, bridge

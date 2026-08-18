@@ -133,8 +133,8 @@ def _build_script_authoring(config, engine_manager, pg_store) -> Any:
     Returns ``ScriptAuthoringServiceImpl | None``. When ``pg_store`` is None
     (no DATABASE_URL) the service stays None so /api/v1/script-sets keeps
     returning 501; the log makes the disabled state explicit. ``engine_manager``
-    is reserved for B6 (engine-backed generation) and is intentionally not
-    forwarded yet — the service constructor does not accept it.
+    powers the B6 AI generation commands; when the engine is unavailable the
+    four AI commands raise ``llm_unavailable`` (503).
     """
     if pg_store is None:
         logger.info("script authoring disabled (no DATABASE_URL); /api/v1/script-sets stays 501")
@@ -143,7 +143,9 @@ def _build_script_authoring(config, engine_manager, pg_store) -> Any:
     from backend.application.script_authoring.service_impl import ScriptAuthoringServiceImpl
 
     repos = PostgresAuthoringRepositories(config.database_url)
-    return ScriptAuthoringServiceImpl(repos, config=config.script_authoring)
+    return ScriptAuthoringServiceImpl(
+        repos, config=config.script_authoring, engine_manager=engine_manager
+    )
 
 
 def _build_api_limiter(config) -> Any:

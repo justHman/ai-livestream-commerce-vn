@@ -163,6 +163,49 @@ class _FakeApprovalRepo:
         self.dependencies[approval.id] = dependencies
 
 
+class _FakeBatchRepo:
+    def __init__(self) -> None:
+        self.rows: dict[str, object] = {}
+
+    async def get(self, batch_id: str, *, conn=None):
+        return None
+
+    async def insert(self, batch, *, state, conn=None) -> None:
+        self.rows[batch.id] = batch
+
+    async def find_by_idempotency(self, set_id: str, key: str, *, conn=None):
+        return None
+
+
+class _FakeJobRepo:
+    def __init__(self) -> None:
+        self.rows: dict[str, object] = {}
+
+    async def find_by_idempotency(self, item_id: str, intent: str, key: str, *, conn=None):
+        return None
+
+    async def insert(self, job, *, conn=None) -> None:
+        self.rows[job.id] = job
+
+
+class _FakeIdempotencyRepo:
+    async def get(self, fingerprint: str, *, conn=None):
+        return None
+
+    async def register(self, fingerprint: str, batch_id: str, *, conn=None) -> None:
+        pass
+
+
+class _FakePlanRepo:
+    async def insert(self, plan, *, conn=None) -> None:
+        pass
+
+
+class _FakeSegmentRepo:
+    async def insert(self, segment, *, conn=None) -> None:
+        pass
+
+
 class _FakeRepos:
     """Minimal repository surface the service talks to (zero PG)."""
 
@@ -172,6 +215,11 @@ class _FakeRepos:
         self.versions = _FakeVersionRepo()
         self.gate_runs = _FakeGateRunRepo()
         self.approvals = _FakeApprovalRepo()
+        self.plans = _FakePlanRepo()
+        self.segments = _FakeSegmentRepo()
+        self.batches = _FakeBatchRepo()
+        self.jobs = _FakeJobRepo()
+        self.idempotency = _FakeIdempotencyRepo()
 
     @asynccontextmanager
     async def transaction(self):
@@ -608,35 +656,45 @@ async def test_approve_batch_wire() -> None:
     assert len(repos.approvals.rows) == 2
 
 
-# ── AI / batch stubs (B5/B6) ────────────────────────────────────────────────
+# ── AI commands without an engine manager (B6) ──────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_ai_and_batch_stubs_raise_llm_unavailable() -> None:
-    service = _make_service(_FakeGate(_pass_result()))
+async def test_ai_commands_raise_llm_unavailable_without_engine_manager() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_fail_result())
+    )
+    set_id = (
+        await service.create_script_set(
+            name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+        )
+    )["id"]
+    # fix / regenerate need a gate-failed version to reach the llm check.
+    await service.save_draft(
+        set_id=set_id, product_id="P1", display_text="x", spoken_text="x", revision=None
+    )
+    await service.submit_for_gate(set_id=set_id, product_id="P1")
     calls = [
         (
             "start_generation",
             dict(
-                set_id="s",
+                set_id=set_id,
                 product_id="P1",
                 target_duration_s=600,
                 intent="selling",
                 idempotency_key="k",
             ),
         ),
-        ("fix_with_ai", dict(set_id="s", product_id="P1", idempotency_key="k")),
+        ("fix_with_ai", dict(set_id=set_id, product_id="P1", idempotency_key="k")),
         (
             "regenerate_segment",
-            dict(set_id="s", product_id="P1", segment_index=0, idempotency_key="k"),
+            dict(set_id=set_id, product_id="P1", segment_index=0, idempotency_key="k"),
         ),
         (
             "start_batch_generation",
-            dict(set_id="s", product_ids=["P1"], target_duration_s=600, idempotency_key="k"),
+            dict(set_id=set_id, product_ids=["P1"], target_duration_s=600, idempotency_key="k"),
         ),
-        ("get_batch", dict(set_id="s", batch_id="b1")),
-        ("cancel_batch", dict(set_id="s", batch_id="b1")),
-        ("get_batch_events_snapshot", dict(set_id="s", batch_id="b1")),
     ]
     for name, kwargs in calls:
         with pytest.raises(ScriptAuthoringError) as exc:
@@ -645,9 +703,19 @@ async def test_ai_and_batch_stubs_raise_llm_unavailable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_batch_events_stub_raises_llm_unavailable() -> None:
+async def test_batch_and_sse_methods_do_not_require_llm() -> None:
     service = _make_service(_FakeGate(_pass_result()))
+    # Unknown batch: the batch/SSE methods report not_found / None instead of
+    # llm_unavailable — LLM availability is orthogonal to batch reads.
     with pytest.raises(ScriptAuthoringError) as exc:
-        async for _ in service.stream_batch_events(set_id="s", batch_id="b"):
-            pass
-    assert exc.value.code == "llm_unavailable"
+        await service.get_batch(set_id="s", batch_id="b1")
+    assert exc.value.code == "not_found"
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.cancel_batch(set_id="s", batch_id="b1")
+    assert exc.value.code == "not_found"
+    assert await service.get_batch_events_snapshot(set_id="s", batch_id="b1") is None
+    events: list[dict[str, str]] = []
+    async for event in service.stream_batch_events(set_id="s", batch_id="b1"):
+        events.append(event)
+        break
+    assert events == []

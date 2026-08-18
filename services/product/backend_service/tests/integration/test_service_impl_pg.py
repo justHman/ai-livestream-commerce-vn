@@ -150,10 +150,15 @@ async def test_ai_stubs_raise_llm_unavailable_pg(pg_url: str) -> None:
     repos = await _connect(pg_url)
     try:
         service = ScriptAuthoringServiceImpl(repos, config=ScriptAuthoringConfig())
+        created = await service.create_script_set(
+            name="Set", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+        )
+        # Without an engine manager the four AI commands raise llm_unavailable
+        # (once a real set / eligible version is resolved).
         with pytest.raises(ScriptAuthoringError) as exc:
             await service.start_generation(
-                set_id="s",
-                product_id="p",
+                set_id=created["id"],
+                product_id="P1",
                 target_duration_s=600,
                 intent="selling",
                 idempotency_key="k",

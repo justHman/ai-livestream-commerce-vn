@@ -704,6 +704,9 @@ class BatchRepository(_Repo):
         data["job_ids"] = _json_rows(data["job_ids"], [])
         data["created_at"] = _iso(data["created_at"])
         data["updated_at"] = _iso(data["updated_at"])
+        # `revision` and `state` are batch-row columns, not GenerationBatch fields.
+        data.pop("revision", None)
+        data.pop("state", None)
         return GenerationBatch.model_validate(data)
 
 
