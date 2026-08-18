@@ -427,6 +427,23 @@ async def test_start_generation_llm_unavailable_when_get_llm_fn_none() -> None:
     assert exc.value.code == "llm_unavailable"
 
 
+@pytest.mark.asyncio
+async def test_start_generation_llm_unavailable_when_engine_empty_or_none() -> None:
+    for cfg in ({"engine": ""}, {"engine": None}):
+        em = _FakeEngineManager(llm_fn=_echo_llm, cfg=cfg)
+        service, repos = _make_service(_FakeGate(_pass_result()), engine_manager=em)
+        set_id = (await _new_set(repos, service))["id"]
+        with pytest.raises(ScriptAuthoringError) as exc:
+            await service.start_generation(
+                set_id=set_id,
+                product_id="P1",
+                target_duration_s=600,
+                intent="selling",
+                idempotency_key="k",
+            )
+        assert exc.value.code == "llm_unavailable"
+
+
 # ── start_generation wire + background completion ───────────────────────────
 
 
@@ -554,6 +571,30 @@ async def test_regenerate_segment_wire_shape_from_gate_failed() -> None:
     assert result["product_id"] == "P1"
     assert result["segment_index"] == 0
     assert result["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_and_fix_missing_set_or_product_not_found() -> None:
+    service, repos = _make_service(
+        _FakeGate(_pass_result()), engine_manager=_FakeEngineManager(_echo_llm)
+    )
+    set_id = (await _new_set(repos, service))["id"]
+    calls = [
+        (
+            "regenerate_segment",
+            dict(set_id="nope", product_id="P1", segment_index=0, idempotency_key="k"),
+        ),
+        (
+            "regenerate_segment",
+            dict(set_id=set_id, product_id="P999", segment_index=0, idempotency_key="k"),
+        ),
+        ("fix_with_ai", dict(set_id="nope", product_id="P1", idempotency_key="k")),
+        ("fix_with_ai", dict(set_id=set_id, product_id="P999", idempotency_key="k")),
+    ]
+    for name, kwargs in calls:
+        with pytest.raises(ScriptAuthoringError) as exc:
+            await getattr(service, name)(**kwargs)
+        assert exc.value.code == "not_found", name
 
 
 # ── fix_with_ai ─────────────────────────────────────────────────────────────

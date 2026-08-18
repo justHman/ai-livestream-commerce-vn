@@ -8,6 +8,7 @@ in-memory fake repositories and an injectable gate.
 
 from __future__ import annotations
 
+import queue
 from contextlib import asynccontextmanager
 
 import pytest
@@ -19,6 +20,7 @@ from backend.application.script_authoring.gate.results import (
     RuleViolation,
     Severity,
 )
+from backend.application.script_authoring.generation.batch import BatchState
 from backend.application.script_authoring.models import (
     Approval,
     GateRun,
@@ -719,3 +721,297 @@ async def test_batch_and_sse_methods_do_not_require_llm() -> None:
         events.append(event)
         break
     assert events == []
+
+
+# ── C10 coverage additions: error branches (in-memory, no PG needed) ─────────
+
+
+class _FakeSetRepoRaisesOnUpdate(_FakeSetRepo):
+    async def update(self, set_: ScriptSet, *, expected_revision: int, conn=None) -> None:
+        raise StaleRevisionError(f"script_set {set_.id}: revision {expected_revision} not current")
+
+
+class _StaleBatchRepo:
+    """Batch repo whose snapshots always lose the optimistic-lock race."""
+
+    async def get(self, batch_id: str, *, conn=None):
+        state = BatchState(batch_id=batch_id, script_set_id="s")
+        state.revision = 1
+        return object(), state
+
+    async def update_state(self, batch_id: str, *, state, expected_revision: int, conn=None):
+        raise StaleRevisionError(f"batch {batch_id}: revision {expected_revision} not current")
+
+
+@pytest.mark.asyncio
+async def test_submit_current_draft_version_missing() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    item = await repos.items.get_by_product(created["id"], "P1")
+    item.current_version_id = "script_version:missingmissingmissingmissingmissingmis"
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.submit_for_gate(set_id=created["id"], product_id="P1")
+    assert exc.value.code == "illegal_transition"
+    assert "current draft version is missing" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_approve_product_version_not_found() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    item = await repos.items.get_by_product(created["id"], "P1")
+    item.state = ScriptState.REVIEWABLE
+    item.current_version_id = "script_version:missingmissingmissingmissingmissingmis"
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.approve_product(
+            set_id=created["id"], product_id="P1", version_id=item.current_version_id, actor="nam"
+        )
+    assert exc.value.code == "not_found"
+    assert "script version" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_approve_batch_missing_version_id() -> None:
+    service = _make_service(_FakeGate(_pass_result()))
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1", "P2"], brief=None
+    )
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.approve_batch(
+            set_id=created["id"], product_ids=["P2"], version_ids={}, actor="nam"
+        )
+    assert exc.value.code == "illegal_transition"
+    assert "missing version_id for P2" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_update_script_set_name_only_preserves_policy() -> None:
+    service = _make_service(_FakeGate(_pass_result()))
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    result = await service.update_script_set(
+        set_id=created["id"],
+        name="B",
+        transition_policy=None,
+        product_ids=None,
+        brief=None,
+        revision=None,
+    )
+    assert result is not None
+    assert result["name"] == "B"
+    assert result["transition_policy"] == "ORDER_AGNOSTIC"
+
+
+@pytest.mark.asyncio
+async def test_update_script_set_transition_only() -> None:
+    service = _make_service(_FakeGate(_pass_result()))
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    result = await service.update_script_set(
+        set_id=created["id"],
+        name=None,
+        transition_policy="ORDER_AWARE",
+        product_ids=None,
+        brief=None,
+        revision=None,
+    )
+    assert result is not None
+    assert result["name"] == "A"
+    assert result["transition_policy"] == "ORDER_AWARE"
+
+
+@pytest.mark.asyncio
+async def test_update_script_set_repo_stale_revision_mapping() -> None:
+    repos = _FakeRepos()
+    repos.script_sets = _FakeSetRepoRaisesOnUpdate()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.update_script_set(
+            set_id=created["id"],
+            name="B",
+            transition_policy=None,
+            product_ids=None,
+            brief=None,
+            revision=None,
+        )
+    assert exc.value.code == "stale_revision"
+
+
+@pytest.mark.asyncio
+async def test_drain_batch_persists_skips_stale_snapshot() -> None:
+    repos = _FakeRepos()
+    repos.batches = _StaleBatchRepo()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    persist_queue: queue.Queue[BatchState] = queue.Queue()
+    persist_queue.put(BatchState(batch_id="b1", script_set_id="s"))
+    # A concurrent drain already applied the snapshot -> update_state raises
+    # StaleRevisionError -> the drain must swallow it and continue.
+    await service._drain_batch_persists("b1", persist_queue)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_safe_llm_returns_none_when_unavailable() -> None:
+    service = ScriptAuthoringServiceImpl(
+        _FakeRepos(), config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    assert service._safe_llm() is None  # noqa: SLF001
+
+
+class _RecoveryBatchRepo:
+    """Batch repo returning a recoverable state with no per-product snapshots."""
+
+    async def get(self, batch_id: str, *, conn=None):
+        state = BatchState(batch_id=batch_id, script_set_id="s", requested_products=[])
+        return object(), state
+
+    async def insert(self, batch, *, state, conn=None) -> None:
+        pass
+
+    async def find_by_idempotency(self, set_id: str, key: str, *, conn=None):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_save_draft_revision_mismatch_stale() -> None:
+    service = _make_service(_FakeGate(_pass_result()))
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.save_draft(
+            set_id=created["id"], product_id="P1", display_text="x", spoken_text="x", revision=5
+        )
+    assert exc.value.code == "stale_revision"
+
+
+@pytest.mark.asyncio
+async def test_submit_and_preview_missing_product_not_found() -> None:
+    service = _make_service(_FakeGate(_pass_result()))
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.submit_for_gate(set_id=created["id"], product_id="P999")
+    assert exc.value.code == "not_found"
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.preview_product(
+            set_id=created["id"], product_id="P999", target_duration_s=600
+        )
+    assert exc.value.code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_preview_and_approve_missing_set_not_found() -> None:
+    service = _make_service(_FakeGate(_pass_result()))
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.preview_product(set_id="nope", product_id="P1", target_duration_s=600)
+    assert exc.value.code == "not_found"
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.approve_product(set_id="nope", product_id="P1", version_id="v1", actor="nam")
+    assert exc.value.code == "not_found"
+
+
+async def _reviewable_with_version(repos, service, set_id: str, product_id: str) -> ScriptVersion:
+    item = await repos.items.get_by_product(set_id, product_id)
+    version = ScriptVersion(
+        id="script_version:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        script_item_id=item.id,
+        version=1,
+        spoken_text="x",
+    )
+    await repos.versions.insert(version)
+    item.state = ScriptState.REVIEWABLE
+    item.current_version_id = version.id
+    return version
+
+
+@pytest.mark.asyncio
+async def test_approve_current_version_mismatch() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    await _reviewable_with_version(repos, service, created["id"], "P1")
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.approve_product(
+            set_id=created["id"],
+            product_id="P1",
+            version_id="script_version:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            actor="nam",
+        )
+    assert exc.value.code == "illegal_transition"
+    assert "only the current REVIEWABLE version" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_approve_gate_fail_maps_illegal_transition() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_fail_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    version = await _reviewable_with_version(repos, service, created["id"], "P1")
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.approve_product(
+            set_id=created["id"], product_id="P1", version_id=version.id, actor="nam"
+        )
+    assert exc.value.code == "illegal_transition"
+
+
+@pytest.mark.asyncio
+async def test_approve_stale_revision_mapping() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    version = await _reviewable_with_version(repos, service, created["id"], "P1")
+    repos.items.fail_update = True
+    with pytest.raises(ScriptAuthoringError) as exc:
+        await service.approve_product(
+            set_id=created["id"], product_id="P1", version_id=version.id, actor="nam"
+        )
+    assert exc.value.code == "stale_revision"
+
+
+@pytest.mark.asyncio
+async def test_recover_orchestrator_rebuilds_from_state() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    repos.batches = _RecoveryBatchRepo()
+    orch, persist_queue, bridge = await service._recover_orchestrator("b1", created["id"])  # noqa: SLF001
+    assert orch is not None
+    assert persist_queue is not None
+    assert bridge is not None
+    assert "b1" in service._active_orchestrators

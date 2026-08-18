@@ -166,3 +166,42 @@ async def test_ai_stubs_raise_llm_unavailable_pg(pg_url: str) -> None:
         assert exc.value.code == "llm_unavailable"
     finally:
         await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_error_branches_pg(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        service = ScriptAuthoringServiceImpl(repos, config=ScriptAuthoringConfig())
+        # Missing script set -> not_found.
+        with pytest.raises(ScriptAuthoringError) as exc:
+            await service.submit_for_gate(set_id="nope", product_id="P1")
+        assert exc.value.code == "not_found"
+        with pytest.raises(ScriptAuthoringError) as exc:
+            await service.approve_batch(
+                set_id="nope", product_ids=["P1"], version_ids={"P1": "v"}, actor="nam"
+            )
+        assert exc.value.code == "not_found"
+
+        created = await service.create_script_set(
+            name="S", transition_policy="ORDER_AGNOSTIC", product_ids=["P1", "P2"], brief=None
+        )
+        # Missing product script -> not_found.
+        with pytest.raises(ScriptAuthoringError) as exc:
+            await service.save_draft(
+                set_id=created["id"],
+                product_id="P999",
+                display_text="x",
+                spoken_text="x",
+                revision=None,
+            )
+        assert exc.value.code == "not_found"
+        # approve_batch missing a version_id for one pid -> illegal_transition.
+        with pytest.raises(ScriptAuthoringError) as exc:
+            await service.approve_batch(
+                set_id=created["id"], product_ids=["P2"], version_ids={}, actor="nam"
+            )
+        assert exc.value.code == "illegal_transition"
+        assert "missing version_id for P2" in exc.value.message
+    finally:
+        await repos.close()

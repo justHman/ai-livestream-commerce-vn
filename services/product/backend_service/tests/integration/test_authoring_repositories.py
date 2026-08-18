@@ -16,6 +16,7 @@ from backend.application.script_authoring.models import (
     GateViolation,
     GenerationBatch,
     GenerationJob,
+    GenerationJobStatus,
     ProductScriptPlan,
     ScriptItem,
     ScriptSegment,
@@ -289,5 +290,239 @@ async def test_idempotency_registry_first_wins(pg_url: str) -> None:
         await repos.idempotency.register("fp-1", "batch-2")
         assert await repos.idempotency.get("fp-1") == "batch-1"
         assert await repos.idempotency.get("missing") is None
+    finally:
+        await repos.close()
+
+
+# ── C10 coverage additions ──────────────────────────────────────────────────
+
+
+async def _seed_item(repos, product_id: str = "p1") -> ScriptItem:
+    s = _set()
+    await repos.script_sets.insert(s)
+    item = _item(s.id, product_id)
+    await repos.items.insert(item)
+    return item
+
+
+async def _seed_version(repos, item: ScriptItem, version: int = 1) -> ScriptVersion:
+    v = ScriptVersion(
+        id=new_id("script_version"),
+        script_item_id=item.id,
+        version=version,
+        spoken_text=f"v{version}",
+    )
+    await repos.versions.insert(v)
+    return v
+
+
+@pytest.mark.asyncio
+async def test_item_list_by_set_and_get_missing(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        i1 = _item(s.id, "p1")
+        i2 = _item(s.id, "p2")
+        await repos.items.insert(i1)
+        await repos.items.insert(i2)
+        assert len(await repos.items.list_by_set(s.id)) == 2
+        assert await repos.items.get(new_id("script_item")) is None
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_get_missing_and_get_latest_none(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        assert await repos.plans.get(new_id("plan")) is None
+        assert await repos.plans.get_latest(new_id("script_item")) is None
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_segments_insert_get_list_and_selected(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        item = await _seed_item(repos)
+        plan = ProductScriptPlan(
+            id=new_id("plan"),
+            script_item_id=item.id,
+            product_id="p1",
+            target_duration_s=600,
+            K=1,
+        )
+        await repos.plans.insert(plan)  # script_segments.plan_id FK needs the plan row
+        seg = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=item.id,
+            plan_id=plan.id,
+            segment_index=0,
+            title="s0",
+            spoken_text="a",
+        )
+        await repos.segments.insert(seg)
+        loaded = await repos.segments.get(seg.id)
+        assert loaded is not None and loaded.title == "s0"
+        assert [s.id for s in await repos.segments.list_by_plan(plan.id)] == [seg.id]
+        assert [s.id for s in await repos.segments.list_selected([seg.id])] == [seg.id]
+        assert await repos.segments.list_selected([]) == []
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_version_get_missing_and_approved_none(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        item = await _seed_item(repos)
+        assert await repos.versions.get(new_id("script_version")) is None
+        # No approved pointer yet -> the JOIN yields no row.
+        assert await repos.versions.get_approved(item.id) is None
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_gate_runs_list_and_latest_for_version(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        item = await _seed_item(repos)
+        version = await _seed_version(repos, item)
+        run = GateRun(
+            id=new_id("gate_run"),
+            script_item_id=item.id,
+            passed=True,
+            script_version_id=version.id,
+        )
+        await repos.gate_runs.insert(run)
+        assert [r.id for r in await repos.gate_runs.list_by_item(item.id)] == [run.id]
+        latest = await repos.gate_runs.latest_for_version(version.id)
+        assert latest is not None and latest.id == run.id
+        assert await repos.gate_runs.latest_for_version(new_id("script_version")) is None
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_get_and_none_paths(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        item = await _seed_item(repos)
+        version = await _seed_version(repos, item)
+        run = GateRun(id=new_id("gate_run"), script_item_id=item.id, passed=True)
+        await repos.gate_runs.insert(run)  # script_approvals.gate_run_id FK needs this row
+        approval = Approval(
+            id=new_id("approval"),
+            script_item_id=item.id,
+            script_version_id=version.id,
+            actor="operator",
+            approval_hash="h",
+            gate_run_id=run.id,
+        )
+        await repos.approvals.insert(approval, dependencies={"rule_set_version": "rs1"})
+        loaded = await repos.approvals.get(approval.id)
+        assert loaded is not None and loaded.id == approval.id
+        assert await repos.approvals.get(new_id("approval")) is None
+        assert await repos.approvals.get_by_item(new_id("script_item")) is None
+        assert await repos.approvals.recorded_dependencies(new_id("script_item")) == {}
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_find_by_idempotency(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        batch = GenerationBatch(id=new_id("batch"), script_set_id=s.id, idempotency_key="key-b")
+        await repos.batches.insert(batch, state=BatchState(batch_id=batch.id, script_set_id=s.id))
+        found = await repos.batches.find_by_idempotency(s.id, "key-b")
+        assert found is not None and found.id == batch.id
+        assert await repos.batches.find_by_idempotency(s.id, "") is None
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_jobs_list_update_and_idempotency_empty_key(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        item = await _seed_item(repos)
+        batch = GenerationBatch(id=new_id("batch"), script_set_id=item.script_set_id)
+        await repos.batches.insert(
+            batch, state=BatchState(batch_id=batch.id, script_set_id=item.script_set_id)
+        )
+        job = GenerationJob(
+            id=new_id("job"),
+            batch_id=batch.id,
+            script_item_id=item.id,
+            product_id="p1",
+            intent="generate_long_form",
+            target_duration_s=600,
+            idempotency_key="key-j",
+        )
+        await repos.jobs.insert(job)
+        assert [j.id for j in await repos.jobs.list_by_batch(batch.id)] == [job.id]
+        assert await repos.jobs.find_by_idempotency(item.id, "generate_long_form", "") is None
+        job.status = GenerationJobStatus.RUNNING
+        job.attempt_count = 1
+        await repos.jobs.update(job)
+        loaded = await repos.jobs.get(job.id)
+        assert loaded is not None and loaded.status is GenerationJobStatus.RUNNING
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_item_update_stale_revision(pg_url: str) -> None:
+    from backend.application.script_authoring.repositories import StaleRevisionError
+
+    repos = await _connect(pg_url)
+    try:
+        item = await _seed_item(repos)
+        await repos.items.update(item, expected_revision=0)
+        with pytest.raises(StaleRevisionError):
+            await repos.items.update(item, expected_revision=0)
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_repo_methods_with_explicit_conn(pg_url: str) -> None:
+    """Passing ``conn`` into repo methods exercises the owned-conn branches."""
+    repos = await _connect(pg_url)
+    try:
+        item = await _seed_item(repos)
+        plan = ProductScriptPlan(
+            id=new_id("plan"),
+            script_item_id=item.id,
+            product_id="p1",
+            target_duration_s=600,
+            K=1,
+        )
+        seg = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=item.id,
+            plan_id=plan.id,
+            segment_index=0,
+            title="s0",
+            spoken_text="a",
+        )
+        run = GateRun(id=new_id("gate_run"), script_item_id=item.id, passed=True)
+        async with repos.transaction() as conn:
+            await repos.plans.insert(plan, conn=conn)  # segment plan_id FK needs the plan row
+            await repos.segments.insert(seg, conn=conn)
+            loaded = await repos.segments.get(seg.id, conn=conn)
+            assert loaded is not None and loaded.title == "s0"
+            assert [s.id for s in await repos.segments.list_by_plan(plan.id, conn=conn)] == [seg.id]
+            await repos.gate_runs.insert(run, conn=conn)
+            assert [r.id for r in await repos.gate_runs.list_by_item(item.id, conn=conn)] == [
+                run.id
+            ]
+            assert len(await repos.items.list_by_set(item.script_set_id, conn=conn)) == 1
     finally:
         await repos.close()

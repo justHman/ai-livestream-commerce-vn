@@ -19,9 +19,11 @@ from backend.application.script_authoring.models import (
     ScriptVersion,
 )
 from backend.application.script_authoring.session_binding import (
+    BindingCheck,
     BindingKind,
     DependencyFingerprint,
     RuntimePlan,
+    RuntimeCatalogProxy,
     check_binding,
     validate_binding,
 )
@@ -418,3 +420,219 @@ async def test_validate_binding_adapter_missing_set() -> None:
     )
     assert not check.ok
     assert check.issues[0].kind is BindingKind.UNKNOWN_SET
+
+
+# ── C10 coverage additions ──────────────────────────────────────────────────
+
+
+def test_ok_result_classmethod() -> None:
+    s = _approved_set()
+    check = BindingCheck.ok_result(s)
+    assert check.ok
+    assert check.script_set is s
+    assert check.issues == ()
+
+
+def test_requested_products_empty_scope_is_ok() -> None:
+    check = check_binding(**_ready_binding(requested_products=[]))
+    assert check.ok
+
+
+# ── RuntimeCatalogProxy ─────────────────────────────────────────────────────
+
+
+def test_catalog_proxy_none_director_returns_false() -> None:
+    assert RuntimeCatalogProxy(director=None).contains("P001") is False
+
+
+def test_catalog_proxy_finds_product_in_session_catalog() -> None:
+    class _Doc:
+        def __init__(self, id_: str) -> None:
+            self.id = id_
+
+    class _Session:
+        def __init__(self, catalog) -> None:
+            self.catalog = catalog
+
+    class _Director:
+        def __init__(self, sessions) -> None:
+            self._sessions = sessions
+
+    director = _Director({"s1": _Session([_Doc("P001"), _Doc("P002")])})
+    proxy = RuntimeCatalogProxy(director=director)
+    assert proxy.contains("P001") is True
+    assert proxy.contains("P002") is True
+    assert proxy.contains("P999") is False
+
+
+def test_catalog_proxy_missing_sessions_attribute_returns_false() -> None:
+    class _DirectorWithoutSessions:
+        pass
+
+    assert RuntimeCatalogProxy(director=_DirectorWithoutSessions()).contains("P001") is False
+
+
+def test_catalog_proxy_empty_sessions_returns_false() -> None:
+    class _Director:
+        def __init__(self) -> None:
+            self._sessions = {}
+
+    assert RuntimeCatalogProxy(director=_Director()).contains("P001") is False
+
+
+# ── validate_binding with plain-dict payloads (coerce branches) ─────────────
+
+
+class _DictBindingSource:
+    """BindingSource returning plain dicts (wire shape) instead of models."""
+
+    def __init__(self, set_dict, items, versions, approvals, deps) -> None:
+        self._set = set_dict
+        self._items = items
+        self._versions = versions
+        self._approvals = approvals
+        self._deps = deps
+
+    async def get_script_set(self, *, set_id: str) -> dict | None:
+        return self._set if self._set is not None and self._set.get("id") == set_id else None
+
+    async def get_script_item(self, *, set_id: str, product_id: str) -> dict | None:
+        return self._items.get(product_id)
+
+    async def get_script_version(
+        self, *, set_id: str, product_id: str, version_id: str | None
+    ) -> dict | None:
+        item = self._items.get(product_id)
+        return None if item is None else self._versions.get(item.get("id"))
+
+    async def get_approval(
+        self, *, set_id: str, product_id: str, version_id: str | None
+    ) -> dict | None:
+        item = self._items.get(product_id)
+        return None if item is None else self._approvals.get(item.get("id"))
+
+    def current_dependencies(self) -> DependencyFingerprint:
+        return self._deps
+
+
+def _dict_payloads(brief) -> dict:
+    set_dict = {
+        "id": SET_ID,
+        "shop_id": "shop-1",
+        "title": "Set",
+        "brief": brief,
+        "product_ids": ["P001"],
+        "revision": 0,
+    }
+    item_dict = {
+        "id": ITEM_ID_P1,
+        "script_set_id": SET_ID,
+        "product_id": "P001",
+        "state": "approved",
+        "approved_version_id": V1_ID,
+        "revision": 0,
+    }
+    version_dict = {
+        "id": V1_ID,
+        "script_item_id": ITEM_ID_P1,
+        "version": 1,
+        "state": "approved",
+        "display_text": "d",
+        "spoken_text": "s",
+    }
+    approval_dict = {
+        "id": APPROVAL_ID,
+        "script_item_id": ITEM_ID_P1,
+        "script_version_id": V1_ID,
+        "actor": "admin",
+        "approval_hash": "0" * 64,
+        "gate_run_id": "gate_run:11111111111111111111111111111111",
+    }
+    return set_dict, item_dict, version_dict, approval_dict
+
+
+@pytest.mark.asyncio
+async def test_validate_binding_dict_brief_as_dict() -> None:
+    set_dict, item_dict, version_dict, approval_dict = _dict_payloads(
+        {
+            "title": "T",
+            "persona": "p",
+            "transition_policy": "ORDER_AGNOSTIC",
+            "shop_name": "Shop A",
+            "notes": "n",
+        }
+    )
+    source = _DictBindingSource(
+        set_dict,
+        {"P001": item_dict},
+        {ITEM_ID_P1: version_dict},
+        {ITEM_ID_P1: approval_dict},
+        _fresh_deps(),
+    )
+    check = await validate_binding(
+        script_set_id=SET_ID,
+        source=source,
+        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_catalog=_Catalog({"P001"}),
+        recorded_dependencies_by_item={ITEM_ID_P1: _fresh_deps()},
+    )
+    assert check.ok
+
+
+@pytest.mark.asyncio
+async def test_validate_binding_dict_brief_as_model() -> None:
+    set_dict, item_dict, version_dict, approval_dict = _dict_payloads(
+        LiveSessionBrief(transition_policy="ORDER_AGNOSTIC")
+    )
+    source = _DictBindingSource(
+        set_dict,
+        {"P001": item_dict},
+        {ITEM_ID_P1: version_dict},
+        {ITEM_ID_P1: approval_dict},
+        _fresh_deps(),
+    )
+    check = await validate_binding(
+        script_set_id=SET_ID,
+        source=source,
+        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_catalog=_Catalog({"P001"}),
+        recorded_dependencies_by_item={ITEM_ID_P1: _fresh_deps()},
+    )
+    assert check.ok
+
+
+@pytest.mark.asyncio
+async def test_validate_binding_dict_without_brief() -> None:
+    set_dict, item_dict, version_dict, approval_dict = _dict_payloads(None)
+    source = _DictBindingSource(
+        set_dict,
+        {"P001": item_dict},
+        {ITEM_ID_P1: version_dict},
+        {ITEM_ID_P1: approval_dict},
+        _fresh_deps(),
+    )
+    check = await validate_binding(
+        script_set_id=SET_ID,
+        source=source,
+        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_catalog=_Catalog({"P001"}),
+        recorded_dependencies_by_item={ITEM_ID_P1: _fresh_deps()},
+    )
+    assert check.ok
+
+
+@pytest.mark.asyncio
+async def test_validate_binding_dict_item_missing_is_skipped() -> None:
+    """A product whose item payload is None is skipped -> reported MISSING."""
+    set_dict, item_dict, version_dict, approval_dict = _dict_payloads(None)
+    source = _DictBindingSource(
+        set_dict, {}, {ITEM_ID_P1: version_dict}, {ITEM_ID_P1: approval_dict}, _fresh_deps()
+    )
+    check = await validate_binding(
+        script_set_id=SET_ID,
+        source=source,
+        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_catalog=_Catalog({"P001"}),
+    )
+    assert not check.ok
+    assert check.issues[0].kind is BindingKind.MISSING
