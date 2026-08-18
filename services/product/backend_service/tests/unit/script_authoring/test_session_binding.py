@@ -195,14 +195,19 @@ def test_unapproved_item_state_reported_unapproved() -> None:
     assert [i.product_id for i in check.unapproved] == ["P001"]
 
 
-def test_unapproved_version_state_reported_unapproved() -> None:
+def test_persisted_version_state_does_not_block_binding() -> None:
+    """Version.state is an immutable creation-time snapshot (Decision 13).
+
+    A persisted non-APPROVED version does NOT block binding when the item is
+    APPROVED, the version is the item's approved version, and the approval row
+    binds that exact version. The version row's state never reflects approval.
+    """
     versions = {
         ITEM_ID_P1: _version(state=ScriptState.REVIEWABLE),
         ITEM_ID_P2: _version(version_id=V2_ID),
     }
     check = check_binding(**_ready_binding(versions_by_item=versions))
-    assert not check.ok
-    assert [i.product_id for i in check.unapproved] == ["P001"]
+    assert check.ok
 
 
 def test_approval_missing_for_approved_version_reported_unapproved() -> None:
