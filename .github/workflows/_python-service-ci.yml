@@ -83,6 +83,15 @@ jobs:
       - name: Unit tests
         run: ./.venv/bin/python -m pytest tests -q -p no:cacheprovider --tb=short --ignore=tests/integration --ignore=tests/contract
         working-directory: services/product/${{ matrix.service }}
+      # backend_service's embedded-PG harness prefers a system postgres install
+      # on Linux (tests/integration/pg_harness.py). ubuntu-latest ships none, so
+      # install it and export its bin dir to PATH for the which/glob lookup.
+      - name: Install PostgreSQL for integration tests
+        if: ${{ inputs.integration && matrix.service == 'backend_service' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-client
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
       - name: Integration tests
         if: ${{ inputs.integration }}
         run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short
