@@ -152,14 +152,14 @@
 
 ## 13. Workbench authoring UX
 
-- [x] 13.1 Add ScriptSet creation/edit view with LiveSessionBrief, product selection/order, transition policy, target duration per product, and generation-call preview before spending tokens.
-- [x] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states.
-- [x] 13.3 Add long-form segment navigator showing title/intent, target/estimated duration, status, gate violations, version history, and exact display/spoken previews.
-- [x] 13.4 Add Generate All UX with selected/missing products, per-product and total estimated semantic calls, bounded-progress status, partial failure, retryable transport failure, and explicit human cost action.
-- [x] 13.5 Add SSE client for batch progress with reconnect/snapshot recovery and no duplicate action on reconnect.
-- [x] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records.
-- [x] 13.7 Add stale dependency warnings that disable runtime-ready state until resubmit/reapprove.
-- [x] 13.8 Add frontend tests for zero-LLM manual PASS, Generate All double-click/idempotency UX, segment failure pause, AI Fix legal-state guards, spoken-text review, approval invalidation, and SSE reconnect.
+- [ ] 13.1 Add ScriptSet creation/edit view with LiveSessionBrief, product selection/order, transition policy, target duration per product, and generation-call preview before spending tokens.
+- [ ] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states.
+- [ ] 13.3 Add long-form segment navigator showing title/intent, target/estimated duration, status, gate violations, version history, and exact display/spoken previews.
+- [ ] 13.4 Add Generate All UX with selected/missing products, per-product and total estimated semantic calls, bounded-progress status, partial failure, retryable transport failure, and explicit human cost action.
+- [ ] 13.5 Add SSE client for batch progress with reconnect/snapshot recovery and no duplicate action on reconnect.
+- [ ] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records.
+- [ ] 13.7 Add stale dependency warnings that disable runtime-ready state until resubmit/reapprove.
+- [ ] 13.8 Add frontend tests for zero-LLM manual PASS, Generate All double-click/idempotency UX, segment failure pause, AI Fix legal-state guards, spoken-text review, approval invalidation, and SSE reconnect.
 
 ## 14. Observability, cost controls, security, and documentation
 
@@ -190,21 +190,65 @@
 - [x] 15.15 Run `openspec validate approved-script-authoring-pipeline` and confirm Change A strict validation/PASS evidence referenced by the dependency gate is still current.
 - [x] 15.16 Update capability/runbook/API documentation and record Change B readiness evidence only after every architecture audit and behavioral gate above passes.
 
-## 16. Production scope decision (recorded 2026-08-16, post-apply re-review NEW-SCRIPT-01)
+## 16. Production scope decision — follow-up completed (recorded 2026-08-16, re-reviewed and closed 2026-08-18)
 
 The post-apply independent re-review (NEW-SCRIPT-01, HIGH) flagged that the
-`/api/v1/script-sets` authoring surface is not composed in the production
-backend container: `backend.bootstrap.app_factory._build_container()` does not
+`/api/v1/script-sets` authoring surface was not composed in the production
+backend container: `backend.bootstrap.app_factory._build_container()` did not
 construct a `script_authoring_service`, and `application/script_authoring/service.py`
-defines only the `ScriptAuthoringService` **Protocol** (no concrete production
-implementation, no `repositories.py`, no `db/sql/` migrations, no composition
-wiring). In production the router returns **501 "script authoring not enabled"**.
+defined only the `ScriptAuthoringService` **Protocol** (no concrete production
+implementation, no SQL repositories, no schema migrations, no composition
+wiring). In production the router returned **501 "script authoring not enabled"**.
+The initial archive (2026-08-12) was therefore **premature** — several
+production persistence/recovery/composition tasks were marked `[x]` without
+production implementation.
 
-**Decision (recorded, no production code change):** for this release, the
-approved-script authoring surface is explicitly **scoped OUT of production**.
-The 501 is the intended gated state for MVP — consistent with this change's
-spec ("no production-ready claim for approved-script runtime integration SHALL
-be made"). A concrete `ScriptAuthoringService` implementation + SQL-backed
-repositories + migrations + container composition is deferred to a follow-up
-change and is NOT part of this release gate. Reviewers SHOULD treat
-`create_app() → POST /api/v1/script-sets → 501` as the accepted MVP behavior.
+**Follow-up (2026-08-18, this branch `feature/change-b-script-authoring`):**
+the original Change B contract was completed, not redesigned. The production
+layer is now implemented and verified against real PostgreSQL:
+
+- 4.1 Concrete production service — `application/script_authoring/service_impl.py`
+  (`ScriptAuthoringServiceImpl`) fulfilling the protocol: ScriptSet CRUD, manual
+  draft/submit, deterministic ScriptGate, preview, single-product generation,
+  segment regeneration, AI fix, approval, batch generation/cancel/SSE, and
+  session-binding data source. Core (draft/gate/review/approve/persist/bind)
+  is always available; AI-only commands raise `llm_unavailable` (mapped to HTTP
+  503 by the router) when the configured LLM is unavailable.
+- 4.2 SQL repositories — `application/script_authoring/repositories.py`
+  (`PostgresAuthoringRepositories`) covering ScriptSet/items/plans/segments/
+  versions/gate runs/approvals/batches/jobs/idempotency, revision-guarded
+  optimistic locking, immutable version/segment rows, and pointer FKs.
+- 4.3 Schema — additive authoring tables + idempotency indexes + pointer FKs in
+  `db/sql/runtime_schema.sql`, applied idempotently by `apply_schema`; verified
+  from a clean DB (`tests/integration/test_authoring_schema.py`).
+- 4.4 Durable workflow persistence/recovery — step-based `WorkflowDriver`
+  (`generation/driver.py`) over the finite FSM; per-product jobs persist
+  plan/K/segment position/artifacts; restart recovery rehydrates without
+  re-running completed segments (`tests/integration/test_authoring_e2e_recovery.py`).
+- 4.5 Production composition — `bootstrap/app_factory.py._build_script_authoring`
+  + lifespan connect/close; with DATABASE_URL, `create_app()` injects the real
+  service so `POST /api/v1/script-sets` returns 201 (not 501)
+  (`tests/integration/test_authoring_composition.py`); without DATABASE_URL the
+  service stays `None` and the surface keeps its documented gated 501.
+- 4.6 Core vs AI availability — manual/deterministic-gate/review/approval/
+  persistence/binding work with `engine_manager=None` (zero LLM); AI-only
+  commands fail explicitly (`llm_unavailable` → 503) without disabling core
+  authoring (`tests/integration/test_scripts_llm_unavailable_503.py`).
+- 4.7 Session binding/runtime handoff — binding resolves only fresh approved
+  versions from durable state; a binding bug (requiring `version.state ==
+  APPROVED` on immutable rows) was fixed; exact approved `spoken_text` reaches
+  the canonical Change A `text_chunker.TextChunker` path unchanged
+  (`tests/integration/test_authoring_e2e_session_binding.py` +
+  `test_authoring_e2e_manual_zero_llm.py`).
+
+Verification: full backend suite **1907 passed, 2 skipped** (2026-08-18),
+including B0-B8 integration suites; ruff clean; `git diff --check` clean;
+architecture audit confirms zero Change A namespace duplication
+(`speech_chunking` / `render.windows.TextChunk` / `flush_timeout_ms` /
+`target_chars` / `ScriptTextChunker`).
+
+**Still open (not part of this follow-up):** tasks 13.1-13.8 (Workbench
+authoring UX) remain `[ ]` — no script-authoring frontend exists in this repo;
+they are backend-complete and awaiting a frontend owner. The final-architecture/
+VieNeu playback E2E (15.3) and 30/60-minute AI long-form E2E (15.4) were not
+re-run in this follow-up and rely on the earlier domain-level verification.
