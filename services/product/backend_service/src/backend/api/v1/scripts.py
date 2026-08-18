@@ -89,6 +89,8 @@ def _raise_domain(service_error: ScriptAuthoringError) -> HTTPException:
         "missing_or_stale_script",
     ):
         return _domain_error(409, service_error.code, service_error.message)
+    if service_error.code == "llm_unavailable":
+        return _domain_error(503, "llm_unavailable", service_error.message)
     # Unknown/authoring-unavailable codes surface as 400 by default.
     return _domain_error(400, service_error.code, service_error.message)
 
