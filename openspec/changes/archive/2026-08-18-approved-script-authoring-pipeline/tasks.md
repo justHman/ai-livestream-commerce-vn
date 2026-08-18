@@ -117,7 +117,7 @@
 - [x] 10.5 Implement finite provider/transport `max_attempts` using immutable job input; distinguish attempt count from semantic job count.
 - [x] 10.6 Implement idempotency for single-product and batch generation so repeated equivalent queued/running requests return the existing workflow rather than duplicate calls.
 - [x] 10.7 Implement cancellation that stops scheduling new semantic calls, preserves completed immutable artifacts, persists cancelled states, and emits terminal events.
-- [x] 10.8 Implement process-restart recovery from persisted finite state/current segment index without reinterpreting model text.
+- [x] 10.8 Implement process-restart recovery from persisted finite state/current segment index without reinterpreting model text. *(Evidence 2026-08-19: `ScriptAuthoringServiceImpl.recover_pending()` runs on lifespan startup and reconstructs + re-spawns durable RUNNING/QUEUED jobs and batches; fresh-process recovery tests in `tests/integration/test_authoring_restart_recovery_pg.py` prove a recovered job reaches COMPLETED, completed immutable segments are NOT duplicated, the workflow id is unchanged, and duplicate recovery attempts produce one active runner.)*
 - [x] 10.9 Add deterministic concurrency tests (e.g. 20 products with max 3 active), idempotency double-click tests, transport retry bound tests, partial failure tests, cancel tests, and restart recovery tests.
 
 ## 11. REST API and SSE protocol
@@ -155,19 +155,22 @@
 > **The Workbench is a local-only authoring/test/debug surface (`workbench/`).
 > It is not a production frontend or a product deployment target. Task
 > completion in Section 13 refers only to the local developer Workbench needed
-> to exercise Change B behavior.** The harness is mock-driven by default (140
+> to exercise Change B behavior.** The harness is mock-driven by default (146
 > Vitest tests) and its request contract matches the backend API (reconciled
-> 2026-08-18). Known local-harness caveat: the real HTTP client parses
-> `GET /script-sets/{set_id}` as `products[]` while the backend returns an
-> `items` map — live-backend response interop for per-product state is the one
-> remaining local-harness gap (mock-driven flows are green).
+> 2026-08-18). A local wire DTO + adapter (`BackendScriptSetResponse` /
+> `mapScriptSetResponse`) now consumes the real backend `items`-map response for
+> create/get/patch (2026-08-19). Known local-harness limitation: the backend API
+> does not expose a per-product `current_version_id` in any response it serves,
+> so the Approve paths cannot resolve a version id against a live backend
+> (tasks 13.2/13.6 below remain unchecked for that reason); the mock-driven
+> approve flows are green.
 
 - [x] 13.1 Add ScriptSet creation/edit view with LiveSessionBrief, product selection/order, transition policy, target duration per product, and generation-call preview before spending tokens.
-- [x] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states.
+- [ ] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states. *(Draft/Submit/Generate/Regenerate/Fix controls work against the real backend; Approve is mock-only — the backend API does not expose the current `version_id` to send to `POST .../approve`, and the production API is not modified for Workbench convenience.)*
 - [x] 13.3 Add long-form segment navigator showing title/intent, target/estimated duration, status, gate violations, version history, and exact display/spoken previews.
 - [x] 13.4 Add Generate All UX with selected/missing products, per-product and total estimated semantic calls, bounded-progress status, partial failure, retryable transport failure, and explicit human cost action.
 - [x] 13.5 Add SSE client for batch progress with reconnect/snapshot recovery and no duplicate action on reconnect.
-- [x] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records.
+- [ ] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records. *(Same backend limitation as 13.2: `POST .../approve-batch` requires `version_ids`, which the backend API does not expose; mock-driven approve works.)*
 - [x] 13.7 Add stale dependency warnings that disable runtime-ready state until resubmit/reapprove.
 - [x] 13.8 Add frontend tests for zero-LLM manual PASS, Generate All double-click/idempotency UX, segment failure pause, AI Fix legal-state guards, spoken-text review, approval invalidation, and SSE reconnect.
 
@@ -260,7 +263,18 @@ architecture audit confirms zero Change A namespace duplication
 **Still open:** the VieNeu playback E2E (15.3) and the 30/60-minute AI
 long-form E2E (15.4) were not re-run against the completed production path
 (they require a live/GPU E2E environment: real LLM + VieNeu playback) and are
-unchecked until verified. Section 13 tasks (13.1-13.8) are implemented by the
-**local-only** Workbench harness (`workbench/`, mock-driven, 140 Vitest tests)
-and are marked `[x]` for that local surface — see Section 13; they do NOT imply
-a production frontend.
+unchecked until verified. Section 13 tasks are implemented by the **local-only**
+Workbench harness (`workbench/`, mock-driven, 146 Vitest tests) — most marked
+`[x]` for that local surface, with `13.2`/`13.6` left `[ ]` because the backend
+API does not expose a current `version_id` for the Approve paths (see Section
+13); they do NOT imply a production frontend.
+
+**Follow-up repair (2026-08-19, branch `feature/change-b-rereview-recovery`):**
+the independent PR #50 re-review's HIGH-A (canonical production predicate —
+`is_production` covers `APP_ENV=prod`, with `production` kept as an alias, plus
+a Terraform precondition so prod cannot create RDS while omitting backend
+`DATABASE_URL`) and HIGH-B (genuine restart recovery — `recover_pending()` on
+lifespan startup reconstructs and re-spawns durable RUNNING/QUEUED jobs and
+batches, see task 10.8 evidence) are resolved. The production layer therefore
+remains restart-safe; only the live/GPU E2E evidence (15.3/15.4) and the
+Workbench Approve-version gap remain open.
