@@ -224,9 +224,7 @@ class TestPostgres:
         # postgres default `/var/run/postgresql` may be missing/not writable
         # for the runner user, making the postmaster FATAL. Windows has no
         # meaningful unix-socket path and ignores the setting at best.
-        unix_extra = (
-            " -c unix_socket_directories=/tmp" if _platform() != "Windows" else ""
-        )
+        unix_extra = " -c unix_socket_directories=/tmp" if _platform() != "Windows" else ""
         start_args = [
             str(pg_ctl),
             "-D",
