@@ -290,6 +290,9 @@ class ScriptAuthoringConfig:
     # stream is retained and how far back a reconnect replay may reach.
     sse_retention_seconds: int = 3600
     sse_replay_window_seconds: int = 300
+    # Shutdown drain grace (HIGH-1): how long the lifespan waits for in-flight
+    # background jobs to finish before cancelling stragglers during shutdown.
+    drain_timeout_s: float = 5.0
 
     @classmethod
     def from_env(cls) -> "ScriptAuthoringConfig":
@@ -308,6 +311,7 @@ class ScriptAuthoringConfig:
             expected_skill_version=os.environ.get("SA_EXPECTED_SKILL_VERSION", ""),
             sse_retention_seconds=int(os.environ.get("SA_SSE_RETENTION_SECONDS", "3600")),
             sse_replay_window_seconds=int(os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")),
+            drain_timeout_s=float(os.environ.get("SA_DRAIN_TIMEOUT_S", "5.0")),
         )
 
 

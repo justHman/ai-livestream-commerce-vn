@@ -346,6 +346,13 @@ class ScriptAuthoringServiceImpl:
         self._config = config or ScriptAuthoringConfig()
         self._gate = gate or self._default_gate()
         self._engine_manager = engine_manager
+        # Owned background-job tasks (HIGH-1). Every fire-and-forget job created
+        # by the AI commands goes through ``_spawn`` and is registered here so
+        # the lifespan drain can quiesce it BEFORE the repository pool closes.
+        # ``_accepting_jobs`` drops to False during shutdown so no new work can
+        # race the close.
+        self._tasks: set[asyncio.Task] = set()
+        self._accepting_jobs = True
         # In-process batch orchestrators keyed by batch id (B6) so cancel_batch
         # finds a running batch; otherwise it recovers from persisted state.
         self._active_orchestrators: dict[str, BatchScriptGenerationOrchestrator] = {}
@@ -495,6 +502,26 @@ class ScriptAuthoringServiceImpl:
             return self._require_llm()
         except ScriptAuthoringError:
             return None
+
+    def _require_accepting(self) -> None:
+        """Refuse new AI background jobs during shutdown (HIGH-1 admission stop)."""
+        if not self._accepting_jobs:
+            raise ScriptAuthoringError("service_unavailable", "script authoring is shutting down")
+
+    def _spawn(self, coro, *, name: str) -> asyncio.Task:
+        """Own a background-job task so the lifespan drain can quiesce it.
+
+        Every fire-and-forget job (generation / regenerate / fix / batch) is
+        created through this helper; ``drain`` waits for or cancels each owned
+        task BEFORE ``repos.close()`` so no task can race the pool close
+        (HIGH-1). Also the admission-stop safety net: it refuses to start when
+        ``_accepting_jobs`` is False, even if a command already did DB work.
+        """
+        self._require_accepting()
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     # ── B6 generation helpers ──────────────────────────────────────────
 
@@ -1197,6 +1224,7 @@ class ScriptAuthoringServiceImpl:
         intent: str,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
+        self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
             self._raise_not_found("script set", set_id)
@@ -1214,7 +1242,9 @@ class ScriptAuthoringServiceImpl:
         job = await self._create_job(
             item, set_id, product_id, op_intent, target_duration_s, idempotency_key
         )
-        asyncio.create_task(self._run_generation_job(job, item, script_set, llm_fn))
+        self._spawn(
+            self._run_generation_job(job, item, script_set, llm_fn), name=f"sa-gen:{job.id}"
+        )
         return {"workflow_id": job.id, "product_id": product_id, "status": "queued"}
 
     async def regenerate_segment(
@@ -1225,6 +1255,7 @@ class ScriptAuthoringServiceImpl:
         segment_index: int,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
+        self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
             self._raise_not_found("script set", set_id)
@@ -1251,7 +1282,10 @@ class ScriptAuthoringServiceImpl:
         plan = await self._repos.plans.get_latest(item.id)
         target = plan.target_duration_s if plan is not None else self._config.min_target_duration_s
         job = await self._create_job(item, set_id, product_id, op_intent, target, idempotency_key)
-        asyncio.create_task(self._run_regenerate_job(job, item, script_set, segment_index, llm_fn))
+        self._spawn(
+            self._run_regenerate_job(job, item, script_set, segment_index, llm_fn),
+            name=f"sa-regen:{job.id}",
+        )
         return {
             "workflow_id": job.id,
             "product_id": product_id,
@@ -1266,6 +1300,7 @@ class ScriptAuthoringServiceImpl:
         product_id: str,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
+        self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
             self._raise_not_found("script set", set_id)
@@ -1299,7 +1334,10 @@ class ScriptAuthoringServiceImpl:
             self._config.min_target_duration_s,
             idempotency_key,
         )
-        asyncio.create_task(self._run_fix_job(job, item, script_set, current_version, llm_fn))
+        self._spawn(
+            self._run_fix_job(job, item, script_set, current_version, llm_fn),
+            name=f"sa-fix:{job.id}",
+        )
         return {"workflow_id": job.id, "product_id": product_id, "status": "queued"}
 
     async def start_batch_generation(
@@ -1310,6 +1348,7 @@ class ScriptAuthoringServiceImpl:
         target_duration_s: int,
         idempotency_key: str,
     ) -> dict[str, Any] | None:
+        self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
             self._raise_not_found("script set", set_id)
@@ -1410,8 +1449,9 @@ class ScriptAuthoringServiceImpl:
         self._batch_persist_queues[state.batch_id] = persist_queue
         self._batch_artifact_bridges[state.batch_id] = bridge
         revisions = {item.id: item.revision for item in items.values()}
-        asyncio.create_task(
-            self._run_batch_job(state.batch_id, orch, persist_queue, bridge, revisions, set())
+        self._spawn(
+            self._run_batch_job(state.batch_id, orch, persist_queue, bridge, revisions, set()),
+            name=f"sa-batch:{state.batch_id}",
         )
         return {
             "batch_id": state.batch_id,
@@ -1507,12 +1547,39 @@ class ScriptAuthoringServiceImpl:
 
     # ── B6 background jobs ────────────────────────────────────────────
 
+    async def drain(self, *, timeout_s: float | None = None) -> None:
+        """Quiesce owned background jobs before the repository pool closes.
+
+        HIGH-1: the lifespan runs this BEFORE ``close_authoring``. Semantics:
+        1. stop admitting new work — the AI commands now raise
+           ``service_unavailable``;
+        2. give owned tasks a bounded (wall-clock) window to complete
+           gracefully — each successful job persists a durable terminal row;
+        3. cancel stragglers and await them so no task can touch the pool after
+           ``close()`` — an unfinished durable job stays RUNNING and is
+           recoverable by the next worker from its persisted snapshot;
+        4. clear the registry.
+
+        A task blocked inside a long sync provider call finishes that call
+        first (cancellation is only delivered at the next await); moving those
+        calls to ``asyncio.to_thread`` (HIGH-2) makes this return promptly even
+        mid-call.
+        """
+        self._accepting_jobs = False
+        tasks = [t for t in self._tasks if not t.done()]
+        if not tasks:
+            self._tasks.clear()
+            return
+        timeout = timeout_s if timeout_s is not None else self._config.drain_timeout_s
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        self._tasks.clear()
+
     async def _run_generation_job(
         self, job: GenerationJob, item: ScriptItem, script_set: ScriptSet, llm_fn
     ) -> None:
-        # ponytail: the sync llm_fn blocks the event loop during each call —
-        # acceptable for B6 (echo/mock LLM). Real LLMs must move to
-        # asyncio.to_thread with a separate drain task.
         bridge = _SyncPersistBridge()
         driver = self._build_driver(
             item,
@@ -1527,7 +1594,9 @@ class ScriptAuthoringServiceImpl:
         revisions = {item.id: item.revision}
         existing_versions: set[str] = set()
         try:
-            while driver.step():
+            # Each finite step runs the (sync) provider call off the loop
+            # (HIGH-2) so a slow LLM never stalls health/SSE/cancellation.
+            while await asyncio.to_thread(driver.step):
                 await self._drain_artifacts(bridge, revisions, existing_versions)
                 await self._update_job(job, driver.workflow, self._job_status_for(item.state))
                 await asyncio.sleep(0)
@@ -1570,7 +1639,7 @@ class ScriptAuthoringServiceImpl:
                 segment_index=segment_index,
             )
             prompt = "\n\n".join(filter(None, [parts.system, parts.context, parts.user]))
-            raw = llm_fn(prompt)
+            raw = await asyncio.to_thread(llm_fn, prompt)  # HIGH-2: keep the loop free
             if not raw or not raw.strip():
                 raise ValueError("regenerated segment text is empty")
             new_segment = ScriptSegment(
@@ -1649,7 +1718,9 @@ class ScriptAuthoringServiceImpl:
             current_version, llm_fn, await self._failed_rule_ids(item.id)
         )
         try:
-            workflow.apply_ai_fix()
+            # apply_ai_fix runs the (sync) repair provider call; off the loop
+            # (HIGH-2) so a slow LLM never stalls health/SSE/cancellation.
+            await asyncio.to_thread(workflow.apply_ai_fix)
         except Exception:
             pass  # apply_ai_fix persists the item FAILED on provider failure
         await self._persist_workflow(
@@ -1698,12 +1769,12 @@ class ScriptAuthoringServiceImpl:
         revisions: dict[str, int],
         existing_versions: set[str],
     ) -> None:
-        # ponytail: the sync llm_fn blocks the event loop during each driver
-        # step — acceptable for B6 (echo/mock LLM). Real LLMs must move to
-        # asyncio.to_thread with a separate drain task.
         try:
             while True:
-                state = orch.step()
+                # One scheduler round runs the (sync) provider calls off the
+                # loop (HIGH-2) so a slow LLM never stalls health/SSE/cancel;
+                # the orchestrator still bounds active products per round.
+                state = await asyncio.to_thread(orch.step)
                 await self._drain_artifacts(bridge, revisions, existing_versions)
                 await self._drain_batch_persists(batch_id, persist_queue)
                 if state.status in ("completed", "partial_completed", "failed", "cancelled"):

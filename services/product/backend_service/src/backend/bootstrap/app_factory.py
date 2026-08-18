@@ -135,8 +135,16 @@ def _build_script_authoring(config, engine_manager, pg_store) -> Any:
     returning 501; the log makes the disabled state explicit. ``engine_manager``
     powers the B6 AI generation commands; when the engine is unavailable the
     four AI commands raise ``llm_unavailable`` (503).
+
+    Production is fail-fast: a missing DATABASE_URL must not silently disable
+    authoring, so the composition root raises instead of returning None.
     """
     if pg_store is None:
+        if config.app_env == "production":
+            raise RuntimeError(
+                "DATABASE_URL is required when APP_ENV=production; "
+                "refusing to silently disable script authoring"
+            )
         logger.info("script authoring disabled (no DATABASE_URL); /api/v1/script-sets stays 501")
         return None
     from backend.application.script_authoring.repositories import PostgresAuthoringRepositories

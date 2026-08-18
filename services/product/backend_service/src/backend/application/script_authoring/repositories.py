@@ -143,13 +143,21 @@ class _Repo:
         return self._parent._pool
 
     async def _acquire(self, conn):
-        if conn is not None:
-            return conn
-        return await self._pool().acquire()
+        """Return ``(conn, pool)``.
 
-    async def _release(self, conn, acquired: bool) -> None:
-        if acquired:
-            await self._pool().release(conn)
+        The concrete pool is retained with the connection so ``_release`` never
+        re-resolves ``self._parent._pool`` — ``close()`` nulls that attribute
+        while a straggler may still be releasing, which leaked the connection
+        and hung ``pool.close()`` (HIGH-1 / §8).
+        """
+        if conn is not None:
+            return conn, None
+        pool = self._pool()
+        return await pool.acquire(), pool
+
+    async def _release(self, conn, pool, acquired: bool) -> None:
+        if acquired and pool is not None:
+            await pool.release(conn)
 
     async def _command(self, coro):
         try:
@@ -161,29 +169,29 @@ class _Repo:
 
     async def _fetchone(self, sql: str, *args, conn=None):
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             row = await self._command(lambda: c.fetchrow(sql, *args))
             return row
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
 
     async def _fetchall(self, sql: str, *args, conn=None):
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             rows = await self._command(lambda: c.fetch(sql, *args))
             return rows
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
 
     async def _execute(self, sql: str, *args, conn=None):
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             return await self._command(lambda: c.execute(sql, *args))
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
 
 
 class ScriptSetRepository(_Repo):
@@ -218,7 +226,7 @@ class ScriptSetRepository(_Repo):
 
     async def update(self, set_: ScriptSet, *, expected_revision: int, conn=None) -> None:
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             status = await self._command(
                 lambda: c.execute(
@@ -234,7 +242,7 @@ class ScriptSetRepository(_Repo):
                 )
             )
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
         if status != "UPDATE 1":
             raise StaleRevisionError(
                 f"script_set {set_.id}: revision {expected_revision} not current"
@@ -284,7 +292,7 @@ class ScriptItemRepository(_Repo):
 
     async def update(self, item: ScriptItem, *, expected_revision: int, conn=None) -> None:
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             status = await self._command(
                 lambda: c.execute(
@@ -301,7 +309,7 @@ class ScriptItemRepository(_Repo):
                 )
             )
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
         if status != "UPDATE 1":
             raise StaleRevisionError(
                 f"script_item {item.id}: revision {expected_revision} not current"
@@ -320,7 +328,7 @@ class ScriptItemRepository(_Repo):
 class PlanRepository(_Repo):
     async def insert(self, plan: ProductScriptPlan, *, conn=None) -> None:
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             async with c.transaction() if acquired else _null_transaction():
                 await c.execute(
@@ -338,7 +346,7 @@ class PlanRepository(_Repo):
                 for segment in plan.segments:
                     await self._insert_segment(c, segment)
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
 
     @staticmethod
     async def _insert_segment(c, segment: ScriptSegment) -> None:
@@ -402,11 +410,11 @@ class PlanRepository(_Repo):
 class SegmentRepository(_Repo):
     async def insert(self, segment: ScriptSegment, *, conn=None) -> None:
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             await self._insert_segment(c, segment)
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
 
     @staticmethod
     async def _insert_segment(c, segment: ScriptSegment) -> None:
@@ -668,7 +676,7 @@ class BatchRepository(_Repo):
         self, batch_id: str, *, state: BatchState, expected_revision: int, conn=None
     ) -> None:
         acquired = conn is None
-        c = await self._acquire(conn)
+        c, pool = await self._acquire(conn)
         try:
             status = await self._command(
                 lambda: c.execute(
@@ -681,7 +689,7 @@ class BatchRepository(_Repo):
                 )
             )
         finally:
-            await self._release(c, acquired)
+            await self._release(c, pool, acquired)
         if status != "UPDATE 1":
             raise StaleRevisionError(f"batch {batch_id}: revision {expected_revision} not current")
 
