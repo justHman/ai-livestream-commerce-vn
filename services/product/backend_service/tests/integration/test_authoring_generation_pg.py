@@ -13,7 +13,11 @@ import asyncio
 import pytest
 
 from backend.application.db.postgres_store import PostgresRuntimeStore
-from backend.application.script_authoring.models import ScriptSource, ScriptState
+from backend.application.script_authoring.models import (
+    GenerationJobStatus,
+    ScriptSource,
+    ScriptState,
+)
 from backend.application.script_authoring.repositories import PostgresAuthoringRepositories
 from backend.application.script_authoring.service_impl import ScriptAuthoringServiceImpl
 from backend.config import ScriptAuthoringConfig
@@ -49,6 +53,34 @@ async def _wait_for_state(
             return item
         await asyncio.sleep(0.05)
     return item
+
+
+async def _wait_for_job(
+    repos: PostgresAuthoringRepositories,
+    workflow_id: str,
+    *,
+    terminal: tuple[GenerationJobStatus, ...] = (
+        GenerationJobStatus.COMPLETED,
+        GenerationJobStatus.FAILED,
+    ),
+    tries: int = 600,
+) -> None:
+    """Wait for the background job to reach a terminal status.
+
+    ``start_generation``/``fix_with_ai``/``regenerate_segment`` return as soon
+    as the job row is queued; the item state becomes DRAFT/REVIEWABLE inside
+    the background task BEFORE its final ``jobs.update``. Tests must wait on
+    the job row (the durable completion signal), not just the item, so
+    ``repos.close()`` in teardown never races a still-running task (which
+    leaks a pool connection and hangs ``pool.close()``).
+    """
+    job_id = workflow_id
+    for _ in range(tries):
+        job = await repos.jobs.get(job_id)
+        if job is not None and job.status in terminal:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"background job {job_id} did not reach a terminal state")
 
 
 async def _new_set(service, product_ids):
@@ -88,6 +120,7 @@ async def test_start_generation_completes_to_reviewable_pg(pg_url: str) -> None:
         assert result["workflow_id"].startswith("job:")
         assert result["status"] == "queued"
 
+        await _wait_for_job(repos, result["workflow_id"])
         item = await _wait_for_state(repos, set_id, "P1", ScriptState.REVIEWABLE)
         assert item is not None
         assert item.state is ScriptState.REVIEWABLE
@@ -134,6 +167,7 @@ async def test_start_generation_idempotent_duplicate_returns_same_job_pg(pg_url:
         )
         assert second["workflow_id"] == first["workflow_id"]
         assert second.get("idempotent") is True
+        await _wait_for_job(repos, first["workflow_id"])
     finally:
         await repos.close()
 
@@ -147,13 +181,14 @@ async def test_regenerate_segment_pg(pg_url: str) -> None:
             repos, config=ScriptAuthoringConfig(), engine_manager=engine_manager
         )
         set_id = (await _new_set(service, ["P1"]))["id"]
-        await service.start_generation(
+        gen = await service.start_generation(
             set_id=set_id,
             product_id="P1",
             target_duration_s=600,
             intent="selling",
             idempotency_key="gen-bad",
         )
+        await _wait_for_job(repos, gen["workflow_id"])
         item = await _wait_for_state(repos, set_id, "P1", ScriptState.GATE_FAILED)
         assert item is not None and item.state is ScriptState.GATE_FAILED
 
@@ -164,6 +199,7 @@ async def test_regenerate_segment_pg(pg_url: str) -> None:
             set_id=set_id, product_id="P1", segment_index=1, idempotency_key="reg-1"
         )
         assert regen["segment_index"] == 1
+        await _wait_for_job(repos, regen["workflow_id"])
         item = await _wait_for_state(repos, set_id, "P1", ScriptState.REVIEWABLE)
         assert item is not None and item.state is ScriptState.REVIEWABLE
         version = await repos.versions.get(item.current_version_id)
@@ -204,6 +240,7 @@ async def test_fix_with_ai_produces_draft_ai_fix_version_pg(pg_url: str) -> None
         assert result["workflow_id"].startswith("job:")
         assert result["status"] == "queued"
 
+        await _wait_for_job(repos, result["workflow_id"])
         for _ in range(600):
             item = await repos.items.get_by_product(set_id, "P1")
             if item is not None and item.state is ScriptState.DRAFT and item.current_version_id:

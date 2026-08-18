@@ -14,7 +14,11 @@ import asyncio
 import pytest
 
 from backend.application.db.postgres_store import PostgresRuntimeStore
-from backend.application.script_authoring.models import ScriptIntent, ScriptState
+from backend.application.script_authoring.models import (
+    GenerationJobStatus,
+    ScriptIntent,
+    ScriptState,
+)
 from backend.application.script_authoring.repositories import PostgresAuthoringRepositories
 from backend.application.script_authoring.service_impl import (
     ScriptAuthoringServiceImpl,
@@ -47,6 +51,33 @@ async def _wait_for_state(
             return item
         await asyncio.sleep(0.05)
     return await repos.items.get_by_product(set_id, product_id)
+
+
+async def _wait_for_job(
+    repos: PostgresAuthoringRepositories,
+    workflow_id: str,
+    *,
+    terminal: tuple[GenerationJobStatus, ...] = (
+        GenerationJobStatus.COMPLETED,
+        GenerationJobStatus.FAILED,
+    ),
+    tries: int = 600,
+) -> None:
+    """Wait for the background job to reach a terminal status.
+
+    ``start_generation`` returns as soon as the job row is queued; the item
+    state becomes REVIEWABLE inside the background task BEFORE its final
+    ``jobs.update``. Wait on the job row (the durable completion signal), not
+    just the item, so ``repos.close()`` in teardown never races a
+    still-running task (which leaks a pool connection and hangs
+    ``pool.close()``).
+    """
+    for _ in range(tries):
+        job = await repos.jobs.get(workflow_id)
+        if job is not None and job.status in terminal:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"background job {workflow_id} did not reach a terminal state")
 
 
 async def _new_set(service, product_ids):
@@ -210,6 +241,7 @@ async def test_restart_idempotent_start_returns_existing_job(pg_url: str) -> Non
         assert len(rows) == 1  # exactly one job row for the idempotency key
 
         # The first-call background task still drives to REVIEWABLE.
+        await _wait_for_job(repos, first["workflow_id"])
         item = await _wait_for_state(repos, set_id, "P1", ScriptState.REVIEWABLE)
         assert item is not None and item.state is ScriptState.REVIEWABLE
     finally:
