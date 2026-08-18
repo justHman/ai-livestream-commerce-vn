@@ -2,9 +2,9 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createScriptClient } from "../src/scriptSets";
+import { createScriptClient, mapScriptSetResponse } from "../src/scriptSets";
 import { idempotencyKey, parseSseFrame, SseFeed } from "../src/scriptSets";
-import type { ScriptEvent } from "../src/scriptSets";
+import type { BackendScriptSetResponse, ScriptEvent } from "../src/scriptSets";
 
 function makeClient(fetchImpl: () => Promise<Response>) {
   vi.stubGlobal("fetch", fetchImpl);
@@ -25,7 +25,14 @@ function mockFetch(status: number, body: unknown) {
 
 describe("script client canonical paths", () => {
   it("creates ScriptSet via POST /api/v1/script-sets with name + brief.title + product_ids", async () => {
-    const fetchMock = mockFetch(200, { id: "sets-1", revision: 1, products: [] });
+    const fetchMock = mockFetch(200, {
+      id: "sets-1",
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      product_ids: ["P001"],
+      revision: 1,
+      items: { P001: { state: "EMPTY" } },
+    });
     const client = makeClient(fetchMock);
     await client.createScriptSet({
       name: "Set A",
@@ -212,5 +219,62 @@ describe("SseFeed snapshot + revision dedup (task 13.5)", () => {
     feed.push(sseFrame(makeEvent({ event_id: "ev-2", revision: 2, type: "batch.progress" })));
     feed.push(sseFrame(makeEvent({ event_id: "ev-2", revision: 2, type: "batch.progress" })));
     expect(seen.filter((t) => t === "batch.progress")).toHaveLength(1);
+  });
+});
+
+describe("real-backend ScriptSet wire adapter (handoff §11.3/§11.4)", () => {
+  // Exact shape returned by ScriptAuthoringServiceImpl._set_wire — an `items`
+  // map keyed by product_id, NOT a `products[]` array.
+  const realWire: BackendScriptSetResponse = {
+    id: "set-9",
+    name: "Phiên live 19/08",
+    transition_policy: "ORDER_AGNOSTIC",
+    product_ids: ["P001", "P002"],
+    revision: 3,
+    items: {
+      P001: { state: "DRAFT" },
+      P002: { state: "REVIEWABLE" },
+    },
+  };
+
+  it("mapScriptSetResponse expands the items map into full products with parsed states", () => {
+    const set = mapScriptSetResponse(realWire);
+    expect(set.id).toBe("set-9");
+    expect(set.name).toBe("Phiên live 19/08");
+    expect(set.revision).toBe(3);
+    expect(set.transition_policy).toBe("ORDER_AGNOSTIC");
+    expect(set.products).toHaveLength(2);
+    expect(set.products.map((p) => p.product_id)).toEqual(["P001", "P002"]);
+    expect(set.products[0]?.state).toBe("DRAFT");
+    expect(set.products[1]?.state).toBe("REVIEWABLE");
+    // Every product is a structurally complete ScriptItem the UI already renders.
+    expect(set.products[0]?.segments).toEqual([]);
+    expect(set.products[0]?.versions).toEqual([]);
+    expect(set.products[0]?.current_version).toBeNull();
+    expect(set.products[0]?.approvals).toEqual([]);
+  });
+
+  it("GET /script-sets/{set_id} parses the real wire shape through the client", async () => {
+    const fetchMock = mockFetch(200, realWire);
+    const client = makeClient(fetchMock);
+    const set = await client.getScriptSet("set-9");
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8800/api/v1/script-sets/set-9");
+    expect(set.products).toHaveLength(2);
+    expect(set.products.map((p) => p.product_id)).toEqual(["P001", "P002"]);
+    expect(set.products[0]?.state).toBe("DRAFT");
+  });
+
+  it("POST /script-sets parses the real wire shape through the client", async () => {
+    const fetchMock = mockFetch(201, realWire);
+    const client = makeClient(fetchMock);
+    const set = await client.createScriptSet({
+      name: "Phiên live 19/08",
+      transition_policy: "ORDER_AGNOSTIC",
+      product_ids: ["P001", "P002"],
+      brief: { title: "t" },
+    });
+    expect(set.products).toHaveLength(2);
+    expect(set.products[1]?.state).toBe("REVIEWABLE");
   });
 });
