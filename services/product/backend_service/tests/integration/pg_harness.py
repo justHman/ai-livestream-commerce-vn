@@ -216,21 +216,42 @@ class TestPostgres:
         # EOF that never comes while the server runs. Redirect to DEVNULL so
         # the server's stdio is the null device and subprocess.run returns
         # when pg_ctl (the direct child) exits.
-        subprocess.run(
-            [
-                str(pg_ctl),
-                "-D",
-                str(self._data_dir),
-                "-l",
-                str(self._log_path),
-                "-o",
-                f"-p {self.port} -h {self.host} -c listen_addresses={self.host}",
-                "start",
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        # unix_socket_directories=/tmp: on Linux CI (GH runner) the system
+        # postgres default `/var/run/postgresql` may be missing/not writable
+        # for the runner user, which makes the postmaster FATAL and pg_ctl
+        # exit non-zero. /tmp is always writable and keeps the unix socket.
+        # unix_socket_directories=/tmp only on Unix: on Linux CI the system
+        # postgres default `/var/run/postgresql` may be missing/not writable
+        # for the runner user, making the postmaster FATAL. Windows has no
+        # meaningful unix-socket path and ignores the setting at best.
+        unix_extra = (
+            " -c unix_socket_directories=/tmp" if _platform() != "Windows" else ""
         )
+        start_args = [
+            str(pg_ctl),
+            "-D",
+            str(self._data_dir),
+            "-l",
+            str(self._log_path),
+            "-o",
+            f"-p {self.port} -h {self.host} -c listen_addresses={self.host}{unix_extra}",
+            "start",
+        ]
+        try:
+            subprocess.run(
+                start_args,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError as exc:
+            log_tail = ""
+            if self._log_path and self._log_path.exists():
+                log_tail = self._log_path.read_text(errors="ignore")[-2000:]
+            raise RuntimeError(
+                f"pg_ctl start failed (exit {exc.returncode}); "
+                f"data dir: {self._data_dir}\n{log_tail}"
+            ) from exc
 
         self._wait_ready()
         self._started = True
