@@ -12,11 +12,10 @@ import { ApiError, type ApiDeps } from "./api";
 export type TransitionPolicy = "ORDER_AWARE" | "ORDER_AGNOSTIC";
 
 export interface LiveSessionBrief {
-  shop_name: string;
-  host_name: string;
-  persona: string;
-  selling_style: string;
-  transition_policy: TransitionPolicy;
+  title: string;
+  host_name?: string;
+  shop_name?: string;
+  note?: string;
 }
 
 export type ScriptItemState =
@@ -132,7 +131,9 @@ export interface ScriptItem {
 
 export interface ScriptSet {
   id: string;
+  name: string;
   revision: number;
+  transition_policy: TransitionPolicy;
   brief: LiveSessionBrief;
   products: ScriptItem[];
   created_at: string;
@@ -140,11 +141,14 @@ export interface ScriptSet {
 }
 
 export interface ScriptSetInput {
-  brief: LiveSessionBrief;
+  name: string;
+  transition_policy?: TransitionPolicy;
   product_ids: string[];
+  brief?: LiveSessionBrief;
 }
 
 export interface ScriptSetPatch {
+  transition_policy?: TransitionPolicy;
   brief?: LiveSessionBrief;
   product_ids?: string[];
 }
@@ -242,7 +246,8 @@ export interface GenerationBatch {
 }
 
 export interface GenerateBatchRequest {
-  products: Array<{ product_id: string; target_duration_s: number }>;
+  product_ids: string[];
+  target_duration_s: number;
 }
 
 export type ScriptEventType =
@@ -356,15 +361,20 @@ export function createScriptClient(deps: ApiDeps) {
   ): Promise<ProductPreview> {
     return requestJson<ProductPreview>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/generation-preview`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ target_duration_s: targetDurationS }) },
+      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_id: productId, target_duration_s: targetDurationS }) },
     );
   }
 
   async function previewBatch(setId: string, req: PreviewRequest): Promise<GenerationPreview> {
-    return requestJson<GenerationPreview>(
-      `/api/v1/script-sets/${esc(setId)}/generation-preview`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify(req) },
+    // Backend exposes only the per-product generation-preview route; a batch
+    // preview is the aggregate of one per-product preview per selected product.
+    const products = await Promise.all(
+      req.products.map((p) => previewProduct(setId, p.product_id, p.target_duration_s)),
     );
+    return {
+      products,
+      estimated_semantic_calls_total: products.reduce((sum, p) => sum + p.estimated_semantic_calls, 0),
+    };
   }
 
   async function generateProduct(
@@ -402,17 +412,17 @@ export function createScriptClient(deps: ApiDeps) {
     );
   }
 
-  async function approveProduct(setId: string, productId: string): Promise<ApprovalResult> {
+  async function approveProduct(setId: string, productId: string, versionId: string, actor: string): Promise<ApprovalResult> {
     return requestJson<ApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/approve`,
-      { method: "POST", headers: adminHeaders(true) },
+      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ version_id: versionId, actor }) },
     );
   }
 
-  async function approveBatch(setId: string, productIds: string[]): Promise<BatchApprovalResult> {
+  async function approveBatch(setId: string, productIds: string[], versionIds: Record<string, string>, actor: string): Promise<BatchApprovalResult> {
     return requestJson<BatchApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/approve-batch`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_ids: productIds }) },
+      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_ids: productIds, version_ids: versionIds, actor }) },
     );
   }
 
