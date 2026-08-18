@@ -465,6 +465,18 @@ class AppConfig:
             script_authoring=ScriptAuthoringConfig.from_env(),
         )
 
+    @property
+    def is_production(self) -> bool:
+        """Canonical production predicate (HIGH-A / R6.1).
+
+        The deployment literal is ``APP_ENV=prod`` (Terraform passes
+        ``app_env = "prod"``); ``production`` is kept as an accepted legacy
+        alias so a stack still using the old literal activates the same
+        production safety gates. Every production-only fail-fast/safety gate
+        MUST use this predicate, never a raw ``app_env == ...`` comparison.
+        """
+        return self.app_env in {"prod", "production"}
+
     def cors_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
             return ["*"]

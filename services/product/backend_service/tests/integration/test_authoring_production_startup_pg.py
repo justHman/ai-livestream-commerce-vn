@@ -2,9 +2,10 @@
 
 Blocker HIGH-4: production can silently disable Script Authoring (HTTP 501)
 when DATABASE_URL is missing or unreachable. Required behavior: in
-APP_ENV=production a missing DATABASE_URL OR an unreachable/invalid DB MUST
-fail startup (the app must not boot). The LLM stays non-fatal (backend boots,
-manual authoring works, AI ops return 503). No SA_ENABLED flag.
+APP_ENV=prod (the real deployment literal; "production" stays an accepted
+alias) a missing DATABASE_URL OR an unreachable/invalid DB MUST fail startup
+(the app must not boot). The LLM stays non-fatal (backend boots, manual
+authoring works, AI ops return 503). No SA_ENABLED flag.
 
 Non-production (dev) keeps its bootable-but-honest behavior (authoring surface
 501 without DB; failures logged).
@@ -21,9 +22,9 @@ from backend.config import AppConfig, TTSConfig
 _AUTH_VALUE = "viewer" + "-token"
 
 
-def _config(database_url: str, *, backend_api_token: str = "") -> AppConfig:
+def _config(database_url: str, *, backend_api_token: str = "", app_env: str = "prod") -> AppConfig:
     return AppConfig(
-        app_env="production",
+        app_env=app_env,
         render_backend="mock",
         database_url=database_url,
         tts=TTSConfig(engine="tone"),  # stub — avoids offline transformers load
@@ -77,3 +78,23 @@ async def test_production_valid_database_llm_none_boots_and_ai_503(pg_url: str) 
         )
         assert gen.status_code == 503, gen.text
         assert gen.json()["error"]["code"] == "llm_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_production_alias_legacy_production_behaves_like_prod() -> None:
+    """The legacy ``APP_ENV=production`` literal stays an accepted alias.
+
+    ``prod`` is the deployment value (Terraform ``app_env = "prod"``); the
+    ``production`` alias must activate the same production safety gates so a
+    stack still configured with the old literal is not silently weakened.
+    """
+    from backend.main import create_app
+
+    # Missing DATABASE_URL fails composition for the alias too.
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        create_app(config=_config("", app_env="production"))
+
+    # Unreachable DATABASE_URL fails lifespan startup for the alias too.
+    app = create_app(config=_config("postgresql://postgres@127.0.0.1:1/nope", app_env="production"))
+    with pytest.raises(Exception):
+        await app.router.lifespan_context(app).__aenter__()

@@ -523,6 +523,15 @@ class ScriptAuthoringServiceImpl:
         task.add_done_callback(self._tasks.discard)
         return task
 
+    def _owns_task(self, name: str) -> bool:
+        """True when this service owns a still-active task named ``name``.
+
+        In-process duplicate-runner guard for recovery (HIGH-B / §9): startup
+        recovery must not spawn a second runner for a job/batch this process is
+        already driving.
+        """
+        return any(t.get_name() == name and not t.done() for t in self._tasks)
+
     # ── B6 generation helpers ──────────────────────────────────────────
 
     def _event_ring(self, batch_id: str) -> deque:
@@ -1547,6 +1556,220 @@ class ScriptAuthoringServiceImpl:
 
     # ── B6 background jobs ────────────────────────────────────────────
 
+    async def recover_pending(self) -> None:
+        """Resume durable jobs/batches left mid-flight by a previous process.
+
+        HIGH-B / R6.3-R6.4: called from the lifespan startup AFTER the
+        authoring repositories connect. Reconstructs each recoverable workflow
+        from its persisted finite state and ``_spawn``s execution so the job
+        actually resumes and reaches a durable terminal status — merely
+        returning the existing workflow id (idempotency) is NOT recovery.
+
+        Duplicate-runner safety: this service skips a job/batch it already owns
+        an active task for (``_owns_task``). Cross-process, the deployment runs
+        a single active backend runner — prod ``desired_backend`` defaults to 1
+        and the compute module does not autoscale the backend service; the
+        durable idempotency + revision guards still prevent duplicate NEW job
+        creation. Multi-replica recovery (a durable lease) is out of scope.
+        """
+        if not self._accepting_jobs:
+            return
+        for job in await self._repos.jobs.list_recoverable():
+            name = f"sa-recover:{job.id}"
+            if self._owns_task(f"sa-gen:{job.id}") or self._owns_task(name):
+                continue
+            self._spawn(self._resume_job(job), name=name)
+        for batch, _state in await self._repos.batches.list_recoverable():
+            name = f"sa-recover-batch:{batch.id}"
+            if self._owns_task(f"sa-batch:{batch.id}") or self._owns_task(name):
+                continue
+            self._spawn(self._resume_batch(batch.id), name=name)
+
+    async def _resume_job(self, job: GenerationJob) -> None:
+        """Dispatch recovery for one durable job by its intent (R6.3)."""
+        if job.intent != ScriptIntent.GENERATE_LONG_FORM:
+            # regenerate/fix jobs cannot be safely resumed without their exact
+            # input parameters (target segment index / failed-rule context),
+            # which are not persisted on the job row; mark them deterministically
+            # FAILED so no job is left RUNNING forever. The item stays in its
+            # durable state (e.g. GATE_FAILED), so a fresh regenerate/fix can be
+            # issued.
+            await self._fail_job(job, f"job intent {job.intent.value} is not resumable")
+            return
+        await self._resume_generation_job(job)
+
+    async def _fail_job(self, job: GenerationJob, message: str) -> None:
+        """Land a durable job FAILED so it is not left RUNNING forever."""
+        job.status = GenerationJobStatus.FAILED
+        try:
+            await self._repos.jobs.update(job)
+        except Exception:
+            pass
+
+    async def _resume_generation_job(self, job: GenerationJob) -> None:
+        """Reconstruct + drive a durable RUNNING generation job to terminal.
+
+        Reuses the persisted plan (never re-plans), regenerates only uncommitted
+        segments, and does not duplicate committed immutable artifacts.
+        """
+        item = await self._repos.items.get(job.script_item_id)
+        if item is None:
+            await self._fail_job(job, "script item missing at recovery")
+            return
+        script_set = await self._repos.script_sets.get(item.script_set_id)
+        if script_set is None:
+            await self._fail_job(job, "script set missing at recovery")
+            return
+        llm_fn = self._safe_llm()
+        if llm_fn is None:
+            await self._fail_job(job, "LLM unavailable at recovery")
+            return
+        try:
+            driver, bridge = await self._reconstruct_generation_driver(
+                job, item, script_set, llm_fn
+            )
+        except Exception as exc:
+            await self._fail_job(job, f"recovery reconstruction failed: {exc}")
+            return
+        revisions = {item.id: item.revision}
+        existing_versions: set[str] = set()
+        await self._drive_generation(job, driver, bridge, revisions, existing_versions)
+        # A reconstructed workflow that could not advance to a terminal state
+        # (e.g. the item was left in a non-generation state such as DRAFT, so
+        # ``driver.step`` returns False without a terminal status) must not stay
+        # RUNNING forever — land it deterministically FAILED.
+        if job.status is GenerationJobStatus.RUNNING:
+            await self._fail_job(job, "recovered job did not advance to a terminal state")
+
+    async def _reconstruct_generation_driver(self, job, item, script_set, llm_fn):
+        """Rebuild a ``WorkflowDriver`` for a durable job from persisted rows.
+
+        Replays only the finite counters (plan id / segment count / persisted
+        segment + version rows) so the restored driver resumes at the next
+        unresolved segment instead of re-planning or regenerating committed
+        segments. The reconstructed snapshot mirrors ``WorkflowDriver.snapshot()``
+        so ``driver.restore`` replays exactly the deterministic finite state.
+        """
+        plan = None
+        if job.plan_id:
+            plan = await self._repos.plans.get(job.plan_id)
+        if plan is None:
+            plan = await self._repos.plans.get_latest(item.id)
+        segments: dict[str, ScriptSegment] = {}
+        segment_versions: list[dict] = []
+        plan_segment_count = job.plan_segment_count
+        if plan is not None:
+            plan_segment_count = plan.segment_count
+            for seg in await self._repos.segments.list_by_plan(plan.id):
+                segments[seg.id] = seg
+                segment_versions.append(
+                    {"index": seg.segment_index, "id": seg.id, "status": seg.status.value}
+                )
+        versions: dict[str, ScriptVersion] = {}
+        version_ids: list[str] = []
+        for ver in await self._repos.versions.list_by_item(item.id):
+            versions[ver.id] = ver
+            version_ids.append(ver.id)
+        bridge = _SyncPersistBridge()
+        driver = self._build_driver(
+            item,
+            script_set,
+            job.target_duration_s,
+            llm_fn,
+            bridge,
+            emit=lambda *a, **k: None,
+            batch_id="",
+            loaders=self._make_loaders({item.id: item}, segments, versions),
+        )
+        snapshot = {
+            "product_id": item.product_id,
+            "item_id": item.id,
+            "state": item.state.value,
+            "current_version_id": item.current_version_id,
+            "approved_version_id": item.approved_version_id,
+            "plan_id": plan.id if plan is not None else job.plan_id,
+            "plan_segment_count": plan_segment_count,
+            "target_duration_s": job.target_duration_s,
+            "semantic_calls": 0,
+            "segment_versions": segment_versions,
+            "version_ids": version_ids,
+        }
+        driver.restore(snapshot)
+        return driver, bridge
+
+    async def _drive_generation(
+        self,
+        job: GenerationJob,
+        driver,
+        bridge: _SyncPersistBridge,
+        revisions: dict[str, int],
+        existing_versions: set[str],
+    ) -> None:
+        """Drive a generation driver to terminal with the shared drain loop."""
+        try:
+            # Each finite step runs the (sync) provider call off the loop
+            # (HIGH-2) so a slow LLM never stalls health/SSE/cancellation.
+            while await asyncio.to_thread(driver.step):
+                await self._drain_artifacts(bridge, revisions, existing_versions)
+                await self._update_job(
+                    job, driver.workflow, self._job_status_for(driver.workflow.item.state)
+                )
+                await asyncio.sleep(0)
+            await self._drain_artifacts(bridge, revisions, existing_versions)
+            await self._update_job(
+                job, driver.workflow, self._job_status_for(driver.workflow.item.state)
+            )
+        except Exception as exc:
+            # Deterministic failure: land the item FAILED and record the job.
+            try:
+                self._land_failed(driver.workflow, str(exc) or type(exc).__name__, bridge)
+                await self._drain_artifacts(bridge, revisions, existing_versions)
+            except Exception:
+                pass
+            try:
+                await self._update_job(job, driver.workflow, GenerationJobStatus.FAILED)
+            except Exception:
+                pass
+
+    async def _resume_batch(self, batch_id: str) -> None:
+        """Resume a durable QUEUED/RUNNING batch after a restart (R6.4)."""
+        try:
+            (
+                orch,
+                persist_queue,
+                bridge,
+                revisions,
+                existing_versions,
+            ) = await self._recover_batch_runner(batch_id)
+        except Exception:
+            return  # already terminal / not recoverable; nothing to resume
+        if orch is None:
+            return
+        await self._run_batch_job(
+            batch_id, orch, persist_queue, bridge, revisions, existing_versions
+        )
+
+    async def _recover_batch_runner(self, batch_id: str):
+        """Rebuild the batch runner from persisted state + seed drain guards."""
+        result = await self._repos.batches.get(batch_id)
+        if result is None:
+            return None, None, None, {}, set()
+        _batch, state = result
+        orch, persist_queue, bridge = await self._recover_orchestrator(
+            batch_id, state.script_set_id
+        )
+        if orch is None:
+            return None, None, None, {}, set()
+        revisions: dict[str, int] = {}
+        existing_versions: set[str] = set()
+        for pid in state.requested_products:
+            item = await self._repos.items.get_by_product(state.script_set_id, pid)
+            if item is not None:
+                revisions[item.id] = item.revision
+                for ver in await self._repos.versions.list_by_item(item.id):
+                    existing_versions.add(ver.id)
+        return orch, persist_queue, bridge, revisions, existing_versions
+
     async def drain(self, *, timeout_s: float | None = None) -> None:
         """Quiesce owned background jobs before the repository pool closes.
 
@@ -1578,41 +1801,35 @@ class ScriptAuthoringServiceImpl:
         self._tasks.clear()
 
     async def _run_generation_job(
-        self, job: GenerationJob, item: ScriptItem, script_set: ScriptSet, llm_fn
+        self,
+        job: GenerationJob,
+        item: ScriptItem,
+        script_set: ScriptSet,
+        llm_fn,
+        driver=None,
     ) -> None:
+        """Drive a generation job to terminal.
+
+        ``driver`` may be a pre-built/restored driver (recovery path) or None,
+        in which case a fresh driver is built from scratch (new-job path). The
+        shared ``_drive_generation`` loop drains artifacts + updates the job row
+        after every finite step.
+        """
         bridge = _SyncPersistBridge()
-        driver = self._build_driver(
-            item,
-            script_set,
-            job.target_duration_s,
-            llm_fn,
-            bridge,
-            emit=lambda *a, **k: None,
-            batch_id="",
-            loaders=self._make_loaders({item.id: item}, {}, {}),
-        )
+        if driver is None:
+            driver = self._build_driver(
+                item,
+                script_set,
+                job.target_duration_s,
+                llm_fn,
+                bridge,
+                emit=lambda *a, **k: None,
+                batch_id="",
+                loaders=self._make_loaders({item.id: item}, {}, {}),
+            )
         revisions = {item.id: item.revision}
         existing_versions: set[str] = set()
-        try:
-            # Each finite step runs the (sync) provider call off the loop
-            # (HIGH-2) so a slow LLM never stalls health/SSE/cancellation.
-            while await asyncio.to_thread(driver.step):
-                await self._drain_artifacts(bridge, revisions, existing_versions)
-                await self._update_job(job, driver.workflow, self._job_status_for(item.state))
-                await asyncio.sleep(0)
-            await self._drain_artifacts(bridge, revisions, existing_versions)
-            await self._update_job(job, driver.workflow, self._job_status_for(item.state))
-        except Exception as exc:
-            # Deterministic failure: land the item FAILED and record the job.
-            try:
-                self._land_failed(driver.workflow, str(exc) or type(exc).__name__, bridge)
-                await self._drain_artifacts(bridge, revisions, existing_versions)
-            except Exception:
-                pass
-            try:
-                await self._update_job(job, driver.workflow, GenerationJobStatus.FAILED)
-            except Exception:
-                pass
+        await self._drive_generation(job, driver, bridge, revisions, existing_versions)
 
     async def _run_regenerate_job(
         self, job, item: ScriptItem, script_set: ScriptSet, segment_index: int, llm_fn

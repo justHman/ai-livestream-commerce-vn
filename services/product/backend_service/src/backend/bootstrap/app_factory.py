@@ -140,9 +140,9 @@ def _build_script_authoring(config, engine_manager, pg_store) -> Any:
     authoring, so the composition root raises instead of returning None.
     """
     if pg_store is None:
-        if config.app_env == "production":
+        if config.is_production:
             raise RuntimeError(
-                "DATABASE_URL is required when APP_ENV=production; "
+                "DATABASE_URL is required when APP_ENV=prod (or production); "
                 "refusing to silently disable script authoring"
             )
         logger.info("script authoring disabled (no DATABASE_URL); /api/v1/script-sets stays 501")

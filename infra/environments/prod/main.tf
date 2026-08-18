@@ -72,6 +72,32 @@ module "database" {
   tags                 = var.tags
 }
 
+# R6.2 (HIGH-A parity): a prod backend that creates RDS but never injects
+# DATABASE_URL into the backend container boots with Script Authoring silently
+# disabled (HTTP 501) — the exact production failure the fail-fast gate exists
+# to prevent. Fail plan/apply instead of silently building the broken config.
+# The backend task injects DATABASE_URL only when `backend/database_url` is in
+# `secrets_arns` (i.e. enable_database_url=true with a real parameter ARN), so
+# create_rds=true MUST imply that wiring.
+resource "terraform_data" "db_url_parity" {
+  input = var.create_rds
+  lifecycle {
+    precondition {
+      condition = (
+        !var.create_rds
+        || (var.enable_database_url && trimspace(var.database_url_parameter_arn) != "")
+      )
+      error_message = <<-EOT
+        create_rds=true requires backend DB connectivity in prod: set
+        enable_database_url=true and database_url_parameter_arn to the SSM
+        SecureString ARN of the Postgres connection string, or set create_rds=false.
+        Otherwise the backend container boots without DATABASE_URL and Script
+        Authoring is silently disabled (501).
+      EOT
+    }
+  }
+}
+
 module "loadbalancer" {
   source = "../../modules/loadbalancer"
 

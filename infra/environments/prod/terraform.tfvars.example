@@ -20,9 +20,14 @@ alb_ingress_cidrs = ["0.0.0.0/0"]
 # TF_VAR_backend_api_token=...
 # TF_VAR_admin_api_token=...
 
-# Required only when enable_database_url is true: ARN of an existing SSM SecureString.
-enable_database_url        = false
-database_url_parameter_arn = ""
+# Backend DB connectivity (required when create_rds = true, enforced by the
+# `terraform_data.db_url_parity` precondition in prod/main.tf): ARN of an
+# existing SSM SecureString containing the Postgres connection string that is
+# injected into the backend container as DATABASE_URL. A prod backend that
+# creates RDS but never injects DATABASE_URL would boot with Script Authoring
+# silently disabled (HTTP 501), so the plan fails instead.
+enable_database_url        = true
+database_url_parameter_arn = "arn:aws:ssm:ap-northeast-2:123456789012:parameter/prod/backend/database_url"
 
 db_instance_class       = "db.t4g.medium"
 create_rds          = true   # managed Postgres
