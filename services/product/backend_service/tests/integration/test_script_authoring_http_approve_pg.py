@@ -15,7 +15,7 @@ approve") is honest:
   GET  /api/v1/script-sets/{id}     -> approved_version_id == version_id
 
 Session binding is NOT exercised here; it is proven separately by
-``test_authoring_e2e_session_binding_pg.py``. Together the two tests compose a
+``test_authoring_e2e_session_binding.py``. Together the two tests compose a
 full HTTP-read->approve->binding proof.
 """
 
