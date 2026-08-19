@@ -223,7 +223,15 @@ class _FakeBatchRepo:
         return row[0], row[1].model_copy(deep=True)
 
     async def update_state(
-        self, batch_id: str, *, state: BatchState, expected_revision: int, conn=None
+        self,
+        batch_id: str,
+        *,
+        state: BatchState,
+        expected_revision: int,
+        lease_owner: str | None = None,
+        lease_epoch: int | None = None,
+        lease_duration_s: int = 300,
+        conn=None,
     ) -> None:
         row = self.rows.get(batch_id)
         if row is None:
@@ -232,6 +240,14 @@ class _FakeBatchRepo:
         if expected_revision != current_state.revision:
             raise StaleRevisionError(f"batch {batch_id}: revision {expected_revision} not current")
         self.rows[batch_id] = (row[0], state.model_copy(deep=True))
+
+    async def acquire_lease(
+        self, batch_id: str, owner: str, lease_duration_s: int, *, conn=None
+    ) -> int:
+        return 1
+
+    async def release_lease(self, batch_id: str, owner: str, *, conn=None) -> None:
+        pass
 
     async def find_by_idempotency(
         self, set_id: str, key: str, *, conn=None
@@ -268,8 +284,25 @@ class _FakeJobRepo:
                 return job
         return None
 
-    async def update(self, job: GenerationJob, *, expected_revision: int = 0, conn=None) -> None:
+    async def update(
+        self,
+        job: GenerationJob,
+        *,
+        expected_revision: int = 0,
+        lease_owner: str | None = None,
+        lease_epoch: int | None = None,
+        lease_duration_s: int = 300,
+        conn=None,
+    ) -> None:
         self.rows[job.id] = job
+
+    async def acquire_lease(
+        self, job_id: str, owner: str, lease_duration_s: int, *, conn=None
+    ) -> int:
+        return 1
+
+    async def release_lease(self, job_id: str, owner: str, *, conn=None) -> None:
+        pass
 
 
 class _FakeIdempotencyRepo:

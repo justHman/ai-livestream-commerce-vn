@@ -293,6 +293,10 @@ class ScriptAuthoringConfig:
     # Shutdown drain grace (HIGH-1): how long the lifespan waits for in-flight
     # background jobs to finish before cancelling stragglers during shutdown.
     drain_timeout_s: float = 5.0
+    # Multi-replica recovery lease (HIGH-1): how long a claimed
+    # job/batch row is fenced to its owning replica before another
+    # replica's ``recover_pending`` may re-claim it.
+    recovery_lease_seconds: int = 300
 
     @classmethod
     def from_env(cls) -> "ScriptAuthoringConfig":
@@ -312,6 +316,7 @@ class ScriptAuthoringConfig:
             sse_retention_seconds=int(os.environ.get("SA_SSE_RETENTION_SECONDS", "3600")),
             sse_replay_window_seconds=int(os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")),
             drain_timeout_s=float(os.environ.get("SA_DRAIN_TIMEOUT_S", "5.0")),
+            recovery_lease_seconds=int(os.environ.get("SA_RECOVERY_LEASE_SECONDS", "300")),
         )
 
 

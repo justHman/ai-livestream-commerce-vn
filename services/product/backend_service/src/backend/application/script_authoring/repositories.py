@@ -69,12 +69,14 @@ _APPROVAL_COLS = (
 _BATCH_COLS = (
     "id, script_set_id, status, product_ids::text AS product_ids, "
     "job_ids::text AS job_ids, estimated_semantic_calls, idempotency_key, "
-    "revision, state::text AS state, created_at, updated_at"
+    "revision, state::text AS state, lease_owner, lease_expires_at, lease_epoch, "
+    "created_at, updated_at"
 )
 _JOB_COLS = (
     "id, batch_id, script_item_id, product_id, intent, status, plan_id, "
     "plan_segment_count, current_segment_index, attempt_count, target_duration_s, "
-    "fingerprint::text AS fingerprint, idempotency_key, created_at, updated_at"
+    "fingerprint::text AS fingerprint, idempotency_key, lease_owner, lease_expires_at, "
+    "lease_epoch, created_at, updated_at"
 )
 
 # Plain column lists for INSERT (no casts / aliases).
@@ -117,6 +119,10 @@ _JOB_INS = (
 
 class StaleRevisionError(Exception):
     """Raised when an optimistic-lock UPDATE matches zero rows."""
+
+
+class LeaseLostError(Exception):
+    """Raised when a fenced worker no longer owns its durable lease."""
 
 
 def _iso(ts: Any) -> str:
@@ -655,43 +661,57 @@ class BatchRepository(_Repo):
             batch_id,
             conn=conn,
         )
-        if row is None:
-            return None
-        data = dict(row)
-        data["product_ids"] = _json_rows(data["product_ids"], [])
-        data["job_ids"] = _json_rows(data["job_ids"], [])
-        data["created_at"] = _iso(data["created_at"])
-        data["updated_at"] = _iso(data["updated_at"])
-        # `revision` and `state` are not GenerationBatch model fields — they are
-        # the batch-level optimistic-lock and the persisted BatchState payload.
-        row_revision = data.pop("revision", None)
-        state_json = _json_rows(data.pop("state", None), {})
-        batch = GenerationBatch.model_validate(data)
-        state = BatchState.model_validate(state_json)
-        if row_revision is not None:
-            state.revision = row_revision
-        return batch, state
+        return self._from_row(row) if row is not None else None
 
     async def update_state(
-        self, batch_id: str, *, state: BatchState, expected_revision: int, conn=None
+        self,
+        batch_id: str,
+        *,
+        state: BatchState,
+        expected_revision: int,
+        lease_owner: str | None = None,
+        lease_epoch: int | None = None,
+        lease_duration_s: int = 300,
+        conn=None,
     ) -> None:
-        acquired = conn is None
-        c, pool = await self._acquire(conn)
-        try:
-            status = await self._command(
-                lambda: c.execute(
-                    "UPDATE script_generation_batches SET status=$2, state=$3::jsonb, "
-                    "revision=revision+1, updated_at=NOW() WHERE id=$1 AND revision=$4 RETURNING id",
-                    batch_id,
-                    state.status,
-                    json.dumps(state.model_dump(mode="json")),
-                    expected_revision,
+        if lease_owner is None or lease_epoch is None:
+            acquired = conn is None
+            c, pool = await self._acquire(conn)
+            try:
+                status = await self._command(
+                    lambda: c.execute(
+                        "UPDATE script_generation_batches SET status=$2, state=$3::jsonb, "
+                        "revision=revision+1, updated_at=NOW() "
+                        "WHERE id=$1 AND revision=$4 RETURNING id",
+                        batch_id,
+                        state.status,
+                        json.dumps(state.model_dump(mode="json")),
+                        expected_revision,
+                    )
                 )
-            )
-        finally:
-            await self._release(c, pool, acquired)
+            finally:
+                await self._release(c, pool, acquired)
+            if status != "UPDATE 1":
+                raise StaleRevisionError(
+                    f"batch {batch_id}: revision {expected_revision} not current"
+                )
+            return
+        status = await self._execute(
+            "UPDATE script_generation_batches SET status=$2, state=$3::jsonb, "
+            "revision=revision+1, "
+            "lease_expires_at=NOW() + make_interval(secs => $7), updated_at=NOW() "
+            "WHERE id=$1 AND revision=$4 AND lease_owner=$5 AND lease_epoch=$6 RETURNING id",
+            batch_id,
+            state.status,
+            json.dumps(state.model_dump(mode="json")),
+            expected_revision,
+            lease_owner,
+            lease_epoch,
+            lease_duration_s,
+            conn=conn,
+        )
         if status != "UPDATE 1":
-            raise StaleRevisionError(f"batch {batch_id}: revision {expected_revision} not current")
+            raise LeaseLostError(f"batch {batch_id}: lease {lease_owner}/{lease_epoch} lost")
 
     async def find_by_idempotency(
         self, set_id: str, key: str, *, conn=None
@@ -712,19 +732,42 @@ class BatchRepository(_Repo):
         data["job_ids"] = _json_rows(data["job_ids"], [])
         data["created_at"] = _iso(data["created_at"])
         data["updated_at"] = _iso(data["updated_at"])
+        data["lease_expires_at"] = _iso(data["lease_expires_at"])
         # `revision` and `state` are batch-row columns, not GenerationBatch fields.
         data.pop("revision", None)
         data.pop("state", None)
         return GenerationBatch.model_validate(data)
 
-    async def list_recoverable(self, *, conn=None) -> list[tuple[GenerationBatch, BatchState]]:
-        """Durable batches that need resuming after a restart (HIGH-B / R6.4).
+    async def acquire_lease(
+        self, batch_id: str, owner: str, lease_duration_s: int, *, conn=None
+    ) -> int:
+        """Take (or refresh) the batch lease; returns the new fencing epoch."""
+        row = await self._fetchone(
+            "UPDATE script_generation_batches "
+            "SET lease_owner=$2, lease_expires_at=NOW() + make_interval(secs => $3), "
+            "lease_epoch=lease_epoch+1 "
+            "WHERE id=$1 AND (lease_owner IS NULL OR lease_owner=$2 OR lease_expires_at < NOW()) "
+            "RETURNING lease_epoch",
+            batch_id,
+            owner,
+            lease_duration_s,
+            conn=conn,
+        )
+        if row is None:
+            raise LeaseLostError(f"batch {batch_id}: lease held by another owner")
+        return int(row["lease_epoch"])
 
-        QUEUED/RUNNING batches with NO per-product job rows. The minimal
-        wrapper batch ``_create_job`` inserts for a single-product generation
-        job is excluded — those are resumed through their job rows
-        (``recover_pending`` drives the job, never the wrapper batch).
-        """
+    async def release_lease(self, batch_id: str, owner: str, *, conn=None) -> None:
+        await self._execute(
+            "UPDATE script_generation_batches SET lease_owner=NULL, lease_expires_at=NULL "
+            "WHERE id=$1 AND lease_owner=$2",
+            batch_id,
+            owner,
+            conn=conn,
+        )
+
+    async def list_recoverable(self, *, conn=None) -> list[tuple[GenerationBatch, BatchState]]:
+        """Durable batches that need resuming after a restart (HIGH-B / R6.4)."""
         rows = await self._fetchall(
             f"SELECT {_BATCH_COLS} FROM script_generation_batches b "
             "WHERE b.status IN ('queued', 'running') "
@@ -732,21 +775,45 @@ class BatchRepository(_Repo):
             "ORDER BY b.created_at",
             conn=conn,
         )
-        result: list[tuple[GenerationBatch, BatchState]] = []
-        for row in rows:
-            data = dict(row)
-            data["product_ids"] = _json_rows(data["product_ids"], [])
-            data["job_ids"] = _json_rows(data["job_ids"], [])
-            data["created_at"] = _iso(data["created_at"])
-            data["updated_at"] = _iso(data["updated_at"])
-            row_revision = data.pop("revision", None)
-            state_json = _json_rows(data.pop("state", None), {})
-            batch = GenerationBatch.model_validate(data)
-            state = BatchState.model_validate(state_json)
-            if row_revision is not None:
-                state.revision = row_revision
-            result.append((batch, state))
-        return result
+        return [self._from_row(row) for row in rows]
+
+    async def claim_recoverable(
+        self, owner: str, lease_duration_s: int, *, conn=None
+    ) -> list[tuple[GenerationBatch, BatchState]]:
+        """Atomically claim recoverable wrapper batches with a fencing epoch."""
+        rows = await self._fetchall(
+            f"UPDATE script_generation_batches b "
+            "SET lease_owner=$1, lease_expires_at=NOW() + make_interval(secs => $2), "
+            "lease_epoch=b.lease_epoch + 1 "
+            "WHERE b.id IN ("
+            "SELECT b2.id FROM script_generation_batches b2 "
+            "WHERE b2.status IN ('queued', 'running') "
+            "AND NOT EXISTS (SELECT 1 FROM script_generation_jobs j WHERE j.batch_id = b2.id) "
+            "AND (b2.lease_owner IS NULL OR b2.lease_expires_at < NOW()) "
+            "ORDER BY b2.created_at LIMIT 100) "
+            "AND (b.lease_owner IS NULL OR b.lease_expires_at < NOW()) "
+            f"RETURNING {_BATCH_COLS}",
+            owner,
+            lease_duration_s,
+            conn=conn,
+        )
+        return [self._from_row(row) for row in rows]
+
+    @staticmethod
+    def _from_row(row) -> tuple[GenerationBatch, BatchState]:
+        data = dict(row)
+        data["product_ids"] = _json_rows(data["product_ids"], [])
+        data["job_ids"] = _json_rows(data["job_ids"], [])
+        data["created_at"] = _iso(data["created_at"])
+        data["updated_at"] = _iso(data["updated_at"])
+        data["lease_expires_at"] = _iso(data["lease_expires_at"])
+        row_revision = data.pop("revision", None)
+        state_json = _json_rows(data.pop("state", None), {})
+        batch = GenerationBatch.model_validate(data)
+        state = BatchState.model_validate(state_json)
+        if row_revision is not None:
+            state.revision = row_revision
+        return batch, state
 
 
 class JobRepository(_Repo):
@@ -802,11 +869,7 @@ class JobRepository(_Repo):
         return self._from_row(row)
 
     async def list_recoverable(self, *, conn=None) -> list[GenerationJob]:
-        """Durable jobs that need resuming after a restart (HIGH-B / R6.3).
-
-        RUNNING (or QUEUED) jobs are the ones a crash can leave mid-flight; a
-        terminal job must never be re-run.
-        """
+        """Durable jobs that need resuming after a restart (HIGH-B / R6.3)."""
         rows = await self._fetchall(
             f"SELECT {_JOB_COLS} FROM script_generation_jobs "
             "WHERE status IN ('running', 'queued') ORDER BY created_at",
@@ -814,19 +877,99 @@ class JobRepository(_Repo):
         )
         return [self._from_row(r) for r in rows]
 
-    async def update(self, job: GenerationJob, *, expected_revision: int = 0, conn=None) -> None:
-        # The job row is owned by a single background worker; no optimistic
-        # guard is needed (the signature keeps call-site parity).
-        await self._execute(
+    async def claim_recoverable(
+        self, owner: str, lease_duration_s: int, *, conn=None
+    ) -> list[GenerationJob]:
+        """Atomically claim recoverable jobs with a fencing epoch."""
+        rows = await self._fetchall(
+            f"UPDATE script_generation_jobs j "
+            "SET lease_owner=$1, lease_expires_at=NOW() + make_interval(secs => $2), "
+            "lease_epoch=j.lease_epoch + 1 "
+            "WHERE j.id IN ("
+            "SELECT j2.id FROM script_generation_jobs j2 "
+            "WHERE j2.status IN ('running', 'queued') "
+            "AND (j2.lease_owner IS NULL OR j2.lease_expires_at < NOW()) "
+            "ORDER BY j2.created_at LIMIT 100) "
+            "AND (j.lease_owner IS NULL OR j.lease_expires_at < NOW()) "
+            f"RETURNING {_JOB_COLS}",
+            owner,
+            lease_duration_s,
+            conn=conn,
+        )
+        return [self._from_row(row) for row in rows]
+
+    async def update(
+        self,
+        job: GenerationJob,
+        *,
+        expected_revision: int = 0,
+        lease_owner: str | None = None,
+        lease_epoch: int | None = None,
+        lease_duration_s: int = 300,
+        conn=None,
+    ) -> None:
+        """Persist progress only while holding the current fencing lease."""
+        if lease_owner is None or lease_epoch is None:
+            await self._execute(
+                "UPDATE script_generation_jobs SET status=$2, plan_id=$3, "
+                "plan_segment_count=$4, current_segment_index=$5, attempt_count=$6, "
+                "updated_at=NOW() WHERE id=$1",
+                job.id,
+                job.status.value,
+                job.plan_id,
+                job.plan_segment_count,
+                job.current_segment_index,
+                job.attempt_count,
+                conn=conn,
+            )
+            return
+        status = await self._execute(
             "UPDATE script_generation_jobs SET status=$2, plan_id=$3, "
             "plan_segment_count=$4, current_segment_index=$5, attempt_count=$6, "
-            "updated_at=NOW() WHERE id=$1",
+            "lease_expires_at=NOW() + make_interval(secs => $7), updated_at=NOW() "
+            "WHERE id=$1 AND lease_owner=$8 AND lease_epoch=$9 RETURNING id",
             job.id,
             job.status.value,
             job.plan_id,
             job.plan_segment_count,
             job.current_segment_index,
             job.attempt_count,
+            lease_duration_s,
+            lease_owner,
+            lease_epoch,
+            conn=conn,
+        )
+        if status != "UPDATE 1":
+            raise LeaseLostError(f"job {job.id}: lease {lease_owner}/{lease_epoch} lost")
+
+    async def acquire_lease(
+        self, job_id: str, owner: str, lease_duration_s: int, *, conn=None
+    ) -> int:
+        """Take (or refresh) the job lease; returns the new fencing epoch.
+
+        Raises ``LeaseLostError`` when another owner holds a VALID lease.
+        """
+        row = await self._fetchone(
+            "UPDATE script_generation_jobs "
+            "SET lease_owner=$2, lease_expires_at=NOW() + make_interval(secs => $3), "
+            "lease_epoch=lease_epoch+1 "
+            "WHERE id=$1 AND (lease_owner IS NULL OR lease_owner=$2 OR lease_expires_at < NOW()) "
+            "RETURNING lease_epoch",
+            job_id,
+            owner,
+            lease_duration_s,
+            conn=conn,
+        )
+        if row is None:
+            raise LeaseLostError(f"job {job_id}: lease held by another owner")
+        return int(row["lease_epoch"])
+
+    async def release_lease(self, job_id: str, owner: str, *, conn=None) -> None:
+        await self._execute(
+            "UPDATE script_generation_jobs SET lease_owner=NULL, lease_expires_at=NULL "
+            "WHERE id=$1 AND lease_owner=$2",
+            job_id,
+            owner,
             conn=conn,
         )
 
@@ -838,6 +981,7 @@ class JobRepository(_Repo):
         data["fingerprint"] = _json_rows(data["fingerprint"], None)
         data["created_at"] = _iso(data["created_at"])
         data["updated_at"] = _iso(data["updated_at"])
+        data["lease_expires_at"] = _iso(data["lease_expires_at"])
         return GenerationJob.model_validate(data)
 
 

@@ -154,6 +154,12 @@ class _FakeGateRunRepo:
     async def insert(self, run: GateRun, *, conn=None) -> None:
         self.rows[run.id] = run
 
+    async def list_by_item(self, item_id: str, *, conn=None) -> list[GateRun]:
+        return [r for r in self.rows.values() if r.script_item_id == item_id]
+
+    async def latest_for_version(self, version_id: str, *, conn=None) -> GateRun | None:
+        return None
+
 
 class _FakeApprovalRepo:
     def __init__(self) -> None:
@@ -232,6 +238,17 @@ def _make_service(gate: _FakeGate) -> ScriptAuthoringServiceImpl:
     return ScriptAuthoringServiceImpl(_FakeRepos(), config=ScriptAuthoringConfig(), gate=gate)
 
 
+def _empty_item_wire(state: str = "EMPTY") -> dict:
+    """Enriched per-item read wire for an item with no version yet (HIGH-2)."""
+    return {
+        "state": state,
+        "current_version_id": None,
+        "approved_version_id": None,
+        "current_version": None,
+        "gate": None,
+    }
+
+
 # ── ScriptSet aggregate (task 11.2) ─────────────────────────────────────────
 
 
@@ -252,7 +269,7 @@ async def test_create_script_set_wire_shape_and_shop_id() -> None:
     assert result["transition_policy"] == "ORDER_AGNOSTIC"
     assert result["product_ids"] == ["P001", "P002"]
     assert result["revision"] == 0
-    assert result["items"] == {"P001": {"state": "EMPTY"}, "P002": {"state": "EMPTY"}}
+    assert result["items"] == {"P001": _empty_item_wire(), "P002": _empty_item_wire()}
     assert "brief" not in result
     stored = repos.script_sets.rows[result["id"]]
     assert stored.shop_id == "Shop A"
@@ -265,7 +282,7 @@ async def test_create_script_set_default_shop_id_when_no_brief_shop() -> None:
         name="Set", transition_policy="ORDER_AWARE", product_ids=["P1"], brief=None
     )
     assert result["transition_policy"] == "ORDER_AWARE"
-    assert result["items"] == {"P1": {"state": "EMPTY"}}
+    assert result["items"] == {"P1": _empty_item_wire()}
 
 
 @pytest.mark.asyncio
@@ -278,7 +295,7 @@ async def test_get_script_set_wire_shape_no_brief_and_missing() -> None:
     assert result is not None
     assert result["transition_policy"] == "ORDER_AWARE"
     assert "brief" not in result
-    assert result["items"] == {"P1": {"state": "EMPTY"}}
+    assert result["items"] == {"P1": _empty_item_wire()}
     assert await service.get_script_set(set_id="nope") is None
 
 
@@ -300,7 +317,7 @@ async def test_update_script_set_adds_items_and_bumps_revision() -> None:
     assert result["name"] == "B"
     assert result["transition_policy"] == "ORDER_AWARE"
     assert result["revision"] == 1
-    assert result["items"] == {"P1": {"state": "EMPTY"}, "P2": {"state": "EMPTY"}}
+    assert result["items"] == {"P1": _empty_item_wire(), "P2": _empty_item_wire()}
 
 
 @pytest.mark.asyncio
@@ -739,7 +756,17 @@ class _StaleBatchRepo:
         state.revision = 1
         return object(), state
 
-    async def update_state(self, batch_id: str, *, state, expected_revision: int, conn=None):
+    async def update_state(
+        self,
+        batch_id: str,
+        *,
+        state,
+        expected_revision: int,
+        lease_owner: str | None = None,
+        lease_epoch: int | None = None,
+        lease_duration_s: int = 300,
+        conn=None,
+    ):
         raise StaleRevisionError(f"batch {batch_id}: revision {expected_revision} not current")
 
 
