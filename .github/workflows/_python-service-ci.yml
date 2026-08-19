@@ -86,12 +86,16 @@ jobs:
       # backend_service's embedded-PG harness prefers a system postgres install
       # on Linux (tests/integration/pg_harness.py). ubuntu-latest ships none, so
       # install it and export its bin dir to PATH for the which/glob lookup.
+      # Bounded + non-fatal: apt can hang indefinitely on a slow mirror (observed
+      # 6h runner timeout on this exact step). With `-o Acquire::Retries/timeouts`
+      # and `|| true`, a failed apt falls through to the harness's embedded-PG
+      # fallback instead of freezing the job or failing CI on a mirror issue.
       - name: Install PostgreSQL for integration tests
         if: ${{ inputs.integration && matrix.service == 'backend_service' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql postgresql-client
-          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql | sort -V | tail -1)/bin" >> "$GITHUB_PATH"
+          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 || true
+          sudo apt-get install -y --no-install-recommends postgresql postgresql-client || true
+          echo "/usr/lib/postgresql/$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)/bin" >> "$GITHUB_PATH" || true
       - name: Integration tests
         if: ${{ inputs.integration }}
         run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short
