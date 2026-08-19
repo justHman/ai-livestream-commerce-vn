@@ -70,7 +70,7 @@ _BATCH_COLS = (
     "id, script_set_id, status, product_ids::text AS product_ids, "
     "job_ids::text AS job_ids, estimated_semantic_calls, idempotency_key, "
     "revision, state::text AS state, lease_owner, lease_expires_at, lease_epoch, "
-    "created_at, updated_at"
+    "cancel_requested, created_at, updated_at"
 )
 _JOB_COLS = (
     "id, batch_id, script_item_id, product_id, intent, status, plan_id, "
@@ -766,6 +766,48 @@ class BatchRepository(_Repo):
             conn=conn,
         )
 
+    async def assert_and_renew_lease(
+        self,
+        batch_id: str,
+        owner: str,
+        epoch: int,
+        lease_duration_s: int,
+        *,
+        conn=None,
+    ) -> None:
+        """Renew a fenced batch lease; raise ``LeaseLostError`` when lost.
+
+        A single-statement fence usable INSIDE an existing transaction (pass
+        ``conn``): the artifact-write transaction begins with this assertion so
+        a stale owner whose lease was taken over commits nothing.
+        """
+        row = await self._fetchone(
+            "UPDATE script_generation_batches "
+            "SET lease_expires_at = NOW() + make_interval(secs => $3) "
+            "WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $4 RETURNING id",
+            batch_id,
+            owner,
+            lease_duration_s,
+            epoch,
+            conn=conn,
+        )
+        if row is None:
+            raise LeaseLostError(f"batch {batch_id}: lease {owner}/{epoch} lost")
+
+    async def request_cancel(self, batch_id: str, *, conn=None) -> None:
+        """Idempotently persist a durable cross-replica cancel request (R8.4).
+
+        ANY replica may set the flag; only the current execution owner consumes
+        it (its loop / recovery observe ``cancel_requested`` and terminalize
+        under the owner+epoch fence). The batch row is the single source of
+        truth, so a non-owner never reconstructs a runner to cancel.
+        """
+        await self._execute(
+            "UPDATE script_generation_batches SET cancel_requested = TRUE WHERE id = $1",
+            batch_id,
+            conn=conn,
+        )
+
     async def list_recoverable(self, *, conn=None) -> list[tuple[GenerationBatch, BatchState]]:
         """Durable batches that need resuming after a restart (HIGH-B / R6.4)."""
         rows = await self._fetchall(
@@ -972,6 +1014,34 @@ class JobRepository(_Repo):
             owner,
             conn=conn,
         )
+
+    async def assert_and_renew_lease(
+        self,
+        job_id: str,
+        owner: str,
+        epoch: int,
+        lease_duration_s: int,
+        *,
+        conn=None,
+    ) -> None:
+        """Renew a fenced job lease; raise ``LeaseLostError`` when lost.
+
+        A single-statement fence usable INSIDE an existing transaction (pass
+        ``conn``): the artifact-write transaction begins with this assertion so
+        a stale owner whose lease was taken over commits nothing.
+        """
+        row = await self._fetchone(
+            "UPDATE script_generation_jobs "
+            "SET lease_expires_at = NOW() + make_interval(secs => $3) "
+            "WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $4 RETURNING id",
+            job_id,
+            owner,
+            lease_duration_s,
+            epoch,
+            conn=conn,
+        )
+        if row is None:
+            raise LeaseLostError(f"job {job_id}: lease {owner}/{epoch} lost")
 
     @staticmethod
     def _from_row(row) -> GenerationJob | None:

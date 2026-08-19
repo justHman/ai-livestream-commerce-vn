@@ -269,6 +269,7 @@ CREATE TABLE IF NOT EXISTS script_generation_batches (
     lease_owner           TEXT,
     lease_expires_at      TIMESTAMPTZ,
     lease_epoch           BIGINT NOT NULL DEFAULT 0,
+    cancel_requested      BOOLEAN NOT NULL DEFAULT FALSE,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -276,7 +277,8 @@ CREATE TABLE IF NOT EXISTS script_generation_batches (
 ALTER TABLE script_generation_batches
     ADD COLUMN IF NOT EXISTS lease_owner TEXT,
     ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_script_batches_set_id ON script_generation_batches (script_set_id);
 CREATE INDEX IF NOT EXISTS idx_script_batches_idempotency_key ON script_generation_batches (idempotency_key);

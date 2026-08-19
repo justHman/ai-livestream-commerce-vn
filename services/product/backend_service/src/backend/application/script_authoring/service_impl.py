@@ -498,8 +498,16 @@ class ScriptAuthoringServiceImpl:
         *,
         item_revision: int,
         existing_version_ids: set[str],
+        job: GenerationJob | None = None,
     ) -> None:
-        """Write workflow-persisted items + new version / gate run in one tx."""
+        """Write workflow-persisted items + new version / gate run in one tx.
+
+        Fencing (R8.2): when called from an owned execution path (``job``), the
+        transaction begins with ``assert_and_renew_lease`` so the artifact
+        writes and the lease assertion share ONE transaction — a stale owner
+        whose lease was taken over observes ``LeaseLostError`` and commits
+        nothing.
+        """
         # The FSM persists the same item object after each transition; dedupe
         # by id so the optimistic-lock UPDATE runs exactly once.
         persisted: dict[str, ScriptItem] = {}
@@ -507,6 +515,14 @@ class ScriptAuthoringServiceImpl:
             persisted[item.id] = item
         try:
             async with self._repos.transaction() as conn:
+                if job is not None and job.lease_owner is not None:
+                    await self._repos.jobs.assert_and_renew_lease(
+                        job.id,
+                        job.lease_owner,
+                        job.lease_epoch,
+                        self._config.recovery_lease_seconds,
+                        conn=conn,
+                    )
                 # Insert immutable version + gate run rows BEFORE the item
                 # update: script_items.current_version_id has a FK to
                 # script_versions.id, so the version must exist first.
@@ -588,6 +604,71 @@ class ScriptAuthoringServiceImpl:
         """Return ``(owner, epoch)`` for a batch this process holds the lease on."""
         epoch = self._leased_batches.get(batch_id)
         return (self._instance_id, epoch) if epoch is not None else None
+
+    async def _with_lease_heartbeat(
+        self,
+        fn: Callable[[], Any],
+        *,
+        job: GenerationJob | None = None,
+        batch_id: str | None = None,
+        batch_lease: tuple[str, int] | None = None,
+    ) -> Any:
+        """Run a sync provider call off the loop under a bounded lease heartbeat.
+
+        R8.3: a HEALTHY provider call can outlive the lease window
+        (``recovery_lease_seconds``). While ``await asyncio.to_thread(fn)`` is
+        in flight this renews the job/batch fence every
+        ``lease_heartbeat_interval()`` seconds via ``assert_and_renew_lease``
+        (owner+epoch matched) so a slow-but-alive owner is not falsely taken
+        over by a recovering replica. If the fence is lost mid-call the result
+        is discarded and ``LeaseLostError`` is raised — the caller then commits
+        NO artifacts and lets the new lease owner continue.
+
+        Bounded + self-cleaning: the heartbeat task is cancelled and awaited
+        before this returns (even on cancellation or provider failure), so no
+        dangling task ever survives a completed ``to_thread``.
+        """
+        interval = self._config.lease_heartbeat_interval()
+        lease_s = self._config.recovery_lease_seconds
+        lost = asyncio.Event()
+
+        async def _beat() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(interval)
+                    try:
+                        if job is not None and job.lease_owner is not None:
+                            await self._repos.jobs.assert_and_renew_lease(
+                                job.id, job.lease_owner, job.lease_epoch, lease_s
+                            )
+                        elif batch_id is not None and batch_lease is not None:
+                            owner, epoch = batch_lease
+                            await self._repos.batches.assert_and_renew_lease(
+                                batch_id, owner, epoch, lease_s
+                            )
+                    except LeaseLostError:
+                        lost.set()
+                        return
+            except asyncio.CancelledError:
+                return
+
+        task = asyncio.create_task(
+            _beat(), name=f"sa-heartbeat:{job.id if job is not None else batch_id}"
+        )
+        try:
+            result = await asyncio.to_thread(fn)
+        except BaseException:
+            # Cancellation or provider failure: cancel the heartbeat, then
+            # re-raise the ORIGINAL exception (traceback preserved).
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        else:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if lost.is_set():
+                raise LeaseLostError("lease lost while provider work was in flight")
+            return result
 
     # ── B6 generation helpers ──────────────────────────────────────────
 
@@ -838,14 +919,25 @@ class ScriptAuthoringServiceImpl:
         bridge: _SyncPersistBridge,
         revisions: dict[str, int],
         existing_versions: set[str],
+        *,
+        job: GenerationJob | None = None,
+        batch_id: str | None = None,
+        batch_lease: tuple[str, int] | None = None,
     ) -> None:
         """Persist one drain of driver artifacts in a single transaction.
+
+        Fencing (R8.2): when the drain belongs to an owned execution path
+        (``job`` or ``batch_id``+``batch_lease``), the transaction begins with
+        ``assert_and_renew_lease`` so the artifact writes and the lease
+        assertion share ONE transaction — a stale owner whose lease was taken
+        over observes ``LeaseLostError`` and commits ZERO artifacts.
 
         Gotcha (a): a ``ProductScriptPlan``'s embedded placeholder segments are
         NOT inserted — only the plan row is written (deep copy with
         ``segments=[]``); the real content segments are inserted separately by
         the drain, avoiding the ``(plan_id, segment_index, version)`` unique
-        violation. Order: plan -> segments -> gate runs -> versions -> item.
+        violation. Order: lease fence -> plan -> segments -> gate runs ->
+        versions -> item.
         """
         artifacts = bridge.drain()
         if not artifacts:
@@ -870,6 +962,23 @@ class ScriptAuthoringServiceImpl:
             return
         try:
             async with self._repos.transaction() as conn:
+                if job is not None and job.lease_owner is not None:
+                    await self._repos.jobs.assert_and_renew_lease(
+                        job.id,
+                        job.lease_owner,
+                        job.lease_epoch,
+                        self._config.recovery_lease_seconds,
+                        conn=conn,
+                    )
+                elif batch_id is not None and batch_lease is not None:
+                    owner, epoch = batch_lease
+                    await self._repos.batches.assert_and_renew_lease(
+                        batch_id,
+                        owner,
+                        epoch,
+                        self._config.recovery_lease_seconds,
+                        conn=conn,
+                    )
                 for plan in plans:
                     await self._repos.plans.insert(
                         plan.model_copy(update={"segments": []}), conn=conn
@@ -1610,30 +1719,43 @@ class ScriptAuthoringServiceImpl:
             raise ScriptAuthoringError(
                 "illegal_transition", f"cannot cancel batch in state {state.status}"
             )
-        orch = self._active_orchestrators.get(batch_id)
-        persist_queue = self._batch_persist_queues.get(batch_id)
-        bridge = self._batch_artifact_bridges.get(batch_id)
-        if orch is None:
-            orch, persist_queue, bridge = await self._recover_orchestrator(batch_id, set_id)
-        if orch is not None:
-            try:
-                orch.cancel()
-            except Exception:
-                pass
-        # The cancelled snapshot (and any queued step snapshots) are persisted
-        # by _drain_batch_persists with a live revision guard.
-        if persist_queue is not None:
-            try:
-                await self._drain_batch_persists(batch_id, persist_queue)
-            except Exception:
-                pass
-        # Drain any enqueued artifact writes so the item rows reflect cancels.
-        if bridge is not None:
-            try:
-                revisions = await self._current_item_revisions(batch_id)
-                await self._drain_artifacts(bridge, revisions, set())
-            except Exception:
-                pass
+        # R8.4: the durable cancel request is the single source of truth and is
+        # persisted by ANY replica (idempotent). A non-owner NEVER reconstructs
+        # a runner, claims the lease, or writes progress/artifacts.
+        await self._repos.batches.request_cancel(batch_id)
+        is_owner = batch_id in self._leased_batches or batch_id in self._active_orchestrators
+        if is_owner:
+            # Low-latency in-memory signal (R8.4 allowed optimization, NOT a
+            # second semantic path): the owner loop polls the durable request
+            # and persists the terminal CANCELLED under its own fence.
+            orch = self._active_orchestrators.get(batch_id)
+            if orch is not None:
+                try:
+                    orch.cancel()
+                except Exception:
+                    pass
+            # The cancelled snapshot (and any queued step snapshots) are
+            # persisted by _drain_batch_persists under the owner's fence.
+            persist_queue = self._batch_persist_queues.get(batch_id)
+            if persist_queue is not None:
+                try:
+                    await self._drain_batch_persists(batch_id, persist_queue)
+                except Exception:
+                    pass
+            # Drain any enqueued artifact writes so the item rows reflect cancels.
+            bridge = self._batch_artifact_bridges.get(batch_id)
+            if bridge is not None:
+                try:
+                    revisions = await self._current_item_revisions(batch_id)
+                    await self._drain_artifacts(
+                        bridge,
+                        revisions,
+                        set(),
+                        batch_id=batch_id,
+                        batch_lease=self._batch_lease(batch_id),
+                    )
+                except Exception:
+                    pass
         return {"batch_id": batch_id, "status": "cancelling"}
 
     async def get_batch_events_snapshot(self, *, set_id: str, batch_id: str) -> str | None:
@@ -1842,14 +1964,19 @@ class ScriptAuthoringServiceImpl:
         """Drive a generation driver to terminal with the shared drain loop."""
         try:
             # Each finite step runs the (sync) provider call off the loop
-            # (HIGH-2) so a slow LLM never stalls health/SSE/cancellation.
-            while await asyncio.to_thread(driver.step):
-                await self._drain_artifacts(bridge, revisions, existing_versions)
+            # (HIGH-2) so a slow LLM never stalls health/SSE/cancellation,
+            # and renews the job lease while the call is in flight (R8.3) so
+            # a healthy slow call is not falsely taken over.
+            while True:
+                done = await self._with_lease_heartbeat(driver.step, job=job)
+                if not done:
+                    break
+                await self._drain_artifacts(bridge, revisions, existing_versions, job=job)
                 await self._update_job(
                     job, driver.workflow, self._job_status_for(driver.workflow.item.state)
                 )
                 await asyncio.sleep(0)
-            await self._drain_artifacts(bridge, revisions, existing_versions)
+            await self._drain_artifacts(bridge, revisions, existing_versions, job=job)
             await self._update_job(
                 job, driver.workflow, self._job_status_for(driver.workflow.item.state)
             )
@@ -1862,7 +1989,7 @@ class ScriptAuthoringServiceImpl:
             # Deterministic failure: land the item FAILED and record the job.
             try:
                 self._land_failed(driver.workflow, str(exc) or type(exc).__name__, bridge)
-                await self._drain_artifacts(bridge, revisions, existing_versions)
+                await self._drain_artifacts(bridge, revisions, existing_versions, job=job)
             except Exception:
                 pass
             try:
@@ -1880,6 +2007,25 @@ class ScriptAuthoringServiceImpl:
         # acquired fence onto the drive loop so progress writes stay guarded.
         if _batch.lease_owner == self._instance_id:
             self._leased_batches[batch_id] = _batch.lease_epoch
+        # R8.4 crash-after-cancel: a durable cancel request wins over resuming
+        # semantic work. Land the terminal CANCELLED under the claimed fence
+        # WITHOUT scheduling any new provider calls.
+        if _batch.cancel_requested:
+            try:
+                terminal = _state.model_copy(deep=True)
+                terminal.status = "cancelled"
+                terminal.bump_revision()
+                await self._repos.batches.update_state(
+                    batch_id,
+                    state=terminal,
+                    expected_revision=_state.revision,
+                    lease_owner=self._instance_id,
+                    lease_epoch=_batch.lease_epoch,
+                    lease_duration_s=self._config.recovery_lease_seconds,
+                )
+            except (LeaseLostError, StaleRevisionError):
+                pass  # fence lost / concurrently terminalized — nothing to write
+            return
         try:
             (
                 orch,
@@ -2022,7 +2168,9 @@ class ScriptAuthoringServiceImpl:
                 segment_index=segment_index,
             )
             prompt = "\n\n".join(filter(None, [parts.system, parts.context, parts.user]))
-            raw = await asyncio.to_thread(llm_fn, prompt)  # HIGH-2: keep the loop free
+            # HIGH-2 keeps the loop free; the lease heartbeat (R8.3) keeps the
+            # fence alive while this slow provider call is in flight.
+            raw = await self._with_lease_heartbeat(lambda: llm_fn(prompt), job=job)
             if not raw or not raw.strip():
                 raise ValueError("regenerated segment text is empty")
             new_segment = ScriptSegment(
@@ -2071,7 +2219,7 @@ class ScriptAuthoringServiceImpl:
             bridge(run)
             bridge(version)
             bridge(item)
-            await self._drain_artifacts(bridge, revisions, existing_versions)
+            await self._drain_artifacts(bridge, revisions, existing_versions, job=job)
             job.status = (
                 GenerationJobStatus.COMPLETED if result.passed else GenerationJobStatus.FAILED
             )
@@ -2084,10 +2232,14 @@ class ScriptAuthoringServiceImpl:
                 lease_epoch=job.lease_epoch,
                 lease_duration_s=self._config.recovery_lease_seconds,
             )
+        except LeaseLostError:
+            # R8.3: another replica owns the fence now — discard the result,
+            # commit no artifacts, and do NOT mark the durable job FAILED.
+            return
         except Exception as exc:
             try:
                 self._land_failed(_RegenWorkflow(item), str(exc) or type(exc).__name__, bridge)
-                await self._drain_artifacts(bridge, revisions, existing_versions)
+                await self._drain_artifacts(bridge, revisions, existing_versions, job=job)
             except Exception:
                 pass
             try:
@@ -2111,25 +2263,35 @@ class ScriptAuthoringServiceImpl:
             current_version, llm_fn, await self._failed_rule_ids(item.id)
         )
         try:
-            # apply_ai_fix runs the (sync) repair provider call; off the loop
-            # (HIGH-2) so a slow LLM never stalls health/SSE/cancellation.
-            await asyncio.to_thread(workflow.apply_ai_fix)
-        except Exception:
-            pass  # apply_ai_fix persists the item FAILED on provider failure
-        await self._persist_workflow(
-            workflow, bridge, item_revision=item.revision, existing_version_ids={current_version.id}
-        )
-        job.status = (
-            GenerationJobStatus.COMPLETED
-            if item.state is ScriptState.DRAFT
-            else GenerationJobStatus.FAILED
-        )
-        await self._repos.jobs.update(
-            job,
-            lease_owner=job.lease_owner,
-            lease_epoch=job.lease_epoch,
-            lease_duration_s=self._config.recovery_lease_seconds,
-        )
+            try:
+                # apply_ai_fix runs the (sync) repair provider call; off the
+                # loop (HIGH-2) + lease heartbeat (R8.3) so a slow fix neither
+                # stalls the loop nor lets the fence lapse.
+                await self._with_lease_heartbeat(workflow.apply_ai_fix, job=job)
+            except LeaseLostError:
+                return  # R8.3: another replica owns the fence; no FAILED
+            except Exception:
+                pass  # apply_ai_fix persists the item FAILED on provider failure
+            await self._persist_workflow(
+                workflow,
+                bridge,
+                item_revision=item.revision,
+                existing_version_ids={current_version.id},
+                job=job,
+            )
+            job.status = (
+                GenerationJobStatus.COMPLETED
+                if item.state is ScriptState.DRAFT
+                else GenerationJobStatus.FAILED
+            )
+            await self._repos.jobs.update(
+                job,
+                lease_owner=job.lease_owner,
+                lease_epoch=job.lease_epoch,
+                lease_duration_s=self._config.recovery_lease_seconds,
+            )
+        except LeaseLostError:
+            return  # fence lost before the final persist; stop writing
 
     def _make_fix_generate(self, current_version, llm_fn, failed_rules):
         failed_ids = [rule_id for rule_id, _message in failed_rules]
@@ -2169,19 +2331,57 @@ class ScriptAuthoringServiceImpl:
     ) -> None:
         try:
             while True:
+                lease = self._batch_lease(batch_id)
                 # One scheduler round runs the (sync) provider calls off the
-                # loop (HIGH-2) so a slow LLM never stalls health/SSE/cancel;
-                # the orchestrator still bounds active products per round.
-                state = await asyncio.to_thread(orch.step)
-                await self._drain_artifacts(bridge, revisions, existing_versions)
+                # loop (HIGH-2) so a slow LLM never stalls health/SSE/cancel,
+                # and renews the batch fence while in flight (R8.3) so a
+                # healthy slow round is not falsely taken over.
+                state = await self._with_lease_heartbeat(
+                    orch.step,
+                    batch_id=batch_id,
+                    batch_lease=lease if lease else None,
+                )
+                await self._drain_artifacts(
+                    bridge,
+                    revisions,
+                    existing_versions,
+                    batch_id=batch_id,
+                    batch_lease=lease if lease else None,
+                )
                 await self._drain_batch_persists(batch_id, persist_queue)
                 if state.status in ("completed", "partial_completed", "failed", "cancelled"):
+                    break
+                # R8.4: honor a durable cross-replica cancel request before
+                # scheduling the next semantic round. Stop, terminalize the
+                # batch CANCELLED under the owner+epoch fence, and exit.
+                if await self._batch_cancel_requested(batch_id):
+                    try:
+                        orch.cancel()
+                    except Exception:
+                        pass
+                    await self._drain_artifacts(
+                        bridge,
+                        revisions,
+                        existing_versions,
+                        batch_id=batch_id,
+                        batch_lease=lease if lease else None,
+                    )
+                    await self._drain_batch_persists(batch_id, persist_queue)
                     break
                 await asyncio.sleep(0.02)
         except LeaseLostError:
             return  # another replica claimed the batch lease; stop writing
         except Exception:
             pass  # failures are already persisted into per-product BatchState rows
+
+    async def _batch_cancel_requested(self, batch_id: str) -> bool:
+        """Return True when a durable cross-replica cancel request is pending.
+
+        Reads the batch row (the source of truth), so a request persisted by
+        any replica is visible to the owner loop on its next poll.
+        """
+        result = await self._repos.batches.get(batch_id)
+        return result is not None and result[0].cancel_requested
 
     async def _current_item_revisions(self, batch_id: str) -> dict[str, int]:
         result = await self._repos.batches.get(batch_id)

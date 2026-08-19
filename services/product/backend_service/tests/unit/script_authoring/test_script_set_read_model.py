@@ -151,6 +151,11 @@ class _FakeBatchRepo:
     async def find_by_idempotency(self, *a, **kw):
         return None
 
+    async def assert_and_renew_lease(
+        self, batch_id: str, owner: str, epoch: int, lease_duration_s: int, *, conn=None
+    ) -> None:
+        return None
+
 
 class _FakeJobRepo:
     async def find_by_idempotency(self, *a, **kw):
@@ -158,6 +163,11 @@ class _FakeJobRepo:
 
     async def insert(self, job, *, conn=None):
         pass
+
+    async def assert_and_renew_lease(
+        self, job_id: str, owner: str, epoch: int, lease_duration_s: int, *, conn=None
+    ) -> None:
+        return None
 
 
 class _FakeIdem:

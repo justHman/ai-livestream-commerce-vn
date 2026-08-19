@@ -74,10 +74,27 @@ def _config(database_url: str) -> AppConfig:
 async def _connect(pg_url: str) -> PostgresAuthoringRepositories:
     store = PostgresRuntimeStore(pg_url)
     await store.connect()
-    await store.apply_schema()
+    await _apply_schema_once(store)
     repos = PostgresAuthoringRepositories(pg_url)
     await repos.connect()
     return repos
+
+
+async def _apply_schema_once(store: PostgresRuntimeStore) -> None:
+    """Apply the runtime schema only when this database does not have it yet.
+
+    Tests create several repository pools on the same database (a service and
+    its recovery replica). Re-running ``apply_schema`` while a background job
+    is actively writing artifacts takes DDL locks that can deadlock against
+    the artifact transaction (segment INSERT / item UPDATE ordering), which
+    surfaces as flaky ``DeadlockDetectedError`` in the cross-process tests.
+    The schema is idempotent and each test database is fresh, so applying it
+    once per database is sufficient.
+    """
+    async with store._pool.acquire() as conn:  # noqa: SLF001 - integration harness
+        applied = await conn.fetchval("SELECT to_regclass('script_sets') IS NOT NULL")
+    if not applied:
+        await store.apply_schema()
 
 
 async def _new_set(service, product_ids):

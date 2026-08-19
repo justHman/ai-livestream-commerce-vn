@@ -298,6 +298,17 @@ class ScriptAuthoringConfig:
     # replica's ``recover_pending`` may re-claim it.
     recovery_lease_seconds: int = 300
 
+    def lease_heartbeat_interval(self) -> float:
+        """Bounded heartbeat cadence for owned provider calls (R8.3).
+
+        A HEALTHY provider call can outlive the lease window; while it runs the
+        owner renews the fence every ``lease/3`` seconds, bounded below at
+        0.25 s so a delayed heartbeat never immediately loses ownership. This
+        keeps slow-but-alive work from being falsely taken over WITHOUT making
+        the default lease arbitrarily huge.
+        """
+        return max(self.recovery_lease_seconds / 3, 0.25)
+
     @classmethod
     def from_env(cls) -> "ScriptAuthoringConfig":
         return cls(
