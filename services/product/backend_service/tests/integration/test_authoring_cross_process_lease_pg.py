@@ -52,7 +52,7 @@ async def _expire_job_lease(repos, job_id: str) -> None:
 @pytest.mark.asyncio
 async def test_two_processes_concurrent_recovery_yields_one_claimant(pg_url: str) -> None:
     """Concurrent startup recovery atomically assigns one job to one process."""
-    llm_a = _InterruptibleLlm(segment_by_index={0: _good_pair_llm().segment_by_index[0]}, delay=0.2)
+    llm_a = _InterruptibleLlm(segment_by_index={0: _good_pair_llm().segment_by_index[0]}, delay=1.5)
     service_a = ScriptAuthoringServiceImpl(
         await _connect(pg_url),
         config=ScriptAuthoringConfig(),
@@ -128,7 +128,7 @@ async def test_rolling_deploy_new_replica_does_not_steal_valid_lease(pg_url: str
             0: _good_pair_llm().segment_by_index[0],
             1: _good_pair_llm().segment_by_index[1],
         },
-        delay=1.0,
+        delay=1.5,
     )
     service_a = ScriptAuthoringServiceImpl(
         await _connect(pg_url),
@@ -184,7 +184,7 @@ async def test_lease_expiry_allows_recovery_after_crash_without_clean_release(pg
             0: _good_pair_llm().segment_by_index[0],
             1: _good_pair_llm().segment_by_index[1],
         },
-        delay=1.0,
+        delay=1.5,
     )
     service_a = ScriptAuthoringServiceImpl(
         await _connect(pg_url),

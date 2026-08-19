@@ -44,7 +44,7 @@ class _InterruptibleLlm(FakeLlm):
     to cancel it after a deterministic durable milestone is persisted.
     """
 
-    def __init__(self, *, segment_by_index=None, default_segment=None, delay: float = 0.3):
+    def __init__(self, *, segment_by_index=None, default_segment=None, delay: float = 1.5):
         super().__init__(
             segment_by_index=segment_by_index, default_segment=default_segment, delay=0.0
         )
@@ -303,7 +303,7 @@ async def test_duplicate_recovery_produces_one_runner(pg_url: str) -> None:
     try:
         llm2 = _InterruptibleLlm(
             segment_by_index={0: gate_compliant_text(0, 280), 1: gate_compliant_text(280, 280)},
-            delay=0.2,
+            delay=1.5,
         )
         service2 = ScriptAuthoringServiceImpl(
             repos2, config=ScriptAuthoringConfig(), engine_manager=FakeEngineManager(llm2)
