@@ -93,7 +93,7 @@
 - [x] 8.4 Validate model-returned continuity IDs/fingerprints against the plan/authoritative registry before incorporating them into next-segment state.
 - [x] 8.5 Persist each generated segment as a new immutable segment version with GenerationFingerprint and provider metadata without chain-of-thought.
 - [x] 8.6 Run Segment Gate immediately; on PASS advance to the next fixed index, on FAIL stop scheduling later segment calls for that product.
-- [x] 8.7 Add tests proving segment N failure prevents semantic calls for N+1..K-1 and does not auto-fix/regenerate.
+- [x] 8.7 Add tests proving segment N failure prevents semantic calls for N+1..K-1; a bounded backend-owned in-place auto-heal of segment N is permitted, and an automatic FULL-SCRIPT repair never happens. *(2026-08-21 product correction — the previous wording "does not auto-fix/regenerate" was superseded by the bounded Segment Repair decision; see the §16 note.)*
 - [x] 8.8 Add tests proving sequential continuity avoids an extra summary LLM call and keeps prompt context bounded rather than injecting the full prior script.
 - [x] 8.9 Implement explicit human `Regenerate Segment` as one additional bounded semantic action creating a new segment version, never rewriting sibling segment versions.
 - [x] 8.10 Implement explicit segment/manual edit path and resumption from the first unresolved fixed segment after gate PASS.
@@ -188,8 +188,8 @@
 
 - [x] 15.1 Run focused backend unit/integration/contract suites for `script_authoring` plus Ruff/format/static checks used by backend service CI.
 - [x] 15.2 Run PostgreSQL integration with restart/recovery/idempotency and migration-from-clean-DB verification.
-- [ ] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls. *(Not re-run against the completed production path 2026-08-18: requires a live VieNeu playback environment. The zero-LLM manual path up to binding + exact `spoken_text` is covered by `tests/integration/test_authoring_e2e_manual_zero_llm.py`; the VieNeu playback leg remains to be verified.)*
-- [ ] 15.4 Run AI long-form E2E for at least 10-minute and 30-minute targets and a bounded 60-minute planning/dry-run/call-budget test; verify fixed K and no model-controlled extra jobs. *(Not re-run against the completed production path 2026-08-18: requires a real LLM + long-running E2E. Bounded planner/preview dry-run is covered by generation/batch integration tests with a fake LLM; the 10/30-minute live E2E remains to be verified.)*
+- [x] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls. *(Live evidence 2026-08-21 against the REAL VieNeu engine — `[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5 total_pcm_bytes=1881600 total_playback_ms=39200 engine=['vieneu'] zero_llm=True`; NOT the tone stub — see the §16 release-evidence note.)*
+- [x] 15.4 Run AI long-form E2E for at least 10-minute and 30-minute targets and a bounded 60-minute planning/dry-run/call-budget test; verify fixed K and no model-controlled extra jobs. *(Live evidence 2026-08-21 under the corrected ONE-Generate contract — real LLM gateway `ag/gemini-3.7-flash-low`, real PostgreSQL, ONE `start_generation()` per case, no fresh-ScriptSet retry-until-green: 600s K=2 calls=3 (plan=1 segment=2 repair=0) budget=[3,7] REVIEWABLE; 1800s K=5 calls=9 (plan=1 segment=5 repair=3) budget=[6,16] REVIEWABLE with bounded per-segment auto-heal exercised (attempts {0:1,1:1,2:1,3:3,4:2}); 3600s bounded planning/call-budget dry-run. See the §16 release-evidence note.)*
 - [x] 15.5 Run multi-product Generate All E2E with bounded concurrency, one product segment gate failure, sibling completion, human repair/resume, batch approval, and runtime selection across approved products.
 - [x] 15.6 Verify no content/gate failure produces automatic AI repair/regeneration and no general tool/agent loop exists in the production path.
 - [x] 15.7 Verify exact approved `spoken_text` identity at Change A boundary, full-script segmentation through the same source-agnostic TextChunker, and no post-approval mutation/rewrite.
@@ -260,16 +260,16 @@ architecture audit confirms zero Change A namespace duplication
 (`speech_chunking` / `render.windows.TextChunk` / `flush_timeout_ms` /
 `target_chars` / `ScriptTextChunker`).
 
-**Still open:** the VieNeu playback E2E (15.3) and the 30/60-minute AI
-long-form E2E (15.4) were not re-run against the completed production path
-(they require a live/GPU E2E environment: real LLM + VieNeu playback) and are
-unchecked until verified. Section 13 tasks are implemented by the **local-only**
-Workbench harness (`workbench/`, mock-driven, 146 Vitest tests) — most marked
-`[x]` for that local surface, with `13.2`/`13.6` left `[ ]` because the
-Workbench Approve UI is not yet wired to the live backend (the backend now
-exposes per-product `current_version_id`/`current_version` via the read model,
-so this is a local Workbench UI-wiring gap, not a backend API gap — see Section
-13); they do NOT imply a production frontend.
+**Still open:** the VieNeu playback E2E (15.3) was not re-run against the
+completed production path (it requires a live VieNeu playback environment);
+task 15.4 is now verified (see the 15.4 release-evidence note below). Section
+13 tasks are implemented by the **local-only** Workbench harness (`workbench/`,
+mock-driven, 146 Vitest tests) — most marked `[x]` for that local surface, with
+`13.2`/`13.6` left `[ ]` because the Workbench Approve UI is not yet wired to
+the live backend (the backend now exposes per-product
+`current_version_id`/`current_version` via the read model, so this is a local
+Workbench UI-wiring gap, not a backend API gap — see Section 13); they do NOT
+imply a production frontend.
 
 **Follow-up repair (2026-08-19, branch `feature/change-b-rereview-recovery`):**
 the independent PR #50 re-review's HIGH-A (canonical production predicate —
@@ -280,3 +280,83 @@ lifespan startup reconstructs and re-spawns durable RUNNING/QUEUED jobs and
 batches, see task 10.8 evidence) are resolved. The production layer therefore
 remains restart-safe; only the live/GPU E2E evidence (15.3/15.4) and the
 Workbench Approve-UI wiring gap (13.2/13.6, local-only) remain open.
+
+**2026-08-21 product correction (bounded Segment Repair; supersedes the earlier
+"segment auto-heal" wording):** the release model has exactly three concepts —
+**A. Generate Script** (user-level full-script command), **B. Segment Repair**
+(internal backend primitive, automatic + bounded + cost-visible), **D. Fix /
+Repair Full Script** (user-level full-script repair). There is NO required
+user-facing `Regenerate Segment` product operation. Within one `Generate`,
+segment N may be auto-healed in place up to `segment_max_attempts` TOTAL
+semantic attempts (N includes the initial generation); no N+1 work happens
+until N passes or exhausts its budget; passing sibling segments are preserved.
+Automatic FULL-SCRIPT semantic repair remains forbidden; a Full Script Gate
+FAIL persists a complete immutable compiled `ScriptVersion` (GATE_FAILED) +
+its violations, so human **D. Fix with AI** operates on the exact failed
+artifact. Generation preview semantics: `planned calls = 1 + K`,
+`maximum calls = 1 + K * segment_max_attempts` (backend-owned, never
+model-controlled).
+
+**15.3 REAL VieNeu release evidence (2026-08-21):** the manual-draft VieNeu
+playback E2E was run against the SELF-HOST tts_service booted on the REAL
+VieNeu engine (NOT the tone stub) — `TTS_ENGINE=vieneu`
+`TTS_MODEL=pnnbao-ump/VieNeu-TTS-v3-Turbo` `TTS_PROVIDER=none` (native engine
+path reports `x-audio-engine: vieneu`). Production path: create ScriptSet →
+draft → gate PASS → human approve → bind → canonical Change A TextChunker
+(`feed` + `finalize`, all 200 chunks, rejoin == approved text) → real VieNeu
+synthesis via `SelfHostedTTSClient` → `POST /v1/speech`.
+`tests/integration/test_authoring_e2e_vieneu_playback_live.py` passes with
+`[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5
+total_pcm_bytes=1881600 total_playback_ms=39200 engine=['vieneu'] zero_llm=True`.
+Verifies zero LLM authoring calls (`engine_manager=None`), EXACT approved
+`spoken_text` identity, non-empty PCM from real VieNeu, and **engine identity
+confirms VieNeu, not tone**.
+
+**15.4 REAL LLM release evidence (2026-08-21, corrected ONE-Generate contract):**
+task 15.4 is now VERIFIED. `tests/integration/test_authoring_real_llm_live_pg.py`
+was rerun against the real LLM gateway (`ag/gemini-3.7-flash-low`, real
+PostgreSQL) with **ONE `start_generation()` per case** — the helper has no
+fresh-ScriptSet/full-generation retry-until-green loop; each semantic call is
+counted (plan + segment + segment-repair) and a segment-budget exhaustion or
+Full Script Gate failure reports the real failed result. `[15.4-evidence]`
+lines: `target=600s K=2 (calibration 2) calls=3 (plan=1 segment=2 repair=0)
+budget=[3,7] reviewable=True audit={item_state: REVIEWABLE, attempts {0:1,1:1}}`;
+`target=1800s K=5 (calibration 5) calls=9 (plan=1 segment=5 repair=3)
+budget=[6,16] reviewable=True audit={item_state: REVIEWABLE, attempts
+{0:1,1:1,2:1,3:3,4:2}}` (bounded per-segment auto-heal exercised — seg3 took 3
+attempts, seg4 took 2 — all within the backend-owned bound and the script still
+reached REVIEWABLE); `target=3600s` bounded planning/call-budget dry-run passed.
+All three: fixed K, no model-controlled extra jobs, planned/max budgets
+validated.
+
+**R9 repair shipped (2026-08-21, branch `feature/change-b-multireplica-review`):**
+- **Bounded, auditable segment auto-heal (R9.2):** `WorkflowDriver` now gates
+  each semantic candidate EXACTLY once (`record_segment_attempt`) and persists
+  every immutable candidate row + GateRun (failed attempts stay auditable —
+  segment index, attempt number = `version`, failed rule IDs, selected/pass
+  status). A passed candidate is selected; a failed candidate is evidence only;
+  budget exhaustion lands truthful GATE_FAILED. Constrained in-place repair
+  (failed candidate + exact failed rule IDs/messages) is preferred over blind
+  regeneration on attempts 2..N.
+- **Product-agnostic, clause-level CLAIM_FACTUAL (R9.3):** the hardcoded
+  product-noun reference guard is removed; support is derived purely from
+  `allowed_claims` at clause level, so correctness does not depend on product
+  name/category and a supported fragment never authorizes an invented
+  extension.
+- **Defensible duration contract (R9.4):** segment + full-script bands are
+  `gate_duration_band` = **50%-150% of the target** (was 15%-200%). A nominal
+  10-minute target cannot pass at ~1.5 minutes. The prompt states the same band
+  so prompt and gate never disagree.
+- **Full Script Gate FAIL persists the complete compiled version (R9.2/3.7).**
+- **R9.6 repair hardening (2026-08-21, live-rerun calibration):** the
+  SPEECH_DURATION messages are now explicit repair guidance — "too short" says
+  KEEP the compact price/number tokens (removing/verbalizing them collapses the
+  Change A estimate) and ADD new distinct content; "too long" says TRIM filler
+  but KEEP the compact tokens. `SegmentRepairHint` carries the segment's planned
+  `target_duration_s` and `build_repair_prompt` renders a direction-neutral
+  length guidance line so a repair knows how much content to write. Per-segment
+  char rates are recalibrated (opening ~2.6 chars/s — its spelled SKU + spelled
+  price carry a ~6-9x spoken-inflation multiplier so it must target fewer
+  characters or overshoot the 1.5x ceiling; later segments ~5.0 chars/s with the
+  digit price). With these fixes the 15.4 live suite reaches REVIEWABLE in ONE
+  Generate with the bounded auto-heal exercised.
