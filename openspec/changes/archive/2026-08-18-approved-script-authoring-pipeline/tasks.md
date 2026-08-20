@@ -188,7 +188,7 @@
 
 - [x] 15.1 Run focused backend unit/integration/contract suites for `script_authoring` plus Ruff/format/static checks used by backend service CI.
 - [x] 15.2 Run PostgreSQL integration with restart/recovery/idempotency and migration-from-clean-DB verification.
-- [x] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls. *(Live evidence 2026-08-21 against the REAL VieNeu engine — `[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5 total_pcm_bytes=1881600 total_playback_ms=39200 engine=['vieneu'] zero_llm=True`; NOT the tone stub — see the §16 release-evidence note.)*
+- [x] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls. *(Live evidence 2026-08-21 on the R9 head against the REAL VieNeu engine — `[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5 total_pcm_bytes=1943040 total_playback_ms=40480 engine=['vieneu'] zero_llm=True`; NOT the tone stub — see the §16 release-evidence note.)*
 - [x] 15.4 Run AI long-form E2E for at least 10-minute and 30-minute targets and a bounded 60-minute planning/dry-run/call-budget test; verify fixed K and no model-controlled extra jobs. *(Live evidence 2026-08-21 under the corrected ONE-Generate contract — real LLM gateway `ag/gemini-3.7-flash-low`, real PostgreSQL, ONE `start_generation()` per case, no fresh-ScriptSet retry-until-green: 600s K=2 calls=3 (plan=1 segment=2 repair=0) budget=[3,7] REVIEWABLE; 1800s K=5 calls=9 (plan=1 segment=5 repair=3) budget=[6,16] REVIEWABLE with bounded per-segment auto-heal exercised (attempts {0:1,1:1,2:1,3:3,4:2}); 3600s bounded planning/call-budget dry-run. See the §16 release-evidence note.)*
 - [x] 15.5 Run multi-product Generate All E2E with bounded concurrency, one product segment gate failure, sibling completion, human repair/resume, batch approval, and runtime selection across approved products.
 - [x] 15.6 Verify no content/gate failure produces automatic AI repair/regeneration and no general tool/agent loop exists in the production path.
@@ -307,7 +307,7 @@ draft → gate PASS → human approve → bind → canonical Change A TextChunke
 synthesis via `SelfHostedTTSClient` → `POST /v1/speech`.
 `tests/integration/test_authoring_e2e_vieneu_playback_live.py` passes with
 `[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5
-total_pcm_bytes=1881600 total_playback_ms=39200 engine=['vieneu'] zero_llm=True`.
+total_pcm_bytes=1943040 total_playback_ms=40480 engine=['vieneu'] zero_llm=True`.
 Verifies zero LLM authoring calls (`engine_manager=None`), EXACT approved
 `spoken_text` identity, non-empty PCM from real VieNeu, and **engine identity
 confirms VieNeu, not tone**.
