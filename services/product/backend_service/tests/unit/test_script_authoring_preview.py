@@ -79,6 +79,16 @@ def test_k_formula_default_calibration() -> None:
     assert preview.estimated_semantic_calls == 16
 
 
+def test_preview_maximum_semantic_calls_is_backend_owned_bound() -> None:
+    """Reviewer R9.2: preview distinguishes PLANNED (1+K) from MAXIMUM
+    Generate calls (1+K*segment_max_attempts) — the backend-owned bound for
+    bounded in-place Segment Repair. The model never controls it."""
+    preview = preview_product("P001", 600.0, DEFAULT, segment_max_attempts=3)
+    assert preview.planned_segment_count == 3
+    assert preview.estimated_semantic_calls == 4  # 1 + K (planned)
+    assert preview.maximum_semantic_calls == 1 + 3 * 3  # 1 + K*N = 10
+
+
 def test_k_respects_segment_count_bounds() -> None:
     """K clamps to max_segment_count even when ceil exceeds it."""
     wide = GenerationBudgetCalibration(max_segment_count=5)

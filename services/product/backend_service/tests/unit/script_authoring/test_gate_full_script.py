@@ -29,10 +29,24 @@ def test_cross_segment_repetition_flags_repeated_phrase() -> None:
     segments = [
         "Kem ABC dưỡng ẩm sâu giá 299.000đ.",
         "Kem ABC dưỡng ẩm sâu thêm lần nữa.",
+        "Kem ABC dưỡng ẩm sâu mỗi tối.",
+        "Kem ABC dưỡng ẩm sâu rất mềm mại.",
     ]
     violations = check_cross_segment_repetition(segments, _ctx())
     assert any(v.rule_id == "REPETITION_CROSS" for v in violations)
-    assert all(v.segment_index in (0, 1) for v in violations)
+    assert all(v.segment_index in (0, 1, 2, 3) for v in violations)
+
+
+def test_cross_segment_repetition_allows_three_segment_overlap() -> None:
+    # Threshold is >= 4 segments (15.4 real-LLM E2E): a 5-segment same-product
+    # script's limited vocabulary repeats common 4-grams across 3 segments, so
+    # a phrase recurring in 3 of K segments is not a defect.
+    segments = [
+        "Kem ABC dưỡng ẩm sâu giá 299.000đ.",
+        "Kem ABC dưỡng ẩm sâu thêm lần nữa.",
+        "Kem ABC dưỡng ẩm sâu mỗi tối.",
+    ]
+    assert check_cross_segment_repetition(segments, _ctx()) == []
 
 
 def test_cross_segment_repetition_clean() -> None:

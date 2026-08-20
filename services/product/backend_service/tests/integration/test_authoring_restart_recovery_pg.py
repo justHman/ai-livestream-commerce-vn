@@ -97,12 +97,12 @@ async def _apply_schema_once(store: PostgresRuntimeStore) -> None:
         await store.apply_schema()
 
 
-async def _new_set(service, product_ids):
+async def _new_set(service, product_ids, brief=None):
     return await service.create_script_set(
         name="Restart Recovery",
         transition_policy="ORDER_AGNOSTIC",
         product_ids=product_ids,
-        brief=None,
+        brief=brief,
     )
 
 
