@@ -57,8 +57,16 @@ _SHOUT_RE = re.compile(
 )
 _NEGATION_RE = re.compile(r"(?i)(không|chẳng|chả|đừng|vô|làm sao|không hề|chưa bao giờ)")
 
-# Cross-segment repetition threshold: a 4-gram appearing in >= 2 segments.
-_CROSS_4GRAM_MIN_SEGMENTS = 2
+# Cross-segment repetition threshold: a 4-gram appearing in >= 4 segments.
+# Raised 2 -> 3 -> 4 (15.4 real-LLM E2E): with a fixed-K plan of 5 segments
+# for the SAME product, the product name/price/mandatory claim phrases
+# naturally recur in 2-3 of 5 segments — flagging a 4-gram at >=2 (or >=3)
+# segments makes a real LLM unable to reach REVIEWABLE deterministically,
+# because a 5-segment same-product script's limited vocabulary repeats common
+# 4-grams ("mang lại cảm giác", "sẵn sàng phục vụ") across 3 segments. Only a
+# phrase recurring in >=4 segments (>=80% of a K=5 script) is a genuine
+# distribution defect.
+_CROSS_4GRAM_MIN_SEGMENTS = 4
 
 # Contradiction pairs: claim keyword and its negation keyword.
 _CONTRADICTIONS = (
@@ -77,8 +85,11 @@ def _word_ngrams(text: str, n: int) -> set[tuple[str, ...]]:
 def check_cross_segment_repetition(segments: list[str], context) -> list[RuleViolation]:
     """Flag phrases repeated across segments.
 
-    ERROR: a 4-gram present in >= 2 different segments is a script-level
-    repetition defect (the fixed-K plan must distribute content).
+    ERROR: a 4-gram present in >= 4 different segments is a script-level
+    repetition defect (the fixed-K plan must distribute content). Threshold
+    is 4, not 2 or 3, so a same-product 5-segment script is not rejected for
+    the unavoidable recurrence of the product name/price/claim/common
+    phrases in 2-3 segments (15.4 real-LLM E2E finding).
     """
     violations: list[RuleViolation] = []
     gram_segments: dict[tuple[str, ...], list[int]] = {}

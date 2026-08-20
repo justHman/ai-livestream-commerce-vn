@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from enum import StrEnum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -128,6 +128,12 @@ class LiveSessionBrief(BaseModel):
     transition_policy: TransitionPolicy = "ORDER_AGNOSTIC"
     shop_name: str = ""
     notes: str = ""
+    # Authoritative per-product facts the generation gate/prompt may use:
+    # product_id -> {"product_name", "prices", "discounts", "skus",
+    # "allowed_claims"}. These are the ONLY values a generated script may
+    # claim (15.4 real-LLM evidence: without facts the CLAIM_FACTUAL gate
+    # flags every sentence).
+    product_facts: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ScriptSet(BaseModel):

@@ -97,7 +97,13 @@ class CompiledScript:
 
 # --- injected boundaries ------------------------------------------------------
 
-SegmentGateCallable = Callable[[SegmentText], GateRunResult]
+#: Segment gate receives the checked text plus the segment's planned target
+#: duration (``target_duration_s / K``) when the AI long-form plan is active;
+#: ``None`` means no plan (manual draft) so the gate falls back to the lenient
+#: default band. One-shot LLM variance means the band is derived from the
+#: target (see service_impl), never a fixed 10-180s window that a planned
+#: 200-240s segment cannot satisfy.
+SegmentGateCallable = Callable[[SegmentText, Optional[float]], GateRunResult]
 FullGateCallable = Callable[[Sequence[str]], GateRunResult]
 PersistCallable = Callable[[ScriptItem], None]
 
@@ -265,7 +271,14 @@ class ProductGenerationWorkflow:
             version=len(self.segments) + 1,
         )
         self.segments[index] = segment_version
-        result = self.segment_gate(spoken_text)
+        # Planned per-segment target (Decision 7): the planner assigns every
+        # segment ``target_duration_s / K`` (see generation/planner.py), so the
+        # gate's target range is derived from that same deterministic value.
+        # ``None`` when no plan exists (manual draft path) -> lenient default.
+        segment_target: Optional[float] = None
+        if self.target_duration_s is not None and self.plan_segment_count:
+            segment_target = self.target_duration_s / self.plan_segment_count
+        result = self.segment_gate(spoken_text, segment_target)
 
         if result.passed:
             segment_version.status = ScriptState.DRAFT
@@ -283,6 +296,71 @@ class ProductGenerationWorkflow:
         )
         self._set_state(ScriptState.GATE_FAILED)
         return result
+
+    def record_segment_attempt(
+        self,
+        index: int,
+        *,
+        display_text: str,
+        spoken_text: str,
+        attempt: int,
+        gate_result: GateRunResult,
+    ) -> ScriptSegment:
+        """Persist ONE segment candidate evaluated by the Segment Gate exactly once.
+
+        Reviewer R9.2/3.4: one semantic candidate -> one Segment Gate
+        evaluation -> one immutable candidate row + one GateRun bound to it.
+        ``attempt`` is the 1-based semantic-attempt number within this segment
+        index and becomes the candidate's immutable ``version`` (so the
+        ``(plan_id, segment_index, version)`` unique key doubles as attempt
+        metadata). A passed candidate becomes the SELECTED segment (status
+        DRAFT) and the workflow stays in GENERATING for the next index; a
+        failed candidate is persisted as GATE_FAILED evidence WITHOUT being
+        selected and WITHOUT advancing the item — the driver owns the bounded
+        in-place retry and the terminal GATE_FAILED transition via
+        ``fail_segment_gate``. ``complete_segment`` remains for the single-shot
+        (non-retry) caller.
+        """
+        if self.item.state is not ScriptState.GENERATING:
+            raise IllegalTransitionError(self.item.state, "generation_complete")
+        if display_text == "" or spoken_text == "":
+            raise ValueError("segment content must be non-empty")
+        if self.plan_id is None:
+            raise ValueError("plan not set; complete_planning first")
+        candidate = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=self.item.id,
+            plan_id=self.plan_id,
+            segment_index=index,
+            display_text=display_text,
+            spoken_text=spoken_text,
+            status=ScriptState.DRAFT if gate_result.passed else ScriptState.GATE_FAILED,
+            version=attempt,
+        )
+        if gate_result.passed:
+            self.segments[index] = candidate
+        self._record_gate_run(
+            full=False,
+            result=gate_result,
+            script_version_id=candidate.id,
+        )
+        return candidate
+
+    def fail_segment_gate(self, index: int, *, message: str = "") -> None:
+        """Move GENERATING -> GATE_FAILED after the bounded segment auto-heal
+        budget is exhausted (reviewer R9.2/3.4).
+
+        All failed candidates stay persisted as immutable audit evidence; later
+        segments are never generated (no N+1 work before N resolves). The
+        caller (the generation driver) selects which attempt budget was
+        exhausted; the workflow never retries or spends on its own.
+        """
+        if self.item.state is not ScriptState.GENERATING:
+            raise IllegalTransitionError(self.item.state, "generation_failed")
+        if index != len(self.segments):
+            raise ValueError(f"failed segment index {index} != current {len(self.segments)}")
+        self.last_error = message
+        self._set_state(ScriptState.GATE_FAILED)
 
     def segment_failed(self, index: int, *, message: str = "") -> None:
         """Mark segment generation as failed (provider/schema error).
@@ -347,6 +425,27 @@ class ProductGenerationWorkflow:
 
         # Full gate FAIL -> GATE_FAILED with actionable violations (9.3).
         self._record_gate_run(full=True, result=result)
+        # Reviewer R9.2/3.7: persist a COMPLETE immutable compiled ScriptVersion
+        # even when the Full Script Gate fails, and bind the exact full-gate
+        # violations to it (via ``gate_run_id``). The item's current version
+        # then IS the failed compiled script, so a later human-triggered
+        # ``Fix with AI`` operates on the exact failed artifact instead of an
+        # out-of-band reconstruction. A failed compiled version is NOT
+        # REVIEWABLE/APPROVED — it is GATE_FAILED and needs an explicit human
+        # full-script Fix to become a new draft.
+        version = ScriptVersion(
+            id=new_id("script_version"),
+            script_item_id=self.item.id,
+            version=len(self.versions) + 1,
+            state=ScriptState.GATE_FAILED,
+            source=ScriptSource.AI_GENERATE,
+            display_text=display_text,
+            spoken_text=spoken_text,
+            segment_version_ids=[seg.id for seg in ordered],
+            gate_run_id=self.last_gate_run.id if self.last_gate_run else None,
+        )
+        self._append_version(version)
+        self.item.current_version_id = version.id
         self._set_state(ScriptState.GATE_FAILED)
         return result
 

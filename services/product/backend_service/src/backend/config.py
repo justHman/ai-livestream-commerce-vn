@@ -83,7 +83,14 @@ class LLMConfig:
     model: str = ""  # HF model id or path
     model_path: str = ""  # local path (for llamacpp GGUF dir)
     device: str = "auto"  # cuda | cpu | auto
-    max_tokens: int = 128
+    # Output ceiling. Raised from 128 to 2048 to match Script Authoring's
+    # generation calibration (model_max_output_tokens=4096, safe_output_tokens
+    # =2048): a 128-token cap (~512 chars ≈ 30 s) physically cannot fill a
+    # segment's target duration and made every real-LLM segment fail the
+    # SPEECH_DURATION gate (15.4 real-LLM E2E finding). A ceiling increase is
+    # safe for short-output consumers (Director etc.) — they still emit short
+    # responses; it only allows longer outputs where the budget needs them.
+    max_tokens: int = 2048
     temperature: float = 0.7
     system_prompt: str = _DEFAULT_PERSONA
     max_model_len: int = 4096
@@ -102,7 +109,7 @@ class LLMConfig:
             model=os.environ.get("LLM_MODEL", ""),
             model_path=os.environ.get("LLM_MODEL_PATH", os.environ.get("LLM_GGUF_DIR", "")),
             device=os.environ.get("LLM_DEVICE", "auto"),
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "128")),
+            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "2048")),
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7")),
             max_model_len=int(os.environ.get("LLM_MAX_MODEL_LEN", "4096")),
             quantization=os.environ.get("LLM_QUANTIZATION") or None,
@@ -275,6 +282,12 @@ class ScriptAuthoringConfig:
     # Transport/provider retry bound (task 10.5): same immutable input,
     # distinct from the semantic call count.
     provider_max_attempts: int = 3
+    # Segment in-place retry bound (15.4 money optimization): how many times a
+    # single segment is regenerated in place when its segment gate fails,
+    # before the workflow lands GATE_FAILED for human fix. Regenerating a
+    # failed segment (1 call) instead of the whole script (K+1 calls) keeps
+    # prior passing segments + continuity and is far cheaper on LLM spend.
+    segment_max_attempts: int = 3
     # Generation duration bounds (task 7.1): 10-60 minute targets.
     min_target_duration_s: int = 600
     max_target_duration_s: int = 3600
@@ -314,6 +327,7 @@ class ScriptAuthoringConfig:
         return cls(
             max_concurrent_products=int(os.environ.get("SA_MAX_CONCURRENT_PRODUCTS", "3")),
             provider_max_attempts=int(os.environ.get("SA_PROVIDER_MAX_ATTEMPTS", "3")),
+            segment_max_attempts=int(os.environ.get("SA_SEGMENT_MAX_ATTEMPTS", "3")),
             min_target_duration_s=int(os.environ.get("SA_MIN_TARGET_DURATION_S", "600")),
             max_target_duration_s=int(os.environ.get("SA_MAX_TARGET_DURATION_S", "3600")),
             budget_max_output_tokens=int(os.environ.get("SA_BUDGET_MAX_OUTPUT_TOKENS", "4096")),
