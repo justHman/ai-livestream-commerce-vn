@@ -340,6 +340,9 @@ class GenerationJob(BaseModel):
     target_duration_s: int = Field(ge=1)
     fingerprint: Optional[GenerationFingerprint] = None
     idempotency_key: str = ""
+    lease_owner: Optional[str] = None
+    lease_expires_at: Optional[str] = None
+    lease_epoch: int = Field(default=0, ge=0)
     created_at: str = Field(default_factory=lambda: _now_iso())
     updated_at: str = Field(default_factory=lambda: _now_iso())
 
@@ -356,6 +359,12 @@ class GenerationBatch(BaseModel):
     job_ids: list[str] = Field(default_factory=list)
     estimated_semantic_calls: int = Field(default=0, ge=0)
     idempotency_key: str = ""
+    lease_owner: Optional[str] = None
+    lease_expires_at: Optional[str] = None
+    lease_epoch: int = Field(default=0, ge=0)
+    # Durable cross-replica cancel request (R8.4): any replica sets this; only
+    # the execution owner consumes it. The batch row is the source of truth.
+    cancel_requested: bool = False
     created_at: str = Field(default_factory=lambda: _now_iso())
     updated_at: str = Field(default_factory=lambda: _now_iso())
 

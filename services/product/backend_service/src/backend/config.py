@@ -293,6 +293,21 @@ class ScriptAuthoringConfig:
     # Shutdown drain grace (HIGH-1): how long the lifespan waits for in-flight
     # background jobs to finish before cancelling stragglers during shutdown.
     drain_timeout_s: float = 5.0
+    # Multi-replica recovery lease (HIGH-1): how long a claimed
+    # job/batch row is fenced to its owning replica before another
+    # replica's ``recover_pending`` may re-claim it.
+    recovery_lease_seconds: int = 300
+
+    def lease_heartbeat_interval(self) -> float:
+        """Bounded heartbeat cadence for owned provider calls (R8.3).
+
+        A HEALTHY provider call can outlive the lease window; while it runs the
+        owner renews the fence every ``lease/3`` seconds, bounded below at
+        0.25 s so a delayed heartbeat never immediately loses ownership. This
+        keeps slow-but-alive work from being falsely taken over WITHOUT making
+        the default lease arbitrarily huge.
+        """
+        return max(self.recovery_lease_seconds / 3, 0.25)
 
     @classmethod
     def from_env(cls) -> "ScriptAuthoringConfig":
@@ -312,6 +327,7 @@ class ScriptAuthoringConfig:
             sse_retention_seconds=int(os.environ.get("SA_SSE_RETENTION_SECONDS", "3600")),
             sse_replay_window_seconds=int(os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")),
             drain_timeout_s=float(os.environ.get("SA_DRAIN_TIMEOUT_S", "5.0")),
+            recovery_lease_seconds=int(os.environ.get("SA_RECOVERY_LEASE_SECONDS", "300")),
         )
 
 
@@ -464,6 +480,18 @@ class AppConfig:
             tts=TTSConfig.from_env(),
             script_authoring=ScriptAuthoringConfig.from_env(),
         )
+
+    @property
+    def is_production(self) -> bool:
+        """Canonical production predicate (HIGH-A / R6.1).
+
+        The deployment literal is ``APP_ENV=prod`` (Terraform passes
+        ``app_env = "prod"``); ``production`` is kept as an accepted legacy
+        alias so a stack still using the old literal activates the same
+        production safety gates. Every production-only fail-fast/safety gate
+        MUST use this predicate, never a raw ``app_env == ...`` comparison.
+        """
+        return self.app_env in {"prod", "production"}
 
     def cors_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":

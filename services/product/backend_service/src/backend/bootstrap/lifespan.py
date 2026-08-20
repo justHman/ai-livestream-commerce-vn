@@ -114,7 +114,7 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
                     _STARTUP_ATTEMPTS,
                     type(exc).__name__,
                 )
-                if container.config.app_env == "production":
+                if container.config.is_production:
                     raise exc
                 return
             delay = _STARTUP_RETRY_DELAYS[attempt]
@@ -174,7 +174,7 @@ async def _connect_authoring(container: BootstrapContainer) -> None:
                     _STARTUP_ATTEMPTS,
                     type(exc).__name__,
                 )
-                if container.config.app_env == "production":
+                if container.config.is_production:
                     raise exc
                 return
             delay = _STARTUP_RETRY_DELAYS[attempt]
@@ -184,6 +184,31 @@ async def _connect_authoring(container: BootstrapContainer) -> None:
                 delay,
             )
             await asyncio.sleep(delay)
+
+
+async def _recover_authoring(container: BootstrapContainer) -> None:
+    """Resume durable authoring jobs/batches left by a previous process (HIGH-B).
+
+    Runs AFTER ``_connect_authoring`` so the repository pool is live. In prod a
+    recovery failure is fail-fast (matches the other startup gates); in dev the
+    error is logged and the app stays bootable — the durable job remains
+    recoverable on the next restart.
+    """
+    service = getattr(container, "script_authoring_service", None)
+    if service is None:
+        return
+    recover = getattr(service, "recover_pending", None)
+    if recover is None:
+        return
+    try:
+        await recover()
+    except Exception as exc:
+        if container.config.is_production:
+            raise
+        logger.warning(
+            "Bootstrap authoring recovery failed type=%s; jobs stay recoverable",
+            type(exc).__name__,
+        )
 
 
 # -- Shutdown --------------------------------------------------------
@@ -348,6 +373,7 @@ def build_lifespan(container: BootstrapContainer):
         try:
             await _connect_postgres(container)
             await _connect_authoring(container)
+            await _recover_authoring(container)
             _start_reducer_loop(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially

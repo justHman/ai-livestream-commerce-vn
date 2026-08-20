@@ -43,7 +43,14 @@ async def test_create_get_update_script_set_pg(pg_url: str) -> None:
             product_ids=["P1", "P2"],
             brief={"title": "T", "shop_name": "Shop PG"},
         )
-        assert created["items"] == {"P1": {"state": "EMPTY"}, "P2": {"state": "EMPTY"}}
+        _empty = {
+            "state": "EMPTY",
+            "current_version_id": None,
+            "approved_version_id": None,
+            "current_version": None,
+            "gate": None,
+        }
+        assert created["items"] == {"P1": _empty, "P2": _empty}
         fetched = await service.get_script_set(set_id=created["id"])
         assert fetched is not None
         assert fetched["revision"] == 0

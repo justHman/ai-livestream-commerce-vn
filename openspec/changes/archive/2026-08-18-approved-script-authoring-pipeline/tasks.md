@@ -117,7 +117,7 @@
 - [x] 10.5 Implement finite provider/transport `max_attempts` using immutable job input; distinguish attempt count from semantic job count.
 - [x] 10.6 Implement idempotency for single-product and batch generation so repeated equivalent queued/running requests return the existing workflow rather than duplicate calls.
 - [x] 10.7 Implement cancellation that stops scheduling new semantic calls, preserves completed immutable artifacts, persists cancelled states, and emits terminal events.
-- [x] 10.8 Implement process-restart recovery from persisted finite state/current segment index without reinterpreting model text.
+- [x] 10.8 Implement process-restart recovery from persisted finite state/current segment index without reinterpreting model text. *(Evidence 2026-08-19: `ScriptAuthoringServiceImpl.recover_pending()` runs on lifespan startup and reconstructs + re-spawns durable RUNNING/QUEUED jobs and batches; fresh-process recovery tests in `tests/integration/test_authoring_restart_recovery_pg.py` prove a recovered job reaches COMPLETED, completed immutable segments are NOT duplicated, the workflow id is unchanged, and duplicate recovery attempts produce one active runner. Recovery ownership is now a PostgreSQL lease: `script_generation_jobs`/`script_generation_batches` carry `lease_owner`/`lease_expires_at`/`lease_epoch` (fencing), `claim_recoverable()` is a single atomic UPDATE..RETURNING, progress writes must match `lease_owner`+`lease_epoch` (a stale replica stops on `LeaseLostError`), and `drain()` releases leases. Cross-process evidence in `tests/integration/test_authoring_cross_process_lease_pg.py`: two services on the SAME PostgreSQL calling `recover_pending()` concurrently yield exactly one claimant/runner, one unfinished semantic action, the same workflow id, and no duplicate artifact; a fresh replica does NOT steal a valid lease (rolling-deploy); a hard-crashed replica's job is recoverable after lease expiry. **R8.1/R8.2 transactional artifact fencing (2026-08-20, PR #52 re-review):** the fence is now transactional — `JobRepository.assert_and_renew_lease` / `BatchRepository.assert_and_renew_lease` are single-statement owner+epoch guards that also run inside an existing transaction, and every owned execution path (single-gen `_drive_generation`, recovered generation, regenerate, AI fix, batch `_run_batch_job`) begins its artifact-write transaction with the lease assertion on the SAME connection. A stale owner whose lease was taken over therefore commits ZERO artifacts: the lease assertion and the artifact writes share ONE PostgreSQL transaction that rolls back on `LeaseLostError`, and the stale owner stops without marking the job FAILED. Proven by `tests/integration/test_authoring_fence_lease_pg.py` (9 tests), in particular `test_stale_owner_cannot_commit_artifacts_after_takeover`. **R8.3 heartbeat:** `ScriptAuthoringConfig.lease_heartbeat_interval()` = `max(recovery_lease_seconds/3, 0.25)`; `_with_lease_heartbeat` renews the job/batch fence while `asyncio.to_thread` provider work is in flight, and on a lost fence the result is discarded and `LeaseLostError` raised. `tests/integration/test_authoring_cross_process_lease_pg.py::test_healthy_slow_owner_stays_owned_through_heartbeat` (short 1s lease, 3s provider call) proves a healthy slow owner is NOT falsely taken over — the event loop stays responsive, a concurrent replica claims nothing, and the job completes under the original owner. **R8.4/R8.5 durable cross-replica cancel:** `script_generation_batches.cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`; `cancel_batch()` persists the request from any replica (idempotent), a NON-OWNER does NOT reconstruct/claim/write (returns `cancelling` only), and the OWNER polls the durable request between rounds/before scheduling/during recovery, calls `orch.cancel()`, and persists terminal CANCELLED under the owner+epoch fence. Batch cross-process tests in `tests/integration/test_authoring_cross_process_lease_pg.py`: `test_batch_two_processes_race_yields_one_claimant_and_no_duplicates`, `test_batch_non_owner_cancel_persists_request_without_takeover`, and `test_batch_cancel_survives_owner_crash` (multi-product, real PG).)*
 - [x] 10.9 Add deterministic concurrency tests (e.g. 20 products with max 3 active), idempotency double-click tests, transport retry bound tests, partial failure tests, cancel tests, and restart recovery tests.
 
 ## 11. REST API and SSE protocol
@@ -128,7 +128,7 @@
 - [x] 11.4 Implement single-product and batch `generation-preview` endpoints that make no model calls.
 - [x] 11.5 Implement `POST .../products/{product_id}/generate`, returning `202` and workflow ID for planning + fixed-K generation.
 - [x] 11.6 Implement `POST .../products/{product_id}/segments/{segment_index}/regenerate` and `POST .../products/{product_id}/fix` with eligibility/conflict guards and `202` semantics.
-- [x] 11.7 Implement `POST .../products/{product_id}/approve` and `POST .../approve-batch`, preserving per-version approval records even in batch UX.
+- [x] 11.7 Implement `POST .../products/{product_id}/approve` and `POST .../approve-batch`, preserving per-version approval records even in batch UX. *(Evidence 2026-08-19: `GET /api/v1/script-sets/{set_id}` now exposes per-item `current_version_id`, `approved_version_id`, a nested `current_version {id, version, source, display_text, spoken_text, gate_result, created_at}`, and `gate`, so an external client can read the exact reviewable version and pass its `version_id` to approve; the stale-version guard (approve requires `version_id`) is intact. Two SEPARATE proofs compose the read→approve→binding story, and no single test claims both: (a) the real-app HTTP read→approve test `tests/integration/test_script_authoring_http_approve_pg.py::test_http_read_then_approve_exact_version` drives `create_app()` + real PG via ASGI TestClient — HTTP create → draft → submit/gate → HTTP GET reads the EXACT `current_version_id` + `current_version.spoken_text` → HTTP POST approve with exactly that `version_id` → HTTP GET again shows `approved_version_id == version_id` (a stale/nonexistent `version_id` still returns 409); and (b) the separate session-binding integration proof `tests/integration/test_authoring_e2e_session_binding.py` (real PG) shows an approved script binds on `(item.state == APPROVED)` + current-version approval and `resolve_approved_script` resolves the EXACT approved `spoken_text` for runtime. The service-level read-model proof remains in `tests/integration/test_script_set_read_model_pg.py`.)*
 - [x] 11.8 Implement `POST .../generate-batch`, require/accept idempotency identity, and return estimated/planned workflow summary with `202`.
 - [x] 11.9 Implement generation-batch snapshot/cancel endpoints and stable structured domain error codes.
 - [x] 11.10 Implement SSE `GET .../generation-batches/{batch_id}/events` with ordered event sequence, stable IDs, auth, reconnect-safe snapshot/revision behavior, and no script text in event payloads by default.
@@ -155,19 +155,22 @@
 > **The Workbench is a local-only authoring/test/debug surface (`workbench/`).
 > It is not a production frontend or a product deployment target. Task
 > completion in Section 13 refers only to the local developer Workbench needed
-> to exercise Change B behavior.** The harness is mock-driven by default (140
+> to exercise Change B behavior.** The harness is mock-driven by default (146
 > Vitest tests) and its request contract matches the backend API (reconciled
-> 2026-08-18). Known local-harness caveat: the real HTTP client parses
-> `GET /script-sets/{set_id}` as `products[]` while the backend returns an
-> `items` map — live-backend response interop for per-product state is the one
-> remaining local-harness gap (mock-driven flows are green).
+> 2026-08-18). A local wire DTO + adapter (`BackendScriptSetResponse` /
+> `mapScriptSetResponse`) now consumes the real backend `items`-map response for
+> create/get/patch (2026-08-19). Known local-harness limitation: the Workbench
+> Approve controls (13.2/13.6) are not yet wired to the live backend — the
+> backend now exposes per-product `current_version_id`/`current_version` (see
+> 11.7), so the remaining gap is purely local Workbench UI wiring, not a backend
+> API gap; the mock-driven approve flows are green.
 
 - [x] 13.1 Add ScriptSet creation/edit view with LiveSessionBrief, product selection/order, transition policy, target duration per product, and generation-call preview before spending tokens.
-- [x] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states.
+- [ ] 13.2 Add per-product states and controls: manual draft, Submit, Generate Script, Regenerate Segment, Fix with AI, and Approve with controls enabled only for legal states. *(Draft/Submit/Generate/Regenerate/Fix controls work against the real backend; Approve remains mock-only — no Workbench UI change was made. The backend approve API is complete (`POST .../approve {version_id}` verified end-to-end in `test_script_authoring_http_approve_pg.py`, see 11.7), so the remaining gap is purely local Workbench approve-UI wiring in the local-only harness, not a backend API gap.)*
 - [x] 13.3 Add long-form segment navigator showing title/intent, target/estimated duration, status, gate violations, version history, and exact display/spoken previews.
 - [x] 13.4 Add Generate All UX with selected/missing products, per-product and total estimated semantic calls, bounded-progress status, partial failure, retryable transport failure, and explicit human cost action.
 - [x] 13.5 Add SSE client for batch progress with reconnect/snapshot recovery and no duplicate action on reconnect.
-- [x] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records.
+- [ ] 13.6 Add batch review/approve selected REVIEWABLE versions while retaining individual immutable approval records. *(Approve-batch remains mock-driven — no Workbench UI change was made. The backend approve-batch API is complete and exposes per-item `version_id`s (see 11.7), so wiring `POST .../approve-batch` with real `version_ids` is purely local Workbench UI work, not a backend API gap.)*
 - [x] 13.7 Add stale dependency warnings that disable runtime-ready state until resubmit/reapprove.
 - [x] 13.8 Add frontend tests for zero-LLM manual PASS, Generate All double-click/idempotency UX, segment failure pause, AI Fix legal-state guards, spoken-text review, approval invalidation, and SSE reconnect.
 
@@ -260,7 +263,20 @@ architecture audit confirms zero Change A namespace duplication
 **Still open:** the VieNeu playback E2E (15.3) and the 30/60-minute AI
 long-form E2E (15.4) were not re-run against the completed production path
 (they require a live/GPU E2E environment: real LLM + VieNeu playback) and are
-unchecked until verified. Section 13 tasks (13.1-13.8) are implemented by the
-**local-only** Workbench harness (`workbench/`, mock-driven, 140 Vitest tests)
-and are marked `[x]` for that local surface — see Section 13; they do NOT imply
-a production frontend.
+unchecked until verified. Section 13 tasks are implemented by the **local-only**
+Workbench harness (`workbench/`, mock-driven, 146 Vitest tests) — most marked
+`[x]` for that local surface, with `13.2`/`13.6` left `[ ]` because the
+Workbench Approve UI is not yet wired to the live backend (the backend now
+exposes per-product `current_version_id`/`current_version` via the read model,
+so this is a local Workbench UI-wiring gap, not a backend API gap — see Section
+13); they do NOT imply a production frontend.
+
+**Follow-up repair (2026-08-19, branch `feature/change-b-rereview-recovery`):**
+the independent PR #50 re-review's HIGH-A (canonical production predicate —
+`is_production` covers `APP_ENV=prod`, with `production` kept as an alias, plus
+a Terraform precondition so prod cannot create RDS while omitting backend
+`DATABASE_URL`) and HIGH-B (genuine restart recovery — `recover_pending()` on
+lifespan startup reconstructs and re-spawns durable RUNNING/QUEUED jobs and
+batches, see task 10.8 evidence) are resolved. The production layer therefore
+remains restart-safe; only the live/GPU E2E evidence (15.3/15.4) and the
+Workbench Approve-UI wiring gap (13.2/13.6, local-only) remain open.

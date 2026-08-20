@@ -140,6 +140,25 @@ export interface ScriptSet {
   updated_at: string;
 }
 
+// ---------------- Backend wire DTO (real _set_wire contract) ----------------
+
+/** Per-product entry in the real backend ScriptSet response. */
+export interface BackendScriptSetItem {
+  state: ScriptItemState;
+}
+
+/** Exact response shape returned by ``ScriptAuthoringServiceImpl._set_wire``
+ * for GET/POST/PATCH ``/api/v1/script-sets`` — an ``items`` map keyed by
+ * product_id, NOT the richer local ``ScriptSet`` view model. */
+export interface BackendScriptSetResponse {
+  id: string;
+  name: string;
+  transition_policy: TransitionPolicy;
+  product_ids: string[];
+  revision: number;
+  items: Record<string, BackendScriptSetItem>;
+}
+
 export interface ScriptSetInput {
   name: string;
   transition_policy?: TransitionPolicy;
@@ -151,6 +170,41 @@ export interface ScriptSetPatch {
   transition_policy?: TransitionPolicy;
   brief?: LiveSessionBrief;
   product_ids?: string[];
+}
+
+/** Expand a real-backend ScriptSet wire response into the local ``ScriptSet``
+ * view model the authoring flows/UI consume. The wire carries only per-product
+ * state; everything else is defaulted to the empty item shape. */
+export function mapScriptSetResponse(wire: BackendScriptSetResponse): ScriptSet {
+  const productIds = wire.product_ids.length ? wire.product_ids : Object.keys(wire.items);
+  return {
+    id: wire.id,
+    name: wire.name,
+    revision: wire.revision,
+    transition_policy: wire.transition_policy,
+    brief: { title: wire.name, host_name: "", shop_name: "", note: "" },
+    products: productIds.map((productId) => emptyScriptItem(productId, wire.items[productId]?.state ?? "EMPTY")),
+    created_at: "",
+    updated_at: "",
+  };
+}
+
+function emptyScriptItem(productId: string, state: ScriptItemState): ScriptItem {
+  return {
+    product_id: productId,
+    product_name: productId,
+    state,
+    source: null,
+    plan: null,
+    segments: [],
+    versions: [],
+    current_version: null,
+    approvals: [],
+    approved_version_id: null,
+    approved_revision: null,
+    failure: null,
+    updated_at: "",
+  };
 }
 
 export interface DraftInput {
@@ -319,25 +373,28 @@ export function createScriptClient(deps: ApiDeps) {
   const esc = encodeURIComponent;
 
   async function createScriptSet(input: ScriptSetInput): Promise<ScriptSet> {
-    return requestJson<ScriptSet>("/api/v1/script-sets", {
+    const wire = await requestJson<BackendScriptSetResponse>("/api/v1/script-sets", {
       method: "POST",
       headers: adminHeaders(true),
       body: JSON.stringify(input),
     });
+    return mapScriptSetResponse(wire);
   }
 
   async function getScriptSet(setId: string): Promise<ScriptSet> {
-    return requestJson<ScriptSet>(`/api/v1/script-sets/${esc(setId)}`, {
+    const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
       headers: adminHeaders(),
     });
+    return mapScriptSetResponse(wire);
   }
 
   async function patchScriptSet(setId: string, patch: ScriptSetPatch): Promise<ScriptSet> {
-    return requestJson<ScriptSet>(`/api/v1/script-sets/${esc(setId)}`, {
+    const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
       method: "PATCH",
       headers: adminHeaders(true),
       body: JSON.stringify(patch),
     });
+    return mapScriptSetResponse(wire);
   }
 
   async function putDraft(setId: string, productId: string, input: DraftInput): Promise<DraftResult> {

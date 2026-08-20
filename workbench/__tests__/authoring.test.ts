@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   applyBatchEvent,
+  approveBatchFlow,
   authoringReducer,
   canApprove,
   canFix,
@@ -13,11 +14,12 @@ import {
   createMockScriptClient,
   generateAllFlow,
   initialStateAuthoring,
+  loadSetFlow,
   previewFlow,
   type AuthoringState,
 } from "../src/authoring";
-import { idempotencyKey } from "../src/scriptSets";
-import type { GenerationPreview, ScriptEvent } from "../src/scriptSets";
+import { createScriptClient, idempotencyKey, mapScriptSetResponse } from "../src/scriptSets";
+import type { BackendScriptSetResponse, ScriptSet } from "../src/scriptSets";
 
 describe("legal-state guards (task 13.2)", () => {
   it("fix is allowed only for GATE_FAILED", () => {
@@ -296,5 +298,95 @@ describe("SSE event application (task 13.5)", () => {
       value: { event_id: "e1", revision: 1, type: "batch.snapshot", script_set_id: "s", batch_id: "b" },
     });
     expect(state.batch.batchId).toBe("b");
+  });
+});
+
+describe("real-backend wire interop (handoff §11.4)", () => {
+  // Exact wire shape from ScriptAuthoringServiceImpl._set_wire.
+  const realWire: BackendScriptSetResponse = {
+    id: "set-9",
+    name: "Phiên live 19/08",
+    transition_policy: "ORDER_AGNOSTIC",
+    product_ids: ["P001", "P002"],
+    revision: 3,
+    items: {
+      P001: { state: "DRAFT" },
+      P002: { state: "REVIEWABLE" },
+    },
+  };
+
+  function wireClient() {
+    const client = createScriptClient({
+      backendUrl: "http://127.0.0.1:8800",
+      viewerToken: () => "",
+      adminToken: () => "t",
+    });
+    return { client };
+  }
+
+  it("loadSetFlow consumes a mapped real-wire ScriptSet (refresh path does not crash)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(realWire), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const { client } = wireClient();
+    const dispatch = vi.fn();
+    const state = { ...initialStateAuthoring(), setId: "set-9" };
+    await loadSetFlow({ client, state, dispatch }, "set-9");
+    const setAction = dispatch.mock.calls.find(([a]) => a.type === "AUTHORING_SET");
+    expect(setAction).toBeDefined();
+    const value = setAction![0] as { value: { scriptSet: ScriptSet; productIds: string[] } };
+    // The render path reads set.products.length / set.products.map(...).
+    expect(value.value.scriptSet.products.length).toBe(2);
+    expect(value.value.scriptSet.products.map((p) => p.product_id)).toEqual(["P001", "P002"]);
+    expect(value.value.productIds).toEqual(["P001", "P002"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("approve path guards missing version data from the real wire (no crash)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(realWire), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const { client } = wireClient();
+    const dispatch = vi.fn();
+    const mapped = mapScriptSetResponse(realWire);
+    const state: AuthoringState = {
+      ...initialStateAuthoring(),
+      setId: "set-9",
+      scriptSet: mapped,
+      selectedApproveIds: ["P002"], // REVIEWABLE, but the wire carries no version data
+    };
+    await approveBatchFlow({ client, state, dispatch });
+    const status = dispatch.mock.calls.find(([a]) => a.type === "AUTHORING_STATUS");
+    expect(String(status?.[0]?.errors?.join(" "))).toContain("thiếu current_version");
+    vi.unstubAllGlobals();
+  });
+
+  it("approve path resolves the current version when the mapped model carries it", async () => {
+    const client = createMockScriptClient();
+    const set = await client.createScriptSet({
+      name: "S",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T" },
+      product_ids: ["P001"],
+    });
+    await client.putDraft(set.id, "P001", { display_text: "abc" });
+    await client.submit(set.id, "P001");
+    const mapped = await client.getScriptSet(set.id);
+    const dispatch = vi.fn();
+    const state: AuthoringState = {
+      ...initialStateAuthoring(),
+      setId: set.id,
+      scriptSet: mapped,
+      selectedApproveIds: ["P001"],
+    };
+    await approveBatchFlow({ client, state, dispatch });
+    const status = dispatch.mock.calls.find(([a]) => a.type === "AUTHORING_STATUS");
+    expect(String(status?.[0]?.status)).toContain("Đã duyệt 1 phiên bản");
   });
 });
