@@ -775,9 +775,15 @@ class ScriptAuthoringServiceImpl:
     def _skill_loader(self) -> SkillLoader:
         path = self._config.skill_path
         if path:
+            # The config default is CWD-relative ("resources/skills/..."), so it
+            # only resolves from the backend_service working directory; a
+            # different CWD must fall back to the packaged absolute skill
+            # (reviewer R9.8 exact-head CI — Generate crashed with
+            # SkillNotFoundError when run from the repo root).
             try:
-                return SkillLoader(Path(path))
-            except Exception:
+                if Path(path).is_file():
+                    return SkillLoader(Path(path))
+            except OSError:
                 pass
         return SkillLoader()
 
