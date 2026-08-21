@@ -302,13 +302,20 @@ The system SHALL run Segment Gate after each generated segment and SHALL stop sc
 #### Scenario: Segment N fails
 - **GIVEN** a plan with K segments and segment N fails ScriptGate
 - **WHEN** the product workflow processes the failure
+- **THEN** the failing segment SHALL be regenerated IN PLACE up to the configured backend-owned `segment_max_attempts` bound (a fixed constant, not model-controlled), keeping prior passing segments and continuity
+- **AND** segments N+1 through K-1 SHALL not be semantically generated until segment N passes its gate or the in-place attempts are exhausted.
+
+#### Scenario: In-place retry exhausted without a pass
+- **GIVEN** segment N has been regenerated `segment_max_attempts` times
+- **WHEN** every attempt still fails Segment Gate
 - **THEN** segment N SHALL become gate-failed
 - **AND** segments N+1 through K-1 SHALL not be semantically generated until human action resolves the failure.
 
-#### Scenario: No automatic repair loop
-- **GIVEN** a gate-failed segment
+#### Scenario: No unbounded automatic repair loop
+- **GIVEN** a gate-failed segment (after the fixed in-place retry bound is exhausted)
 - **WHEN** no human explicitly requests repair/regeneration
 - **THEN** the system SHALL make no additional semantic repair/regeneration call for that failure.
+- **AND** the in-place retry SHALL be bounded by the backend-owned `segment_max_attempts` constant (never a model-controlled or unbounded loop).
 
 ### Requirement: Full-script gate
 The system SHALL compile selected passing segment versions and run a Full Script Gate before a product script becomes reviewable.

@@ -396,14 +396,24 @@ class PlanRepository(_Repo):
         rows = await self._fetchall(
             "SELECT id, script_item_id, plan_id, segment_index, title, intent, "
             "target_duration_s, display_text, spoken_text, status, version, created_at "
-            "FROM script_segments WHERE plan_id = $1 ORDER BY segment_index",
+            "FROM script_segments WHERE plan_id = $1 ORDER BY segment_index, version",
             row["id"],
             conn=conn,
         )
+        # R9.2: bounded segment auto-heal persists EVERY candidate attempt as an
+        # immutable row (failed candidates stay auditable), so a plan may hold
+        # several rows per index. Reconstruct the plan's segment list from the
+        # LATEST (highest-version) candidate per index so the list stays exactly
+        # one entry per generated index and index-aligned for the model.
+        latest_by_index: dict[int, dict] = {}
+        for r in rows:
+            latest_by_index[r["segment_index"]] = r
         data = dict(row)
         data["created_at"] = _iso(data["created_at"])
         data["K"] = data.pop("segment_count")
-        data["segments"] = [self._segment_from_row(r) for r in rows]
+        data["segments"] = [
+            self._segment_from_row(latest_by_index[i]) for i in sorted(latest_by_index)
+        ]
         return ProductScriptPlan.model_validate(data)
 
     @staticmethod

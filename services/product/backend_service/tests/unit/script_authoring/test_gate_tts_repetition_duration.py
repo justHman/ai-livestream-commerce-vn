@@ -80,9 +80,30 @@ def test_normalize_tts_text_idempotent() -> None:
 
 
 def test_local_repetition_flags_repeated_phrase() -> None:
-    text = "mua ngay mua ngay mua ngay kem này tốt kem này tốt kem này tốt "
+    # 3-gram "kem này tốt" repeated 4x -> flags (threshold 3-gram >= 4x).
+    text = "kem này tốt kem này tốt kem này tốt kem này tốt mua ngay hôm nay."
     violations = check_local_repetition(text, _ctx())
     assert any(v.rule_id == "REPETITION_LOCAL" for v in violations)
+
+
+def test_local_repetition_allows_three_time_gram() -> None:
+    # Thresholds raised (15.4 real-LLM E2E): a long segment restates the
+    # mandatory claim phrase verbatim (intro + factual sentence) and common
+    # Vietnamese 3-grams ("của thiết bị") recur 3x in natural prose. A
+    # 4-gram at 2x and a 3-gram at 3x are clean; 4x flags.
+    assert (
+        check_local_repetition(
+            "bộ lọc loại bỏ tạp chất đạt chuẩn bộ lọc loại bỏ tạp chất hiệu quả.", _ctx()
+        )
+        == []
+    )
+    assert check_local_repetition("một thiết bị một thiết bị một thiết bị.", _ctx()) == []
+    assert any(
+        v.rule_id == "REPETITION_LOCAL"
+        for v in check_local_repetition(
+            "một thiết bị một thiết bị một thiết bị một thiết bị", _ctx()
+        )
+    )
 
 
 def test_local_repetition_clean() -> None:
@@ -101,6 +122,17 @@ def test_cta_frequency_within_limit() -> None:
 
 
 # -- duration (task 3.9, via Change A estimator) ---------------------------
+
+
+def test_gate_duration_band_is_defensible_50_150_percent() -> None:
+    # Reviewer R9.4: the duration acceptance band is a defensible 50%-150% of
+    # the target. A nominal 10-minute target must NOT pass at ~1.5 minutes
+    # (the PR#53 15% lower bound) nor at twice the target.
+    from backend.application.script_authoring.duration import gate_duration_band
+
+    assert gate_duration_band(600) == (300.0, 900.0)
+    assert gate_duration_band(1800) == (900.0, 2700.0)
+    assert gate_duration_band(3600) == (1800.0, 5400.0)
 
 
 def test_segment_duration_too_short() -> None:
@@ -132,3 +164,29 @@ def test_segment_duration_uses_change_a_estimator_parity() -> None:
         _ctx(target_min_seconds=0, target_max_seconds=upstream / 1000.0 - 0.001),
     )
     assert any(v.rule_id == "SPEECH_DURATION_SEGMENT" for v in violations)
+
+
+def test_segment_duration_too_short_message_guards_compact_tokens() -> None:
+    """Reviewer R9.6: the repair instruction a too-short segment receives must
+    tell the model to KEEP the compact price/number tokens (they inflate the
+    Change A spoken estimate) and ADD new content — the 15.4 repair used to
+    remove/verbalize the price token, which collapsed the estimate (1450 chars
+    measured ~81.9s vs a ~139.8s shorter sibling) and kept the segment short."""
+    violations = check_segment_duration("Ngắn quá.", _ctx(target_min_seconds=60))
+    too_short = next(v for v in violations if v.rule_id == "SPEECH_DURATION_SEGMENT")
+    assert "KEEP the compact price/number tokens" in too_short.message
+    assert "do NOT remove or verbalize them" in too_short.message
+    assert "ADD new sentences" in too_short.message
+
+
+def test_segment_duration_too_long_message_guards_compact_tokens() -> None:
+    """The too-long repair instruction trims filler but must keep the compact
+    tokens so the estimate does not overshoot the other direction (the 15.4
+    too-long repair went 500.2s -> 646.4s -> 78.9s — it never landed in band)."""
+    long_text = " ".join("Kem ABC dưỡng ẩm sâu cho làn da mềm mại." for _ in range(120))
+    violations = check_segment_duration(
+        long_text, _ctx(target_min_seconds=10, target_max_seconds=60)
+    )
+    too_long = next(v for v in violations if v.rule_id == "SPEECH_DURATION_SEGMENT")
+    assert "TRIM redundant sentences" in too_long.message
+    assert "KEEP the compact price/number tokens" in too_long.message

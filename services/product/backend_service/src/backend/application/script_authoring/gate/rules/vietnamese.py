@@ -42,6 +42,11 @@ _TONE_CLASS = f"[{_TONE_VOWELS}]"
 # "toàn" and "thời" never match.
 _NON_SEMIVOWELS = "aăâeêơ"
 _WRONG_TONE_RE = re.compile(r"[bcdđghklmnpqrstvx]" + _TONE_CLASS + f"[{_NON_SEMIVOWELS}]")
+# The "ua"/"ưa" ON-GLIDE cluster is correct with the tone on u/ư ("của",
+# "mùa", "búa", "ngừa"): here u/ư is the semivowel on-glide and the main
+# vowel follows. The wrong-slot pattern above would flag consonant + u/ư-toned
+# + a, so those legitimate on-glides are excluded (real-LLM E2E false positive).
+_U_ONGUIDE_TONED = "ùúủũụừứửữự"
 
 # Adjacent tone marks on one syllable ("tròang") — never legitimate.
 _DOUBLE_TONE_RE = re.compile(_TONE_CLASS + _TONE_CLASS)
@@ -119,6 +124,12 @@ def check_tense_spacing(text: str, context) -> list[RuleViolation]:
             )
         )
     for match in _WRONG_TONE_RE.finditer(text):
+        # The "ua"/"ưa" on-glide (consonant + u/ư-toned + "a") is CORRECT
+        # Vietnamese ("của", "mùa", "ngừa"): the tone sits on the semivowel
+        # u/ư, not on a non-final vowel. Only o/ô/... + vowel ("tóan",
+        # "hòan") is a genuine wrong-slot misspelling.
+        if match.group()[1] in _U_ONGUIDE_TONED and match.group()[2] == "a":
+            continue
         violations.append(
             RuleViolation(
                 rule_id=RULE_VN_SPELLING_TONE,

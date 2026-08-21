@@ -248,6 +248,19 @@ def _make_service(gate: _FakeGate) -> ScriptAuthoringServiceImpl:
     return ScriptAuthoringServiceImpl(_FakeRepos(), config=ScriptAuthoringConfig(), gate=gate)
 
 
+def test_skill_loader_falls_back_when_configured_path_is_missing(tmp_path) -> None:
+    """Reviewer R9.8 exact-head CI: the packaged skill must load regardless of
+    the process CWD. The config default ``skill_path`` is CWD-relative; from a
+    different working directory it does not resolve, and Generate would crash
+    with SkillNotFoundError at runtime. A configured path that is not an
+    existing file must fall back to the packaged skill, not crash."""
+    config = ScriptAuthoringConfig(skill_path=str(tmp_path / "nope" / "SKILL.md"))
+    service = ScriptAuthoringServiceImpl(
+        _FakeRepos(), config=config, gate=_FakeGate(_pass_result())
+    )
+    assert service._skill_loader().content().strip()  # packaged skill, not a raise
+
+
 def _empty_item_wire(state: str = "EMPTY") -> dict:
     """Enriched per-item read wire for an item with no version yet (HIGH-2)."""
     return {

@@ -221,7 +221,8 @@ The system SHALL provide a no-LLM preview of planned segment counts and semantic
 #### Scenario: Preview one 60-minute product
 - **GIVEN** model-capability/calibration configuration and target duration 3600 seconds
 - **WHEN** the user requests generation preview
-- **THEN** the backend SHALL return the planned segment count `K` and estimated semantic calls `1 + K` using Change B `GenerationBudgetCalibration`
+- **THEN** the backend SHALL return the planned segment count `K` and the semantic call budget using Change B `GenerationBudgetCalibration`
+- **AND** the preview SHALL distinguish the PLANNED calls `1 + K` from the MAXIMUM Generate calls `1 + K * segment_max_attempts` (backend-owned bound for bounded in-place Segment Repair; never model-controlled)
 - **AND** no LLM call SHALL be made for the preview
 - **AND** the preview SHALL NOT require or duplicate Change A speech-duration estimation for text that does not yet exist.
 
@@ -274,19 +275,26 @@ The system SHALL generate segments for one product sequentially using compact va
 - **THEN** the invalid reference SHALL be rejected/ignored according to deterministic schema policy
 - **AND** SHALL not expand authoritative context.
 
-### Requirement: Segment gate stops future spend
-The system SHALL run Segment Gate after each generated segment and SHALL stop scheduling later segments for that product when the segment fails content policy.
+### Requirement: Segment gate bounds per-segment spend
+The system SHALL run Segment Gate after each generated segment candidate and SHALL stop scheduling later segments for that product when segment N cannot pass within its bounded backend-owned attempt budget. *(2026-08-21 product correction: a bounded, backend-owned, in-place Segment Repair is permitted before advancing; the earlier wording that no additional semantic repair/regeneration call is ever made was superseded. Automatic FULL-SCRIPT semantic repair remains forbidden.)*
 
-#### Scenario: Segment N fails
+#### Scenario: Segment N fails within its bounded budget
 - **GIVEN** a plan with K segments and segment N fails ScriptGate
 - **WHEN** the product workflow processes the failure
-- **THEN** segment N SHALL become gate-failed
-- **AND** segments N+1 through K-1 SHALL not be semantically generated until human action resolves the failure.
+- **THEN** segment N SHALL be repaired/regenerated in place within the backend-owned attempt budget (`1..segment_max_attempts` TOTAL semantic attempts, where N includes the initial generation)
+- **AND** segments N+1 through K-1 SHALL not be semantically generated until segment N passes or exhausts its budget
+- **AND** passing sibling segments SHALL be preserved.
 
-#### Scenario: No automatic repair loop
-- **GIVEN** a gate-failed segment
-- **WHEN** no human explicitly requests repair/regeneration
-- **THEN** the system SHALL make no additional semantic repair/regeneration call for that failure.
+#### Scenario: Segment budget exhausted
+- **GIVEN** segment N exhausted its bounded attempt budget
+- **WHEN** the workflow processes the exhausted budget
+- **THEN** the item SHALL become GATE_FAILED (a truthful failure, never an unbounded retry loop)
+- **AND** the system SHALL make no further automatic semantic call for that failure.
+
+#### Scenario: Full-script automatic repair remains forbidden
+- **GIVEN** a gate-failed full script
+- **WHEN** no human explicitly triggers Full-Script Fix with AI
+- **THEN** the system SHALL make no automatic full-script semantic repair/regeneration call.
 
 ### Requirement: Full-script gate
 The system SHALL compile selected passing segment versions and run a Full Script Gate before a product script becomes reviewable.
@@ -299,7 +307,8 @@ The system SHALL compile selected passing segment versions and run a Full Script
 #### Scenario: Full gate fails
 - **WHEN** cross-segment validation finds a violation
 - **THEN** the compiled product SHALL not become `REVIEWABLE`
-- **AND** the response/UI SHALL identify actionable global or implicated-segment violations.
+- **AND** the response/UI SHALL identify actionable global or implicated-segment violations
+- **AND** the system SHALL persist the complete immutable compiled `ScriptVersion` as GATE_FAILED with its violations bound to it, so a later human Full-Script Fix with AI operates on the exact failed artifact (2026-08-21 correction).
 
 ### Requirement: Multi-product bounded batch generation
 The system SHALL support one-click multi-product generation as backend-managed per-product workflows with bounded product concurrency and per-product isolation.

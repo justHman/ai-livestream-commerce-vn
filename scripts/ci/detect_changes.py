@@ -49,9 +49,22 @@ def changed_paths(repo_root: Path, base: str, head: str) -> List[str]:
         text=True,
         check=False,
     )
-    if proc.returncode != 0:
+    if proc.returncode == 0:
+        return [line for line in proc.stdout.splitlines() if line.strip()]
+    # A force-push that rewrote the branch makes ``event.before`` the old
+    # dangling head, which is not in the fresh clone -> invalid revision
+    # range. Treat the whole head as affected (conservative) instead of
+    # failing the gate (reviewer R9.8 exact-head CI; first-push-adjacent).
+    fallback = subprocess.run(
+        ["git", "show", "--name-only", "--format=", head],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if fallback.returncode != 0:
         raise RuntimeError(f"git diff {base}..{head} failed: {proc.stderr.strip()}")
-    return [line for line in proc.stdout.splitlines() if line.strip()]
+    return [line for line in fallback.stdout.splitlines() if line.strip()]
 
 
 def affected_services(repo_root: Path, base: str, head: str) -> List[str]:

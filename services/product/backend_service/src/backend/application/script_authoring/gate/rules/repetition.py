@@ -31,10 +31,19 @@ _CTA_RE = re.compile(
 # Word tokens for n-gram extraction (Vietnamese syllables).
 _WORD_RE = re.compile(r"[\w]+", re.UNICODE)
 
-# Repetition thresholds: 2 occurrences of a 4-gram, or 3 occurrences of a
+# Repetition thresholds: 3 occurrences of a 4-gram, or 4 occurrences of a
 # 3-gram, within one segment.
-_MAX_4GRAM_REPEAT = 1
-_MAX_3GRAM_REPEAT = 2
+# Raised 4-gram 2 -> 3 and 3-gram 3 -> 4 (15.4 real-LLM E2E): a long segment
+# (~360s for a K=5/1800s script) must restate the mandatory claim phrase
+# verbatim, and a real LLM naturally says it twice (intro + factual
+# sentence). That single restatement makes every overlapping 4-gram of the
+# claim appear 2x and a 2x threshold fired 2-3 violations per restated
+# claim. Common Vietnamese 3-grams ("của thiết bị", "một thiết bị") also
+# recur 3x in natural prose. A phrase repeated 4+ times in one segment is
+# the real within-segment defect (mirrors the cross-segment 4-gram
+# threshold, also >= 3 segments).
+_MAX_4GRAM_REPEAT = 2
+_MAX_3GRAM_REPEAT = 3
 
 
 def _ngrams(words: list[str], n: int) -> list[tuple[str, ...]]:

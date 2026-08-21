@@ -782,6 +782,14 @@
             "title": "Note",
             "type": "string"
           },
+          "product_facts": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Product Facts",
+            "type": "object"
+          },
           "shop_name": {
             "default": "",
             "maxLength": 256,

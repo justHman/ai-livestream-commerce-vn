@@ -45,6 +45,125 @@ _BARE_PERCENT_RE = re.compile(r"\d+(?:[.,]\d+)?\s*%")
 # "SKU123", "ABC-X1", "SP-299". Also catches quoted product names.
 _SKU_RE = re.compile(r"\b[A-Z]{2,}(?:-[A-Z0-9]+)?\d{2,}[A-Z0-9-]*\b")
 
+# Benefit/capability signals (15.4 real-LLM E2E redesign). A sentence is an
+# unsupported factual claim ONLY when it asserts a specific product benefit or
+# capability that is not among the authoritative allowed claims. The old
+# trigger was a handful of generic verbs matched as substrings ("có", "giúp",
+# "làm", "chứa", "tăng", "giảm") — but those words appear in natural
+# Vietnamese scene-setting/transitions ("đi làm về", "bình chứa cồng kềnh",
+# "nhu cầu tăng cao"), so the rule rejected normal prose a real LLM produces
+# every run and blocked REVIEWABLE deterministically. This vocabulary is
+# specific compound phrases that only a real product claim carries; generic
+# verbs are deliberately absent.
+_BENEFIT_SIGNALS = (
+    # capability / effect verbs (specific to product performance)
+    "loại bỏ",
+    "lọc sạch",
+    "khử",
+    "diệt",
+    "ngăn ngừa",
+    "ngăn chặn",
+    "cải thiện",
+    "nâng cao",
+    "tăng cường",
+    "bảo vệ",
+    "duy trì",
+    "tiết kiệm",
+    "tối ưu",
+    "giảm bớt",
+    "làm sạch",
+    "làm trắng",
+    "làm mềm",
+    "bền bỉ",
+    # quality / safety adjectives
+    "an toàn",
+    "hiệu quả",
+    "đáng tin cậy",
+    "chất lượng",
+    "ổn định",
+    # design / usage attributes
+    "gọn nhẹ",
+    "nhỏ gọn",
+    "dễ dàng",
+    "đơn giản",
+    "tiện lợi",
+    "thiết kế",
+    # attribute / spec nouns
+    "công suất",
+    "tuổi thọ",
+    "độ bền",
+    "nguyên liệu",
+    "thành phần",
+    "bảo hành",
+    "bảo trì",
+    "không dùng điện",
+    "không cần điện",
+    "không tốn điện",
+)
+
+_BENEFIT_RE = re.compile(
+    "|".join(re.escape(signal) for signal in _BENEFIT_SIGNALS),
+    re.IGNORECASE,
+)
+
+# Vietnamese clause connectors: a factual sentence may combine a supported
+# fragment with an invented extension ("thiết kế gọn nhẹ và bảo hành 10
+# năm"). Splitting on these makes support checking clause-level so the
+# supported fragment never authorizes an appended invented claim (reviewer
+# R9.3). The set is deliberately small and generic (and/meanwhile + comma/
+# semicolon); "với" is excluded because it is too ambiguous in prose.
+_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:\bvà\b|đồng thời|,|;)\s*")
+
+
+def _split_clauses(sentence: str) -> list[str]:
+    """Split one sentence into independent claim clauses.
+
+    A claim support check must be clause-level (reviewer R9.3): a sentence
+    can join an authorized fragment with an invented factual extension, and
+    the supported fragment alone must not authorize the rest.
+    """
+    return [c.strip() for c in _CLAUSE_SPLIT_RE.split(sentence) if c.strip()]
+
+
+# Vietnamese function words that must not count as claim-overlap evidence:
+# they appear in nearly every sentence regardless of whether a claim is
+# discussed, so including them lets a scene-setting sentence "overlap" an
+# allowed claim on pure filler words.
+_STOPWORDS = frozenset(
+    """
+    có này là một và để cho của với các những được không rất vô cùng
+    tại trong khi thì về sẽ đã đang cũng từ nên vào ra lên xuống đó đây
+    hơn còn mới mà do như nó anh chị em bạn mọi người gia đình cả mỗi
+    ngày nữa quá thật đều chính vẫn lại xong luôn sẵn
+    """.split()
+)
+
+_WORD_RE = re.compile(r"[\w]+", re.UNICODE)
+
+
+def _content_words(text: str) -> set[str]:
+    """Lowercased word tokens minus function words (claim-overlap evidence)."""
+    return {w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS}
+
+
+def _overlaps_allowed(lowered_clause: str, allowed: list[str]) -> bool:
+    """True when the clause shares >=2 content words with any allowed claim.
+
+    Clause-level, paraphrase-tolerant authorization (15.4 real-LLM E2E
+    redesign + reviewer R9.3): a real LLM restates an allowed claim in
+    natural words rather than verbatim ("thiết kế tinh tế gọn gàng hiện đại"
+    for "thiết kế gọn nhẹ", "bảo trì định kỳ diễn ra đơn giản" for "bảo trì
+    đơn giản"). Two shared content words are enough evidence that the clause
+    describes that authorized claim; an invented clause (công suất 500 lít,
+    bảo hành 5 năm) shares no content words with the allowed set and is still
+    flagged.
+    """
+    words = _content_words(lowered_clause)
+    for claim in allowed:
+        if len(words & _content_words(claim)) >= 2:
+            return True
+    return False
+
 
 def _span_of(match: re.Match[str]) -> TextSpan:
     return TextSpan(match.start(), match.end())
@@ -150,51 +269,43 @@ def check_identity_claims(text: str, context) -> list[RuleViolation]:
 def check_factual_claims(text: str, context) -> list[RuleViolation]:
     """Flag configured factual claims (sentences) absent from the allowed set.
 
-    ``facts.allowed_claims`` holds exact claim sentences known to be true.
-    The rule matches each allowed claim's content as a substring (exact
-    sentence match) — a claim the backend never authorized is an ERROR.
+    Product-agnostic, clause-level support (reviewer R9.3). ``allowed_claims``
+    holds exact claim sentences known to be true; a claim the backend never
+    authorized is an ERROR.
+
+    A sentence is a claim candidate ONLY when it carries a specific
+    benefit/capability/spec signal (``_BENEFIT_SIGNALS`` — category-agnostic
+    capability words, never product nouns). Each signal-bearing CLAUSE must be
+    authorized by clause-level word overlap with an allowed claim; an
+    unsupported clause is an ERROR.
+
+    The old product-reference guard (a hardcoded product-noun vocabulary) let
+    unsupported claims escape when their nouns fell outside that vocabulary.
+    Support is now derived purely from the allowed-claim set, so correctness
+    does not depend on the product name/category.
     """
     violations: list[RuleViolation] = []
     allowed = [claim.strip().lower() for claim in context.facts.allowed_claims]
-    # The generic unsupported-claim check: any sentence in the script that
-    # looks like a factual claim (contains a known claim verb) but is not in
-    # the allowed set.
-    claim_verbs = (
-        "giúp",
-        "làm",
-        "chứa",
-        "có",
-        "tăng",
-        "giảm",
-        "an toàn",
-        "hiệu quả",
-        "thành phần",
-        "nguyên liệu",
-        "không chứa",
-    )
     for sentence in re.split(r"[.!?]+", text):
         stripped = sentence.strip()
         if not stripped:
             continue
         # Sentences that only carry price/discount/SKU forms are covered by
         # the dedicated claim rules; do not re-flag them here.
-        if _PRICE_RE.search(stripped) and not re.search(
-            r"giúp|làm|chứa|tăng|an toàn|hiệu quả|thành phần|nguyên liệu", stripped, re.IGNORECASE
-        ):
+        if _PRICE_RE.search(stripped) and not _BENEFIT_RE.search(stripped):
             continue
-        lowered_sentence = stripped.lower()
-        if any(verb in lowered_sentence for verb in claim_verbs):
-            # The sentence is allowed when it carries an authorized claim
-            # (substring match: "Kem này có kem dưỡng ẩm sâu" is authorized
-            # when "kem dưỡng ẩm sâu" is an allowed claim).
-            if any(claim in lowered_sentence for claim in allowed):
+        for clause in _split_clauses(stripped):
+            lowered = clause.lower()
+            if not _BENEFIT_RE.search(lowered):
+                continue
+            if _overlaps_allowed(lowered, allowed):
                 continue
             violations.append(
                 RuleViolation(
                     rule_id=RULE_CLAIM_FACTUAL,
                     severity=Severity.ERROR,
                     message=(
-                        f"Claim {stripped!r} is not among the authoritative "
+                        f"Claim {clause!r} is not among the authoritative "
                         "allowed claims; do not state it."
                     ),
                 )

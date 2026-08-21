@@ -141,6 +141,72 @@ async def test_start_generation_completes_to_reviewable_pg(pg_url: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_planned_size_segments_over_180s_reach_reviewable_pg(pg_url: str) -> None:
+    """15.4 regression: the segment gate band derives from the planned segment
+    target (600s/K=2 -> 300s, band [150, 450]), so a ~230s segment — previously
+    structurally rejected by the fixed 180s default max — now passes and the
+    product reaches REVIEWABLE."""
+    repos = await _connect(pg_url)
+    try:
+        # ~230s per segment (400 ASCII tokens), above the old 180s hard max.
+        llm = FakeLlm(
+            segment_by_index={
+                0: gate_compliant_text(0, 400),
+                1: gate_compliant_text(400, 400),
+            }
+        )
+        service = ScriptAuthoringServiceImpl(
+            repos, config=ScriptAuthoringConfig(), engine_manager=FakeEngineManager(llm)
+        )
+        set_id = (await _new_set(service, ["P1"]))["id"]
+        result = await service.start_generation(
+            set_id=set_id,
+            product_id="P1",
+            target_duration_s=600,
+            intent="selling",
+            idempotency_key="gen-230s",
+        )
+        await _wait_for_job(repos, result["workflow_id"])
+        item = await _wait_for_state(repos, set_id, "P1", ScriptState.REVIEWABLE)
+        assert item is not None and item.state is ScriptState.REVIEWABLE
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_segment_at_30_percent_of_target_fails_defensible_band_pg(pg_url: str) -> None:
+    """R9.4: a segment at ~30% of its planned target must FAIL the restored
+    defensible band.
+
+    600s target -> K=2 -> 300s per segment -> band [150, 450]. A ~90s segment
+    (30% of target) passed the PR#53 15%-200% band but must be rejected by the
+    restored 50%-150% band; the driver's bounded in-place retry then exhausts
+    its budget and the item lands GATE_FAILED (truthful failure).
+    """
+    repos = await _connect(pg_url)
+    try:
+        # ~90s segment (147 distinct CVC words ~= 90s of spoken text).
+        llm = FakeLlm(segment_by_index={0: gate_compliant_text(800, 147)})
+        service = ScriptAuthoringServiceImpl(
+            repos, config=ScriptAuthoringConfig(), engine_manager=FakeEngineManager(llm)
+        )
+        set_id = (await _new_set(service, ["P1"]))["id"]
+        result = await service.start_generation(
+            set_id=set_id,
+            product_id="P1",
+            target_duration_s=600,
+            intent="selling",
+            idempotency_key="gen-30pct",
+        )
+        await _wait_for_job(repos, result["workflow_id"])
+        item = await _wait_for_state(repos, set_id, "P1", ScriptState.GATE_FAILED)
+        assert item is not None
+        assert item.state is ScriptState.GATE_FAILED
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
 async def test_start_generation_idempotent_duplicate_returns_same_job_pg(pg_url: str) -> None:
     repos = await _connect(pg_url)
     try:
@@ -206,11 +272,13 @@ async def test_regenerate_segment_pg(pg_url: str) -> None:
         assert version is not None
         current_segments = await repos.segments.list_selected(version.segment_version_ids)
         assert current_segments
-        # Regeneration created a NEW immutable segment version: two distinct
-        # segment rows now exist for index 1.
+        # Regeneration created a NEW immutable segment version on top of the
+        # original. R9.2 bounded auto-heal also persists every failed candidate
+        # attempt as an immutable row, so index 1 holds the original candidates
+        # plus the regenerated one (>= 2 distinct versions).
         all_segments = await repos.segments.list_by_plan(current_segments[0].plan_id)
         seg1_rows = [s for s in all_segments if s.segment_index == 1]
-        assert len({s.version for s in seg1_rows}) == 2
+        assert len({s.version for s in seg1_rows}) >= 2
     finally:
         await repos.close()
 

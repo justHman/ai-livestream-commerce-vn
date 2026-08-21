@@ -41,6 +41,7 @@ from backend.application.script_authoring.approval import (
     approve_script,
 )
 from backend.application.script_authoring.compile import compile_spoken_text
+from backend.application.script_authoring.duration import gate_duration_band
 from backend.application.script_authoring.fingerprints import (
     ApprovalDependencies,
     rule_set_version_key,
@@ -70,7 +71,10 @@ from backend.application.script_authoring.generation.continuity import Continuit
 from backend.application.script_authoring.generation.context_builder import (
     AuthoritativeContext,
 )
-from backend.application.script_authoring.generation.driver import WorkflowDriver
+from backend.application.script_authoring.generation.driver import (
+    SegmentRepairHint,
+    WorkflowDriver,
+)
 from backend.application.script_authoring.generation.intent import (
     ScriptIntent as GenScriptIntent,
     build_transition_context,
@@ -395,7 +399,60 @@ class ScriptAuthoringServiceImpl:
             shop_name=brief.get("shop_name", ""),
             notes=brief.get("notes", brief.get("note", "")),
             transition_policy=transition_policy,
+            product_facts=brief.get("product_facts") or {},
         )
+
+    @staticmethod
+    def _product_facts(brief: LiveSessionBrief, product_id: str) -> ProductFacts:
+        """Build the gate's authoritative facts for one product from the brief.
+
+        Facts are the only values a script MAY claim. An empty brief carries no
+        facts, so the strict gate flags every claim as unverified — the caller
+        (15.4 real-LLM evidence) supplies a brief with ``product_facts``.
+        """
+        raw = (brief.product_facts or {}).get(product_id, {}) or {}
+        return ProductFacts(
+            product_name=str(raw.get("product_name", "")),
+            prices=tuple(str(v) for v in raw.get("prices", ())),
+            discounts=tuple(str(v) for v in raw.get("discounts", ())),
+            skus=tuple(str(v) for v in raw.get("skus", ())),
+            allowed_claims=tuple(str(v) for v in raw.get("allowed_claims", ())),
+        )
+
+    def _segment_constraints(self) -> list[str]:
+        """Registry ``generation_constraint`` text for the segment rule set.
+
+        Spec: generation uses registry constraints — the Generate prompt must
+        carry the deterministic rules the gate will enforce, so the model can
+        write gate-compliant copy in one shot (no AI retry). Segments are the
+        long-form path's strictest surface (format, spelling, claims, TTS,
+        repetition, duration). A duck-typed gate without a registry (unit
+        fakes) simply supplies no constraints.
+        """
+        registry = getattr(self._gate, "registry", None)
+        if registry is None:
+            return []
+        rules = default_segment_rules()
+        return registry().generation_constraints([spec.id for spec in rules])
+
+    @staticmethod
+    def _authoritative_context(brief: LiveSessionBrief, product_id: str) -> "AuthoritativeContext":
+        """Authoritative context for the Generate prompt for one product.
+
+        Product identity/price render into ``product``; the allowed claims
+        render as claim facts the model may state. Matches the gate's
+        ``ProductFacts`` so the prompt and the gate agree on what is citable.
+        """
+        facts = ScriptAuthoringServiceImpl._product_facts(brief, product_id)
+        product: dict[str, str] = {}
+        if facts.product_name:
+            product["name"] = facts.product_name
+        for price in facts.prices:
+            product.setdefault("price", price)
+        for sku in facts.skus:
+            product.setdefault("sku", sku)
+        claim_facts = tuple({"claim": claim} for claim in facts.allowed_claims)
+        return AuthoritativeContext(product=product, facts=claim_facts)
 
     @staticmethod
     def _version_wire(version: ScriptVersion | None) -> dict[str, Any] | None:
@@ -474,7 +531,9 @@ class ScriptAuthoringServiceImpl:
         gate = self._gate
         context = ScriptGateContext(transition_policy=transition_policy, facts=ProductFacts())
 
-        def segment_gate(text: str) -> GateRunResult:
+        def segment_gate(text: str, target_duration_s: float | None = None) -> GateRunResult:
+            # Manual drafts have no plan -> no per-segment target; the lenient
+            # default band (10-180s) applies.
             return gate.run_segment(text, context)
 
         def full_gate(segments: Sequence[str]) -> GateRunResult:
@@ -716,9 +775,15 @@ class ScriptAuthoringServiceImpl:
     def _skill_loader(self) -> SkillLoader:
         path = self._config.skill_path
         if path:
+            # The config default is CWD-relative ("resources/skills/..."), so it
+            # only resolves from the backend_service working directory; a
+            # different CWD must fall back to the packaged absolute skill
+            # (reviewer R9.8 exact-head CI — Generate crashed with
+            # SkillNotFoundError when run from the repo root).
             try:
-                return SkillLoader(Path(path))
-            except Exception:
+                if Path(path).is_file():
+                    return SkillLoader(Path(path))
+            except OSError:
                 pass
         return SkillLoader()
 
@@ -838,32 +903,147 @@ class ScriptAuthoringServiceImpl:
         skill_text = self._skill_text()
         transition = build_transition_context(script_set.brief.transition_policy)
         gen_intent = GenScriptIntent(intent="selling", target_duration_s=target_duration_s)
+        # Authoritative facts for the prompt and the gate come from the same
+        # brief slice, so the model is told exactly what it may claim.
+        authoritative = self._authoritative_context(script_set.brief, item.product_id)
+        segment_constraints = self._segment_constraints()
+        facts_obj = self._product_facts(script_set.brief, item.product_id)
+        all_claims = list(authoritative.facts)
 
-        def segment_generate(index: int, continuity: ContinuityState) -> SegmentStepOutcome:
+        def segment_generate(
+            index: int,
+            continuity: ContinuityState,
+            segment_target_s: float | None = None,
+        ) -> SegmentStepOutcome:
             emit("segment.started", {"product_id": item.product_id, "segment_index": index})
+            # 15.4 real-E2E finding: the prompt must state the SEGMENT's planned
+            # duration (target/K), not the whole product target — otherwise the
+            # model over-fills every segment and fails the gate's duration rule.
+            duration_s = int(segment_target_s or target_duration_s)
+            # Per-segment authoritative slice (15.4): the full product
+            # name/price/SKU appear ONLY in the opening segment (index 0), and
+            # each segment gets a rotating subset of claims so content is
+            # distributed and REPETITION_CROSS stays quiet. The segment gate
+            # still uses the FULL facts (it checks every claim), so the model
+            # only ever sees what it is allowed to claim this segment.
+            product_ctx = {"name": facts_obj.product_name}
+            # 15.4 calibration: EVERY segment states the digit price once (it is
+            # the compact token that makes a ~1000-char segment reach the spoken
+            # band), but only the opening segment names the SKU/product identity
+            # so cross-segment 4-grams cannot repeat. Per-segment char rate is
+            # calibrated to each segment's compact-token mix.
+            if facts_obj.prices:
+                prices = list(facts_obj.prices)
+                # Prefer the spelled-out variant so the model copies it verbatim
+                # (multiplicative currency inflation keeps the segment long
+                # enough for the duration gate; a digit price the model writes
+                # under-counts duration, 15.4 real-E2E finding).
+                spelled = next((p for p in prices if not re.search(r"\d", p)), None)
+                product_ctx["price"] = spelled or prices[0]
+            if index == 0 and facts_obj.skus:
+                product_ctx["sku"] = ", ".join(facts_obj.skus)
+            if all_claims:
+                # Exactly ONE claim per segment so no segment repeats the same
+                # topic phrase (adjacent variants of one claim would make the
+                # model restate the phrase and fail REPETITION_LOCAL, 15.4).
+                claims = [all_claims[index % len(all_claims)]]
+            else:
+                claims = []
+            ctx = AuthoritativeContext(product=product_ctx, facts=tuple(claims))
             parts = build_generate_prompt(
                 skill_text,
-                generation_constraints=[],
-                context=AuthoritativeContext(),
-                duration_s=target_duration_s,
+                generation_constraints=segment_constraints,
+                context=ctx,
+                duration_s=duration_s,
                 intent=gen_intent,
                 transition=transition,
                 segment_index=index,
                 continuity=continuity,
+                compact_tokens=True,
+                # Opening segment carries the spelled SKU + the price written in
+                # words — a ~6-9x currency/acronym spoken-inflation multiplier,
+                # so it must target FEWER characters (~2.6 chars/s) or it
+                # overshoots the 1.5x ceiling (15.4: 1685 chars measured 614s
+                # vs a 540s max for a 360s segment; but 2.2 under-filled the
+                # 600s opening to 138s < its 150s floor). Later segments carry
+                # the digit price and must fill more characters (~5.0 chars/s)
+                # so a plain-prose stretch still clears the defensible 50%
+                # spoken floor (reviewer R9.4 — a 360s segment needs >=180s).
+                chars_per_second=2.6 if index == 0 else 5.0,
+                price_in_words=(index == 0),
             )
             prompt = "\n\n".join(filter(None, [parts.system, parts.context, parts.user]))
             raw = llm_fn(prompt)
             if not raw or not raw.strip():
                 return SegmentStepOutcome(index=index, state=continuity, error="empty model output")
+            words = raw.split()
             return SegmentStepOutcome(
                 index=index,
                 state=continuity,
                 result=SegmentGenerationResult(
-                    segment_index=index, display_text=raw, spoken_text=raw
+                    segment_index=index,
+                    display_text=raw,
+                    spoken_text=raw,
+                    opening_fingerprint=" ".join(words[:5])[:80] if words else None,
+                    covered_fact_ids=frozenset(c["claim"] for c in claims if "claim" in c),
+                    topic=f"Phần {index + 1}",
                 ),
             )
 
         return segment_generate
+
+    def _make_segment_repair(self, item, script_set, target_duration_s, llm_fn, *, emit):
+        """Build the constrained in-place segment repair callable (reviewer R9.2/3.3).
+
+        Attempts 2..N of a Generate operation hand the exact failed candidate +
+        exact failed rule IDs/messages to ``build_repair_prompt`` so the model
+        makes the minimum local change instead of blindly rewriting the segment
+        from scratch. The per-segment authoritative slice matches generation, so
+        a repair can never introduce an unverified claim.
+        """
+        authoritative = self._authoritative_context(script_set.brief, item.product_id)
+        facts_obj = self._product_facts(script_set.brief, item.product_id)
+        all_claims = list(authoritative.facts)
+
+        def segment_repair(
+            index: int, continuity: ContinuityState, hint: "SegmentRepairHint"
+        ) -> SegmentStepOutcome:
+            emit("segment.repairing", {"product_id": item.product_id, "segment_index": index})
+            product_ctx = {"name": facts_obj.product_name}
+            if all_claims:
+                claims = [all_claims[index % len(all_claims)]]
+            else:
+                claims = []
+            ctx = AuthoritativeContext(product=product_ctx, facts=tuple(claims))
+            parts = build_repair_prompt(
+                hint.source_text,
+                hint.failed_rule_ids,
+                hint.repair_instructions,
+                ctx,
+                segment_index=index,
+                target_duration_s=hint.target_duration_s,
+            )
+            prompt = "\n\n".join(filter(None, [parts.system, parts.context, parts.user]))
+            raw = llm_fn(prompt)
+            if not raw or not raw.strip():
+                return SegmentStepOutcome(
+                    index=index, state=continuity, error="empty repair output"
+                )
+            words = raw.split()
+            return SegmentStepOutcome(
+                index=index,
+                state=continuity,
+                result=SegmentGenerationResult(
+                    segment_index=index,
+                    display_text=raw,
+                    spoken_text=raw,
+                    opening_fingerprint=" ".join(words[:5])[:80] if words else None,
+                    covered_fact_ids=frozenset(c["claim"] for c in claims if "claim" in c),
+                    topic=f"Phần {index + 1}",
+                ),
+            )
+
+        return segment_repair
 
     def _build_driver(
         self,
@@ -877,15 +1057,44 @@ class ScriptAuthoringServiceImpl:
         batch_id: str,
         loaders,
     ):
-        context = ScriptGateContext(
-            transition_policy=script_set.brief.transition_policy, facts=ProductFacts()
+        facts = self._product_facts(script_set.brief, item.product_id)
+        base_context = ScriptGateContext(
+            transition_policy=script_set.brief.transition_policy, facts=facts
         )
 
-        def segment_gate(text: str) -> GateRunResult:
-            return self._gate.run_segment(text, context)
+        def segment_gate(text: str, target_duration_s: float | None = None) -> GateRunResult:
+            # Planned segment band: 50%-150% of the per-segment target
+            # (``gate_duration_band``, reviewer R9.4). The PR#53 15%-200% band
+            # let a nominal 10-minute target pass at ~1.5 minutes and an
+            # over-long 2x segment pass; the defensible 50%-150% band restores
+            # the operational meaning of the requested duration. The generate
+            # prompt states this SAME band, so prompt and gate never disagree.
+            # None -> no plan -> lenient default.
+            ctx = base_context
+            if target_duration_s is not None and target_duration_s > 0:
+                min_s, max_s = gate_duration_band(target_duration_s)
+                ctx = ScriptGateContext(
+                    transition_policy=script_set.brief.transition_policy,
+                    facts=facts,
+                    target_min_seconds=min_s,
+                    target_max_seconds=max_s,
+                )
+            return self._gate.run_segment(text, ctx)
 
         def full_gate(segments: Sequence[str]) -> GateRunResult:
-            return self._gate.run_full_script(list(segments), context)
+            # Total-script band is the same defensible 50%-150% of the target
+            # (``gate_duration_band``, reviewer R9.4), so a 10-minute script
+            # must actually speak at least ~5 minutes. None -> lenient default.
+            ctx = base_context
+            if target_duration_s > 0:
+                min_s, max_s = gate_duration_band(target_duration_s)
+                ctx = ScriptGateContext(
+                    transition_policy=script_set.brief.transition_policy,
+                    facts=facts,
+                    total_min_seconds=min_s,
+                    total_max_seconds=max_s,
+                )
+            return self._gate.run_full_script(list(segments), ctx)
 
         workflow = ProductGenerationWorkflow(
             item=item,
@@ -901,16 +1110,21 @@ class ScriptAuthoringServiceImpl:
         segment_generate = self._make_segment_generate(
             item, script_set, target_duration_s, llm_fn, emit=emit
         )
+        segment_repair = self._make_segment_repair(
+            item, script_set, target_duration_s, llm_fn, emit=emit
+        )
         driver = WorkflowDriver(
             product_id=item.product_id,
             workflow=workflow,
             plan_generate=plan_generate,
             segment_generate=segment_generate,
+            segment_repair=segment_repair,
             persist=bridge,
             load_item=loaders[0],
             load_segment=loaders[1],
             load_version=loaders[2],
             fingerprint=self._generation_fingerprint(),
+            max_segment_attempts=self._config.segment_max_attempts,
         )
         return _EventEmittingDriver(driver, emit, batch_id)
 
@@ -1315,7 +1529,12 @@ class ScriptAuthoringServiceImpl:
         if item is None:
             self._raise_not_found("product script", product_id)
         try:
-            preview = compute_product_preview(product_id, target_duration_s, self._calibration())
+            preview = compute_product_preview(
+                product_id,
+                target_duration_s,
+                self._calibration(),
+                segment_max_attempts=self._config.segment_max_attempts,
+            )
         except GenerationBudgetError as exc:
             raise ScriptAuthoringError("illegal_transition", str(exc)) from exc
         return {
@@ -1323,6 +1542,7 @@ class ScriptAuthoringServiceImpl:
             "target_duration_s": int(preview.target_duration_s),
             "planned_segment_count": preview.planned_segment_count,
             "estimated_semantic_calls": preview.estimated_semantic_calls,
+            "maximum_semantic_calls": preview.maximum_semantic_calls,
         }
 
     # ── human approval (task 11.7) ───────────────────────────────────
@@ -2154,9 +2374,13 @@ class ScriptAuthoringServiceImpl:
             if plan is None:
                 raise ValueError("no plan to regenerate a segment from")
             segments = await self._repos.segments.list_by_plan(plan.id)
-            if segment_index < 0 or segment_index >= len(segments):
+            # R9.2: bounded segment auto-heal persists EVERY candidate attempt
+            # as an immutable row, so a failed index may carry several rows.
+            # Regeneration targets the latest (highest version) candidate.
+            index_segments = [s for s in segments if s.segment_index == segment_index]
+            if not index_segments:
                 raise ValueError(f"segment index {segment_index} out of range")
-            current_segment = segments[segment_index]
+            current_segment = max(index_segments, key=lambda s: s.version)
             parts = build_generate_prompt(
                 self._skill_text(),
                 generation_constraints=[],

@@ -107,6 +107,9 @@ class LiveSessionBriefIn(BaseModel):
     host_name: str = Field(default="", max_length=128)
     shop_name: str = Field(default="", max_length=256)
     note: str = Field(default="", max_length=2_000)
+    # Authoritative facts a generated script may claim, per product
+    # (product_id -> {product_name, prices, discounts, skus, allowed_claims}).
+    product_facts: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ScriptSetCreateIn(BaseModel):

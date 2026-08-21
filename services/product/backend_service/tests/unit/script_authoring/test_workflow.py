@@ -70,7 +70,7 @@ def _violation(rule_id: str, *, segment_index: int | None = None) -> RuleViolati
     )
 
 
-def _pass(_text: str | Sequence[str] = "") -> GateRunResult:
+def _pass(_text: str | Sequence[str] = "", _target: float | None = None) -> GateRunResult:
     return GateRunResult(scope="segment", fingerprint=RuleSetFingerprint())
 
 
@@ -86,7 +86,7 @@ def _result(*violations: RuleViolation) -> GateRunResult:
 def _fail(*violations: RuleViolation) -> Callable:
     """Build a full-gate callable that always fails with ``violations``."""
 
-    def _check(_text: str | Sequence[str]) -> GateRunResult:
+    def _check(_text: str | Sequence[str], _target: float | None = None) -> GateRunResult:
         return _result(*violations)
 
     return _check
@@ -330,7 +330,7 @@ def test_compile_rejects_missing_segments() -> None:
 def test_segment_gate_fail_stops_product_at_n() -> None:
     segment_results = [_pass(), _result(_violation("PROFANITY_OFFENSIVE"))]
 
-    def sg(text: str) -> GateRunResult:
+    def sg(text: str, _target: float | None = None) -> GateRunResult:
         return segment_results.pop(0)
 
     fake = _make(segment_gate=sg, with_generate=True)
@@ -360,6 +360,26 @@ def test_segment_gate_fail_stops_product_at_n() -> None:
     # Manual edit from GATE_FAILED is the human resolution path.
     wf.create_manual_draft(display_text="Đoạn 1 tốt.", spoken_text="Đoạn 1 tốt.")
     assert wf.item.state is DRAFT
+
+
+def test_segment_gate_receives_planned_per_segment_target() -> None:
+    """The segment gate gets ``target_duration_s / K`` so its duration band can
+    match the planned segment (15.4 finding: a fixed 10-180s default cannot
+    hold a planned 200-240s segment). Manual drafts (no plan) pass None."""
+    targets: list[float | None] = []
+
+    def sg(text: str, target: float | None = None) -> GateRunResult:
+        targets.append(target)
+        return _pass(text, target)
+
+    fake = _make(segment_gate=sg, with_generate=True)
+    wf = fake.workflow
+    wf.start_planning(target_duration_s=600)
+    wf.complete_planning(segment_count=3)
+    for index in range(3):
+        wf.start_segment(index)
+        wf.complete_segment(index, display_text=f"Đoạn {index}.", spoken_text=f"Đoạn {index}.")
+    assert targets == [200.0, 200.0, 200.0]
 
 
 # --- 6. Full Gate FAIL (task 9.3) ---------------------------------------------
@@ -410,6 +430,111 @@ def test_full_gate_fail_does_not_auto_repair() -> None:
     wf.compile_and_full_gate()
     assert wf.item.state is GATE_FAILED
     assert calls["fix"] == 0  # no automatic semantic retry
+
+
+def test_record_segment_attempt_selects_passed_candidate() -> None:
+    # Reviewer R9.2/3.4: one candidate -> one gate eval -> one immutable
+    # candidate + one GateRun bound to it; a passed candidate is SELECTED and
+    # the workflow stays in GENERATING for the next index.
+    fake = _make(with_generate=True)
+    wf = fake.workflow
+    wf.start_planning(target_duration_s=600)
+    wf.complete_planning(segment_count=2)
+    wf.start_segment(0)
+    candidate = wf.record_segment_attempt(
+        0,
+        display_text="Đoạn 0.",
+        spoken_text="Đoạn 0.",
+        attempt=1,
+        gate_result=_pass("Đoạn 0.", 300.0),
+    )
+    assert candidate.status is DRAFT
+    assert wf.segments[0].id == candidate.id
+    assert wf.item.state is GENERATING
+    assert wf.last_gate_run is not None
+    assert wf.last_gate_run.passed is True
+    assert wf.last_gate_run.full is False
+    assert wf.last_gate_run.script_version_id == candidate.id
+
+
+def test_record_segment_attempt_failed_candidate_is_evidence_not_selected() -> None:
+    # Reviewer R9.2/3.4: a failed candidate is persisted as audit evidence but
+    # NOT selected, so a bounded in-place retry of the SAME index stays legal
+    # (no N+1 work while N is unresolved) and the item is not advanced.
+    fake = _make(with_generate=True)
+    wf = fake.workflow
+    wf.start_planning(target_duration_s=600)
+    wf.complete_planning(segment_count=2)
+    wf.start_segment(0)
+    failed = _result(_violation("PROFANITY_OFFENSIVE"))
+    candidate = wf.record_segment_attempt(
+        0,
+        display_text="Xấu quá!",
+        spoken_text="Xấu quá!",
+        attempt=1,
+        gate_result=failed,
+    )
+    assert candidate.status is GATE_FAILED
+    assert 0 not in wf.segments, "failed candidate is evidence, not the selected segment"
+    assert wf.item.state is GENERATING
+    assert wf.last_gate_run is not None
+    assert wf.last_gate_run.passed is False
+    assert [v.rule_id for v in wf.last_gate_run.violations] == ["PROFANITY_OFFENSIVE"]
+    assert wf.last_gate_run.script_version_id == candidate.id
+
+
+def test_fail_segment_gate_lands_gate_failed_after_budget_exhausted() -> None:
+    # Reviewer R9.2: after the bounded segment auto-heal budget is exhausted,
+    # the workflow lands truthful GATE_FAILED (no unbounded retry loop).
+    fake = _make(with_generate=True)
+    wf = fake.workflow
+    wf.start_planning(target_duration_s=600)
+    wf.complete_planning(segment_count=2)
+    wf.start_segment(0)
+    wf.fail_segment_gate(0, message="segment 0 gate failed after 3 semantic attempts")
+    assert wf.item.state is GATE_FAILED
+    assert wf.last_error == "segment 0 gate failed after 3 semantic attempts"
+    with pytest.raises(IllegalTransitionError):
+        wf.complete_segment(1, display_text="x", spoken_text="x")
+
+
+def test_full_gate_fail_persists_complete_failed_version() -> None:
+    # Reviewer R9.2/3.7: when the Full Script Gate fails after all K segments
+    # pass locally, a complete immutable compiled ScriptVersion (GATE_FAILED)
+    # is persisted, bound to the exact full-gate violations, and becomes the
+    # item's current version — so a later human Fix with AI operates on the
+    # exact failed compiled script instead of an out-of-band reconstruction.
+    fake = _make(
+        full_gate=_fail(
+            _violation("REPETITION_CROSS", segment_index=1),
+            _violation("CLAIM_CONTRADICTION"),
+        ),
+        with_generate=True,
+    )
+    wf = fake.workflow
+    wf.start_planning(target_duration_s=600)
+    wf.complete_planning(segment_count=2)
+    wf.start_segment(0)
+    wf.complete_segment(0, display_text="Đoạn 0.", spoken_text="Đoạn 0.")
+    wf.start_segment(1)
+    wf.complete_segment(1, display_text="Đoạn 1.", spoken_text="Đoạn 1.")
+    result = wf.compile_and_full_gate()
+    assert not result.passed
+    assert wf.item.state is GATE_FAILED
+    assert wf.current_version is not None
+    assert wf.current_version.state is GATE_FAILED
+    assert wf.current_version.segment_version_ids == [wf.segments[0].id, wf.segments[1].id]
+    assert wf.current_version.gate_run_id == wf.last_gate_run.id
+    assert wf.item.current_version_id == wf.current_version.id
+    assert [v.rule_id for v in wf.last_gate_run.violations] == [
+        "REPETITION_CROSS",
+        "CLAIM_CONTRADICTION",
+    ]
+    # A failed compiled version is not approval and not REVIEWABLE.
+    assert wf.item.approved_version_id is None
+    assert wf.current_version.state is not REVIEWABLE
+    # Human full-script Fix is legal from this exact failed version.
+    assert wf.fix_eligible() is True
 
 
 # --- 7. human approval (Decision 14) ------------------------------------------

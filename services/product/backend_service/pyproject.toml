@@ -63,6 +63,9 @@ include = ["backend*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "live: release-evidence E2E requiring real LLM/TTS/avatar gateways (skip when env absent)",
+]
 pythonpath = [
   "src",
   "../llm_service/src",
