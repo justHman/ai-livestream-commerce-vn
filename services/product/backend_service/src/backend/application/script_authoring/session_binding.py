@@ -263,7 +263,12 @@ def check_binding(
                 _issue(product_id, BindingKind.MISSING, "no approved version for product")
             )
             continue
-        if item.state is not ScriptState.APPROVED or version.state is not ScriptState.APPROVED:
+        # Version rows are immutable (Decision 13): script_versions.state is a
+        # creation-time snapshot and never flips to APPROVED. The approval
+        # signal is fully determined by item.state + the approved_version_id
+        # pointer (checked above) + the approval row binding this version
+        # (checked below) — not by the version row's own state.
+        if item.state is not ScriptState.APPROVED:
             issues.append(_issue(product_id, BindingKind.UNAPPROVED, "script is not APPROVED"))
             continue
         approval = approvals_by_item.get(item.id)

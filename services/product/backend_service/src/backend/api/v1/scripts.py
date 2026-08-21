@@ -89,6 +89,10 @@ def _raise_domain(service_error: ScriptAuthoringError) -> HTTPException:
         "missing_or_stale_script",
     ):
         return _domain_error(409, service_error.code, service_error.message)
+    if service_error.code == "llm_unavailable":
+        return _domain_error(503, "llm_unavailable", service_error.message)
+    if service_error.code == "service_unavailable":
+        return _domain_error(503, "service_unavailable", service_error.message)
     # Unknown/authoring-unavailable codes surface as 400 by default.
     return _domain_error(400, service_error.code, service_error.message)
 
@@ -103,6 +107,9 @@ class LiveSessionBriefIn(BaseModel):
     host_name: str = Field(default="", max_length=128)
     shop_name: str = Field(default="", max_length=256)
     note: str = Field(default="", max_length=2_000)
+    # Authoritative facts a generated script may claim, per product
+    # (product_id -> {product_name, prices, discounts, skus, allowed_claims}).
+    product_facts: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ScriptSetCreateIn(BaseModel):

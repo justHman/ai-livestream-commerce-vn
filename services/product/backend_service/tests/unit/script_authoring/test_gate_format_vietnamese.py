@@ -85,11 +85,25 @@ def test_control_characters_are_errors() -> None:
         # legit Vietnamese never flagged
         ("toàn thời gian hoàn thành", []),
         ("thời gian tiền bạc", []),
+        # "của"/"mùa" are CORRECT: tone on the u of the "ua" on-glide cluster.
+        # The wrong-slot rule must NOT flag them (real-LLM E2E false positive).
+        ("của gia đình chúng ta", []),
+        ("mùa hè nắng nóng", []),
     ],
 )
 def test_vietnamese_rules(text: str, expected_rules: list[str]) -> None:
     violations = check_common_spelling(text, _ctx()) + check_tense_spacing(text, _ctx())
     assert sorted(v.rule_id for v in violations) == sorted(expected_rules)
+
+
+def test_ua_onglide_tone_is_not_wrong_slot() -> None:
+    # The "ua"/"ưa" on-glide puts the tone on u/ư (correct): "của", "mùa",
+    # "búa", "ngừa". Only o/ô/... + vowel ("tóan", "hòan") is a wrong slot.
+    assert check_tense_spacing("của", _ctx()) == []
+    assert check_tense_spacing("mùa", _ctx()) == []
+    assert check_tense_spacing("búa", _ctx()) == []
+    assert check_tense_spacing("ngừa", _ctx()) == []
+    assert check_tense_spacing("tóan", _ctx())  # still flagged
 
 
 def test_brand_allowlist_exempts_spelling_check() -> None:

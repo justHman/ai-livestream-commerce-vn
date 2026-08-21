@@ -17,6 +17,8 @@ from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
 from backend.application.script_authoring.generation.continuity import (
     TAIL_LIMIT_CHARS,
     ContinuityState,
+    closing_fingerprint,
+    extract_ctas,
 )
 
 
@@ -157,6 +159,9 @@ class ProductSegmentGenerator:
                 state.opening_fingerprints
                 | ({result.opening_fingerprint} if result.opening_fingerprint else set())
             ),
+            used_ctas=state.used_ctas | extract_ctas(result.spoken_text),
+            closing_fingerprints=state.closing_fingerprints
+            | ({fp for fp in (closing_fingerprint(result.spoken_text),) if fp}),
             last_topic=result.topic or state.last_topic,
             next_topic=None,
         )

@@ -69,8 +69,9 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
 
     ``CancelledError`` propagates immediately; other failures log and retry
     up to ``_STARTUP_ATTEMPTS`` at ``_STARTUP_RETRY_DELAYS``; on exhaustion the
-    store is closed and the error is logged (server remains bootable, and
-    readiness reports the failure honestly).
+    store is closed. In production the final failure is re-raised (fail-fast —
+    the app must not boot with an unreachable DB); otherwise the error is
+    logged and the server remains bootable (readiness reports it honestly).
     """
     pg = container.pg_store
     if pg is None or not getattr(pg, "enabled", False):
@@ -113,6 +114,8 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
                     _STARTUP_ATTEMPTS,
                     type(exc).__name__,
                 )
+                if container.config.is_production:
+                    raise exc
                 return
             delay = _STARTUP_RETRY_DELAYS[attempt]
             logger.warning(
@@ -121,6 +124,91 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
                 delay,
             )
             await asyncio.sleep(delay)
+
+
+async def _connect_authoring(container: BootstrapContainer) -> None:
+    """Connect the Change B authoring repositories with bounded retries.
+
+    The script_* tables are owned by ``_connect_postgres``'s apply_schema, so
+    this stage only establishes the authoring pool. When the composition wired
+    no service (no DATABASE_URL) the authoring surface stays 501. On retry
+    exhaustion the final failure is re-raised in production (fail-fast);
+    otherwise failures log and the server remains bootable, mirroring
+    ``_connect_postgres``.
+    """
+    service = getattr(container, "script_authoring_service", None)
+    if service is None:
+        return
+    repos = getattr(service, "_repos", None)
+    if repos is None or not getattr(repos, "enabled", False):
+        return
+    for attempt in range(_STARTUP_ATTEMPTS):
+        try:
+            connect = repos.connect
+            if inspect.iscoroutinefunction(connect):
+                await connect()
+            else:
+                await asyncio.to_thread(connect)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            close = getattr(repos, "close", None)
+            if close is not None:
+                try:
+                    if inspect.iscoroutinefunction(close):
+                        await close()
+                    else:
+                        await asyncio.to_thread(close)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as close_exc:
+                    logger.warning(
+                        "Bootstrap script-authoring cleanup failed after startup attempt=%s error_type=%s",
+                        attempt + 1,
+                        type(close_exc).__name__,
+                    )
+            if attempt == _STARTUP_ATTEMPTS - 1:
+                logger.error(
+                    "Bootstrap script-authoring startup failed after %s attempts error_type=%s",
+                    _STARTUP_ATTEMPTS,
+                    type(exc).__name__,
+                )
+                if container.config.is_production:
+                    raise exc
+                return
+            delay = _STARTUP_RETRY_DELAYS[attempt]
+            logger.warning(
+                "Bootstrap script-authoring startup failed attempt=%s retry_in_seconds=%s",
+                attempt + 1,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+
+async def _recover_authoring(container: BootstrapContainer) -> None:
+    """Resume durable authoring jobs/batches left by a previous process (HIGH-B).
+
+    Runs AFTER ``_connect_authoring`` so the repository pool is live. In prod a
+    recovery failure is fail-fast (matches the other startup gates); in dev the
+    error is logged and the app stays bootable — the durable job remains
+    recoverable on the next restart.
+    """
+    service = getattr(container, "script_authoring_service", None)
+    if service is None:
+        return
+    recover = getattr(service, "recover_pending", None)
+    if recover is None:
+        return
+    try:
+        await recover()
+    except Exception as exc:
+        if container.config.is_production:
+            raise
+        logger.warning(
+            "Bootstrap authoring recovery failed type=%s; jobs stay recoverable",
+            type(exc).__name__,
+        )
 
 
 # -- Shutdown --------------------------------------------------------
@@ -230,6 +318,36 @@ async def _shutdown(container: BootstrapContainer) -> None:
             if close is not None:
                 await _call_cleanup(close, async_method=inspect.iscoroutinefunction(close))
 
+    async def close_authoring() -> None:
+        service = getattr(container, "script_authoring_service", None)
+        if service is None:
+            return
+        repos = getattr(service, "_repos", None)
+        if repos is None or not getattr(repos, "enabled", False):
+            return
+        close = getattr(repos, "close", None)
+        if close is not None:
+            await _call_cleanup(close, async_method=inspect.iscoroutinefunction(close))
+
+    async def drain_authoring() -> None:
+        """Drain Script Authoring background jobs before any pool closes.
+
+        HIGH-1: MUST run before ``close_authoring``. Awaited directly (not
+        under the per-stage timeout) — cutting the drain short would leave a
+        still-running job to race ``repos.close()``, the exact hang it
+        prevents. The drain itself is bounded (configurable graceful window,
+        then cancel + await stragglers).
+        """
+        service = getattr(container, "script_authoring_service", None)
+        if service is None:
+            return
+        drain = getattr(service, "drain", None)
+        if drain is not None:
+            await _call_cleanup(drain, async_method=inspect.iscoroutinefunction(drain))
+
+    # Drain Script Authoring background jobs BEFORE the authoring/postgres
+    # close stages so no owned task races the pool close (HIGH-1).
+    await drain_authoring()
     stages = (
         ("orchestrators", stop_session_pipeline),
         ("coordinator", stop_coordinator),
@@ -237,6 +355,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
         ("livekit.stop_all", stop_livekit),
         ("render.stop_all", stop_backend),
         ("clients.close", close_clients),
+        ("authoring", close_authoring),
         ("postgres", close_postgres),
     )
     for name, operation in stages:
@@ -251,8 +370,16 @@ def build_lifespan(container: BootstrapContainer):
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        await _connect_postgres(container)
-        _start_reducer_loop(container)
+        try:
+            await _connect_postgres(container)
+            await _connect_authoring(container)
+            await _recover_authoring(container)
+            _start_reducer_loop(container)
+        except Exception:
+            # Production startup is fail-fast: tear down any partially
+            # initialized resource before the boot error propagates.
+            await _shutdown(container)
+            raise
         try:
             yield
         finally:

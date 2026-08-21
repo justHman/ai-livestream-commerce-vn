@@ -63,6 +63,7 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     store = config.build_store()
     engine_manager = v1_engine_manager(config)
     pg_store = _build_pg_store(config)
+    script_authoring = _build_script_authoring(config, engine_manager, pg_store)
     from backend.application.platform_events import PlatformEventIngestionService
     from backend.application.publishing import LiveKitPublisherRegistry, publish_enabled
 
@@ -78,6 +79,7 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
         director=director,
         coordinator=coordinator,
         reducer=reducer,
+        script_authoring_service=script_authoring,
         event_ingestion=PlatformEventIngestionService(
             store=store,
             pg_store=pg_store,
@@ -123,6 +125,35 @@ def _build_pg_store(config) -> Any:
     from backend.application.db.postgres_store import PostgresRuntimeStore
 
     return PostgresRuntimeStore(config.database_url)
+
+
+def _build_script_authoring(config, engine_manager, pg_store) -> Any:
+    """Build the Change B authoring service when Postgres is configured.
+
+    Returns ``ScriptAuthoringServiceImpl | None``. When ``pg_store`` is None
+    (no DATABASE_URL) the service stays None so /api/v1/script-sets keeps
+    returning 501; the log makes the disabled state explicit. ``engine_manager``
+    powers the B6 AI generation commands; when the engine is unavailable the
+    four AI commands raise ``llm_unavailable`` (503).
+
+    Production is fail-fast: a missing DATABASE_URL must not silently disable
+    authoring, so the composition root raises instead of returning None.
+    """
+    if pg_store is None:
+        if config.is_production:
+            raise RuntimeError(
+                "DATABASE_URL is required when APP_ENV=prod (or production); "
+                "refusing to silently disable script authoring"
+            )
+        logger.info("script authoring disabled (no DATABASE_URL); /api/v1/script-sets stays 501")
+        return None
+    from backend.application.script_authoring.repositories import PostgresAuthoringRepositories
+    from backend.application.script_authoring.service_impl import ScriptAuthoringServiceImpl
+
+    repos = PostgresAuthoringRepositories(config.database_url)
+    return ScriptAuthoringServiceImpl(
+        repos, config=config.script_authoring, engine_manager=engine_manager
+    )
 
 
 def _build_api_limiter(config) -> Any:

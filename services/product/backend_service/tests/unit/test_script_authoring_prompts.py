@@ -35,6 +35,7 @@ from backend.application.script_authoring.generation.context_builder import (
     build_authoritative_context_from_entity,
 )
 from backend.application.script_authoring.generation.continuity import (
+    TAIL_LIMIT_CHARS,
     ContinuityState,
     build_tail,
 )
@@ -333,8 +334,8 @@ class TestGeneratePrompt:
             transition=build_transition_context("ORDER_AGNOSTIC"),
             continuity=state,
         )
-        assert len(state.previous_segment_tail) <= 300
-        assert len(parts.context) < 3000  # bounded context, no full script
+        assert len(state.previous_segment_tail) <= TAIL_LIMIT_CHARS
+        assert len(parts.context) < 5000  # bounded context, no full script
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +392,26 @@ class TestRepairPrompt:
                 rule_repair_instructions=[],
                 authoritative_facts=build_authoritative_context(_full_context_dict()),
             )
+
+    def test_target_duration_rendered_when_provided(self) -> None:
+        """Reviewer R9.6: a segment repair must state its spoken-duration target
+        so the model writes enough new content instead of guessing (the 15.4
+        repair under-produced because it never knew the target)."""
+        parts = build_repair_prompt(
+            source_text="Kem ABC giá 100.000đ.",
+            failed_rule_ids=["SPEECH_DURATION_SEGMENT"],
+            rule_repair_instructions=["Segment is too short."],
+            authoritative_facts=build_authoritative_context(_full_context_dict()),
+            segment_index=2,
+            target_duration_s=180.0,
+        )
+        assert "target spoken duration" in parts.user.lower()
+        assert "180" in parts.user
+        assert "segment 2" in parts.user.lower()
+
+    def test_no_target_duration_when_omitted(self) -> None:
+        parts = _build_repair()
+        assert "target spoken duration" not in parts.user
 
 
 # ---------------------------------------------------------------------------

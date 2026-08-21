@@ -6,6 +6,7 @@ import type { Api } from "./api";
 import type { Action } from "./authoring";
 import {
   approveBatchFlow,
+  AUTHORING_ACTOR,
   authoringReducer,
   cancelBatchFlow,
   canApprove,
@@ -31,6 +32,7 @@ import {
   type ScriptClient,
   type ScriptItem,
   type ScriptSet,
+  type TransitionPolicy,
 } from "./scriptSets";
 
 export interface AuthoringMountDeps {
@@ -49,7 +51,9 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
   let state: AuthoringState = {
     scriptSet: null,
     setId: "",
-    brief: { shop_name: "", host_name: "", persona: "", selling_style: "", transition_policy: "ORDER_AGNOSTIC" },
+    name: "",
+    transitionPolicy: "ORDER_AGNOSTIC",
+    brief: { title: "", host_name: "", shop_name: "", note: "" },
     productIds: [],
     targets: {},
     preview: null,
@@ -137,7 +141,9 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
         await client.fixProduct(state.setId, productId, idempotencyKey({ setId: state.setId, productId, op: "fix" }));
         addEvent(`Fix with AI ${productId} đã chấp nhận.`, "success");
       } else if (action === "approve") {
-        const result = await client.approveProduct(state.setId, productId);
+        const versionId = state.scriptSet?.products.find((p) => p.product_id === productId)?.current_version?.version_id;
+        if (!versionId) throw new Error("409: chưa có phiên bản REVIEWABLE để duyệt");
+        const result = await client.approveProduct(state.setId, productId, versionId, AUTHORING_ACTOR);
         addEvent(`Đã duyệt ${productId} (version ${result.approval.version}).`, "success");
       }
       await refresh();
@@ -229,11 +235,12 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
       return;
     }
     ($("scriptSetCreateForm") as HTMLElement).classList.remove("hidden");
-    if (document.activeElement !== $("briefShopName")) ($("briefShopName") as HTMLInputElement).value = state.brief.shop_name;
-    if (document.activeElement !== $("briefHostName")) ($("briefHostName") as HTMLInputElement).value = state.brief.host_name;
-    if (document.activeElement !== $("briefPersona")) ($("briefPersona") as HTMLInputElement).value = state.brief.persona;
-    if (document.activeElement !== $("briefSellingStyle")) ($("briefSellingStyle") as HTMLTextAreaElement).value = state.brief.selling_style;
-    ($("briefTransition") as HTMLSelectElement).value = state.brief.transition_policy;
+    if (document.activeElement !== $("scriptSetName")) ($("scriptSetName") as HTMLInputElement).value = state.name;
+    if (document.activeElement !== $("briefTitle")) ($("briefTitle") as HTMLInputElement).value = state.brief.title;
+    if (document.activeElement !== $("briefShopName")) ($("briefShopName") as HTMLInputElement).value = state.brief.shop_name ?? "";
+    if (document.activeElement !== $("briefHostName")) ($("briefHostName") as HTMLInputElement).value = state.brief.host_name ?? "";
+    if (document.activeElement !== $("briefNote")) ($("briefNote") as HTMLTextAreaElement).value = state.brief.note ?? "";
+    ($("briefTransition") as HTMLSelectElement).value = state.transitionPolicy;
     const list = $("scriptSetProductList");
     const fragment = document.createDocumentFragment();
     for (const productId of state.productIds) {
@@ -257,7 +264,7 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
   function renderSet(): void {
     const set = state.scriptSet;
     ($("scriptSetSummary") as HTMLElement).textContent = set
-      ? `ScriptSet ${set.id} · revision ${set.revision} · ${set.products.length} sản phẩm · policy ${set.brief.transition_policy}`
+      ? `ScriptSet ${set.id} · revision ${set.revision} · ${set.products.length} sản phẩm · policy ${set.transition_policy}`
       : "Chưa có ScriptSet.";
   }
 
@@ -318,11 +325,12 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
     ($("generateAllBtn") as HTMLButtonElement).addEventListener("click", () => void generateAll());
     ($("cancelBatchBtn") as HTMLButtonElement).addEventListener("click", () => void cancelBatch());
     ($("approveBatchBtn") as HTMLButtonElement).addEventListener("click", () => void approveBatch());
+    ($("scriptSetName") as HTMLInputElement).addEventListener("input", (event) => dispatch({ type: "AUTHORING_SET", value: { name: (event.target as HTMLInputElement).value } }));
+    ($("briefTitle") as HTMLInputElement).addEventListener("input", (event) => dispatch({ type: "AUTHORING_BRIEF", field: "title", value: (event.target as HTMLInputElement).value }));
     ($("briefShopName") as HTMLInputElement).addEventListener("input", (event) => dispatch({ type: "AUTHORING_BRIEF", field: "shop_name", value: (event.target as HTMLInputElement).value }));
     ($("briefHostName") as HTMLInputElement).addEventListener("input", (event) => dispatch({ type: "AUTHORING_BRIEF", field: "host_name", value: (event.target as HTMLInputElement).value }));
-    ($("briefPersona") as HTMLInputElement).addEventListener("input", (event) => dispatch({ type: "AUTHORING_BRIEF", field: "persona", value: (event.target as HTMLInputElement).value }));
-    ($("briefSellingStyle") as HTMLTextAreaElement).addEventListener("input", (event) => dispatch({ type: "AUTHORING_BRIEF", field: "selling_style", value: (event.target as HTMLTextAreaElement).value }));
-    ($("briefTransition") as HTMLSelectElement).addEventListener("change", (event) => dispatch({ type: "AUTHORING_BRIEF", field: "transition_policy", value: (event.target as HTMLSelectElement).value }));
+    ($("briefNote") as HTMLTextAreaElement).addEventListener("input", (event) => dispatch({ type: "AUTHORING_BRIEF", field: "note", value: (event.target as HTMLTextAreaElement).value }));
+    ($("briefTransition") as HTMLSelectElement).addEventListener("change", (event) => dispatch({ type: "AUTHORING_SET", value: { transitionPolicy: (event.target as HTMLSelectElement).value as TransitionPolicy } }));
     ($("scriptSetProductIds") as HTMLInputElement).addEventListener("input", (event) => {
       const ids = (event.target as HTMLInputElement).value.split(",").map((s) => s.trim()).filter(Boolean);
       dispatch({ type: "AUTHORING_SET", value: { productIds: ids } });

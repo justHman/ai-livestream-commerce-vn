@@ -85,6 +85,7 @@ test = [
 [package.dev-dependencies]
 dev = [
     { name = "async-timeout" },
+    { name = "asyncpg" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -121,6 +122,7 @@ provides-extras = ["director", "livekit", "postgres", "test"]
 [package.metadata.requires-dev]
 dev = [
     { name = "async-timeout" },
+    { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -151,6 +153,8 @@ provides-extras = ["llamacpp", "sglang", "transformers", "vllm", "test"]
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx" },
+    { name = "numpy", specifier = ">=2.3.5" },
+    { name = "pyjwt" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -183,6 +187,8 @@ provides-extras = ["cosyvoice", "transformers", "vieneu", "test"]
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx" },
+    { name = "numpy", specifier = ">=2.4.6" },
+    { name = "pyjwt" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },

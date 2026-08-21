@@ -12,11 +12,10 @@ import { ApiError, type ApiDeps } from "./api";
 export type TransitionPolicy = "ORDER_AWARE" | "ORDER_AGNOSTIC";
 
 export interface LiveSessionBrief {
-  shop_name: string;
-  host_name: string;
-  persona: string;
-  selling_style: string;
-  transition_policy: TransitionPolicy;
+  title: string;
+  host_name?: string;
+  shop_name?: string;
+  note?: string;
 }
 
 export type ScriptItemState =
@@ -132,21 +131,80 @@ export interface ScriptItem {
 
 export interface ScriptSet {
   id: string;
+  name: string;
   revision: number;
+  transition_policy: TransitionPolicy;
   brief: LiveSessionBrief;
   products: ScriptItem[];
   created_at: string;
   updated_at: string;
 }
 
-export interface ScriptSetInput {
-  brief: LiveSessionBrief;
+// ---------------- Backend wire DTO (real _set_wire contract) ----------------
+
+/** Per-product entry in the real backend ScriptSet response. */
+export interface BackendScriptSetItem {
+  state: ScriptItemState;
+}
+
+/** Exact response shape returned by ``ScriptAuthoringServiceImpl._set_wire``
+ * for GET/POST/PATCH ``/api/v1/script-sets`` — an ``items`` map keyed by
+ * product_id, NOT the richer local ``ScriptSet`` view model. */
+export interface BackendScriptSetResponse {
+  id: string;
+  name: string;
+  transition_policy: TransitionPolicy;
   product_ids: string[];
+  revision: number;
+  items: Record<string, BackendScriptSetItem>;
+}
+
+export interface ScriptSetInput {
+  name: string;
+  transition_policy?: TransitionPolicy;
+  product_ids: string[];
+  brief?: LiveSessionBrief;
 }
 
 export interface ScriptSetPatch {
+  transition_policy?: TransitionPolicy;
   brief?: LiveSessionBrief;
   product_ids?: string[];
+}
+
+/** Expand a real-backend ScriptSet wire response into the local ``ScriptSet``
+ * view model the authoring flows/UI consume. The wire carries only per-product
+ * state; everything else is defaulted to the empty item shape. */
+export function mapScriptSetResponse(wire: BackendScriptSetResponse): ScriptSet {
+  const productIds = wire.product_ids.length ? wire.product_ids : Object.keys(wire.items);
+  return {
+    id: wire.id,
+    name: wire.name,
+    revision: wire.revision,
+    transition_policy: wire.transition_policy,
+    brief: { title: wire.name, host_name: "", shop_name: "", note: "" },
+    products: productIds.map((productId) => emptyScriptItem(productId, wire.items[productId]?.state ?? "EMPTY")),
+    created_at: "",
+    updated_at: "",
+  };
+}
+
+function emptyScriptItem(productId: string, state: ScriptItemState): ScriptItem {
+  return {
+    product_id: productId,
+    product_name: productId,
+    state,
+    source: null,
+    plan: null,
+    segments: [],
+    versions: [],
+    current_version: null,
+    approvals: [],
+    approved_version_id: null,
+    approved_revision: null,
+    failure: null,
+    updated_at: "",
+  };
 }
 
 export interface DraftInput {
@@ -242,7 +300,8 @@ export interface GenerationBatch {
 }
 
 export interface GenerateBatchRequest {
-  products: Array<{ product_id: string; target_duration_s: number }>;
+  product_ids: string[];
+  target_duration_s: number;
 }
 
 export type ScriptEventType =
@@ -314,25 +373,28 @@ export function createScriptClient(deps: ApiDeps) {
   const esc = encodeURIComponent;
 
   async function createScriptSet(input: ScriptSetInput): Promise<ScriptSet> {
-    return requestJson<ScriptSet>("/api/v1/script-sets", {
+    const wire = await requestJson<BackendScriptSetResponse>("/api/v1/script-sets", {
       method: "POST",
       headers: adminHeaders(true),
       body: JSON.stringify(input),
     });
+    return mapScriptSetResponse(wire);
   }
 
   async function getScriptSet(setId: string): Promise<ScriptSet> {
-    return requestJson<ScriptSet>(`/api/v1/script-sets/${esc(setId)}`, {
+    const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
       headers: adminHeaders(),
     });
+    return mapScriptSetResponse(wire);
   }
 
   async function patchScriptSet(setId: string, patch: ScriptSetPatch): Promise<ScriptSet> {
-    return requestJson<ScriptSet>(`/api/v1/script-sets/${esc(setId)}`, {
+    const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
       method: "PATCH",
       headers: adminHeaders(true),
       body: JSON.stringify(patch),
     });
+    return mapScriptSetResponse(wire);
   }
 
   async function putDraft(setId: string, productId: string, input: DraftInput): Promise<DraftResult> {
@@ -356,15 +418,20 @@ export function createScriptClient(deps: ApiDeps) {
   ): Promise<ProductPreview> {
     return requestJson<ProductPreview>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/generation-preview`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ target_duration_s: targetDurationS }) },
+      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_id: productId, target_duration_s: targetDurationS }) },
     );
   }
 
   async function previewBatch(setId: string, req: PreviewRequest): Promise<GenerationPreview> {
-    return requestJson<GenerationPreview>(
-      `/api/v1/script-sets/${esc(setId)}/generation-preview`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify(req) },
+    // Backend exposes only the per-product generation-preview route; a batch
+    // preview is the aggregate of one per-product preview per selected product.
+    const products = await Promise.all(
+      req.products.map((p) => previewProduct(setId, p.product_id, p.target_duration_s)),
     );
+    return {
+      products,
+      estimated_semantic_calls_total: products.reduce((sum, p) => sum + p.estimated_semantic_calls, 0),
+    };
   }
 
   async function generateProduct(
@@ -402,17 +469,17 @@ export function createScriptClient(deps: ApiDeps) {
     );
   }
 
-  async function approveProduct(setId: string, productId: string): Promise<ApprovalResult> {
+  async function approveProduct(setId: string, productId: string, versionId: string, actor: string): Promise<ApprovalResult> {
     return requestJson<ApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/approve`,
-      { method: "POST", headers: adminHeaders(true) },
+      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ version_id: versionId, actor }) },
     );
   }
 
-  async function approveBatch(setId: string, productIds: string[]): Promise<BatchApprovalResult> {
+  async function approveBatch(setId: string, productIds: string[], versionIds: Record<string, string>, actor: string): Promise<BatchApprovalResult> {
     return requestJson<BatchApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/approve-batch`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_ids: productIds }) },
+      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_ids: productIds, version_ids: versionIds, actor }) },
     );
   }
 

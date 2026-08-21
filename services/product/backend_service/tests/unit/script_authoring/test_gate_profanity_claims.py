@@ -204,8 +204,146 @@ def test_authorized_discount_bare_percent_not_double_flagged() -> None:
 def test_factual_claim_authorized_and_unauthorized() -> None:
     ctx = _ctx()
     assert check_factual_claims("Kem này có kem dưỡng ẩm sâu.", ctx) == []
-    violations = check_factual_claims("Kem này giúp trắng da 10 tông.", ctx)
+    violations = check_factual_claims("Kem này làm trắng da 10 tông.", ctx)
     assert any(v.rule_id == "CLAIM_FACTUAL" for v in violations)
+
+
+def test_factual_claim_scene_setting_not_a_claim() -> None:
+    # Scene-setting/transition sentences reuse common Vietnamese verbs
+    # ("làm", "chứa", "tăng", "giúp", "có") without a benefit signal — they
+    # are not product claims and must never be flagged (15.4 real-LLM E2E
+    # redesign: the old single-verb substring trigger rejected natural prose
+    # every run and blocked REVIEWABLE deterministically).
+    ctx = _ctx()
+    assert check_factual_claims("Mỗi khi đi làm về mệt mỏi, bạn chỉ việc rót nước.", ctx) == []
+    assert check_factual_claims("Đừng tích trữ bình chứa cồng kềnh trong bếp.", ctx) == []
+    assert check_factual_claims("Nhu cầu giải khát tăng cao vào ngày oi bức.", ctx) == []
+    assert check_factual_claims("Kem này giúp da mềm mại mỗi ngày.", ctx) == []
+    assert check_factual_claims("Thiết bị này giúp gian bếp gọn gàng.", ctx) == []
+
+
+def test_factual_claim_scene_setting_prose_passes_without_claim_signal() -> None:
+    # Pure scene-setting/transition prose carries no claim signal, so it is
+    # never a claim and is never flagged (15.4 real-LLM E2E). Signal-free
+    # prose about the home/space stays safe under the product-agnostic rule.
+    ctx = _ctx()
+    assert check_factual_claims("Không gian sống hiện đại thoáng đãng cho cả gia đình.", ctx) == []
+    assert (
+        check_factual_claims(
+            "Việc bài trí các vật dụng khoa học giúp căn nhà luôn ngăn nắp và rộng rãi.", ctx
+        )
+        == []
+    )
+    assert (
+        check_factual_claims(
+            "Bạn sẽ thấy mọi góc nhỏ trong căn nhà đều được sắp xếp gọn gàng.", ctx
+        )
+        == []
+    )
+
+
+def test_factual_claim_signal_bearing_unauthorized_prose_fails() -> None:
+    # Reviewer HIGH C: the OLD product-reference guard skipped any sentence
+    # that did not name a hardcoded product noun, letting unsupported claims
+    # escape when their nouns fell outside that vocabulary. A signal-bearing
+    # clause that is not authorized by an allowed claim is now flagged
+    # regardless of product wording — product-agnostic, no noun enumeration.
+    ctx = _ctx()
+    assert any(
+        v.rule_id == "CLAIM_FACTUAL"
+        for v in check_factual_claims("Không gian sống hiện đại được tối ưu diện tích.", ctx)
+    )
+
+
+# --- CLAIM_FACTUAL product-agnostic, clause-level (reviewer R9.3) -------------
+
+_PARAPHRASE_FACTS = ProductFacts(
+    product_name="Máy lọc nước NanoFresh",
+    allowed_claims=(
+        "thiết kế gọn nhẹ",
+        "bộ lọc loại bỏ tạp chất",
+        "không dùng điện trong quá trình lọc",
+    ),
+)
+
+
+def _paraphrase_ctx() -> ScriptGateContext:
+    return ScriptGateContext(facts=_PARAPHRASE_FACTS)
+
+
+def test_claim_factual_supported_paraphrase_passes() -> None:
+    # Reviewer test 1: a natural paraphrase of an allowed claim is authorized.
+    ctx = _paraphrase_ctx()
+    assert (
+        check_factual_claims("Thiết bị này thiết kế tinh tế, gọn gàng cho mọi không gian.", ctx)
+        == []
+    )
+
+
+def test_claim_factual_unsupported_claim_without_product_noun_fails() -> None:
+    # Reviewer test 2: an unsupported claim escapes the OLD hardcoded
+    # product-noun vocabulary when its nouns belong to another category.
+    # The product-agnostic gate must flag it regardless of wording.
+    ctx = _paraphrase_ctx()
+    violations = check_factual_claims(
+        "Khả năng hút bụi siêu mạnh với công suất 1500W mỗi lần sử dụng.", ctx
+    )
+    assert any(v.rule_id == "CLAIM_FACTUAL" for v in violations)
+
+
+def test_claim_factual_supported_fragment_does_not_authorize_appendage() -> None:
+    # Reviewer test 3: the supported fragment must not authorize an invented
+    # factual extension in the same sentence ("thiết kế gọn nhẹ và bảo hành
+    # 10 năm" — the warranty claim is not in the allowed set).
+    ctx = _paraphrase_ctx()
+    violations = check_factual_claims("Thiết kế gọn nhẹ và bảo hành 10 năm.", ctx)
+    assert any(v.rule_id == "CLAIM_FACTUAL" for v in violations)
+
+
+def test_claim_factual_invented_spec_warranty_performance_fails() -> None:
+    # Reviewer test 4: invented numeric/spec/warranty/performance claims fail.
+    ctx = _paraphrase_ctx()
+    for claim in (
+        "Công suất lọc lên tới 500 lít mỗi giờ.",
+        "Sản phẩm được bảo hành tới 5 năm.",
+        "Tuổi thọ lõi lọc lên tới 10 năm.",
+        "Động cơ vận hành êm ái, tiết kiệm điện đến 90%.",
+    ):
+        assert any(v.rule_id == "CLAIM_FACTUAL" for v in check_factual_claims(claim, ctx)), (
+            f"unsupported claim not flagged: {claim!r}"
+        )
+
+
+def test_claim_factual_verdict_independent_of_product_name() -> None:
+    # Reviewer test 5: correctness does not depend on the live-test product
+    # name/category — the same supported/unsupported pair behaves identically
+    # for a water filter and a skincare product.
+    for facts in (
+        _PARAPHRASE_FACTS,
+        ProductFacts(product_name="Kem ABC", allowed_claims=_PARAPHRASE_FACTS.allowed_claims),
+    ):
+        ctx = ScriptGateContext(facts=facts)
+        assert check_factual_claims("Thiết kế gọn nhẹ cho mọi không gian.", ctx) == []
+        assert any(
+            v.rule_id == "CLAIM_FACTUAL"
+            for v in check_factual_claims("Thiết kế gọn nhẹ và bảo hành 10 năm.", ctx)
+        )
+
+
+def test_factual_claim_benefit_signal_without_allowed_claim() -> None:
+    # A sentence asserting a specific product benefit/capability that is NOT
+    # in the allowed set is an unsupported claim and is flagged.
+    ctx = _ctx()
+    assert any(
+        v.rule_id == "CLAIM_FACTUAL"
+        for v in check_factual_claims("Máy này công suất lọc 500 lít mỗi giờ.", ctx)
+    )
+    assert any(
+        v.rule_id == "CLAIM_FACTUAL"
+        for v in check_factual_claims("Kem này bảo hành lên tới 5 năm.", ctx)
+    )
+    # A benefit sentence carrying an allowed claim substring passes.
+    assert check_factual_claims("Kem này không chứa paraben nên an toàn.", ctx) == []
 
 
 def test_price_sentence_not_double_flagged_as_claim() -> None:

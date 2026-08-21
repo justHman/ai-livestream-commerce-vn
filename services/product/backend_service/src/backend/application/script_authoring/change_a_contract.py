@@ -44,7 +44,7 @@ EXPECTED_MODULES: tuple[str, ...] = (
 _EVIDENCE_MARKERS: tuple[str, ...] = (
     "9.3 Run OpenSpec validation",  # strict validation task present
     "openspec validate adaptive-speech-text-chunking` → valid",
-    "PASS 2026-08-12: real-TTS benchmark",  # task 8.9 VieNeu benchmark PASS
+    "PASS 2026-08-12. Real-TTS benchmark",  # task 8.9 VieNeu benchmark PASS
     "AUTHORIZED 2026-08-12 after 8.9 PASS",  # task 9.5 change B authorization
 )
 

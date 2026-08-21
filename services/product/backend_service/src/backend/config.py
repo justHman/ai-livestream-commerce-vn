@@ -83,7 +83,14 @@ class LLMConfig:
     model: str = ""  # HF model id or path
     model_path: str = ""  # local path (for llamacpp GGUF dir)
     device: str = "auto"  # cuda | cpu | auto
-    max_tokens: int = 128
+    # Output ceiling. Raised from 128 to 2048 to match Script Authoring's
+    # generation calibration (model_max_output_tokens=4096, safe_output_tokens
+    # =2048): a 128-token cap (~512 chars ≈ 30 s) physically cannot fill a
+    # segment's target duration and made every real-LLM segment fail the
+    # SPEECH_DURATION gate (15.4 real-LLM E2E finding). A ceiling increase is
+    # safe for short-output consumers (Director etc.) — they still emit short
+    # responses; it only allows longer outputs where the budget needs them.
+    max_tokens: int = 2048
     temperature: float = 0.7
     system_prompt: str = _DEFAULT_PERSONA
     max_model_len: int = 4096
@@ -102,7 +109,7 @@ class LLMConfig:
             model=os.environ.get("LLM_MODEL", ""),
             model_path=os.environ.get("LLM_MODEL_PATH", os.environ.get("LLM_GGUF_DIR", "")),
             device=os.environ.get("LLM_DEVICE", "auto"),
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "128")),
+            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "2048")),
             temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7")),
             max_model_len=int(os.environ.get("LLM_MAX_MODEL_LEN", "4096")),
             quantization=os.environ.get("LLM_QUANTIZATION") or None,
@@ -275,6 +282,12 @@ class ScriptAuthoringConfig:
     # Transport/provider retry bound (task 10.5): same immutable input,
     # distinct from the semantic call count.
     provider_max_attempts: int = 3
+    # Segment in-place retry bound (15.4 money optimization): how many times a
+    # single segment is regenerated in place when its segment gate fails,
+    # before the workflow lands GATE_FAILED for human fix. Regenerating a
+    # failed segment (1 call) instead of the whole script (K+1 calls) keeps
+    # prior passing segments + continuity and is far cheaper on LLM spend.
+    segment_max_attempts: int = 3
     # Generation duration bounds (task 7.1): 10-60 minute targets.
     min_target_duration_s: int = 600
     max_target_duration_s: int = 3600
@@ -290,12 +303,31 @@ class ScriptAuthoringConfig:
     # stream is retained and how far back a reconnect replay may reach.
     sse_retention_seconds: int = 3600
     sse_replay_window_seconds: int = 300
+    # Shutdown drain grace (HIGH-1): how long the lifespan waits for in-flight
+    # background jobs to finish before cancelling stragglers during shutdown.
+    drain_timeout_s: float = 5.0
+    # Multi-replica recovery lease (HIGH-1): how long a claimed
+    # job/batch row is fenced to its owning replica before another
+    # replica's ``recover_pending`` may re-claim it.
+    recovery_lease_seconds: int = 300
+
+    def lease_heartbeat_interval(self) -> float:
+        """Bounded heartbeat cadence for owned provider calls (R8.3).
+
+        A HEALTHY provider call can outlive the lease window; while it runs the
+        owner renews the fence every ``lease/3`` seconds, bounded below at
+        0.25 s so a delayed heartbeat never immediately loses ownership. This
+        keeps slow-but-alive work from being falsely taken over WITHOUT making
+        the default lease arbitrarily huge.
+        """
+        return max(self.recovery_lease_seconds / 3, 0.25)
 
     @classmethod
     def from_env(cls) -> "ScriptAuthoringConfig":
         return cls(
             max_concurrent_products=int(os.environ.get("SA_MAX_CONCURRENT_PRODUCTS", "3")),
             provider_max_attempts=int(os.environ.get("SA_PROVIDER_MAX_ATTEMPTS", "3")),
+            segment_max_attempts=int(os.environ.get("SA_SEGMENT_MAX_ATTEMPTS", "3")),
             min_target_duration_s=int(os.environ.get("SA_MIN_TARGET_DURATION_S", "600")),
             max_target_duration_s=int(os.environ.get("SA_MAX_TARGET_DURATION_S", "3600")),
             budget_max_output_tokens=int(os.environ.get("SA_BUDGET_MAX_OUTPUT_TOKENS", "4096")),
@@ -308,6 +340,8 @@ class ScriptAuthoringConfig:
             expected_skill_version=os.environ.get("SA_EXPECTED_SKILL_VERSION", ""),
             sse_retention_seconds=int(os.environ.get("SA_SSE_RETENTION_SECONDS", "3600")),
             sse_replay_window_seconds=int(os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")),
+            drain_timeout_s=float(os.environ.get("SA_DRAIN_TIMEOUT_S", "5.0")),
+            recovery_lease_seconds=int(os.environ.get("SA_RECOVERY_LEASE_SECONDS", "300")),
         )
 
 
@@ -460,6 +494,18 @@ class AppConfig:
             tts=TTSConfig.from_env(),
             script_authoring=ScriptAuthoringConfig.from_env(),
         )
+
+    @property
+    def is_production(self) -> bool:
+        """Canonical production predicate (HIGH-A / R6.1).
+
+        The deployment literal is ``APP_ENV=prod`` (Terraform passes
+        ``app_env = "prod"``); ``production`` is kept as an accepted legacy
+        alias so a stack still using the old literal activates the same
+        production safety gates. Every production-only fail-fast/safety gate
+        MUST use this predicate, never a raw ``app_env == ...`` comparison.
+        """
+        return self.app_env in {"prod", "production"}
 
     def cors_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":

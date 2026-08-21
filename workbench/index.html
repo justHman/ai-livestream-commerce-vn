@@ -181,12 +181,13 @@
         <p class="hint">Tạo kịch bản trước livestream: draft thủ công không tốn token; AI generation là hành động tùy chọn có chủ đích. Approve chỉ do con người.</p>
 
         <div id="scriptSetCreateForm">
-          <h3>Brief phiên</h3>
+          <h3>ScriptSet</h3>
           <div class="grid-2">
+            <div class="field"><label for="scriptSetName">Tên ScriptSet</label><input id="scriptSetName" maxlength="256"></div>
+            <div class="field"><label for="briefTitle">Tiêu đề brief</label><input id="briefTitle" maxlength="256"></div>
             <div class="field"><label for="briefShopName">Tên shop</label><input id="briefShopName" maxlength="256"></div>
             <div class="field"><label for="briefHostName">Tên MC</label><input id="briefHostName" maxlength="128"></div>
-            <div class="field wide"><label for="briefPersona">Persona</label><input id="briefPersona" maxlength="1000"></div>
-            <div class="field wide"><label for="briefSellingStyle">Phong cách bán hàng</label><textarea id="briefSellingStyle" maxlength="1000"></textarea></div>
+            <div class="field wide"><label for="briefNote">Ghi chú</label><textarea id="briefNote" maxlength="2000"></textarea></div>
             <div class="field"><label for="briefTransition">Transition policy</label><select id="briefTransition"><option value="ORDER_AGNOSTIC">ORDER_AGNOSTIC</option><option value="ORDER_AWARE">ORDER_AWARE</option></select></div>
           </div>
           <div class="field"><label for="scriptSetProductIds">Product IDs (phân cách bằng dấu phẩy)</label><input id="scriptSetProductIds" placeholder="P001, P002, P003"></div>

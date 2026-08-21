@@ -37,7 +37,14 @@ postgres = ["asyncpg"]
 test = ["pytest", "pytest-asyncio", "pytest-timeout", "async_timeout"]
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio", "pytest-timeout", "async_timeout", "pytest-cov"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
+    "async_timeout",
+    "pytest-cov",
+    "asyncpg>=0.31.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -56,6 +63,9 @@ include = ["backend*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "live: release-evidence E2E requiring real LLM/TTS/avatar gateways (skip when env absent)",
+]
 pythonpath = [
   "src",
   "../llm_service/src",

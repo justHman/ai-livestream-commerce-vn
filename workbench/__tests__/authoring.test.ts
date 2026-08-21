@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   applyBatchEvent,
+  approveBatchFlow,
   authoringReducer,
   canApprove,
   canFix,
@@ -13,11 +14,12 @@ import {
   createMockScriptClient,
   generateAllFlow,
   initialStateAuthoring,
+  loadSetFlow,
   previewFlow,
   type AuthoringState,
 } from "../src/authoring";
-import { idempotencyKey } from "../src/scriptSets";
-import type { GenerationPreview, ScriptEvent } from "../src/scriptSets";
+import { createScriptClient, idempotencyKey, mapScriptSetResponse } from "../src/scriptSets";
+import type { BackendScriptSetResponse, ScriptSet } from "../src/scriptSets";
 
 describe("legal-state guards (task 13.2)", () => {
   it("fix is allowed only for GATE_FAILED", () => {
@@ -60,14 +62,17 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
   it("manual draft -> submit -> reviewable -> approve reaches APPROVED without generation", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001"],
     });
     const draft = await client.putDraft(set.id, "P001", { display_text: "Kem chống nắng chỉ 329 nghìn đồng." });
     expect(draft.state).toBe("DRAFT");
     const submitted = await client.submit(set.id, "P001");
     expect(submitted.state).toBe("reviewable");
-    const approved = await client.approveProduct(set.id, "P001");
+    const beforeApprove = await client.getScriptSet(set.id);
+    const approved = await client.approveProduct(set.id, "P001", beforeApprove.products[0]!.current_version!.version_id, "operator");
     expect(approved.state).toBe("APPROVED");
     const reloaded = await client.getScriptSet(set.id);
     expect(reloaded.products[0]?.state).toBe("APPROVED");
@@ -77,17 +82,21 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
   it("approve is rejected for non-REVIEWABLE versions", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001"],
     });
     await client.putDraft(set.id, "P001", { display_text: "abc" });
-    await expect(client.approveProduct(set.id, "P001")).rejects.toThrow(/409/);
+    await expect(client.approveProduct(set.id, "P001", "x", "operator")).rejects.toThrow(/409/);
   });
 
   it("manual gate FAIL -> fix with AI -> resubmit -> reviewable", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001"],
     });
     await client.putDraft(set.id, "P001", { display_text: "Không dùng--dấu gạch dài." });
@@ -103,7 +112,9 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
   it("fix is rejected with 409 when the version is not gate-failed", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001"],
     });
     await client.putDraft(set.id, "P001", { display_text: "ok" });
@@ -113,7 +124,9 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
   it("segment regenerate creates a new segment version, not a sibling rewrite", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001"],
     });
     // Put the item into GATE_FAILED first (segment pause), then regenerate.
@@ -132,7 +145,9 @@ describe("Generate All UX (tasks 13.4, 13.8)", () => {
   async function readyState(): Promise<{ state: AuthoringState; client: ReturnType<typeof createMockScriptClient> }> {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001", "P002"],
     });
     const state: AuthoringState = {
@@ -148,7 +163,9 @@ describe("Generate All UX (tasks 13.4, 13.8)", () => {
   it("preview estimates 1+K calls per product without any LLM call", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001", "P002"],
     });
     const state: AuthoringState = { ...initialStateAuthoring(), setId: set.id, productIds: ["P001", "P002"], targets: { P001: 600, P002: 3600 } };
@@ -196,7 +213,9 @@ describe("Generate All UX (tasks 13.4, 13.8)", () => {
   it("segment failure pauses the product (mock gate-fail stops later spend)", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001"],
     });
     await client.putDraft(set.id, "P001", { display_text: "x--y" });
@@ -213,12 +232,15 @@ describe("approval invalidation (task 13.7)", () => {
   it("new draft after approval leaves the prior approval untouched (immutable history)", async () => {
     const client = createMockScriptClient();
     const set = await client.createScriptSet({
-      brief: { shop_name: "S", host_name: "H", persona: "P", selling_style: "Rõ giá.", transition_policy: "ORDER_AGNOSTIC" },
+      name: "Set A",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T", host_name: "H", shop_name: "S", note: "" },
       product_ids: ["P001"],
     });
     await client.putDraft(set.id, "P001", { display_text: "v1" });
     await client.submit(set.id, "P001");
-    await client.approveProduct(set.id, "P001");
+    const beforeApprove = await client.getScriptSet(set.id);
+    await client.approveProduct(set.id, "P001", beforeApprove.products[0]!.current_version!.version_id, "operator");
     // Edit after approval creates a new draft version.
     const next = await client.putDraft(set.id, "P001", { display_text: "v2" });
     expect(next.state).toBe("DRAFT");
@@ -276,5 +298,95 @@ describe("SSE event application (task 13.5)", () => {
       value: { event_id: "e1", revision: 1, type: "batch.snapshot", script_set_id: "s", batch_id: "b" },
     });
     expect(state.batch.batchId).toBe("b");
+  });
+});
+
+describe("real-backend wire interop (handoff §11.4)", () => {
+  // Exact wire shape from ScriptAuthoringServiceImpl._set_wire.
+  const realWire: BackendScriptSetResponse = {
+    id: "set-9",
+    name: "Phiên live 19/08",
+    transition_policy: "ORDER_AGNOSTIC",
+    product_ids: ["P001", "P002"],
+    revision: 3,
+    items: {
+      P001: { state: "DRAFT" },
+      P002: { state: "REVIEWABLE" },
+    },
+  };
+
+  function wireClient() {
+    const client = createScriptClient({
+      backendUrl: "http://127.0.0.1:8800",
+      viewerToken: () => "",
+      adminToken: () => "t",
+    });
+    return { client };
+  }
+
+  it("loadSetFlow consumes a mapped real-wire ScriptSet (refresh path does not crash)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(realWire), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const { client } = wireClient();
+    const dispatch = vi.fn();
+    const state = { ...initialStateAuthoring(), setId: "set-9" };
+    await loadSetFlow({ client, state, dispatch }, "set-9");
+    const setAction = dispatch.mock.calls.find(([a]) => a.type === "AUTHORING_SET");
+    expect(setAction).toBeDefined();
+    const value = setAction![0] as { value: { scriptSet: ScriptSet; productIds: string[] } };
+    // The render path reads set.products.length / set.products.map(...).
+    expect(value.value.scriptSet.products.length).toBe(2);
+    expect(value.value.scriptSet.products.map((p) => p.product_id)).toEqual(["P001", "P002"]);
+    expect(value.value.productIds).toEqual(["P001", "P002"]);
+    vi.unstubAllGlobals();
+  });
+
+  it("approve path guards missing version data from the real wire (no crash)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(realWire), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const { client } = wireClient();
+    const dispatch = vi.fn();
+    const mapped = mapScriptSetResponse(realWire);
+    const state: AuthoringState = {
+      ...initialStateAuthoring(),
+      setId: "set-9",
+      scriptSet: mapped,
+      selectedApproveIds: ["P002"], // REVIEWABLE, but the wire carries no version data
+    };
+    await approveBatchFlow({ client, state, dispatch });
+    const status = dispatch.mock.calls.find(([a]) => a.type === "AUTHORING_STATUS");
+    expect(String(status?.[0]?.errors?.join(" "))).toContain("thiếu current_version");
+    vi.unstubAllGlobals();
+  });
+
+  it("approve path resolves the current version when the mapped model carries it", async () => {
+    const client = createMockScriptClient();
+    const set = await client.createScriptSet({
+      name: "S",
+      transition_policy: "ORDER_AGNOSTIC",
+      brief: { title: "T" },
+      product_ids: ["P001"],
+    });
+    await client.putDraft(set.id, "P001", { display_text: "abc" });
+    await client.submit(set.id, "P001");
+    const mapped = await client.getScriptSet(set.id);
+    const dispatch = vi.fn();
+    const state: AuthoringState = {
+      ...initialStateAuthoring(),
+      setId: set.id,
+      scriptSet: mapped,
+      selectedApproveIds: ["P001"],
+    };
+    await approveBatchFlow({ client, state, dispatch });
+    const status = dispatch.mock.calls.find(([a]) => a.type === "AUTHORING_STATUS");
+    expect(String(status?.[0]?.status)).toContain("Đã duyệt 1 phiên bản");
   });
 });
