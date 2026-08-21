@@ -188,10 +188,10 @@
 
 - [x] 15.1 Run focused backend unit/integration/contract suites for `script_authoring` plus Ruff/format/static checks used by backend service CI.
 - [x] 15.2 Run PostgreSQL integration with restart/recovery/idempotency and migration-from-clean-DB verification.
-- [x] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls. *(Live evidence 2026-08-21 on the R9 head against the REAL VieNeu engine — `[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5 total_pcm_bytes=1943040 total_playback_ms=40480 engine=['vieneu'] zero_llm=True`; NOT the tone stub — see the §16 release-evidence note.)*
+- [x] 15.3 Run manual-draft E2E: create ScriptSet → draft → gate PASS → review exact spoken text → human approve → bind → canonical Change A TextChunker → VieNeu playback; verify zero LLM authoring calls. *(Live evidence 2026-08-21 on the R9 head against the REAL VieNeu engine — `[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5 total_pcm_bytes=1943040 total_playback_ms=40480 engine=['vieneu'] zero_llm=True`; exact approved-text identity across all 200 canonical TextChunks, 5 spread representative chunks synthesized through the real VieNeu engine; NOT the tone stub — see the §16 release-evidence note.)*
 - [x] 15.4 Run AI long-form E2E for at least 10-minute and 30-minute targets and a bounded 60-minute planning/dry-run/call-budget test; verify fixed K and no model-controlled extra jobs. *(Live evidence 2026-08-21 under the corrected ONE-Generate contract — real LLM gateway `ag/gemini-3.7-flash-low`, real PostgreSQL, ONE `start_generation()` per case, no fresh-ScriptSet retry-until-green: 600s K=2 calls=3 (plan=1 segment=2 repair=0) budget=[3,7] REVIEWABLE; 1800s K=5 calls=9 (plan=1 segment=5 repair=3) budget=[6,16] REVIEWABLE with bounded per-segment auto-heal exercised (attempts {0:1,1:1,2:1,3:3,4:2}); 3600s bounded planning/call-budget dry-run. See the §16 release-evidence note.)*
 - [x] 15.5 Run multi-product Generate All E2E with bounded concurrency, one product segment gate failure, sibling completion, human repair/resume, batch approval, and runtime selection across approved products.
-- [x] 15.6 Verify no content/gate failure produces automatic AI repair/regeneration and no general tool/agent loop exists in the production path.
+- [x] 15.6 Verify no unbounded/model-controlled content-repair loop exists; bounded backend-owned Segment Repair during Generate is allowed by the 2026-08-21 product correction, while Full Script Gate failure does not automatically invoke user-level Full-Script Fix/Repair and no general tool/agent loop exists in the production path.
 - [x] 15.7 Verify exact approved `spoken_text` identity at Change A boundary, full-script segmentation through the same source-agnostic TextChunker, and no post-approval mutation/rewrite.
 - [x] 15.8 Run repository-wide searches equivalent to `rg -n "speech_chunking" .`, `rg -n "render\.windows.*TextChunk|from .*render\.windows import .*TextChunk" .`, and `rg -n "legacy.*TextChunk|compat.*TextChunk|re-export.*TextChunk" .`; historical prose may remain only when clearly historical, while active implementation dependencies MUST be zero.
 - [x] 15.9 Run Change-B-scope searches equivalent to `rg -n "check_timeout|flush_timeout_ms|target_chars|ScriptTextChunker|VerbatimChunker|mode=.*script|TextChunk\(" services/product/backend_service/src/backend/application/script_authoring services/product/backend_service/src/backend/api` and inspect every result; require zero Change B-owned streaming timeout/source-mode/manual TextChunk finality/bypass implementation.
@@ -260,16 +260,21 @@ architecture audit confirms zero Change A namespace duplication
 (`speech_chunking` / `render.windows.TextChunk` / `flush_timeout_ms` /
 `target_chars` / `ScriptTextChunker`).
 
-**Still open:** the VieNeu playback E2E (15.3) was not re-run against the
-completed production path (it requires a live VieNeu playback environment);
-task 15.4 is now verified (see the 15.4 release-evidence note below). Section
-13 tasks are implemented by the **local-only** Workbench harness (`workbench/`,
-mock-driven, 146 Vitest tests) — most marked `[x]` for that local surface, with
-`13.2`/`13.6` left `[ ]` because the Workbench Approve UI is not yet wired to
-the live backend (the backend now exposes per-product
-`current_version_id`/`current_version` via the read model, so this is a local
-Workbench UI-wiring gap, not a backend API gap — see Section 13); they do NOT
-imply a production frontend.
+**Release evidence now completed:**
+- 15.3: exact approved-text identity across all 200 canonical TextChunks plus
+  real VieNeu synthesis of a spread 5-chunk sample (first/quarter/middle/
+  three-quarter/last), non-empty PCM, engine identity `vieneu`, zero authoring
+  LLM.
+- 15.4: corrected ONE-Generate real-LLM evidence for 600s/1800s (fixed K, every
+  semantic call counted, planned/max budgets validated, REVIEWABLE) plus bounded
+  3600s planning/call-budget proof.
+
+Local-only Workbench `13.2`/`13.6` remain intentionally unchecked and are not
+production release blockers: the Workbench Approve UI is not yet wired to the
+live backend (the backend now exposes per-product `current_version_id`/
+`current_version` via the read model, so this is a local Workbench UI-wiring
+gap, not a backend API gap — see Section 13); they do NOT imply a production
+frontend.
 
 **Follow-up repair (2026-08-19, branch `feature/change-b-rereview-recovery`):**
 the independent PR #50 re-review's HIGH-A (canonical production predicate —
@@ -303,14 +308,17 @@ VieNeu engine (NOT the tone stub) — `TTS_ENGINE=vieneu`
 `TTS_MODEL=pnnbao-ump/VieNeu-TTS-v3-Turbo` `TTS_PROVIDER=none` (native engine
 path reports `x-audio-engine: vieneu`). Production path: create ScriptSet →
 draft → gate PASS → human approve → bind → canonical Change A TextChunker
-(`feed` + `finalize`, all 200 chunks, rejoin == approved text) → real VieNeu
+(`feed` + `finalize`, all 200 chunks) → rejoin == approved text → real VieNeu
 synthesis via `SelfHostedTTSClient` → `POST /v1/speech`.
 `tests/integration/test_authoring_e2e_vieneu_playback_live.py` passes with
 `[15.3-evidence] chunks=200 spoken_chars=12199 synthesized_sample=5
 total_pcm_bytes=1943040 total_playback_ms=40480 engine=['vieneu'] zero_llm=True`.
-Verifies zero LLM authoring calls (`engine_manager=None`), EXACT approved
-`spoken_text` identity, non-empty PCM from real VieNeu, and **engine identity
-confirms VieNeu, not tone**.
+Precision: **exact approved-text identity was verified across all 200 canonical
+TextChunks; 5 spread representative chunks (first/quarter/middle/three-quarter/
+last) were synthesized through the real VieNeu engine** with non-empty PCM and
+engine identity `vieneu`. Also verifies zero LLM authoring calls
+(`engine_manager=None`), EXACT approved `spoken_text` identity, and engine
+identity confirms VieNeu, not tone.
 
 **15.4 REAL LLM release evidence (2026-08-21, corrected ONE-Generate contract):**
 task 15.4 is now VERIFIED. `tests/integration/test_authoring_real_llm_live_pg.py`
