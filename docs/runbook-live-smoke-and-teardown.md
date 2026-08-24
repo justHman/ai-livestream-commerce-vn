@@ -1,5 +1,12 @@
 # Tier S live smoke and teardown
 
+> **STATUS 2026-08-24: Stages 2–3 = PAUSED / STALE / DO NOT EXECUTE.**
+> Retained as historical planning evidence only; do not reconcile or execute.
+> Self-host LLM/Avatar rollout and the generic S3 weight bootstrap are DEFERRED.
+> Provider-first (BYOK/third-party providers + managed LiveKit Cloud) is the current
+> strategy; AWS remains one deployment option, not the product architecture.
+> A future live deployment requires a fresh plan from the then-current architecture.
+
 > **Billable external operation.** Execute only after explicit confirmation of
 > the AWS account, resources, time window, estimated cost, smoke commands, and
 > teardown choice. This procedure is not authorization.
@@ -192,6 +199,8 @@ verification after destroy.
 
 ## Stage 2 — LiveAvatar cloud + real engines (no LiveKit)
 
+> **PAUSED / STALE / DO NOT EXECUTE (2026-08-24) — historical plan retained as evidence. Self-host Avatar/LLM rollout DEFERRED.**
+
 > Billable: AWS g6 Spot + LiveAvatar credits. Requires Stage 1 PASS report +
 > teardown verification before any Stage 2 plan.
 
@@ -213,6 +222,8 @@ API key never in logs; `desired_livekit=0` verified; bounded latency sample
 recorded. No LiveKit in Stage 2. On FAIL/PASS follow the mandatory loop.
 
 ## Stage 3 — self-host avatar + LiveKit full media
+
+> **PAUSED / STALE / DO NOT EXECUTE (2026-08-24) — historical plan retained as evidence. Self-host Avatar/LLM rollout DEFERRED.**
 
 > Billable: AWS g6 Spot (engine) + g4dn Spot (avatar) + LiveKit Fargate Spot.
 > Requires Stage 2 PASS report + teardown verification before any Stage 3
