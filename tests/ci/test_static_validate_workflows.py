@@ -310,7 +310,7 @@ def test_gh_api_multiline_suppression_rejected():
                         {
                             "run": (
                                 'conclusion=$(gh api "repos/x/runs?head_sha=a" \\\n'
-                                '  --jq y 2>/dev/null || true)'
+                                "  --jq y 2>/dev/null || true)"
                             ),
                             "env": {"GH_TOKEN": "${{ github.token }}"},
                         }
@@ -377,7 +377,9 @@ def test_cross_job_runtime_read_without_transport_rejected():
             "jobs": {
                 "read": {
                     "runs-on": "x",
-                    "steps": [{"run": 'jq -r . <<<"$(cat .runtime/deploy/evidence/staging/a.jsonl)"'}],
+                    "steps": [
+                        {"run": 'jq -r . <<<"$(cat .runtime/deploy/evidence/staging/a.jsonl)"'}
+                    ],
                 }
             }
         },
@@ -414,7 +416,7 @@ def test_same_job_runtime_write_and_read_accepted():
                 "w": {
                     "runs-on": "x",
                     "steps": [
-                        {"run": 'mkdir -p .runtime/ev && echo x >> .runtime/ev/a.jsonl'},
+                        {"run": "mkdir -p .runtime/ev && echo x >> .runtime/ev/a.jsonl"},
                         {"run": "cat .runtime/ev/a.jsonl"},
                     ],
                 }

@@ -44,11 +44,7 @@ def test_no_stale_runtime_selectors_in_examples() -> None:
 
 def test_env_example_render_backend_value_is_canonical() -> None:
     lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
-    values = [
-        line.split("=", 1)[1].strip()
-        for line in lines
-        if line.startswith("RENDER_BACKEND=")
-    ]
+    values = [line.split("=", 1)[1].strip() for line in lines if line.startswith("RENDER_BACKEND=")]
     assert values, ".env.example must define RENDER_BACKEND"
     assert values[0] in CANONICAL_RENDER_BACKENDS, (
         f"RENDER_BACKEND={values[0]!r} not in canonical set {sorted(CANONICAL_RENDER_BACKENDS)}"

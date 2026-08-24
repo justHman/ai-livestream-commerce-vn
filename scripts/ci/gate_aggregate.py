@@ -27,8 +27,7 @@ def aggregate(results: Dict[str, str]) -> List[str]:
     for name, value in results.items():
         if value not in ACCEPTED:
             failures.append(
-                f"CI / gate failed: job '{name}' result '{value}' is not "
-                f"success or skipped."
+                f"CI / gate failed: job '{name}' result '{value}' is not success or skipped."
             )
     return failures
 
@@ -56,7 +55,10 @@ def main(argv=None) -> int:
     if failures:
         for line in failures:
             print(line, file=sys.stderr)
-        print(f"CI / gate failed: {len(failures)} governed result(s) not success/skipped.", file=sys.stderr)
+        print(
+            f"CI / gate failed: {len(failures)} governed result(s) not success/skipped.",
+            file=sys.stderr,
+        )
         return 1
     print("CI / gate passed: all governed jobs succeeded or skipped neutrally.")
     return 0

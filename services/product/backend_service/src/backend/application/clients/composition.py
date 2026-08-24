@@ -95,7 +95,9 @@ class RemoteHttpTTSEngine(TTSEngine):
     @classmethod
     def from_config(cls, cfg: dict) -> "RemoteHttpTTSEngine":
         rate = int(cfg.get("sample_rate", 24_000))
-        client = SelfHostedTTSClient(base_url=cfg.get("base_url", ""), api_key=cfg.get("api_key", ""))
+        client = SelfHostedTTSClient(
+            base_url=cfg.get("base_url", ""), api_key=cfg.get("api_key", "")
+        )
         return cls(client, sample_rate=rate)
 
     def synthesize(self, req: TTSRequest) -> AudioChunk:

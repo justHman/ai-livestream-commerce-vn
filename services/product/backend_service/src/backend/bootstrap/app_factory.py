@@ -164,9 +164,7 @@ def _validate_production_auth_tokens(config) -> None:
     _token_problem("admin_api_token")
 
     if problems:
-        raise RuntimeError(
-            "production auth token validation failed: " + "; ".join(problems)
-        )
+        raise RuntimeError("production auth token validation failed: " + "; ".join(problems))
 
 
 def v1_engine_manager(config) -> Any:

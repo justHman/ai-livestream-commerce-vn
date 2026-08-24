@@ -32,7 +32,5 @@ def test_model_assets_affects_every_image_lane():
 
 
 def test_backend_resources_affect_backend_lane():
-    res = detect_affected_areas(
-        ["services/product/backend_service/resources/skills/plan.yaml"]
-    )
+    res = detect_affected_areas(["services/product/backend_service/resources/skills/plan.yaml"])
     assert "backend_service" in res["areas"]

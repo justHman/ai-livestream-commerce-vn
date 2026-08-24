@@ -416,7 +416,10 @@ def _runtime_file_lines(run: str):
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", stripped):
             # Skip plain path assignments (write-pipeline precursors); a
             # command-substitution assignment that reads the file is a read.
-            if not any(t in stripped for t in ("$(", "cat ", "jq ", "< ", "head ", "tail ", "sha256sum", "python ")):
+            if not any(
+                t in stripped
+                for t in ("$(", "cat ", "jq ", "< ", "head ", "tail ", "sha256sum", "python ")
+            ):
                 continue
         is_write = (">>" in ln) or ("> " in ln) or ("mkdir -p" in ln)
         yield stripped, is_write

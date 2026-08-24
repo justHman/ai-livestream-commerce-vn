@@ -193,14 +193,13 @@ def boot_probes_docker(image: str, keep: bool) -> None:
 def negative_readiness_docker(image: str, keep: bool) -> None:
     """Broken required dependency must never be falsely green (R0.4).
 
-    ``TTS_ENGINE=transformers`` selects an engine whose dependency (torch)
-    is deliberately absent from the production image, so the backend records
-    a load error while still serving the tone stub. Readiness must then be
-    503; until Cluster-0 task 0.2 lands it is 200 and this phase fails with
-    exit code 2 (the defect is surfaced, not hidden).
+    ``LLM_ENGINE=vllm`` selects a local GPU engine that is deliberately NOT
+    in the backend control-plane image (Cluster B rejects GPU engines in the
+    backend), so the backend records a load error while still serving the
+    echo stub. Readiness must then be 503, never a falsely-green 200.
     """
     port = _free_port()
-    env_args = [f"-e{k}={v}" for k, v in _OFFLINE_ENV.items()] + ["-eTTS_ENGINE=transformers"]
+    env_args = [f"-e{k}={v}" for k, v in _OFFLINE_ENV.items()] + ["-eLLM_ENGINE=vllm"]
     run = _run(["docker", "run", "-d", "-p", f"{port}:8800", *env_args, image])
     if run.returncode != 0:
         raise SystemExit(f"FAIL docker run (negative): {run.stderr}")

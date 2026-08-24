@@ -19,9 +19,7 @@ def test_repo_tools_failure_fails_gate():
 
 
 def test_all_success_and_skipped_passes():
-    failures = aggregate(
-        {"scan": "success", "repo-tools": "success", "workbench-check": "skipped"}
-    )
+    failures = aggregate({"scan": "success", "repo-tools": "success", "workbench-check": "skipped"})
     assert failures == []
 
 
@@ -62,9 +60,9 @@ def test_ci_gate_aggregates_every_needs_job():
     run_text = gate["steps"][0]["run"]
     # Every governed job must be passed to gate_aggregate as --result <name>=
     for job in needed:
-        assert re.search(
-            rf"--result\s+[A-Za-z0-9_-]*{re.escape(job)}=", run_text
-        ), f"gate aggregation omits governed job '{job}'"
+        assert re.search(rf"--result\s+[A-Za-z0-9_-]*{re.escape(job)}=", run_text), (
+            f"gate aggregation omits governed job '{job}'"
+        )
     # The aggregation must invoke the shared script, not a shell-only loop.
     assert "gate_aggregate.py" in run_text
 

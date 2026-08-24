@@ -20,9 +20,7 @@ def _result():
 
 
 def test_canonical_environment_names_are_full_words():
-    assert GITHUB_ENVIRONMENT_NAMES == frozenset(
-        {"development", "staging", "production"}
-    )
+    assert GITHUB_ENVIRONMENT_NAMES == frozenset({"development", "staging", "production"})
     # The tf-side short names (dev/prod) are exactly what must NOT leak into
     # GitHub Environment references — the R1.3 mismatch.
     assert "dev" not in GITHUB_ENVIRONMENT_NAMES
@@ -34,10 +32,7 @@ def test_trust_subject_is_exact_environment_match():
         trust_subject("development")
         == "repo:justHman/ai-livestream-commerce-vn:environment:development"
     )
-    assert (
-        trust_subject("staging")
-        == "repo:justHman/ai-livestream-commerce-vn:environment:staging"
-    )
+    assert trust_subject("staging") == "repo:justHman/ai-livestream-commerce-vn:environment:staging"
     assert (
         trust_subject("production")
         == "repo:justHman/ai-livestream-commerce-vn:environment:production"
@@ -53,18 +48,14 @@ def test_expected_trust_subjects_cover_all_canonical_environments():
 
 def test_environment_short_name_rejected():
     r = _result()
-    validate_environment_vocabulary(
-        {"jobs": {"deploy": {"environment": "prod"}}}, r
-    )
+    validate_environment_vocabulary({"jobs": {"deploy": {"environment": "prod"}}}, r)
     assert not r.passed
     assert any("canonical" in e and "R1.3" in e for e in r.errors)
 
 
 def test_environment_canonical_name_accepted():
     r = _result()
-    validate_environment_vocabulary(
-        {"jobs": {"deploy": {"environment": "production"}}}, r
-    )
+    validate_environment_vocabulary({"jobs": {"deploy": {"environment": "production"}}}, r)
     assert r.passed
 
 

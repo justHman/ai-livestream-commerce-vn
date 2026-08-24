@@ -14,12 +14,16 @@ from avatar import create_app
 
 
 def test_stub_engine_ready_returns_503() -> None:
-    # offline_env fixture sets AVATAR_ENGINE=none -> stub -> not ready.
+    # offline_env fixture sets AVATAR_ENGINE=none -> stub -> never production
+    # ready (R0.3): 503 with test_stub_only, NOT a generic engine_unavailable.
     app = create_app()
     with TestClient(app) as client:
         resp = client.get("/health/ready")
     assert resp.status_code == 503
-    assert resp.json() == {"status": "not_ready", "reason": "engine_unavailable"}
+    body = resp.json()
+    assert body["status"] == "not_ready"
+    assert body["reason"] == "test_stub_only"
+    assert body["mode"] == "test_stub"
 
 
 def test_lifespan_marks_stub_engine_not_ready() -> None:

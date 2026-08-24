@@ -22,7 +22,9 @@ from backend.config import AppConfig, TTSConfig
 _AUTH_VALUE = "viewer" + "-token"
 
 
-def _config(database_url: str, *, backend_api_token: str = _AUTH_VALUE, app_env: str = "prod") -> AppConfig:
+def _config(
+    database_url: str, *, backend_api_token: str = _AUTH_VALUE, app_env: str = "prod"
+) -> AppConfig:
     # Local embedded PG (loopback) is an explicit dev/test store: the prod TLS
     # gate (C.3/R7.4) exempts loopback hosts, so no sslmode is appended here.
     return AppConfig(

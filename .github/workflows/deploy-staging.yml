@@ -369,9 +369,10 @@ jobs:
           file="deploy-evidence/staging/$VALIDATED_SHA.jsonl"
           : > "$file"
           ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          for adir in .runtime/deploy/evidence/raw/deploy-evidence-staging-${VALIDATED_SHA}-*/; do
+          prefix=".runtime/deploy/evidence/raw/deploy-evidence-staging-${VALIDATED_SHA}-"
+          for adir in "${prefix}"*/; do
             [[ -d "$adir" ]] || continue
-            container=${adir#.runtime/deploy/evidence/raw/deploy-evidence-staging-${VALIDATED_SHA}-}
+            container=${adir#"$prefix"}
             container=${container%/}
             # Each artifact holds the single evidence file at its root
             # (upload-artifact@v4 stores a non-glob file at artifact root).
