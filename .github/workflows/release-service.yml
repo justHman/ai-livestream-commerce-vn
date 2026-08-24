@@ -139,9 +139,11 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.tag_commit }}
       - name: Production readiness — approval enforcement must exist
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production" --jq '.protection_rules // []' 2>/dev/null || true)
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production" --jq '.protection_rules // []')
           if ! jq -e 'map(.type == "required_reviewers") | any' <<<"$rules" >/dev/null 2>&1; then
             echo "Production environment has no required_reviewers protection rule." >&2
             echo "Release blocked by design (5.3): approval enforcement must be configured" >&2

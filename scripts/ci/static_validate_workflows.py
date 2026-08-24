@@ -268,6 +268,66 @@ def validate_no_step_level_reusable(workflow: dict, result: ValidationResult) ->
                 )
 
 
+def validate_gh_api_authentication(workflow: dict, result: ValidationResult) -> None:
+    """Validate governed `gh api` calls are explicitly authenticated (audit R1.2).
+
+    Rules:
+    - Every step whose run invokes `gh api` MUST declare GH_TOKEN or
+      GITHUB_TOKEN at step or job env.
+    - A governed `gh api` call MUST NOT suppress CLI failure (`2>/dev/null`,
+      `|| true`) and reinterpret it as absence of governance: an auth/API
+      error must fail the governed check.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        job_env = job.get("env") if isinstance(job.get("env"), dict) else {}
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            run = step.get("run")
+            if not isinstance(run, str) or "gh api" not in run:
+                continue
+
+            step_env = step.get("env") if isinstance(step.get("env"), dict) else {}
+            envs = {**job_env, **step_env}
+            token_keys = {k.upper() for k in envs}
+            if not ({"GH_TOKEN", "GITHUB_TOKEN"} & token_keys):
+                result.add_error(
+                    f"Job '{job_name}' step {idx} calls `gh api` without an explicit "
+                    f"GH_TOKEN/GITHUB_TOKEN env (R1.2). Declare 'env: GH_TOKEN: "
+                    f"${{{{ github.token }}}}'."
+                )
+
+            # Reconstruct each logical `gh api` command (join backslash
+            # continuations) and flag suppression of its exit status.
+            lines = run.splitlines()
+            i = 0
+            while i < len(lines):
+                if "gh api" not in lines[i]:
+                    i += 1
+                    continue
+                cmd = lines[i]
+                j = i
+                while cmd.rstrip().endswith("\\") and j + 1 < len(lines):
+                    j += 1
+                    cmd += "\n" + lines[j]
+                if "|| true" in cmd or "2>/dev/null" in cmd:
+                    result.add_error(
+                        f"Job '{job_name}' step {idx} suppresses a `gh api` failure "
+                        f"(`|| true` / `2>/dev/null`). An auth/API error must fail "
+                        f"the governed check, not be reinterpreted as missing evidence."
+                    )
+                i = j + 1
+
+
 def validate_service_tags(workflow: dict, result: ValidationResult) -> None:
     """Validate service tag patterns.
 
@@ -444,6 +504,7 @@ def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationRes
     validate_trigger_rules(workflow, result)
     validate_reusable_refs(workflow, result, workflows_dir)
     validate_no_step_level_reusable(workflow, result)
+    validate_gh_api_authentication(workflow, result)
     validate_service_tags(workflow, result)
     validate_no_deploy(workflow, result)
     validate_permissions_shape(workflow, result)

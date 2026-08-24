@@ -79,10 +79,11 @@ jobs:
       - name: Verify CI gate passed for commit
         env:
           COMMIT_SHA: ${{ steps.v.outputs.validated_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           conclusion=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${COMMIT_SHA}&event=push&per_page=10" \
-            --jq '[.workflow_runs[] | select(.name == "ci" or .path == ".github/workflows/ci.yml")] | sort_by(.created_at) | reverse | .[0] | {conclusion, status} // empty' 2>/dev/null || true)
+            --jq '[.workflow_runs[] | select(.name == "ci" or .path == ".github/workflows/ci.yml")] | sort_by(.created_at) | reverse | .[0] | {conclusion, status} // empty')
           status=$(jq -r '.status // "missing"' <<<"$conclusion")
           result=$(jq -r '.conclusion // "missing"' <<<"$conclusion")
           if [[ "$status" != "completed" || "$result" != "success" ]]; then

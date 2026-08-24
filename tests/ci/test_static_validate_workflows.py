@@ -11,6 +11,7 @@ from scripts.ci.static_validate_workflows import (
     validate_reusable_refs,
     validate_no_deploy,
     validate_no_step_level_reusable,
+    validate_gh_api_authentication,
     validate_permissions_shape,
     validate_service_tags,
     ValidationResult,
@@ -241,6 +242,84 @@ def test_job_level_local_reusable_allowed():
         r,
     )
     assert r.passed
+
+
+# ── R1.2: gh api authentication ─────────────────────────────────────────────
+
+
+def test_gh_api_missing_token_rejected():
+    r = _result()
+    validate_gh_api_authentication(
+        {"jobs": {"v": {"steps": [{"run": 'conclusion=$(gh api "repos/x/runs" --jq y)'}]}}},
+        r,
+    )
+    assert not r.passed
+    assert any("GH_TOKEN" in e and "gh api" in e for e in r.errors)
+
+
+def test_gh_api_with_token_passes():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'conclusion=$(gh api "repos/x/runs" --jq y)',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_gh_api_suppression_rejected_even_with_token():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'gh api "repos/x/env" --jq y 2>/dev/null || true',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("suppresses" in e for e in r.errors)
+
+
+def test_gh_api_multiline_suppression_rejected():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": (
+                                'conclusion=$(gh api "repos/x/runs?head_sha=a" \\\n'
+                                '  --jq y 2>/dev/null || true)'
+                            ),
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("suppresses" in e for e in r.errors)
 
 
 # ── Service tags ────────────────────────────────────────────────────────────
