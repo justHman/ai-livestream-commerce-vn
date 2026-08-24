@@ -328,6 +328,41 @@ def validate_gh_api_authentication(workflow: dict, result: ValidationResult) -> 
                 i = j + 1
 
 
+def validate_environment_vocabulary(workflow: dict, result: ValidationResult) -> None:
+    """Validate job-level `environment:` names against the canonical vocabulary.
+
+    Rule (audit R1.3): GitHub Environment names used by workflows MUST come
+    from one canonical set so OIDC trust subjects match exactly. Dynamic
+    expressions (containing ``${{``) are validated at runtime by the owning
+    workflow's hard allowlist and are skipped here.
+    """
+    from scripts.ci.deployment_environments import SUPPORTED_ENVIRONMENT_NAMES
+
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        env_ref = job.get("environment")
+        name = None
+        if isinstance(env_ref, str):
+            name = env_ref
+        elif isinstance(env_ref, dict):
+            name = env_ref.get("name")
+        if not isinstance(name, str) or not name.strip() or "${{" in name:
+            continue
+        if name not in SUPPORTED_ENVIRONMENT_NAMES:
+            result.add_error(
+                f"Job '{job_name}' uses environment '{name}' outside the canonical "
+                f"vocabulary {sorted(SUPPORTED_ENVIRONMENT_NAMES)} (R1.3). OIDC "
+                f"trust subjects match GitHub Environment names exactly; a "
+                f"mismatch breaks OIDC and must not be worked around by "
+                f"broadening trust."
+            )
+
+
 def validate_service_tags(workflow: dict, result: ValidationResult) -> None:
     """Validate service tag patterns.
 
@@ -505,6 +540,7 @@ def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationRes
     validate_reusable_refs(workflow, result, workflows_dir)
     validate_no_step_level_reusable(workflow, result)
     validate_gh_api_authentication(workflow, result)
+    validate_environment_vocabulary(workflow, result)
     validate_service_tags(workflow, result)
     validate_no_deploy(workflow, result)
     validate_permissions_shape(workflow, result)
