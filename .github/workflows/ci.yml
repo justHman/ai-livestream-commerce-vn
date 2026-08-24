@@ -180,16 +180,23 @@ jobs:
           WB: ${{ needs.workbench-check.result }}
           PLT: ${{ needs.platform-check.result }}
           TF: ${{ needs.terraform-plan.result }}
+          REPO: ${{ needs.repo-tools.result }}
         run: |
           set -euo pipefail
-          results=("$SCAN" "$WL" "$AREA" "$MODE" "$SVC" "$CTN" "$WB" "$PLT" "$TF")
-          for r in "${results[@]}"; do
-            [[ "$r" == "success" || "$r" == "skipped" ]] || {
-              echo "CI / gate failed: job result '$r' is not success or skipped." >&2
-              exit 1
-            }
-          done
-          echo "CI / gate passed: all governed jobs succeeded or skipped neutrally."
+          # R8.5: the final gate aggregates EVERY governed job (including
+          # repo-tools) via the shared, failure-injection-tested script so a
+          # governed failure can never escape the aggregate.
+          python scripts/ci/gate_aggregate.py \
+            --result secret-scan="$SCAN" \
+            --result workflow-lint="$WL" \
+            --result affected-area="$AREA" \
+            --result mode="$MODE" \
+            --result service-ci="$SVC" \
+            --result container-build="$CTN" \
+            --result workbench-check="$WB" \
+            --result platform-check="$PLT" \
+            --result terraform-plan="$TF" \
+            --result repo-tools="$REPO"
 
   service-ci:
     needs: [mode, affected-area]
