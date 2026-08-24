@@ -29,6 +29,16 @@ _mod = _util.module_from_spec(_gha_yaml)
 _gha_yaml.loader.exec_module(_mod)
 load_yaml = _mod.load_file
 
+# Canonical environment vocabulary (sibling module; load by file so the CLI
+# works standalone without the repo root on sys.path).
+_deploy_envs = _util.spec_from_file_location(
+    "_deploy_envs",
+    Path(__file__).resolve().parent / "deployment_environments.py",
+)
+_deploy_envs_mod = _util.module_from_spec(_deploy_envs)
+_deploy_envs.loader.exec_module(_deploy_envs_mod)
+SUPPORTED_ENVIRONMENT_NAMES = _deploy_envs_mod.SUPPORTED_ENVIRONMENT_NAMES
+
 # ── Constants ───────────────────────────────────────────────────────────────
 
 SUPPORTED_TRIGGERS = frozenset(
@@ -336,8 +346,6 @@ def validate_environment_vocabulary(workflow: dict, result: ValidationResult) ->
     expressions (containing ``${{``) are validated at runtime by the owning
     workflow's hard allowlist and are skipped here.
     """
-    from scripts.ci.deployment_environments import SUPPORTED_ENVIRONMENT_NAMES
-
     jobs = workflow.get("jobs", {})
     if not isinstance(jobs, dict):
         return
