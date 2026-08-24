@@ -249,6 +249,25 @@ def create_app(
             "CORS_ORIGINS='*' is forbidden outside APP_ENV=dev; set explicit origins"
         )
 
+    # R0.3/Decision 5 fail-loud: self-host Avatar has no production-ready
+    # engine — only a test stub exists (avatar_service builds
+    # AvatarForcingEngine(model="mock") for AVATAR_ENGINE=none). Selecting it
+    # must fail clearly at startup instead of silently booting a stub that
+    # advertises readiness. Runs BEFORE the local-engine guard so the
+    # avatar-specific message is never masked by the generic one. Real
+    # composition path only (no injected deps/container), like the guard below.
+    if container is None and deps is None and config.avatar_adapter == "self_hosted":
+        if config.is_production:
+            raise RuntimeError(
+                "self-host Avatar is not production-ready; only a test stub exists "
+                "(AVATAR_ADAPTER=self_hosted rejected in production)"
+            )
+        if not config.allow_stub_avatar_test_only:
+            raise RuntimeError(
+                "self-host Avatar selected (AVATAR_ADAPTER=self_hosted) but only a test "
+                "stub exists; set ALLOW_STUB_AVATAR_TEST_ONLY=1 for explicit test mode only"
+            )
+
     # Production guard: the control plane must never run local model/GPU
     # engines — remote/provider clients only. Only the real composition path
     # (no injected deps/container) is guarded; injected deps own their engines.

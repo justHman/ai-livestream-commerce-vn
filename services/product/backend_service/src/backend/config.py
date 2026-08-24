@@ -431,6 +431,12 @@ class AppConfig:
     # Renderer backend
     render_backend: str = "cloud_liveavatar"
 
+    # Avatar adapter selection (provider-shaped env). Used for the fail-loud
+    # self-host guard; NOT part of _resolve_adapter_defaults — that function
+    # stays unchanged and only derives *_ENGINE selectors from *_ADAPTER.
+    avatar_adapter: str = ""
+    allow_stub_avatar_test_only: bool = False
+
     # Session storage
     store_backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
@@ -525,6 +531,9 @@ class AppConfig:
         return cls(
             app_env=os.environ.get("APP_ENV", "dev").lower(),
             render_backend=render_backend,
+            avatar_adapter=os.environ.get("AVATAR_ADAPTER", "").lower(),
+            allow_stub_avatar_test_only=os.environ.get("ALLOW_STUB_AVATAR_TEST_ONLY", "0").lower()
+            in ("1", "true", "yes", "on"),
             store_backend=os.environ.get("SESSION_STORE", "memory").lower(),
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             cors_origins=os.environ.get("CORS_ORIGINS", "*"),

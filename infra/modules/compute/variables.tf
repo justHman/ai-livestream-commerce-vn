@@ -245,6 +245,12 @@ variable "avatar_adapter" {
   }
 }
 
+variable "allow_stub_avatar_test_only" {
+  description = "Explicit test-only escape for the Avatar stub; never enabled in production."
+  type        = bool
+  default     = false
+}
+
 variable "llm_adapter" {
   description = "Backend LLM adapter (always openai_compatible)"
   type        = string
