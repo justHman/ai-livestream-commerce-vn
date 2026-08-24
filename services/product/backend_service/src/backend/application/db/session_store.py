@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-__all__ = ["SessionLockTimeout", "SessionStore"]
+__all__ = ["SessionLockTimeout", "SessionStore", "StaleOwnerWriteError"]
 
 
 class SessionLockTimeout(Exception):
@@ -23,6 +23,14 @@ class SessionLockTimeout(Exception):
 
     def __init__(self, session_id: str) -> None:
         super().__init__(f"timed out acquiring session lock: {session_id}")
+        self.session_id = session_id
+
+
+class StaleOwnerWriteError(Exception):
+    """Lost per-session lock ownership before a protected write; caller maps to session-busy/retry."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(f"lost session lock ownership: {session_id}")
         self.session_id = session_id
 
 
