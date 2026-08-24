@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ from backend.application.schemas.run_plan import (
 )
 
 from backend.application.platform_events import EventsIn  # noqa: F401  (re-exported for route modules)
+from backend.application.rate_limit import quota_identity_key
 
 from .auth import viewer_auth
 
@@ -370,30 +372,23 @@ class PathAttachReq(BaseModel):
 # ── Wiring (container-scoped, set by backend.bootstrap.app_factory) ──
 
 
-def _request_limit_key(request: Request, scope: str, session_id: str = "") -> str:
-    host = request.client.host if request.client is not None else "unknown"
-    return f"{host}:{scope}:{session_id}"
-
-
-async def _request_session_id(request: Request) -> str:
-    session_id = request.path_params.get("session_id", "")
-    if session_id:
-        return session_id
-    try:
-        body = await request.json()
-    except ValueError:
-        return ""
-    return str(body.get("session_id", "")) if isinstance(body, dict) else ""
+def _rate_limit_config(request: Request):
+    """Resolve runtime config for rate limiting; unwired apps fall back to defaults."""
+    cfg = getattr(getattr(request.app.state, "container", None), "config", None)
+    if cfg is None:
+        return SimpleNamespace(trusted_proxy_client_ip=False)
+    return cfg
 
 
 async def rate_limit_viewer(request: Request) -> None:
-    session_id = await _request_session_id(request)
-    if not request.app.state.api_limiter.allow(_request_limit_key(request, "viewer", session_id)):
+    key = f"viewer:{quota_identity_key(request, _rate_limit_config(request))}"
+    if not await request.app.state.api_limiter.allow(key):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
 
 
 async def rate_limit_admin(request: Request) -> None:
-    if not request.app.state.api_limiter.allow(_request_limit_key(request, "admin")):
+    key = f"admin:{quota_identity_key(request, _rate_limit_config(request))}"
+    if not await request.app.state.api_limiter.allow(key):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
 
 

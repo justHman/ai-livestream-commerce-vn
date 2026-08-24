@@ -157,12 +157,20 @@ def _build_script_authoring(config, engine_manager, pg_store) -> Any:
 
 
 def _build_api_limiter(config) -> Any:
-    from backend.application.render.limiters import SlidingWindowLimiter
+    from backend.application.rate_limit import (
+        InMemoryRateLimitStore,
+        RedisRateLimitStore,
+        SharedQuotaLimiter,
+    )
 
-    return SlidingWindowLimiter(
-        limit=config.api_rate_limit_requests,
+    if config.store_backend == "redis":
+        store = RedisRateLimitStore(config.redis_url)
+    else:
+        store = InMemoryRateLimitStore(max_keys=config.api_rate_limit_max_keys)
+    return SharedQuotaLimiter(
+        store,
+        requests_limit=config.api_rate_limit_requests,
         window_seconds=config.api_rate_limit_window_seconds,
-        max_keys=config.api_rate_limit_max_keys,
     )
 
 

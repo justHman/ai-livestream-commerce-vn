@@ -106,21 +106,15 @@ def test_authenticated_identity_beats_shared_nat_ip() -> None:
     )
 
     assert (
-        quota_identity_key(
-            _http_request(headers=[(b"authorization", b"Bearer view")]), cfg
-        )
+        quota_identity_key(_http_request(headers=[(b"authorization", b"Bearer view")]), cfg)
         == "id:viewer"
     )
     assert (
-        quota_identity_key(
-            _http_request(headers=[(b"authorization", b"Bearer adm")]), cfg
-        )
+        quota_identity_key(_http_request(headers=[(b"authorization", b"Bearer adm")]), cfg)
         == "id:admin"
     )
     assert (
-        quota_identity_key(
-            _http_request(headers=[(b"authorization", b"Bearer nope")]), cfg
-        )
+        quota_identity_key(_http_request(headers=[(b"authorization", b"Bearer nope")]), cfg)
         == "ip:203.0.113.9"
     )
 
@@ -130,9 +124,7 @@ def test_trusted_proxy_policy_explicit() -> None:
     cfg_off = SimpleNamespace(
         admin_api_token="", backend_api_token="", trusted_proxy_client_ip=False
     )
-    cfg_on = SimpleNamespace(
-        admin_api_token="", backend_api_token="", trusted_proxy_client_ip=True
-    )
+    cfg_on = SimpleNamespace(admin_api_token="", backend_api_token="", trusted_proxy_client_ip=True)
 
     assert quota_identity_key(req, cfg_off) == "ip:203.0.113.9"
     assert quota_identity_key(req, cfg_on) == "ip:198.51.100.7"

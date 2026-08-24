@@ -391,6 +391,8 @@ class AppConfig:
     api_rate_limit_requests: int = 30
     api_rate_limit_window_seconds: float = 60.0
     api_rate_limit_max_keys: int = 10_000
+    # Explicit trusted-proxy policy (R8.10): when False, forwarded headers are ignored.
+    trusted_proxy_client_ip: bool = False
     ws_rate_limit_messages: int = 60
     ws_rate_limit_window_seconds: float = 60.0
 
@@ -459,6 +461,8 @@ class AppConfig:
                 os.environ.get("API_RATE_LIMIT_WINDOW_SECONDS", "60")
             ),
             api_rate_limit_max_keys=int(os.environ.get("API_RATE_LIMIT_MAX_KEYS", "10000")),
+            trusted_proxy_client_ip=os.environ.get("RATE_LIMIT_TRUST_PROXY_CLIENT_IP", "").lower()
+            in ("1", "true", "yes", "on"),
             ws_rate_limit_messages=int(os.environ.get("WS_RATE_LIMIT_MESSAGES", "60")),
             ws_rate_limit_window_seconds=float(
                 os.environ.get("WS_RATE_LIMIT_WINDOW_SECONDS", "60")
