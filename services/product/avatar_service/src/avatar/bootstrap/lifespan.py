@@ -24,6 +24,7 @@ async def create_lifespan(app: FastAPI) -> AsyncIterator[dict]:
     container = _build_container()
     app.state.container = container
     app.state.engine = container.engine
+    app.state.engine_is_stub = container.engine_is_stub
     app.state.engine_ready = True
     try:
         yield {"container": container}
