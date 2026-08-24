@@ -159,6 +159,7 @@ jobs:
       - mode
       - service-ci
       - container-build
+      - backend-container-smoke
       - workbench-check
       - platform-check
       - terraform-plan
@@ -177,6 +178,7 @@ jobs:
           # failures.
           SVC: ${{ needs.service-ci.result == 'failure' && needs.affected-area.outputs.services_json == '[]' && 'skipped' || needs.service-ci.result }}
           CTN: ${{ needs.container-build.result }}
+          BCTN: ${{ needs.backend-container-smoke.result }}
           WB: ${{ needs.workbench-check.result }}
           PLT: ${{ needs.platform-check.result }}
           TF: ${{ needs.terraform-plan.result }}
@@ -193,6 +195,7 @@ jobs:
             --result mode="$MODE" \
             --result service-ci="$SVC" \
             --result container-build="$CTN" \
+            --result backend-container-smoke="$BCTN" \
             --result workbench-check="$WB" \
             --result platform-check="$PLT" \
             --result terraform-plan="$TF" \
@@ -252,6 +255,21 @@ jobs:
             dockerfile: services/product/avatar_service/Dockerfile
             image: imjusthman/ai-live-avatar
             platforms: linux/amd64
+
+  # F.9: built-container smoke — build a production-shaped backend image and
+  # prove packaged resources + readiness semantics from inside the container.
+  # Cheaper than the release image (no push, no cache export); catches
+  # packaging/entrypoint defects on ordinary runners without GPU/model/cloud.
+  backend-container-smoke:
+    runs-on: ubuntu-latest
+    needs: [mode, affected-area]
+    if: ${{ always() && needs.mode.result == 'success' && contains(fromJson(needs.affected-area.outputs.services_json), 'backend_service') && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production-shaped backend image
+        run: docker build -f services/product/backend_service/Dockerfile -t ai-live-backend:smoke .
+      - name: Run built-container artifact/readiness smoke
+        run: python services/product/backend_service/scripts/container_smoke.py --mode docker --image ai-live-backend:smoke
 
   workbench-check:
     runs-on: ubuntu-latest

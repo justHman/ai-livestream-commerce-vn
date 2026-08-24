@@ -16,9 +16,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
-# Single-file evidence uploads name the artifact with a per-leg suffix and give
-# ``path:`` a concrete file, which upload-artifact@v4 stores at artifact root.
-EVIDENCE_UPLOAD = re.compile(r"deploy-evidence-\S+\.jsonl")
+# Single-file evidence uploads give ``path:`` a concrete .jsonl file (no glob
+# chars, no trailing slash), which upload-artifact@v4 stores at artifact root.
+EVIDENCE_UPLOAD = re.compile(r"^[^\s*?]+\.jsonl$")
 EVIDENCE_READ_BASENAME = re.compile(r"\$adir/\$[A-Z_]+\$?\{?\}?[^/]*\.jsonl")
 
 
@@ -51,13 +51,28 @@ def test_every_evidence_read_targets_artifact_root_basename() -> None:
 
 
 def test_every_evidence_upload_is_a_single_concrete_file() -> None:
-    # ``path:`` must be a concrete file (artifact root storage), not a glob/dir.
+    # Evidence artifacts are named ``deploy-evidence-...`` and their ``path:``
+    # must be a single concrete ``.jsonl`` file (artifact-root storage), never a
+    # glob or directory (which would change the download layout the reader
+    # depends on).
     doc = _load("_deploy-service.yml")
-    for job in doc["jobs"].values():
-        for step in job.get("steps", []):
-            with_ = step.get("with") or {}
-            upload_path = with_.get("path", "") or ""
-            if "deploy-evidence" in upload_path:
-                assert EVIDENCE_UPLOAD.search(upload_path), (
-                    f"evidence upload path is not a single file: {upload_path!r}"
-                )
+    uploads = [
+        (step.get("with") or {}).get("path", "")
+        for job in doc["jobs"].values()
+        for step in job.get("steps", [])
+        if "deploy-evidence-" in ((step.get("with") or {}).get("name", ""))
+    ]
+    assert uploads, "expected at least one deploy-evidence- upload"
+    for upload_path in uploads:
+        # A single concrete file: no glob chars, no trailing slash, and it ends
+        # in `.jsonl` after any `${{ }}` templating in the literal text.
+        literal = re.sub(r"\$\{\{[^}]*\}\}", "", upload_path)
+        assert "*" not in literal and "?" not in literal, (
+            f"evidence upload path must not be a glob: {upload_path!r}"
+        )
+        assert not literal.rstrip().endswith("/"), (
+            f"evidence upload path must be a file, not a directory: {upload_path!r}"
+        )
+        assert literal.rstrip().endswith(".jsonl"), (
+            f"evidence upload path must be a single .jsonl file: {upload_path!r}"
+        )
