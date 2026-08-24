@@ -116,7 +116,7 @@ jobs:
           echo "evidence_digest=$digest" >> "$GITHUB_OUTPUT"
           echo "evidence_ts=$ts" >> "$GITHUB_OUTPUT"
 
-  deploy:
+  prepare:
     needs: [resolve, validate-evidence]
     runs-on: ubuntu-latest
     environment: production
@@ -124,6 +124,16 @@ jobs:
       EVIDENCE_DIGEST: ${{ needs.validate-evidence.outputs.evidence_digest }}
       TAG_COMMIT: ${{ needs.resolve.outputs.tag_commit }}
       SERVICE: ${{ needs.resolve.outputs.service }}
+    outputs:
+      ecs_cluster: ${{ steps.tf.outputs.ecs_cluster }}
+      backend_service: ${{ steps.tf.outputs.backend_service }}
+      llm_service: ${{ steps.tf.outputs.llm_service }}
+      tts_service: ${{ steps.tf.outputs.tts_service }}
+      avatar_service: ${{ steps.tf.outputs.avatar_service }}
+      migrate_task_arn: ${{ steps.tf.outputs.migrate_task_arn }}
+      public_subnet_ids: ${{ steps.tf.outputs.public_subnet_ids }}
+      backend_sg_id: ${{ steps.tf.outputs.backend_sg_id }}
+      smoke_url: ${{ steps.tf.outputs.smoke_url }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -204,13 +214,26 @@ jobs:
           check_optional "$tts_desired" "$tts_svc" tts
           check_optional "$avatar_desired" "$avatar_svc" avatar
           echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"
+
+  migrate:
+    needs: [resolve, prepare]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.resolve.outputs.service == 'backend_service' && needs.prepare.outputs.migrate_task_arn != '' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      ECS_CLUSTER: ${{ needs.prepare.outputs.ecs_cluster }}
+      MIGRATE_TASK_ARN: ${{ needs.prepare.outputs.migrate_task_arn }}
+      BACKEND_SUBNETS: ${{ needs.prepare.outputs.public_subnet_ids }}
+      BACKEND_SG: ${{ needs.prepare.outputs.backend_sg_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag_commit }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
       - name: Run pre-deploy migration
-        if: ${{ env.SERVICE == 'backend_service' && steps.tf.outputs.migrate_task_arn != '' }}
-        env:
-          ECS_CLUSTER: ${{ steps.tf.outputs.ecs_cluster }}
-          MIGRATE_TASK_ARN: ${{ steps.tf.outputs.migrate_task_arn }}
-          BACKEND_SUBNETS: ${{ steps.tf.outputs.public_subnet_ids }}
-          BACKEND_SG: ${{ steps.tf.outputs.backend_sg_id }}
         run: |
           set -euo pipefail
           run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
@@ -221,19 +244,39 @@ jobs:
           exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$run_id" --query 'tasks[0].containers[0].exitCode' --output text)
           [[ "$exit_code" == "0" ]] || { echo "Migration failed (exit $exit_code). Release aborted." >&2; exit 1; }
           echo "Migration completed."
-      - name: Promote exact staging digest (no rebuild)
-        uses: ./.github/workflows/_deploy-service.yml
+
+  promote:
+    needs: [resolve, validate-evidence, prepare, migrate]
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: production
+    uses: ./.github/workflows/_deploy-service.yml
+    with:
+      env: production
+      commit_sha: ${{ needs.resolve.outputs.tag_commit }}
+      initiator: ${{ github.actor }}
+      cluster: ${{ needs.prepare.outputs.ecs_cluster }}
+      service: ${{ needs.prepare.outputs[format('{0}_service', needs.resolve.outputs.service_short)] }}
+      container: ${{ needs.resolve.outputs.service_short }}
+      image: ${{ needs.validate-evidence.outputs.evidence_digest }}
+      role_arn: ${{ secrets.AWS_ROLE_ARN_PROD }}
+      aws_region: ${{ env.AWS_REGION }}
+      smoke_url: ${{ needs.resolve.outputs.service == 'backend_service' && needs.prepare.outputs.smoke_url || '' }}
+    secrets: inherit
+
+  record-outcome:
+    needs: [resolve, validate-evidence, promote]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      EVIDENCE_DIGEST: ${{ needs.validate-evidence.outputs.evidence_digest }}
+      TAG_COMMIT: ${{ needs.resolve.outputs.tag_commit }}
+      SERVICE: ${{ needs.resolve.outputs.service }}
+    steps:
+      - uses: actions/checkout@v4
         with:
-          env: production
-          commit_sha: ${{ env.TAG_COMMIT }}
-          initiator: ${{ github.actor }}
-          cluster: ${{ steps.tf.outputs.ecs_cluster }}
-          service: ${{ steps.tf.outputs[format('{0}_service', needs.resolve.outputs.service_short)] }}
-          container: ${{ needs.resolve.outputs.service_short }}
-          image: ${{ env.EVIDENCE_DIGEST }}
-          role_arn: ${{ secrets.AWS_ROLE_ARN_PROD }}
-          aws_region: ${{ env.AWS_REGION }}
-          smoke_url: ${{ env.SERVICE == 'backend_service' && steps.tf.outputs.smoke_url || '' }}
+          ref: ${{ needs.resolve.outputs.tag_commit }}
       - name: Record release outcome
         if: ${{ always() }}
         env:

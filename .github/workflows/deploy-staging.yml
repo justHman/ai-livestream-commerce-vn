@@ -218,22 +218,51 @@ jobs:
             dockerfile: services/product/avatar_service/Dockerfile
             image: imjusthman/ai-live-avatar
             platforms: linux/amd64
+    uses: ./.github/workflows/_container-build.yml
+    with:
+      image: ${{ matrix.image }}
+      tag: staging-${{ needs.validate.outputs.validated_sha }}
+      scope: ${{ matrix.role }}
+      dockerfile: ${{ matrix.dockerfile }}
+      platforms: ${{ matrix.platforms }}
+      push: true
+      export_cache: false
+    secrets: inherit
+
+  migrate:
+    needs: [validate, preflight, build]
+    if: ${{ always() && needs.validate.result == 'success' && needs.preflight.result == 'success' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      ECS_CLUSTER: ${{ needs.preflight.outputs.ecs_cluster }}
+      MIGRATE_TASK_ARN: ${{ needs.preflight.outputs.migrate_task_arn }}
+      BACKEND_SUBNETS: ${{ needs.preflight.outputs.public_subnet_ids }}
+      BACKEND_SG: ${{ needs.preflight.outputs.backend_sg_id }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.validate.outputs.validated_sha }}
-      - uses: ./.github/workflows/_container-build.yml
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
-          image: ${{ matrix.image }}
-          tag: staging-${{ needs.validate.outputs.validated_sha }}
-          scope: ${{ matrix.role }}
-          dockerfile: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platforms }}
-          push: true
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Run pre-deploy migration
+        run: |
+          set -euo pipefail
+          if [[ -z "$MIGRATE_TASK_ARN" ]]; then echo "No migration task configured; skipping."; exit 0; fi
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$run_id"
+          exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$run_id" --query 'tasks[0].containers[0].exitCode' --output text)
+          [[ "$exit_code" == "0" ]] || { echo "Migration failed (exit $exit_code). Deployment aborted." >&2; exit 1; }
+          echo "Migration completed."
 
   deploy:
-    needs: [validate, preflight, build]
-    if: ${{ always() && needs.validate.result == 'success' && needs.preflight.result == 'success' && needs.build.result == 'success' }}
+    needs: [validate, preflight, build, migrate]
+    if: ${{ always() && needs.validate.result == 'success' && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: staging
     strategy:
@@ -257,45 +286,19 @@ jobs:
             role: avatar
             image: imjusthman/ai-live-avatar
             container: avatar
-    env:
-      ECS_CLUSTER: ${{ needs.preflight.outputs.ecs_cluster }}
-      MIGRATE_TASK_ARN: ${{ needs.preflight.outputs.migrate_task_arn }}
-      BACKEND_SUBNETS: ${{ needs.preflight.outputs.public_subnet_ids }}
-      BACKEND_SG: ${{ needs.preflight.outputs.backend_sg_id }}
-      VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.validate.outputs.validated_sha }}
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Run pre-deploy migration
-        if: ${{ env.MIGRATE_TASK_ARN != '' && matrix.role == 'backend' }}
-        run: |
-          set -euo pipefail
-          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
-            --query 'tasks[0].taskArn' --output text)
-          [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
-          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$run_id"
-          exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$run_id" --query 'tasks[0].containers[0].exitCode' --output text)
-          [[ "$exit_code" == "0" ]] || { echo "Migration failed (exit $exit_code). Deployment aborted." >&2; exit 1; }
-          echo "Migration completed."
-      - name: Deploy service
-        uses: ./.github/workflows/_deploy-service.yml
-        with:
-          env: staging
-          commit_sha: ${{ env.VALIDATED_SHA }}
-          initiator: ${{ github.actor }}
-          cluster: ${{ needs.preflight.outputs.ecs_cluster }}
-          service: ${{ needs.preflight.outputs[format('{0}_service', matrix.role)] }}
-          container: ${{ matrix.container }}
-          image: ${{ format('{0}:staging-{1}', matrix.image, env.VALIDATED_SHA) }}
-          role_arn: ${{ secrets.AWS_ROLE_ARN_STAGING }}
-          aws_region: ${{ env.AWS_REGION }}
-          smoke_url: ${{ matrix.role == 'backend' && needs.preflight.outputs.smoke_url || '' }}
+    uses: ./.github/workflows/_deploy-service.yml
+    with:
+      env: staging
+      commit_sha: ${{ needs.validate.outputs.validated_sha }}
+      initiator: ${{ github.actor }}
+      cluster: ${{ needs.preflight.outputs.ecs_cluster }}
+      service: ${{ needs.preflight.outputs[format('{0}_service', matrix.role)] }}
+      container: ${{ matrix.container }}
+      image: ${{ format('{0}:staging-{1}', matrix.image, needs.validate.outputs.validated_sha) }}
+      role_arn: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+      aws_region: ${{ env.AWS_REGION }}
+      smoke_url: ${{ matrix.role == 'backend' && needs.preflight.outputs.smoke_url || '' }}
+    secrets: inherit
 
   smoke:
     needs: [validate, preflight, deploy]

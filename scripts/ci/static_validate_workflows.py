@@ -238,6 +238,36 @@ def validate_reusable_refs(workflow: dict, result: ValidationResult, workflows_d
             )
 
 
+def validate_no_step_level_reusable(workflow: dict, result: ValidationResult) -> None:
+    """Validate reusable workflows are invoked at job level only.
+
+    Rule (audit R1.1): a reusable workflow (local `./.github/workflows/*.yml`)
+    MUST be invoked via `jobs.<id>.uses`. Invoking it through `steps[*].uses`
+    is invalid GitHub Actions syntax and silently breaks the delivery chain.
+    External actions (`owner/repo@ref`) at step level remain allowed.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            if isinstance(uses, str) and uses.startswith("./"):
+                result.add_error(
+                    f"Job '{job_name}' step {idx} invokes local reusable workflow "
+                    f"'{uses}' via steps[].uses. Reusable workflows must be invoked "
+                    f"at job level via jobs.<id>.uses."
+                )
+
+
 def validate_service_tags(workflow: dict, result: ValidationResult) -> None:
     """Validate service tag patterns.
 
@@ -379,10 +409,12 @@ def validate_permissions_shape(workflow: dict, result: ValidationResult) -> None
             )
         secrets = job.get("secrets")
         if secrets is not None and not isinstance(secrets, dict):
-            result.add_error(
-                f"Job '{job_name}' secrets block must be a mapping "
-                f"(shape check only); got {type(secrets).__name__}."
-            )
+            # Reusable-workflow call jobs (`uses`) may declare `secrets: inherit`.
+            if not (isinstance(secrets, str) and secrets == "inherit" and job.get("uses")):
+                result.add_error(
+                    f"Job '{job_name}' secrets block must be a mapping "
+                    f"(shape check only); got {type(secrets).__name__}."
+                )
 
     # Reusable workflow secrets (on.workflow_call.secrets): must be a mapping when present.
     on = _on_mapping(workflow.get("on"))
@@ -411,6 +443,7 @@ def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationRes
 
     validate_trigger_rules(workflow, result)
     validate_reusable_refs(workflow, result, workflows_dir)
+    validate_no_step_level_reusable(workflow, result)
     validate_service_tags(workflow, result)
     validate_no_deploy(workflow, result)
     validate_permissions_shape(workflow, result)

@@ -10,6 +10,7 @@ from scripts.ci.static_validate_workflows import (
     validate_trigger_rules,
     validate_reusable_refs,
     validate_no_deploy,
+    validate_no_step_level_reusable,
     validate_permissions_shape,
     validate_service_tags,
     ValidationResult,
@@ -183,6 +184,63 @@ def test_workflow_call_secrets_invalid_shape_rejected():
     )
     assert not r.passed
     assert any("on.workflow_call.secrets" in e for e in r.errors)
+
+
+# ── R1.1: reusable workflows never invoked via steps[*].uses ───────────────
+
+
+def test_step_level_local_reusable_rejected():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {"uses": "actions/checkout@v4"},
+                        {"uses": "./.github/workflows/_deploy-service.yml"},
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("steps[].uses" in e and "_deploy-service.yml" in e for e in r.errors)
+
+
+def test_step_level_external_action_allowed():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "build": {
+                    "steps": [
+                        {"uses": "actions/checkout@v4"},
+                        {"uses": "docker/build-push-action@v6"},
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_job_level_local_reusable_allowed():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "build": {
+                    "uses": "./.github/workflows/_container-build.yml",
+                    "with": {"image": "x"},
+                    "steps": [{"uses": "actions/checkout@v4"}],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
 
 
 # ── Service tags ────────────────────────────────────────────────────────────
