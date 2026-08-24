@@ -9,16 +9,29 @@ exposes a sensitive ``rediss://`` URI instead of a plaintext host:port string.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_MAIN = ROOT / "infra/modules/database/main.tf"
 DB_OUTPUTS = ROOT / "infra/modules/database/outputs.tf"
-ENVIRONMENTS = sorted((ROOT / "infra/environments").glob("*/main.tf"))
+# Only deployment envs that create the database module — excludes the account
+# bootstrap in environments/global, which has no RDS/ElastiCache to secure.
+ENVIRONMENTS = sorted(
+    p
+    for p in (ROOT / "infra/environments").glob("*/main.tf")
+    if 'module "database"' in p.read_text(encoding="utf-8")
+)
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _compact(source: str) -> str:
+    """Collapse whitespace runs to single spaces so terraform-fmt aligned
+    ``key = value`` pairs match the same literal tokens."""
+    return re.sub(r"\s+", " ", source)
 
 
 def test_redis_uses_replication_group_with_tls_and_auth() -> None:
@@ -27,13 +40,13 @@ def test_redis_uses_replication_group_with_tls_and_auth() -> None:
     assert 'resource "aws_elasticache_cluster"' not in source
     assert "transit_encryption_enabled = true" in source
     assert "at_rest_encryption_enabled = true" in source
-    assert "auth_token = var.redis_auth_token" in source
+    assert "auth_token = var.redis_auth_token" in _compact(source)
 
 
 def test_postgres_parameter_group_forces_ssl() -> None:
     source = _read(DB_MAIN)
     assert "rds.force_ssl" in source
-    assert 'value = "1"' in source
+    assert 'value = "1"' in _compact(source)
 
 
 def test_redis_uri_output_is_sensitive_rediss() -> None:

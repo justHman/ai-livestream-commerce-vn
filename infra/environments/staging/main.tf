@@ -73,6 +73,7 @@ module "database" {
   allocated_storage_gb = var.db_allocated_storage_gb
   multi_az             = false
   redis_node_type      = var.redis_node_type
+  redis_auth_token     = var.redis_auth_token
   # Staging is ephemeral but prod-like: keep final snapshot + deletion
   # protection off so teardown stays safe; backups enabled.
   backup_retention_days = 7
@@ -127,7 +128,7 @@ module "compute" {
   cors_origins             = var.cors_origins
   debug_enabled            = var.debug_enabled
   session_store            = var.session_store
-  redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? "redis://${module.database.redis_connection_string}" : "")
+  redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? module.database.redis_uri : "")
   app_env                  = var.app_env
   avatar_adapter           = var.avatar_adapter
   livekit_url              = var.livekit_url

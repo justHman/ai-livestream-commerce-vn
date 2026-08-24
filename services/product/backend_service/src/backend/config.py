@@ -24,6 +24,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
+
+
+def _dsn_sslmode(database_url: str) -> str:
+    """Extract the ``sslmode`` query value from a Postgres DSN ('' when absent).
+
+    ``urlparse``/``parse_qs`` handle both ``postgres://`` and ``postgresql://``
+    schemes; a DSN with no query string yields '' so callers can treat a
+    missing sslmode the same as an unset one.
+    """
+    values = parse_qs(urlparse(database_url).query).get("sslmode", [])
+    return values[0] if values else ""
 
 
 def _canonical_base_sales() -> str:
@@ -510,6 +522,34 @@ class AppConfig:
         MUST use this predicate, never a raw ``app_env == ...`` comparison.
         """
         return self.app_env in {"prod", "production"}
+
+    def __post_init__(self) -> None:
+        """Fail loud on a production boot against an unencrypted data store.
+
+        App-side half of R7.1 (managed Redis TLS+auth) and R7.4 (RDS TLS):
+        ``APP_ENV=prod`` must never silently start with a plaintext
+        ``redis://`` store or a DATABASE_URL that lacks an explicit sslmode.
+        Local/dev configs (the default) are unrestricted.
+        """
+        if (
+            self.is_production
+            and self.store_backend == "redis"
+            and not self.redis_url.startswith("rediss://")
+        ):
+            raise ValueError("production redis requires rediss:// (TLS)")
+        if (
+            self.is_production
+            and self.database_url
+            and _dsn_sslmode(self.database_url)
+            not in {
+                "require",
+                "verify-ca",
+                "verify-full",
+            }
+        ):
+            raise ValueError(
+                "production DATABASE_URL requires sslmode=require|verify-ca|verify-full"
+            )
 
     def cors_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
