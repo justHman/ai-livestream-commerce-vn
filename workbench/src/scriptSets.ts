@@ -6,6 +6,7 @@
  */
 
 import { ApiError, type ApiDeps } from "./api";
+export type { ApiDeps };
 
 // ---------------- Domain types (task 2.1, Decision 16) ----------------
 
@@ -95,6 +96,9 @@ export interface CompiledScriptVersion {
   spoken_text: string;
   estimated_duration_s: number;
   gate_violations: GateViolation[];
+  /** Preserved gate outcome when the wire carried one; "DRAFT" otherwise. */
+  gate_status?: "DRAFT" | "GATE_FAILED" | "GATE_PASSED";
+  violations?: GateViolation[];
   fingerprint: GenerationFingerprint | null;
   created_at: string;
 }
@@ -142,9 +146,30 @@ export interface ScriptSet {
 
 // ---------------- Backend wire DTO (real _set_wire contract) ----------------
 
+/** Version entry as emitted by ``ScriptAuthoringServiceImpl._version_wire``. */
+export interface BackendScriptVersionWire {
+  id: string;
+  version: number;
+  source: string;
+  display_text: string;
+  spoken_text: string;
+  gate_result: string | null;
+  created_at: string;
+}
+
+/** Gate outcome as emitted by ``ScriptAuthoringServiceImpl._gate_wire``. */
+export interface GateOutcome {
+  state: "passed" | "gate_failed";
+  violations: GateViolation[];
+}
+
 /** Per-product entry in the real backend ScriptSet response. */
 export interface BackendScriptSetItem {
   state: ScriptItemState;
+  current_version_id: string | null;
+  approved_version_id: string | null;
+  current_version: BackendScriptVersionWire | null;
+  gate: GateOutcome | null;
 }
 
 /** Exact response shape returned by ``ScriptAuthoringServiceImpl._set_wire``
@@ -173,8 +198,9 @@ export interface ScriptSetPatch {
 }
 
 /** Expand a real-backend ScriptSet wire response into the local ``ScriptSet``
- * view model the authoring flows/UI consume. The wire carries only per-product
- * state; everything else is defaulted to the empty item shape. */
+ * view model the authoring flows/UI consume. Per-product identity (state,
+ * current/approved version ids, gate outcome) is preserved from the wire;
+ * plan/segments/history stay defaulted because the wire does not carry them. */
 export function mapScriptSetResponse(wire: BackendScriptSetResponse): ScriptSet {
   const productIds = wire.product_ids.length ? wire.product_ids : Object.keys(wire.items);
   return {
@@ -183,10 +209,34 @@ export function mapScriptSetResponse(wire: BackendScriptSetResponse): ScriptSet 
     revision: wire.revision,
     transition_policy: wire.transition_policy,
     brief: { title: wire.name, host_name: "", shop_name: "", note: "" },
-    products: productIds.map((productId) => emptyScriptItem(productId, wire.items[productId]?.state ?? "EMPTY")),
+    products: productIds.map((productId) => mapScriptItem(productId, wire.items[productId])),
     created_at: "",
     updated_at: "",
   };
+}
+
+function mapScriptItem(productId: string, item: BackendScriptSetItem | undefined): ScriptItem {
+  const mapped = emptyScriptItem(productId, item?.state ?? "EMPTY");
+  mapped.approved_version_id = item?.approved_version_id ?? null;
+  const cv = item?.current_version;
+  if (cv) {
+    const violations = item?.gate?.violations ?? [];
+    mapped.current_version = {
+      version_id: cv.id,
+      version: cv.version,
+      source: cv.source as ScriptSource,
+      state: item?.state ?? "DRAFT",
+      display_text: cv.display_text,
+      spoken_text: cv.spoken_text,
+      estimated_duration_s: 0,
+      gate_violations: violations,
+      gate_status: item?.gate ? (item.gate.state === "passed" ? "GATE_PASSED" : "GATE_FAILED") : "DRAFT",
+      violations,
+      fingerprint: null,
+      created_at: cv.created_at,
+    };
+  }
+  return mapped;
 }
 
 function emptyScriptItem(productId: string, state: ScriptItemState): ScriptItem {
@@ -219,6 +269,7 @@ export interface ProductPreview {
   target_duration_s: number;
   planned_segment_count: number;
   estimated_semantic_calls: number;
+  maximum_semantic_calls: number;
 }
 
 export interface GenerationPreview {
@@ -230,73 +281,84 @@ export interface PreviewRequest {
   products: Array<{ product_id: string; target_duration_s: number }>;
 }
 
-// ---------------- Command responses ----------------
+// ---------------- Command responses (real backend envelopes) ----------------
 
+/** PUT .../draft — backend returns only the resulting item state. */
 export interface DraftResult {
-  version_id: string;
-  version: number;
+  ok: boolean;
+  product_id: string;
   state: ScriptItemState;
-  spoken_text: string;
-  estimated_duration_s?: number;
-  violations?: GateViolation[];
 }
 
+/** POST .../submit — gate outcome rides in ``gate``. */
 export interface SubmitResult {
-  state: "gate_running" | "gate_failed" | "reviewable";
-  version_id?: string;
-  violations?: GateViolation[];
-}
-
-export interface AcceptedJob {
-  status: "accepted" | "existing";
-  workflow_id?: string;
-  job_id?: string;
-  batch_id?: string;
-}
-
-export interface ApprovalResult {
-  approval: ApprovalRecord;
+  ok: boolean;
+  product_id: string;
   state: ScriptItemState;
+  gate: GateOutcome | null;
 }
 
+/** Single-product async job acceptance (generate / regenerate / fix): either a
+ * queued workflow or an idempotent replay of the existing workflow. */
+export interface AcceptedJob {
+  workflow_id: string;
+  product_id?: string;
+  segment_index?: number;
+  status?: "queued";
+  idempotent?: boolean;
+}
+
+export interface ApprovalInfo {
+  version_id: string;
+  actor: string;
+  approved_at: string;
+}
+
+/** POST .../approve — per-product approval envelope. */
+export interface ApprovalResult {
+  ok: boolean;
+  product_id: string;
+  state: ScriptItemState;
+  approval: ApprovalInfo;
+}
+
+/** POST .../approve-batch — approvals keyed by product_id, NOT an array. */
 export interface BatchApprovalResult {
-  approvals: ApprovalRecord[];
+  ok: boolean;
+  approvals: Record<string, ApprovalResult>;
 }
 
 // ---------------- Batch + SSE (Decision 16) ----------------
 
-export type BatchProductStatus =
+/** Batch status vocabulary from GET .../generation-batches/{batch_id}. */
+export type BatchStatus =
   | "queued"
-  | "planning"
-  | "generating"
-  | "reviewable"
+  | "running"
+  | "completed"
+  | "partial_completed"
   | "failed"
   | "cancelled"
-  | "completed";
+  | "cancelling";
 
-export interface BatchProductProgress {
-  product_id: string;
-  status: BatchProductStatus;
-  current_segment_index: number | null;
-  segment_count: number | null;
-  estimated_semantic_calls: number;
-  attempts: number;
-  failure: FailureInfo | null;
+/** Real wire shape of GET .../generation-batches/{batch_id}: the backend emits
+ * exactly ``{batch_id, status, product_ids}``. */
+export interface BatchSnapshot {
+  batch_id: string;
+  status: string;
+  product_ids: string[];
 }
 
-export type BatchStatus = "queued" | "running" | "completed" | "cancelled" | "partial_failure";
-
-export interface GenerationBatch {
+/** POST .../generate-batch acceptance: new queue run or idempotent replay. */
+export interface BatchGenerationResult {
   batch_id: string;
-  script_set_id: string;
-  script_set_revision: number;
-  requested_product_ids: string[];
+  workflow_summary: WorkflowSummary;
   status: BatchStatus;
-  revision: number;
-  products: BatchProductProgress[];
+  idempotent?: boolean;
+}
+
+export interface WorkflowSummary {
+  products: Array<{ product_id: string; estimated_semantic_calls: number }>;
   estimated_semantic_calls_total: number;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface GenerateBatchRequest {
@@ -304,31 +366,34 @@ export interface GenerateBatchRequest {
   target_duration_s: number;
 }
 
+/** Real backend SSE event vocabulary (tasks 11.10, D.3). Live events carry no
+ * event_id/revision; the snapshot carries batch_id/set_id/status/revision. */
 export type ScriptEventType =
   | "batch.snapshot"
   | "batch.progress"
-  | "product.planning_started"
-  | "product.plan_ready"
-  | "segment.started"
-  | "segment.gate_passed"
-  | "segment.gate_failed"
-  | "product.reviewable"
   | "product.failed"
   | "batch.completed"
-  | "batch.cancelled";
+  | "batch.cancelled"
+  | "batch.error";
 
 export interface ScriptEvent {
-  event_id: string;
-  revision: number;
+  /** Present only when the backend frame carried an event id (current
+   * snapshot/live frames do NOT — dedup falls back to revision/snapshot). */
+  event_id?: string;
+  /** Present only on the batch.snapshot frame. */
+  revision?: number;
   type: ScriptEventType;
-  script_set_id: string;
-  batch_id: string;
+  /** Backend wire key — the events payload uses ``set_id``, not ``script_set_id``. */
+  set_id?: string;
+  batch_id?: string;
   product_id?: string;
-  segment_index?: number;
-  segment_count?: number;
-  failure?: FailureInfo;
-  snapshot?: GenerationBatch;
-  payload?: { attempts?: number; status?: BatchStatus };
+  reason?: string;
+  code?: string;
+  message?: string;
+  /** Snapshot status at TOP level (real backend snapshot payload). */
+  status?: BatchStatus;
+  /** Raw snapshot payload mirrored for consumers reading ``event.snapshot``. */
+  snapshot?: Record<string, unknown>;
 }
 
 // ---------------- Client ----------------
@@ -336,8 +401,8 @@ export interface ScriptEvent {
 export function createScriptClient(deps: ApiDeps) {
   const base = () => deps.backendUrl.replace(/\/$/, "");
 
-  function adminHeaders(json = false): Record<string, string> {
-    const token = deps.adminToken();
+  function viewerHeaders(json = false): Record<string, string> {
+    const token = deps.viewerToken();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
     if (json) headers["Content-Type"] = "application/json";
@@ -375,7 +440,7 @@ export function createScriptClient(deps: ApiDeps) {
   async function createScriptSet(input: ScriptSetInput): Promise<ScriptSet> {
     const wire = await requestJson<BackendScriptSetResponse>("/api/v1/script-sets", {
       method: "POST",
-      headers: adminHeaders(true),
+      headers: viewerHeaders(true),
       body: JSON.stringify(input),
     });
     return mapScriptSetResponse(wire);
@@ -383,7 +448,7 @@ export function createScriptClient(deps: ApiDeps) {
 
   async function getScriptSet(setId: string): Promise<ScriptSet> {
     const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
-      headers: adminHeaders(),
+      headers: viewerHeaders(),
     });
     return mapScriptSetResponse(wire);
   }
@@ -391,7 +456,7 @@ export function createScriptClient(deps: ApiDeps) {
   async function patchScriptSet(setId: string, patch: ScriptSetPatch): Promise<ScriptSet> {
     const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
       method: "PATCH",
-      headers: adminHeaders(true),
+      headers: viewerHeaders(true),
       body: JSON.stringify(patch),
     });
     return mapScriptSetResponse(wire);
@@ -400,14 +465,14 @@ export function createScriptClient(deps: ApiDeps) {
   async function putDraft(setId: string, productId: string, input: DraftInput): Promise<DraftResult> {
     return requestJson<DraftResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/draft`,
-      { method: "PUT", headers: adminHeaders(true), body: JSON.stringify(input) },
+      { method: "PUT", headers: viewerHeaders(true), body: JSON.stringify(input) },
     );
   }
 
   async function submit(setId: string, productId: string): Promise<SubmitResult> {
     return requestJson<SubmitResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/submit`,
-      { method: "POST", headers: adminHeaders(true) },
+      { method: "POST", headers: viewerHeaders(true) },
     );
   }
 
@@ -418,7 +483,7 @@ export function createScriptClient(deps: ApiDeps) {
   ): Promise<ProductPreview> {
     return requestJson<ProductPreview>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/generation-preview`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_id: productId, target_duration_s: targetDurationS }) },
+      { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ product_id: productId, target_duration_s: targetDurationS }) },
     );
   }
 
@@ -444,7 +509,7 @@ export function createScriptClient(deps: ApiDeps) {
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/generate`,
       {
         method: "POST",
-        headers: { ...adminHeaders(true), "Idempotency-Key": key },
+        headers: { ...viewerHeaders(true), "Idempotency-Key": key },
         body: JSON.stringify({ target_duration_s: targetDurationS }),
       },
     );
@@ -458,53 +523,53 @@ export function createScriptClient(deps: ApiDeps) {
   ): Promise<AcceptedJob> {
     return requestJson<AcceptedJob>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/segments/${segmentIndex}/regenerate`,
-      { method: "POST", headers: { ...adminHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
+      { method: "POST", headers: { ...viewerHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
     );
   }
 
   async function fixProduct(setId: string, productId: string, key: string): Promise<AcceptedJob> {
     return requestJson<AcceptedJob>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/fix`,
-      { method: "POST", headers: { ...adminHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
+      { method: "POST", headers: { ...viewerHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
     );
   }
 
   async function approveProduct(setId: string, productId: string, versionId: string, actor: string): Promise<ApprovalResult> {
     return requestJson<ApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/approve`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ version_id: versionId, actor }) },
+      { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ version_id: versionId, actor }) },
     );
   }
 
   async function approveBatch(setId: string, productIds: string[], versionIds: Record<string, string>, actor: string): Promise<BatchApprovalResult> {
     return requestJson<BatchApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/approve-batch`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_ids: productIds, version_ids: versionIds, actor }) },
+      { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ product_ids: productIds, version_ids: versionIds, actor }) },
     );
   }
 
-  async function generateBatch(setId: string, req: GenerateBatchRequest, key: string): Promise<AcceptedJob> {
-    return requestJson<AcceptedJob>(
+  async function generateBatch(setId: string, req: GenerateBatchRequest, key: string): Promise<BatchGenerationResult> {
+    return requestJson<BatchGenerationResult>(
       `/api/v1/script-sets/${esc(setId)}/generate-batch`,
       {
         method: "POST",
-        headers: { ...adminHeaders(true), "Idempotency-Key": key },
+        headers: { ...viewerHeaders(true), "Idempotency-Key": key },
         body: JSON.stringify(req),
       },
     );
   }
 
-  async function getBatch(setId: string, batchId: string): Promise<GenerationBatch> {
-    return requestJson<GenerationBatch>(
+  async function getBatch(setId: string, batchId: string): Promise<BatchSnapshot> {
+    return requestJson<BatchSnapshot>(
       `/api/v1/script-sets/${esc(setId)}/generation-batches/${esc(batchId)}`,
-      { headers: adminHeaders() },
+      { headers: viewerHeaders() },
     );
   }
 
-  async function cancelBatch(setId: string, batchId: string): Promise<{ ok: boolean }> {
-    return requestJson<{ ok: boolean }>(
+  async function cancelBatch(setId: string, batchId: string): Promise<{ batch_id: string; status: BatchStatus }> {
+    return requestJson<{ batch_id: string; status: BatchStatus }>(
       `/api/v1/script-sets/${esc(setId)}/generation-batches/${esc(batchId)}/cancel`,
-      { method: "POST", headers: adminHeaders() },
+      { method: "POST", headers: viewerHeaders() },
     );
   }
 
@@ -545,13 +610,6 @@ export function idempotencyKey(value: unknown): string {
 }
 
 // ---------------- SSE (Decision 16) ----------------
-
-export function sseUrl(backend: string, setId: string, batchId: string, token: string): string {
-  const url = new URL(backend);
-  url.pathname = `/api/v1/script-sets/${encodeURIComponent(setId)}/generation-batches/${encodeURIComponent(batchId)}/events`;
-  if (token) url.search = `token=${encodeURIComponent(token)}`;
-  return url.toString();
-}
 
 export interface SseHandlers {
   onEvent: (event: ScriptEvent) => void;
@@ -597,16 +655,23 @@ export class SseFeed {
   accept(event: ScriptEvent): void {
     if (event.type === "batch.snapshot") {
       // Snapshot replaces prior state — replay after reconnect is idempotent.
-      this.lastRevision = event.revision;
+      this.lastRevision = event.revision ?? 0;
       this.snapshotApplied = true;
       this.handlers.onEvent(event);
       return;
     }
     if (!this.snapshotApplied) return; // wait for snapshot before live events
-    if (event.revision <= this.lastRevision || this.seenIds.has(event.event_id)) return;
-    if (this.seenIds.size > 500) this.seenIds.clear(); // ponytail: bounded-session dedup set
-    this.seenIds.add(event.event_id);
-    this.lastRevision = event.revision;
+    // Real backend live events carry NO event_id and NO revision — apply dedup
+    // guards only when the wire actually provided them (snapshot-replay dedup).
+    if (event.event_id !== undefined) {
+      if (this.seenIds.has(event.event_id)) return;
+      if (this.seenIds.size > 500) this.seenIds.clear(); // ponytail: bounded-session dedup set
+      this.seenIds.add(event.event_id);
+    }
+    if (event.revision !== undefined) {
+      if (event.revision <= this.lastRevision) return;
+      this.lastRevision = event.revision;
+    }
     this.handlers.onEvent(event);
   }
 
@@ -615,63 +680,140 @@ export class SseFeed {
   }
 }
 
-const SSE_EVENT_TYPES: ScriptEventType[] = [
-  "batch.snapshot",
-  "batch.progress",
-  "product.planning_started",
-  "product.plan_ready",
-  "segment.started",
-  "segment.gate_passed",
-  "segment.gate_failed",
-  "product.reviewable",
-  "product.failed",
-  "batch.completed",
-  "batch.cancelled",
-];
+/** Backend SSE event names → local ScriptEvent types (identity map; unknown
+ * names are ignored with a warning). */
+const SSE_EVENT_TYPE_MAP: Record<string, ScriptEventType> = {
+  "batch.snapshot": "batch.snapshot",
+  "batch.progress": "batch.progress",
+  "product.failed": "product.failed",
+  "batch.completed": "batch.completed",
+  "batch.cancelled": "batch.cancelled",
+  "batch.error": "batch.error",
+};
 
-export class ScriptEventSource {
-  private source: EventSource | null = null;
+export interface BatchEventStreamDeps extends SseHandlers {
+  backendUrl: string;
+  viewerToken: () => string;
+  scriptSetId: string;
+  batchId: string;
+  retryDelayMs?: number;
+}
+
+/** fetch-based SSE transport with header auth — native EventSource cannot send
+ * headers and the events route is ``viewer_auth`` (D.3). Each network frame is
+ * parsed exactly ONCE (raw frame → payload JSON) and handed to SseFeed as a
+ * fully-built ScriptEvent; an already-parsed payload is never re-parsed as an
+ * SSE frame. Reconnect = snapshot replay; batch.error (and the backend's
+ * permanent HTTP errors) terminate the stream. */
+export class BatchEventStream {
+  private controller: AbortController | null = null;
+  private disconnected = false;
+  private terminalEventSeen = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   readonly feed: SseFeed;
 
-  constructor(
-    private deps: {
-      backendUrl: string;
-      adminToken: () => string;
-      scriptSetId: string;
-      batchId: string;
-    } & SseHandlers,
-  ) {
+  constructor(private deps: BatchEventStreamDeps) {
     this.feed = new SseFeed({ onEvent: deps.onEvent, onStatus: deps.onStatus });
   }
 
-  connect(): void {
+  get connected(): boolean {
+    return this.controller !== null;
+  }
+
+  async connect(): Promise<void> {
     this.disconnect();
-    const url = sseUrl(
-      this.deps.backendUrl,
-      this.deps.scriptSetId,
-      this.deps.batchId,
-      this.deps.adminToken(),
-    );
-    const source = new EventSource(url);
-    this.source = source;
-    source.onopen = () => this.deps.onStatus?.("SSE generation đã kết nối.", "success");
-    source.onerror = () => this.deps.onStatus?.("SSE generation mất kết nối — đang thử lại.", "warning");
-    const push = (raw: string): void => this.feed.push(raw);
-    source.onmessage = (event) => push((event as MessageEvent<string>).data);
-    // Named events never reach onmessage — register per known type.
-    for (const type of SSE_EVENT_TYPES) {
-      source.addEventListener(type, (event) => push((event as MessageEvent<string>).data));
+    this.disconnected = false;
+    this.terminalEventSeen = false;
+    const { backendUrl, viewerToken, scriptSetId, batchId } = this.deps;
+    const url = `${backendUrl.replace(/\/$/, "")}/api/v1/script-sets/${encodeURIComponent(scriptSetId)}/generation-batches/${encodeURIComponent(batchId)}/events`;
+    const controller = new AbortController();
+    this.controller = controller;
+    try {
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${viewerToken()}`, Accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        // Permanent HTTP errors (auth/not-found) never recover by retrying.
+        if (response.status === 401 || response.status === 403 || response.status === 404) {
+          this.terminalEventSeen = true;
+          this.deps.onStatus?.(`SSE lỗi HTTP ${response.status} — dừng kết nối.`, "danger");
+          return;
+        }
+        throw new Error(`SSE HTTP ${response.status}`);
+      }
+      if (!response.body) throw new Error("SSE: response has no body");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary: number;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          this.consumeFrame(raw);
+        }
+      }
+      // Clean stream end: the backend closes only after a terminal event, so no
+      // reconnect here — a live stream that errors below does reconnect.
+    } catch (error) {
+      if (this.disconnected) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      this.deps.onStatus?.("SSE generation mất kết nối — đang thử lại.", "warning");
+      return this.scheduleReconnect();
     }
+  }
+
+  /** Parse one raw SSE frame ONCE and deliver a single ScriptEvent to the feed. */
+  consumeFrame(raw: string): void {
+    const frame = parseSseFrame(raw);
+    if (!frame) return;
+    const type = SSE_EVENT_TYPE_MAP[frame.event];
+    if (!type) {
+      this.deps.onStatus?.(`SSE event không xác định: ${frame.event}`, "warning");
+      return;
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(frame.data) as Record<string, unknown>;
+    } catch {
+      this.deps.onStatus?.("SSE event không phải JSON.", "danger");
+      return;
+    }
+    if (type === "batch.error") {
+      this.terminalEventSeen = true;
+      this.deps.onStatus?.("Batch lỗi — dừng kết nối.", "danger");
+    } else if (type === "batch.completed" || type === "batch.cancelled") {
+      this.terminalEventSeen = true;
+    }
+    const event =
+      type === "batch.snapshot"
+        ? ({ ...payload, type, snapshot: payload } as ScriptEvent)
+        : ({ ...payload, type } as ScriptEvent);
+    this.feed.accept(event);
   }
 
   disconnect(): void {
-    if (this.source) {
-      this.source.close();
-      this.source = null;
+    this.disconnected = true;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
+    this.controller?.abort();
+    this.controller = null;
   }
 
-  get connected(): boolean {
-    return this.source !== null;
+  private scheduleReconnect(): Promise<void> | void {
+    if (this.disconnected || this.terminalEventSeen) return;
+    this.controller = null;
+    const delay = this.deps.retryDelayMs ?? 1500;
+    if (delay === 0) return this.connect();
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.connect();
+    }, delay);
   }
 }

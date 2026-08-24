@@ -4,8 +4,8 @@
 External CLI configured by base URL/tokens. Never imports backend internals
 and never mutates processes. Stdlib + httpx (declared root tool deps) only.
 
-Flow: health/ready -> engines -> start session -> attach -> chat/ingest ->
-platform WS -> interrupt -> stop, with cleanup in finally.
+Flow: health/ready -> engines -> start session -> attach -> event ingest ->
+control WS -> interrupt -> stop, with cleanup in finally.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class SmokeConfig:
     viewer_token: str = ""
     admin_token: str = ""
     timeout_sec: float = 30.0
-    chat_count: int = 3
+    event_count: int = 3
 
 
 def _now_ms() -> float:
@@ -126,50 +126,65 @@ async def smoke(cfg: SmokeConfig) -> list[Check]:
                 _now_ms() - t0,
             ))
 
-            # ── chat burst (canonical path-style, 202) ──
+            # ── event ingest (canonical POST /sessions/{id}/events) ──
+            # One canonical EventsIn batch per comment; every per-event outcome
+            # (accepted/duplicate/rejected) is a valid 200 batch result.
             accepted = 0
-            for index in range(cfg.chat_count):
+            for index in range(cfg.event_count):
                 t0 = _now_ms()
-                chat = await client.post(
-                    f"{base}/api/v1/sessions/{urllib.parse.quote(session_id)}/chat",
+                event = {
+                    "event_id": f"smoke_{index}_{int(time.time() * 1000)}",
+                    "platform": "smoke",
+                    "source_stream_id": "smoke-stream",
+                    "occurred_at": time.time(),
+                    "type": "viewer.comment",
+                    "viewer": {"viewer_id": f"viewer_{index}", "display_name": f"Khách {index}"},
+                    "payload": {"text": f"Giá sản phẩm bao nhiêu? {index}"},
+                }
+                ingest = await client.post(
+                    f"{base}/api/v1/sessions/{urllib.parse.quote(session_id)}/events",
                     headers=_headers(cfg.viewer_token, json_body=True),
-                    json={"text": f"Giá sản phẩm bao nhiêu? {index}", "author": f"smoke_{index}", "ts": time.time()},
+                    json={"events": [event]},
                 )
-                if chat.status_code == 202:
+                ingest_json = ingest.json() if ingest.status_code == 200 else {}
+                ok = ingest.status_code == 200 and ingest_json.get("accepted", 0) >= 1
+                if ok:
                     accepted += 1
                 checks.append(Check(
-                    "sessions.chat",
-                    chat.status_code == 202,
-                    chat.text[:120],
+                    "sessions.events",
+                    ok,
+                    ingest.text[:120],
                     _now_ms() - t0,
                 ))
             checks.append(Check(
-                "sessions.chat_burst",
-                accepted == cfg.chat_count,
-                f"accepted={accepted}/{cfg.chat_count}",
+                "sessions.events_burst",
+                accepted == cfg.event_count,
+                f"accepted={accepted}/{cfg.event_count}",
                 0.0,
             ))
 
-            # ── platform WS (canonical /ws/platform/{session}) ──
+            # ── control WS (canonical /api/v1/ws/control/{session_id}?token=) ──
             t0 = _now_ms()
-            ws_url = f"{base.replace('http', 'ws', 1)}/api/v1/ws/platform/{urllib.parse.quote(session_id)}"
+            ws_url = f"{base.replace('http', 'ws', 1)}/api/v1/ws/control/{urllib.parse.quote(session_id)}"
             if cfg.viewer_token:
                 ws_url += f"?token={urllib.parse.quote(cfg.viewer_token)}"
             ws_ok = False
-            ws_detail = "ws not tested (httpx-ws unavailable)"
+            ws_detail = "ws not tested (websockets unavailable)"
             try:
                 import websockets  # optional — skip when unavailable
 
-                async with websockets.connect(ws_url, timeout=10.0) as ws:
-                    await ws.send(json.dumps({"text": "Chào shop, giá bao nhiêu?", "author": "smoke_ws"}))
-                    reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
-                    ws_ok = reply.get("type") in ("platform.accepted", "platform.stored")
-                    ws_detail = f"type={reply.get('type')}"
+                async with websockets.connect(ws_url) as ws:
+                    first = json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
+                    ws_ok = (
+                        first.get("type") == "control.connected"
+                        and first.get("session_id") == session_id
+                    )
+                    ws_detail = f"type={first.get('type')} session_id={first.get('session_id')}"
             except ImportError:
                 ws_detail = "websockets module not installed; skipped"
             except Exception as exc:  # noqa: BLE001
                 ws_detail = f"{type(exc).__name__}: {exc}"
-            checks.append(Check("platform.ws", ws_ok, ws_detail, _now_ms() - t0))
+            checks.append(Check("control.ws", ws_ok, ws_detail, _now_ms() - t0))
 
             # ── interrupt ──
             t0 = _now_ms()
@@ -205,7 +220,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--base-url", required=True, help="Backend base URL e.g. http://127.0.0.1:8800")
     parser.add_argument("--viewer-token", default="", help="Viewer token (BACKEND_API_TOKEN)")
     parser.add_argument("--admin-token", default="", help="Admin token (ADMIN_API_TOKEN)")
-    parser.add_argument("--chat-count", type=int, default=3)
+    parser.add_argument("--event-count", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
 
@@ -214,7 +229,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         viewer_token=args.viewer_token,
         admin_token=args.admin_token,
         timeout_sec=args.timeout,
-        chat_count=args.chat_count,
+        event_count=args.event_count,
     )))
 
     print("Workbench smoke report")
