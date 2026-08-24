@@ -47,10 +47,6 @@ on:
         description: "Target image ref (repo:tag or repo@sha256:...)"
         type: string
         required: true
-      role_arn:
-        description: "AWS deploy role ARN to assume"
-        type: string
-        required: true
       aws_region:
         description: "AWS region"
         type: string
@@ -59,6 +55,16 @@ on:
         description: "HTTP smoke URL (backend only; empty skips smoke)"
         type: string
         default: ""
+    secrets:
+      role_arn:
+        description: "AWS deploy role ARN to assume"
+        required: true
+      dockerhub_user:
+        description: "Docker Hub username for image push"
+        required: true
+      dockerhub_token:
+        description: "Docker Hub token for image push"
+        required: true
 
 permissions:
   contents: read
@@ -77,7 +83,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ inputs.role_arn }}
+          role-to-assume: ${{ secrets.role_arn }}
           aws-region: ${{ inputs.aws_region }}
       - name: Login to Docker Hub
         uses: docker/login-action@v3

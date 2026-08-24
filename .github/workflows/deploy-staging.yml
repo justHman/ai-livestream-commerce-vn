@@ -192,8 +192,6 @@ jobs:
   build:
     needs: [validate, preflight]
     if: ${{ always() && needs.validate.result == 'success' && needs.preflight.result == 'success' }}
-    runs-on: ubuntu-latest
-    environment: staging
     strategy:
       fail-fast: false
       matrix:
@@ -273,8 +271,6 @@ jobs:
   deploy:
     needs: [validate, preflight, build, migrate]
     if: ${{ always() && needs.validate.result == 'success' && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
-    runs-on: ubuntu-latest
-    environment: staging
     strategy:
       fail-fast: false
       matrix:
@@ -305,10 +301,11 @@ jobs:
       service: ${{ needs.preflight.outputs[format('{0}_service', matrix.role)] }}
       container: ${{ matrix.container }}
       image: ${{ format('{0}:staging-{1}', matrix.image, needs.validate.outputs.validated_sha) }}
-      role_arn: ${{ secrets.AWS_ROLE_ARN_STAGING }}
-      aws_region: ${{ env.AWS_REGION }}
       smoke_url: ${{ matrix.role == 'backend' && needs.preflight.outputs.smoke_url || '' }}
-    secrets: inherit
+    secrets:
+      role_arn: AWS_ROLE_ARN_STAGING
+      dockerhub_user: DOCKERHUB_USER
+      dockerhub_token: DOCKERHUB_TOKEN
 
   smoke:
     needs: [validate, preflight, deploy]
