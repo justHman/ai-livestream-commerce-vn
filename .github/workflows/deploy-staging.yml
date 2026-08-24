@@ -344,6 +344,8 @@ jobs:
 
   record-evidence:
     needs: [validate, smoke, deploy]
+    # R1.6: never commit an empty/broken evidence file when a leg failed.
+    if: ${{ always() && needs.validate.result == 'success' && needs.smoke.result == 'success' && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -374,7 +376,9 @@ jobs:
             [[ -d "$adir" ]] || continue
             container=${adir#.runtime/deploy/evidence/raw/deploy-evidence-staging-${VALIDATED_SHA}-}
             container=${container%/}
-            ef="$adir/deploy/evidence/staging/$VALIDATED_SHA.jsonl"
+            # Each artifact holds the single evidence file at its root
+            # (upload-artifact@v4 stores a non-glob file at artifact root).
+            ef="$adir/$VALIDATED_SHA.jsonl"
             [[ -f "$ef" ]] || continue
             prev=$(jq -r '.prev_digest' "$ef")
             new=$(jq -r '.new_digest' "$ef")
