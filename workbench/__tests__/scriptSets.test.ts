@@ -172,7 +172,7 @@ function makeEvent(overrides: Partial<ScriptEvent>): ScriptEvent {
     event_id: "ev-1",
     revision: 1,
     type: "batch.progress",
-    script_set_id: "sets-1",
+    set_id: "sets-1",
     batch_id: "batch-1",
     ...overrides,
   };
@@ -187,14 +187,14 @@ describe("SseFeed snapshot + revision dedup (task 13.5)", () => {
     const seen: string[] = [];
     const feed = new SseFeed({ onEvent: (e) => seen.push(e.type) });
     feed.push(sseFrame(makeEvent({ event_id: "snap-1", revision: 10, type: "batch.snapshot" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-11", revision: 11, type: "segment.started" })));
-    expect(seen).toEqual(["batch.snapshot", "segment.started"]);
+    feed.push(sseFrame(makeEvent({ event_id: "ev-11", revision: 11, type: "batch.progress" })));
+    expect(seen).toEqual(["batch.snapshot", "batch.progress"]);
   });
 
   it("drops live events before the first snapshot", () => {
     const seen: string[] = [];
     const feed = new SseFeed({ onEvent: (e) => seen.push(e.type) });
-    feed.push(sseFrame(makeEvent({ event_id: "ev-1", revision: 1, type: "segment.started" })));
+    feed.push(sseFrame(makeEvent({ event_id: "ev-1", revision: 1, type: "batch.progress" })));
     expect(seen).toEqual([]);
   });
 
@@ -202,14 +202,14 @@ describe("SseFeed snapshot + revision dedup (task 13.5)", () => {
     const seen: string[] = [];
     const feed = new SseFeed({ onEvent: (e) => seen.push(e.type) });
     feed.push(sseFrame(makeEvent({ event_id: "snap-1", revision: 5, type: "batch.snapshot" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "segment.gate_passed" })));
+    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "product.failed" })));
     // Reconnect: server replays snapshot + events up to revision 6.
     feed.push(sseFrame(makeEvent({ event_id: "snap-1", revision: 6, type: "batch.snapshot" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "segment.gate_passed" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-7", revision: 7, type: "product.reviewable" })));
-    expect(seen).toEqual(["batch.snapshot", "segment.gate_passed", "batch.snapshot", "product.reviewable"]);
-    // segment.gate_passed applied exactly once across the reconnect.
-    expect(seen.filter((t) => t === "segment.gate_passed")).toHaveLength(1);
+    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "product.failed" })));
+    feed.push(sseFrame(makeEvent({ event_id: "ev-7", revision: 7, type: "batch.completed" })));
+    expect(seen).toEqual(["batch.snapshot", "product.failed", "batch.snapshot", "batch.completed"]);
+    // product.failed applied exactly once across the reconnect.
+    expect(seen.filter((t) => t === "product.failed")).toHaveLength(1);
   });
 
   it("dedups duplicate event ids within one session", () => {

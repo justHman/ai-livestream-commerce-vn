@@ -25,9 +25,9 @@ import {
   type AuthoringState,
 } from "./authoring";
 import {
+  BatchEventStream,
   createScriptClient,
   idempotencyKey,
-  ScriptEventSource,
   type GenerationPreview,
   type ScriptClient,
   type ScriptItem,
@@ -71,7 +71,7 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
     adminToken: () => "",
   });
 
-  let sse: ScriptEventSource | null = null;
+  let sse: BatchEventStream | null = null;
   let sseBatchId: string | null = null;
 
   function dispatch(action: Action): void {
@@ -201,20 +201,19 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
     const batchId = state.batch.batchId;
     if (!batchId || !state.setId) return;
     sseBatchId = batchId;
-    sse = new ScriptEventSource({
+    sse = new BatchEventStream({
       backendUrl: deps.backendUrl(),
       viewerToken: deps.viewerToken,
       scriptSetId: state.setId,
       batchId,
       onEvent: (event) => {
         dispatch({ type: "AUTHORING_SSE_EVENT", value: event });
-        if (event.type === "product.reviewable") addEvent(`${event.product_id ?? ""} đã sẵn sàng duyệt.`, "success");
-        if (event.type === "product.failed") addEvent(`${event.product_id ?? ""} thất bại: ${event.failure?.message ?? "unknown"}`, "danger");
+        if (event.type === "product.failed") addEvent(`${event.product_id ?? ""} thất bại: ${event.reason ?? "unknown"}`, "danger");
         if (event.type === "batch.snapshot") addEvent("Đã đồng bộ snapshot batch.", "success");
       },
       onStatus: addEvent,
     });
-    sse.connect();
+    void sse.connect();
   }
 
   // ---------------- Render ----------------
@@ -226,7 +225,7 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
     renderBatch();
     renderItems();
     renderStatus();
-    // Bind SSE once per batch; EventSource itself reconnects (snapshot replay).
+    // Bind SSE once per batch; BatchEventStream reconnects on transport errors (snapshot replay).
     if (state.setId && state.batch.batchId && state.batch.batchId !== sseBatchId) attachSse();
   }
 

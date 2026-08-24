@@ -145,20 +145,38 @@ export interface AuthoringDeps {
 
 export function applyBatchEvent(state: AuthoringState, event: ScriptEvent): AuthoringState {
   if (event.type === "batch.snapshot") {
+    // Real backend snapshot payload carries status at TOP level (not
+    // event.snapshot.status) plus batch_id and revision.
     return {
       ...state,
-      batch: { ...state.batch, batchId: event.batch_id, status: batchStatusOf(event.snapshot?.status) },
+      batch: { ...state.batch, batchId: event.batch_id ?? state.batch.batchId, status: batchStatusOf(event.status) },
     };
   }
-  if (event.failure) {
-    const transport = event.failure.reason === "transport";
+  if (event.type === "batch.error") {
     return {
       ...state,
       batch: {
         ...state.batch,
-        transportRetrying: transport,
-        lastError: transport ? event.failure.message : null,
+        transportRetrying: false,
+        lastError: event.code ?? event.message ?? "Batch lỗi",
       },
+    };
+  }
+  if (event.type === "product.failed") {
+    return {
+      ...state,
+      batch: {
+        ...state.batch,
+        lastError: event.reason ?? `Sản phẩm ${event.product_id ?? ""} thất bại`,
+      },
+    };
+  }
+  if (event.type === "batch.progress") {
+    // Live progress carries only batch_id — ensure the id is known even if a
+    // snapshot frame was never seen.
+    return {
+      ...state,
+      batch: { ...state.batch, batchId: event.batch_id ?? state.batch.batchId },
     };
   }
   if (event.type === "batch.completed" || event.type === "batch.cancelled") {

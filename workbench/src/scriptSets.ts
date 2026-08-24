@@ -340,12 +340,6 @@ export type BatchStatus =
   | "cancelled"
   | "cancelling";
 
-export interface GenerationBatch {
-  batch_id: string;
-  status: BatchStatus;
-  product_ids: string[];
-}
-
 /** Real wire shape of GET .../generation-batches/{batch_id}: the backend emits
  * exactly ``{batch_id, status, product_ids}``. */
 export interface BatchSnapshot {
@@ -372,31 +366,34 @@ export interface GenerateBatchRequest {
   target_duration_s: number;
 }
 
+/** Real backend SSE event vocabulary (tasks 11.10, D.3). Live events carry no
+ * event_id/revision; the snapshot carries batch_id/set_id/status/revision. */
 export type ScriptEventType =
   | "batch.snapshot"
   | "batch.progress"
-  | "product.planning_started"
-  | "product.plan_ready"
-  | "segment.started"
-  | "segment.gate_passed"
-  | "segment.gate_failed"
-  | "product.reviewable"
   | "product.failed"
   | "batch.completed"
-  | "batch.cancelled";
+  | "batch.cancelled"
+  | "batch.error";
 
 export interface ScriptEvent {
-  event_id: string;
-  revision: number;
+  /** Present only when the backend frame carried an event id (current
+   * snapshot/live frames do NOT — dedup falls back to revision/snapshot). */
+  event_id?: string;
+  /** Present only on the batch.snapshot frame. */
+  revision?: number;
   type: ScriptEventType;
-  script_set_id: string;
-  batch_id: string;
+  /** Backend wire key — the events payload uses ``set_id``, not ``script_set_id``. */
+  set_id?: string;
+  batch_id?: string;
   product_id?: string;
-  segment_index?: number;
-  segment_count?: number;
-  failure?: FailureInfo;
-  snapshot?: GenerationBatch;
-  payload?: { attempts?: number; status?: BatchStatus };
+  reason?: string;
+  code?: string;
+  message?: string;
+  /** Snapshot status at TOP level (real backend snapshot payload). */
+  status?: BatchStatus;
+  /** Raw snapshot payload mirrored for consumers reading ``event.snapshot``. */
+  snapshot?: Record<string, unknown>;
 }
 
 // ---------------- Client ----------------
@@ -614,13 +611,6 @@ export function idempotencyKey(value: unknown): string {
 
 // ---------------- SSE (Decision 16) ----------------
 
-export function sseUrl(backend: string, setId: string, batchId: string, token: string): string {
-  const url = new URL(backend);
-  url.pathname = `/api/v1/script-sets/${encodeURIComponent(setId)}/generation-batches/${encodeURIComponent(batchId)}/events`;
-  if (token) url.search = `token=${encodeURIComponent(token)}`;
-  return url.toString();
-}
-
 export interface SseHandlers {
   onEvent: (event: ScriptEvent) => void;
   onStatus?: (message: string, tone?: string) => void;
@@ -665,16 +655,23 @@ export class SseFeed {
   accept(event: ScriptEvent): void {
     if (event.type === "batch.snapshot") {
       // Snapshot replaces prior state — replay after reconnect is idempotent.
-      this.lastRevision = event.revision;
+      this.lastRevision = event.revision ?? 0;
       this.snapshotApplied = true;
       this.handlers.onEvent(event);
       return;
     }
     if (!this.snapshotApplied) return; // wait for snapshot before live events
-    if (event.revision <= this.lastRevision || this.seenIds.has(event.event_id)) return;
-    if (this.seenIds.size > 500) this.seenIds.clear(); // ponytail: bounded-session dedup set
-    this.seenIds.add(event.event_id);
-    this.lastRevision = event.revision;
+    // Real backend live events carry NO event_id and NO revision — apply dedup
+    // guards only when the wire actually provided them (snapshot-replay dedup).
+    if (event.event_id !== undefined) {
+      if (this.seenIds.has(event.event_id)) return;
+      if (this.seenIds.size > 500) this.seenIds.clear(); // ponytail: bounded-session dedup set
+      this.seenIds.add(event.event_id);
+    }
+    if (event.revision !== undefined) {
+      if (event.revision <= this.lastRevision) return;
+      this.lastRevision = event.revision;
+    }
     this.handlers.onEvent(event);
   }
 
@@ -683,63 +680,140 @@ export class SseFeed {
   }
 }
 
-const SSE_EVENT_TYPES: ScriptEventType[] = [
-  "batch.snapshot",
-  "batch.progress",
-  "product.planning_started",
-  "product.plan_ready",
-  "segment.started",
-  "segment.gate_passed",
-  "segment.gate_failed",
-  "product.reviewable",
-  "product.failed",
-  "batch.completed",
-  "batch.cancelled",
-];
+/** Backend SSE event names → local ScriptEvent types (identity map; unknown
+ * names are ignored with a warning). */
+const SSE_EVENT_TYPE_MAP: Record<string, ScriptEventType> = {
+  "batch.snapshot": "batch.snapshot",
+  "batch.progress": "batch.progress",
+  "product.failed": "product.failed",
+  "batch.completed": "batch.completed",
+  "batch.cancelled": "batch.cancelled",
+  "batch.error": "batch.error",
+};
 
-export class ScriptEventSource {
-  private source: EventSource | null = null;
+export interface BatchEventStreamDeps extends SseHandlers {
+  backendUrl: string;
+  viewerToken: () => string;
+  scriptSetId: string;
+  batchId: string;
+  retryDelayMs?: number;
+}
+
+/** fetch-based SSE transport with header auth — native EventSource cannot send
+ * headers and the events route is ``viewer_auth`` (D.3). Each network frame is
+ * parsed exactly ONCE (raw frame → payload JSON) and handed to SseFeed as a
+ * fully-built ScriptEvent; an already-parsed payload is never re-parsed as an
+ * SSE frame. Reconnect = snapshot replay; batch.error (and the backend's
+ * permanent HTTP errors) terminate the stream. */
+export class BatchEventStream {
+  private controller: AbortController | null = null;
+  private disconnected = false;
+  private terminalEventSeen = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   readonly feed: SseFeed;
 
-  constructor(
-    private deps: {
-      backendUrl: string;
-      viewerToken: () => string;
-      scriptSetId: string;
-      batchId: string;
-    } & SseHandlers,
-  ) {
+  constructor(private deps: BatchEventStreamDeps) {
     this.feed = new SseFeed({ onEvent: deps.onEvent, onStatus: deps.onStatus });
   }
 
-  connect(): void {
+  get connected(): boolean {
+    return this.controller !== null;
+  }
+
+  async connect(): Promise<void> {
     this.disconnect();
-    const url = sseUrl(
-      this.deps.backendUrl,
-      this.deps.scriptSetId,
-      this.deps.batchId,
-      this.deps.viewerToken(),
-    );
-    const source = new EventSource(url);
-    this.source = source;
-    source.onopen = () => this.deps.onStatus?.("SSE generation đã kết nối.", "success");
-    source.onerror = () => this.deps.onStatus?.("SSE generation mất kết nối — đang thử lại.", "warning");
-    const push = (raw: string): void => this.feed.push(raw);
-    source.onmessage = (event) => push((event as MessageEvent<string>).data);
-    // Named events never reach onmessage — register per known type.
-    for (const type of SSE_EVENT_TYPES) {
-      source.addEventListener(type, (event) => push((event as MessageEvent<string>).data));
+    this.disconnected = false;
+    this.terminalEventSeen = false;
+    const { backendUrl, viewerToken, scriptSetId, batchId } = this.deps;
+    const url = `${backendUrl.replace(/\/$/, "")}/api/v1/script-sets/${encodeURIComponent(scriptSetId)}/generation-batches/${encodeURIComponent(batchId)}/events`;
+    const controller = new AbortController();
+    this.controller = controller;
+    try {
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${viewerToken()}`, Accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        // Permanent HTTP errors (auth/not-found) never recover by retrying.
+        if (response.status === 401 || response.status === 403 || response.status === 404) {
+          this.terminalEventSeen = true;
+          this.deps.onStatus?.(`SSE lỗi HTTP ${response.status} — dừng kết nối.`, "danger");
+          return;
+        }
+        throw new Error(`SSE HTTP ${response.status}`);
+      }
+      if (!response.body) throw new Error("SSE: response has no body");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary: number;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          this.consumeFrame(raw);
+        }
+      }
+      // Clean stream end: the backend closes only after a terminal event, so no
+      // reconnect here — a live stream that errors below does reconnect.
+    } catch (error) {
+      if (this.disconnected) return;
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      this.deps.onStatus?.("SSE generation mất kết nối — đang thử lại.", "warning");
+      return this.scheduleReconnect();
     }
+  }
+
+  /** Parse one raw SSE frame ONCE and deliver a single ScriptEvent to the feed. */
+  consumeFrame(raw: string): void {
+    const frame = parseSseFrame(raw);
+    if (!frame) return;
+    const type = SSE_EVENT_TYPE_MAP[frame.event];
+    if (!type) {
+      this.deps.onStatus?.(`SSE event không xác định: ${frame.event}`, "warning");
+      return;
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(frame.data) as Record<string, unknown>;
+    } catch {
+      this.deps.onStatus?.("SSE event không phải JSON.", "danger");
+      return;
+    }
+    if (type === "batch.error") {
+      this.terminalEventSeen = true;
+      this.deps.onStatus?.("Batch lỗi — dừng kết nối.", "danger");
+    } else if (type === "batch.completed" || type === "batch.cancelled") {
+      this.terminalEventSeen = true;
+    }
+    const event =
+      type === "batch.snapshot"
+        ? ({ ...payload, type, snapshot: payload } as ScriptEvent)
+        : ({ ...payload, type } as ScriptEvent);
+    this.feed.accept(event);
   }
 
   disconnect(): void {
-    if (this.source) {
-      this.source.close();
-      this.source = null;
+    this.disconnected = true;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
+    this.controller?.abort();
+    this.controller = null;
   }
 
-  get connected(): boolean {
-    return this.source !== null;
+  private scheduleReconnect(): Promise<void> | void {
+    if (this.disconnected || this.terminalEventSeen) return;
+    this.controller = null;
+    const delay = this.deps.retryDelayMs ?? 1500;
+    if (delay === 0) return this.connect();
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.connect();
+    }, delay);
   }
 }
