@@ -140,7 +140,7 @@ export function displayStateLabel(state: ScriptItemState): string {
 export interface AuthoringDeps {
   scriptClient: ScriptClient;
   api: Api;
-  adminToken: () => string;
+  viewerToken: () => string;
 }
 
 export function applyBatchEvent(state: AuthoringState, event: ScriptEvent): AuthoringState {

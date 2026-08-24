@@ -37,7 +37,7 @@ import {
 
 export interface AuthoringMountDeps {
   backendUrl: () => string;
-  adminToken: () => string;
+  viewerToken: () => string;
   api: Api;
   onEvent: (message: string, tone?: string) => void;
 }
@@ -67,8 +67,8 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
 
   const client: ScriptClient = createScriptClient({
     backendUrl: deps.backendUrl(),
-    viewerToken: () => "",
-    adminToken: deps.adminToken,
+    viewerToken: deps.viewerToken,
+    adminToken: () => "",
   });
 
   let sse: ScriptEventSource | null = null;
@@ -203,7 +203,7 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
     sseBatchId = batchId;
     sse = new ScriptEventSource({
       backendUrl: deps.backendUrl(),
-      adminToken: deps.adminToken,
+      viewerToken: deps.viewerToken,
       scriptSetId: state.setId,
       batchId,
       onEvent: (event) => {

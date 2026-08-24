@@ -6,6 +6,7 @@
  */
 
 import { ApiError, type ApiDeps } from "./api";
+export type { ApiDeps };
 
 // ---------------- Domain types (task 2.1, Decision 16) ----------------
 
@@ -403,8 +404,8 @@ export interface ScriptEvent {
 export function createScriptClient(deps: ApiDeps) {
   const base = () => deps.backendUrl.replace(/\/$/, "");
 
-  function adminHeaders(json = false): Record<string, string> {
-    const token = deps.adminToken();
+  function viewerHeaders(json = false): Record<string, string> {
+    const token = deps.viewerToken();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
     if (json) headers["Content-Type"] = "application/json";
@@ -442,7 +443,7 @@ export function createScriptClient(deps: ApiDeps) {
   async function createScriptSet(input: ScriptSetInput): Promise<ScriptSet> {
     const wire = await requestJson<BackendScriptSetResponse>("/api/v1/script-sets", {
       method: "POST",
-      headers: adminHeaders(true),
+      headers: viewerHeaders(true),
       body: JSON.stringify(input),
     });
     return mapScriptSetResponse(wire);
@@ -450,7 +451,7 @@ export function createScriptClient(deps: ApiDeps) {
 
   async function getScriptSet(setId: string): Promise<ScriptSet> {
     const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
-      headers: adminHeaders(),
+      headers: viewerHeaders(),
     });
     return mapScriptSetResponse(wire);
   }
@@ -458,7 +459,7 @@ export function createScriptClient(deps: ApiDeps) {
   async function patchScriptSet(setId: string, patch: ScriptSetPatch): Promise<ScriptSet> {
     const wire = await requestJson<BackendScriptSetResponse>(`/api/v1/script-sets/${esc(setId)}`, {
       method: "PATCH",
-      headers: adminHeaders(true),
+      headers: viewerHeaders(true),
       body: JSON.stringify(patch),
     });
     return mapScriptSetResponse(wire);
@@ -467,14 +468,14 @@ export function createScriptClient(deps: ApiDeps) {
   async function putDraft(setId: string, productId: string, input: DraftInput): Promise<DraftResult> {
     return requestJson<DraftResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/draft`,
-      { method: "PUT", headers: adminHeaders(true), body: JSON.stringify(input) },
+      { method: "PUT", headers: viewerHeaders(true), body: JSON.stringify(input) },
     );
   }
 
   async function submit(setId: string, productId: string): Promise<SubmitResult> {
     return requestJson<SubmitResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/submit`,
-      { method: "POST", headers: adminHeaders(true) },
+      { method: "POST", headers: viewerHeaders(true) },
     );
   }
 
@@ -485,7 +486,7 @@ export function createScriptClient(deps: ApiDeps) {
   ): Promise<ProductPreview> {
     return requestJson<ProductPreview>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/generation-preview`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_id: productId, target_duration_s: targetDurationS }) },
+      { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ product_id: productId, target_duration_s: targetDurationS }) },
     );
   }
 
@@ -511,7 +512,7 @@ export function createScriptClient(deps: ApiDeps) {
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/generate`,
       {
         method: "POST",
-        headers: { ...adminHeaders(true), "Idempotency-Key": key },
+        headers: { ...viewerHeaders(true), "Idempotency-Key": key },
         body: JSON.stringify({ target_duration_s: targetDurationS }),
       },
     );
@@ -525,28 +526,28 @@ export function createScriptClient(deps: ApiDeps) {
   ): Promise<AcceptedJob> {
     return requestJson<AcceptedJob>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/segments/${segmentIndex}/regenerate`,
-      { method: "POST", headers: { ...adminHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
+      { method: "POST", headers: { ...viewerHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
     );
   }
 
   async function fixProduct(setId: string, productId: string, key: string): Promise<AcceptedJob> {
     return requestJson<AcceptedJob>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/fix`,
-      { method: "POST", headers: { ...adminHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
+      { method: "POST", headers: { ...viewerHeaders(true), "Idempotency-Key": key }, body: JSON.stringify({}) },
     );
   }
 
   async function approveProduct(setId: string, productId: string, versionId: string, actor: string): Promise<ApprovalResult> {
     return requestJson<ApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/products/${esc(productId)}/approve`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ version_id: versionId, actor }) },
+      { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ version_id: versionId, actor }) },
     );
   }
 
   async function approveBatch(setId: string, productIds: string[], versionIds: Record<string, string>, actor: string): Promise<BatchApprovalResult> {
     return requestJson<BatchApprovalResult>(
       `/api/v1/script-sets/${esc(setId)}/approve-batch`,
-      { method: "POST", headers: adminHeaders(true), body: JSON.stringify({ product_ids: productIds, version_ids: versionIds, actor }) },
+      { method: "POST", headers: viewerHeaders(true), body: JSON.stringify({ product_ids: productIds, version_ids: versionIds, actor }) },
     );
   }
 
@@ -555,7 +556,7 @@ export function createScriptClient(deps: ApiDeps) {
       `/api/v1/script-sets/${esc(setId)}/generate-batch`,
       {
         method: "POST",
-        headers: { ...adminHeaders(true), "Idempotency-Key": key },
+        headers: { ...viewerHeaders(true), "Idempotency-Key": key },
         body: JSON.stringify(req),
       },
     );
@@ -564,14 +565,14 @@ export function createScriptClient(deps: ApiDeps) {
   async function getBatch(setId: string, batchId: string): Promise<BatchSnapshot> {
     return requestJson<BatchSnapshot>(
       `/api/v1/script-sets/${esc(setId)}/generation-batches/${esc(batchId)}`,
-      { headers: adminHeaders() },
+      { headers: viewerHeaders() },
     );
   }
 
   async function cancelBatch(setId: string, batchId: string): Promise<{ batch_id: string; status: BatchStatus }> {
     return requestJson<{ batch_id: string; status: BatchStatus }>(
       `/api/v1/script-sets/${esc(setId)}/generation-batches/${esc(batchId)}/cancel`,
-      { method: "POST", headers: adminHeaders() },
+      { method: "POST", headers: viewerHeaders() },
     );
   }
 
@@ -703,7 +704,7 @@ export class ScriptEventSource {
   constructor(
     private deps: {
       backendUrl: string;
-      adminToken: () => string;
+      viewerToken: () => string;
       scriptSetId: string;
       batchId: string;
     } & SseHandlers,
@@ -717,7 +718,7 @@ export class ScriptEventSource {
       this.deps.backendUrl,
       this.deps.scriptSetId,
       this.deps.batchId,
-      this.deps.adminToken(),
+      this.deps.viewerToken(),
     );
     const source = new EventSource(url);
     this.source = source;

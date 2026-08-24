@@ -870,7 +870,7 @@ function boot(): void {
   hydrateLocalDraft();
   mountAuthoring({
     backendUrl: () => backendUrl(),
-    adminToken: getAdminToken,
+    viewerToken: getViewerToken,
     api: store,
     onEvent: addEvent,
   });
