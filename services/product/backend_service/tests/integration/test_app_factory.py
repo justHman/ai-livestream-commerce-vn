@@ -371,6 +371,7 @@ def test_health_ready_not_ready_when_llm_load_failed(mock_env: None, injected_de
     with TestClient(app) as client:
         r = client.get("/api/v1/health/ready")
     body = r.json()
+    assert r.status_code == 503, "not-ready must be HTTP 503, not a 200 body (audit R0.4)"
     # Mock backend → ready would be True, but llm_load_error → not ready.
     assert body["ok"] is False, (
         "Finding 2: /health/ready must report not-ready when a configured real "
@@ -393,6 +394,7 @@ def test_health_ready_not_ready_when_tts_load_failed(mock_env: None, injected_de
     with TestClient(app) as client:
         r = client.get("/api/v1/health/ready")
     body = r.json()
+    assert r.status_code == 503, "not-ready must be HTTP 503, not a 200 body (audit R0.4)"
     assert body["ok"] is False
     assert body["status"] == "not_ready"
     assert "tts_load_error" in body
