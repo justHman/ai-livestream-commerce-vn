@@ -9,9 +9,13 @@ Engine selection (the production seam):
   RENDER_BACKEND   cloud_liveavatar | self_host_avatarforcing_half |
                    self_host_echoavatar_full | mock
   SESSION_STORE    memory(Colab) | redis(AWS)
-  LLM_ENGINE       vllm | llamacpp | sglang | hf | none(default echo)
-  TTS_ENGINE       transformers(default) | vieneu | cosyvoice | tone
+  LLM_ENGINE       vllm | llamacpp | sglang | hf | openai_compat | none(default echo)
+  TTS_ENGINE       transformers(default) | vieneu | cosyvoice | tone |
+                   remote_http | elevenlabs | openai_speech
   DIRECTOR_ENABLED 0 | 1
+  *_ADAPTER        LLM_ADAPTER / TTS_ADAPTER / AVATAR_ADAPTER deterministically
+                   derive their selector when the explicit *_ENGINE /
+                   *_BACKEND env is absent (see _resolve_adapter_defaults).
 
 Prompt ownership (OpenSpec 1.11): canonical Director prompt text lives in the
 Markdown bundle under ``backend/application/director/prompts/``. This module
@@ -73,6 +77,55 @@ def _build_persona(shop_profile: str = "") -> str:
     guardrails = bundle.prompt("response_guardrails_vi")
     shop = shop_profile or os.environ.get("SHOP_PROFILE") or _DEFAULT_SHOP_PROFILE
     return base + "\n\n" + guardrails + "\n\n" + shop
+
+
+def _resolve_adapter_defaults(env: dict[str, str]) -> dict[str, str | None]:
+    """Derive engine selectors from provider-shaped ``*_ADAPTER`` env.
+
+    Terraform injects ``LLM_ADAPTER``/``TTS_ADAPTER``/``AVATAR_ADAPTER`` while
+    leaving the explicit ``*_ENGINE``/``*_BACKEND`` selector unset. When an
+    explicit selector IS present, this derives ``None`` for it (explicit env
+    wins) and the caller keeps the explicit value. Unknown adapter values fail
+    loud rather than silently echo a stub engine.
+    """
+    llm_engine: str | None = None
+    llm_adapter = env.get("LLM_ADAPTER")
+    if llm_adapter and "LLM_ENGINE" not in env:
+        if llm_adapter.lower() == "openai_compatible":
+            llm_engine = "openai_compat"
+        else:
+            raise ValueError(f"unsupported LLM_ADAPTER={llm_adapter!r}")
+
+    tts_engine: str | None = None
+    tts_adapter = env.get("TTS_ADAPTER")
+    if tts_adapter and "TTS_ENGINE" not in env:
+        tts_map = {
+            "self_hosted": "remote_http",
+            "elevenlabs": "elevenlabs",
+            "openai_speech": "openai_speech",
+        }
+        key = tts_adapter.lower()
+        if key in tts_map:
+            tts_engine = tts_map[key]
+        else:
+            raise ValueError(f"unsupported TTS_ADAPTER={tts_adapter!r}")
+
+    render_backend: str | None = None
+    avatar_adapter = env.get("AVATAR_ADAPTER")
+    if avatar_adapter and "RENDER_BACKEND" not in env:
+        key = avatar_adapter.lower()
+        if key in ("liveavatar", "baidu_xiling"):
+            render_backend = "cloud_liveavatar"
+        elif key == "self_hosted":
+            render_backend = None  # self-host rendering is avatar_service's domain
+        else:
+            raise ValueError(f"unsupported AVATAR_ADAPTER={avatar_adapter!r}")
+
+    return {
+        "llm_engine": llm_engine,
+        "tts_engine": tts_engine,
+        "render_backend": render_backend,
+    }
 
 
 @dataclass
@@ -446,9 +499,32 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
+        derived = _resolve_adapter_defaults(
+            {
+                k: os.environ[k]
+                for k in (
+                    "LLM_ADAPTER",
+                    "LLM_ENGINE",
+                    "TTS_ADAPTER",
+                    "TTS_ENGINE",
+                    "AVATAR_ADAPTER",
+                    "RENDER_BACKEND",
+                )
+                if k in os.environ
+            }
+        )
+        render_backend = os.environ.get("RENDER_BACKEND", "cloud_liveavatar").lower()
+        if derived["render_backend"] is not None and "RENDER_BACKEND" not in os.environ:
+            render_backend = derived["render_backend"]
+        llm_cfg = LLMConfig.from_env()
+        if derived["llm_engine"] is not None and "LLM_ENGINE" not in os.environ:
+            llm_cfg.engine = derived["llm_engine"]
+        tts_cfg = TTSConfig.from_env()
+        if derived["tts_engine"] is not None and "TTS_ENGINE" not in os.environ:
+            tts_cfg.engine = derived["tts_engine"]
         return cls(
             app_env=os.environ.get("APP_ENV", "dev").lower(),
-            render_backend=os.environ.get("RENDER_BACKEND", "cloud_liveavatar").lower(),
+            render_backend=render_backend,
             store_backend=os.environ.get("SESSION_STORE", "memory").lower(),
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             cors_origins=os.environ.get("CORS_ORIGINS", "*"),
@@ -490,8 +566,8 @@ class AppConfig:
             database_url=os.environ.get("DATABASE_URL", ""),
             livekit_publish=os.environ.get("LIVEKIT_PUBLISH", "0").lower()
             in ("1", "true", "on", "yes"),
-            llm=LLMConfig.from_env(),
-            tts=TTSConfig.from_env(),
+            llm=llm_cfg,
+            tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),
         )
 

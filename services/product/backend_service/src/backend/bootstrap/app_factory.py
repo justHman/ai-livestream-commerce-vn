@@ -92,6 +92,11 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
 
 def v1_engine_manager(config) -> Any:
     """Build an EngineManager and load configured engines (parity helper)."""
+    # Function-level import: composition pulls in the provider clients, which
+    # must never be imported at module scope here (avoids import cycles).
+    from backend.application.clients.composition import ensure_remote_engines_registered
+
+    ensure_remote_engines_registered()
     from backend.engine_manager import EngineManager
 
     manager = EngineManager()
@@ -243,6 +248,21 @@ def create_app(
         raise RuntimeError(
             "CORS_ORIGINS='*' is forbidden outside APP_ENV=dev; set explicit origins"
         )
+
+    # Production guard: the control plane must never run local model/GPU
+    # engines — remote/provider clients only. Only the real composition path
+    # (no injected deps/container) is guarded; injected deps own their engines.
+    if config.is_production and container is None and deps is None:
+        offending = []
+        if config.llm.engine in {"vllm", "llamacpp", "sglang", "hf"}:
+            offending.append(f"llm.engine={config.llm.engine}")
+        if config.tts.engine in {"transformers", "vieneu", "cosyvoice"}:
+            offending.append(f"tts.engine={config.tts.engine}")
+        if offending:
+            raise RuntimeError(
+                "backend control plane must not run local model/GPU engines "
+                "(remote/provider clients only); offending: " + ", ".join(offending)
+            )
 
     # Resolve the typed container (canonical path) or the legacy deps path.
     resolved_container: BootstrapContainer
