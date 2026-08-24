@@ -12,6 +12,7 @@ Canonical dependency access goes through ``app.state.container`` (see
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from fastapi import FastAPI
@@ -90,6 +91,52 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     )
 
 
+# Credential values that must never be treated as production-ready secrets.
+# Terraform injects real SSM values; a placeholder here means the deployment
+# shipped a fake credential the client would silently send unauthenticated.
+_PROVIDER_CREDENTIAL_PLACEHOLDERS = frozenset(
+    {"CHANGE_ME", "changeme", "change-me", "placeholder", "dev-token", "test-token", "dummy"}
+)
+
+
+def _validate_production_provider_credentials(config) -> None:
+    """Fail startup when an enabled remote/provider engine lacks a real credential.
+
+    R8.4: the backend's outbound clients read ``LLM_AUTH_TOKEN`` /
+    ``TTS_AUTH_TOKEN`` and send an ``Authorization`` header only when the value
+    is present. A production deployment with a missing, empty, or placeholder
+    credential would silently construct an unauthenticated client. Runs on the
+    real composition path only (no injected deps/container) and only when
+    ``config.is_production``; no remote engine enabled → no-op.
+    """
+    problems: list[str] = []
+
+    def _credential_problem(env_names: tuple[str, ...], engine_label: str) -> None:
+        value = next((os.environ.get(n, "") for n in env_names if os.environ.get(n, "")), "")
+        if not value.strip():
+            problems.append(f"missing credential env {env_names[0]} for engine {engine_label}")
+        elif value.strip() in _PROVIDER_CREDENTIAL_PLACEHOLDERS:
+            problems.append(
+                f"placeholder credential {env_names[0]}={value!r} for engine {engine_label}"
+            )
+
+    if config.llm.engine == "openai_compat":
+        if not (config.llm.base_url or "").strip():
+            problems.append("LLM_BASE_URL is empty for engine openai_compat")
+        _credential_problem(("LLM_AUTH_TOKEN",), config.llm.engine)
+    if config.tts.engine == "remote_http":
+        if not (config.tts.base_url or "").strip():
+            problems.append("TTS_BASE_URL is empty for engine remote_http")
+        _credential_problem(("TTS_AUTH_TOKEN",), config.tts.engine)
+    if config.tts.engine in ("elevenlabs", "openai_speech"):
+        _credential_problem(("TTS_API_KEY", "ELEVENLABS_API_KEY"), config.tts.engine)
+
+    if problems:
+        raise RuntimeError(
+            "production provider credential validation failed: " + "; ".join(problems)
+        )
+
+
 def v1_engine_manager(config) -> Any:
     """Build an EngineManager and load configured engines (parity helper)."""
     # Function-level import: composition pulls in the provider clients, which
@@ -105,6 +152,8 @@ def v1_engine_manager(config) -> Any:
             manager.load_llm(config.llm.to_engine_cfg())
             manager.set_system_prompt(config.llm.system_prompt)
     except Exception as exc:
+        if config.is_production:
+            raise  # R8.4: fail startup instead of silently degrading to a stub
         manager.llm_load_error = f"{type(exc).__name__}: {exc}"
         print(
             f"[bootstrap] LLM engine '{config.llm.engine}' unavailable "
@@ -114,6 +163,8 @@ def v1_engine_manager(config) -> Any:
         if config.tts.engine not in ("tone", "", None):
             manager.load_tts(config.tts.to_engine_cfg())
     except Exception as exc:
+        if config.is_production:
+            raise  # R8.4: fail startup instead of silently degrading to a stub
         manager.tts_load_error = f"{type(exc).__name__}: {exc}"
         print(
             f"[bootstrap] TTS engine '{config.tts.engine}' unavailable "
@@ -282,6 +333,13 @@ def create_app(
                 "backend control plane must not run local model/GPU engines "
                 "(remote/provider clients only); offending: " + ", ".join(offending)
             )
+
+    # R8.4: production remote/provider engines must carry a real credential and
+    # base URL before the container boots — a missing/placeholder credential
+    # would silently construct an unauthenticated client. Real composition path
+    # only (no injected deps/container), like the guards above.
+    if config.is_production and container is None and deps is None:
+        _validate_production_provider_credentials(config)
 
     # Resolve the typed container (canonical path) or the legacy deps path.
     resolved_container: BootstrapContainer

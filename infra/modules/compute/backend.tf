@@ -81,19 +81,22 @@ resource "aws_ecs_task_definition" "backend" {
             valueFrom = var.secrets_arns["liveavatar/api_key"]
           },
         ] : [],
-        # Remote OpenAI-compatible LLM API key (optional, when llm_adapter is
-        # a remote endpoint needing auth).
+        # Remote OpenAI-compatible LLM credential (optional, when llm_adapter
+        # is a remote endpoint needing auth). Injected under LLM_AUTH_TOKEN —
+        # the canonical name the backend OpenAICompatibleClient reads.
         lookup(var.secrets_arns, "llm/api_key", "") != "" ? [
           {
-            name      = "LLM_API_KEY"
+            name      = "LLM_AUTH_TOKEN"
             valueFrom = var.secrets_arns["llm/api_key"]
           },
         ] : [],
-        # Stage 2 ship-fast: ElevenLabs remote TTS API key (optional, when
+        # Stage 2 ship-fast: ElevenLabs remote TTS credential (optional, when
         # tts_engine=elevenlabs). Put in SSM /dev/tts/api_key out-of-band.
+        # Injected under TTS_AUTH_TOKEN — the canonical name the backend
+        # SelfHostedTTSClient reads.
         lookup(var.secrets_arns, "tts/api_key", "") != "" ? [
           {
-            name      = "TTS_API_KEY"
+            name      = "TTS_AUTH_TOKEN"
             valueFrom = var.secrets_arns["tts/api_key"]
           },
         ] : [],
