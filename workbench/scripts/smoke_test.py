@@ -173,7 +173,7 @@ async def smoke(cfg: SmokeConfig) -> list[Check]:
             try:
                 import websockets  # optional — skip when unavailable
 
-                async with websockets.connect(ws_url, timeout=10.0) as ws:
+                async with websockets.connect(ws_url) as ws:
                     first = json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
                     ws_ok = (
                         first.get("type") == "control.connected"
