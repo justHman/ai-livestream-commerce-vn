@@ -169,6 +169,7 @@ jobs:
       - repo-tools
     if: ${{ always() }}
     steps:
+      - uses: actions/checkout@v4
       - name: Aggregate required-check results
         env:
           SCAN: ${{ needs.secret-scan.result }}
