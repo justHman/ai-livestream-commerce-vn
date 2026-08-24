@@ -38,6 +38,7 @@ def _config(database_url: str) -> AppConfig:
         tts=TTSConfig(engine="tone"),  # stub — avoids offline transformers load
         cors_origins="http://localhost",  # production CORS guard forbids "*"
         backend_api_token=_AUTH_VALUE,  # production viewer auth requires a token
+        admin_api_token=_AUTH_VALUE,  # production admin auth requires a token (B.5)
     )
 
 

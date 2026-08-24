@@ -22,14 +22,18 @@ from backend.config import AppConfig, TTSConfig
 _AUTH_VALUE = "viewer" + "-token"
 
 
-def _config(database_url: str, *, backend_api_token: str = "", app_env: str = "prod") -> AppConfig:
+def _config(database_url: str, *, backend_api_token: str = _AUTH_VALUE, app_env: str = "prod") -> AppConfig:
     return AppConfig(
         app_env=app_env,
         render_backend="mock",
         database_url=database_url,
         tts=TTSConfig(engine="tone"),  # stub — avoids offline transformers load
         cors_origins="http://localhost",  # production CORS guard forbids "*"
-        backend_api_token=backend_api_token,  # production viewer auth requires a token
+        # Production auth planes require real tokens (B.5): the auth-token
+        # guard fires before the DATABASE_URL guard, so these fixtures carry
+        # real viewer + admin credentials to keep testing the DB guard.
+        backend_api_token=backend_api_token,
+        admin_api_token=_AUTH_VALUE,
     )
 
 

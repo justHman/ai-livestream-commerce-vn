@@ -137,6 +137,38 @@ def _validate_production_provider_credentials(config) -> None:
         )
 
 
+def _validate_production_auth_tokens(config) -> None:
+    """Fail startup when production auth tokens are empty or placeholders.
+
+    R8.1/R8.2: real production must reject known placeholder/development
+    fixture credentials and empty required auth tokens (``backend_api_token``,
+    ``admin_api_token``) before the service becomes ready — otherwise the
+    auth plane would boot accepting a known dev/placeholder credential. Runs
+    on the real composition path only (no injected deps/container) and only
+    when ``config.is_production``; dev/CI no-op. Auth tokens share the same
+    placeholder set as provider credentials.
+    """
+    if not config.is_production:
+        return
+    problems: list[str] = []
+
+    def _token_problem(attr: str) -> None:
+        value = getattr(config, attr)
+        stripped = value.strip()
+        if not stripped:
+            problems.append(f"{attr} is empty")
+        elif stripped in _PROVIDER_CREDENTIAL_PLACEHOLDERS:
+            problems.append(f"{attr}={value!r} is a placeholder")
+
+    _token_problem("backend_api_token")
+    _token_problem("admin_api_token")
+
+    if problems:
+        raise RuntimeError(
+            "production auth token validation failed: " + "; ".join(problems)
+        )
+
+
 def v1_engine_manager(config) -> Any:
     """Build an EngineManager and load configured engines (parity helper)."""
     # Function-level import: composition pulls in the provider clients, which
@@ -340,6 +372,13 @@ def create_app(
     # only (no injected deps/container), like the guards above.
     if config.is_production and container is None and deps is None:
         _validate_production_provider_credentials(config)
+
+    # R8.1/R8.2: production auth tokens must be real before the service becomes
+    # ready — empty/placeholder BACKEND_API_TOKEN/ADMIN_API_TOKEN would boot an
+    # auth plane that accepts a known dev/placeholder credential. Real
+    # composition path only, after the provider-credential guard above.
+    if config.is_production and container is None and deps is None:
+        _validate_production_auth_tokens(config)
 
     # Resolve the typed container (canonical path) or the legacy deps path.
     resolved_container: BootstrapContainer

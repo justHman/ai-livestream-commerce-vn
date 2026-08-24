@@ -47,6 +47,11 @@ def _prod_llm_config() -> AppConfig:
     return AppConfig(
         app_env="prod",
         cors_origins="https://shop.example",
+        # Real auth tokens: the B.5 production guard rejects empty/placeholder
+        # BACKEND_API_TOKEN/ADMIN_API_TOKEN; this fixture targets the provider
+        # credential validation, not the auth plane.
+        backend_api_token="real-viewer",
+        admin_api_token="real-admin",
         llm=LLMConfig(engine="openai_compat", base_url="http://llm.internal/v1"),
         tts=TTSConfig(engine="tone"),
     )
