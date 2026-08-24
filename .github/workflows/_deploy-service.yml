@@ -154,3 +154,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "new_digest=$new_digest" >> "$GITHUB_OUTPUT"
           echo "prev_digest=$prev_digest" >> "$GITHUB_OUTPUT"
+      # R1.6: the per-leg evidence line lives on this job's runner; upload it
+      # as a declared artifact (unique per env/sha/container) so downstream
+      # jobs (record-evidence / record-outcome) consume it via download-artifact
+      # instead of assuming a shared filesystem.
+      - name: Upload deployment evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-evidence-${{ inputs.env }}-${{ inputs.commit_sha }}-${{ inputs.container }}
+          path: .runtime/deploy/evidence/${{ inputs.env }}/${{ inputs.commit_sha }}.jsonl
+          if-no-files-found: error

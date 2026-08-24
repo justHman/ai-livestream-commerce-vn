@@ -334,7 +334,7 @@ jobs:
           echo "Smoke passed for ${{ needs.validate.outputs.validated_sha }} at ${{ needs.preflight.outputs.smoke_url }}" >> "$GITHUB_STEP_SUMMARY"
 
   record-evidence:
-    needs: smoke
+    needs: [validate, smoke, deploy]
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -346,6 +346,14 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      # R1.6: each deploy leg uploaded its evidence line as
+      # deploy-evidence-staging-<sha>-<container>; download them via declared
+      # artifact transport (no shared runner filesystem).
+      - name: Download per-service deployment evidence
+        uses: actions/download-artifact@v4
+        with:
+          path: .runtime/deploy/evidence/raw
+          pattern: deploy-evidence-staging-${{ env.VALIDATED_SHA }}-*
       - name: Collect production-eligible evidence digests
         run: |
           set -euo pipefail
@@ -353,13 +361,15 @@ jobs:
           file="deploy-evidence/staging/$VALIDATED_SHA.jsonl"
           : > "$file"
           ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          services="${{ needs.validate.outputs.services_matrix }}"
-          # _deploy-service writes per-service evidence under .runtime; read it
-          # back and re-emit into the tracked production-eligible file.
-          for svc in $(jq -r '.[]' <<<"$services"); do
-            prev=$(jq -r 'select(.service | contains("'$svc'")) | .prev_digest' ".runtime/deploy/evidence/staging/$VALIDATED_SHA.jsonl" 2>/dev/null || echo "")
-            new=$(jq -r 'select(.service | contains("'$svc'")) | .new_digest' ".runtime/deploy/evidence/staging/$VALIDATED_SHA.jsonl" 2>/dev/null || echo "")
-            printf '%s\n' "{\"ts\":\"$ts\",\"env\":\"staging\",\"commit_sha\":\"$VALIDATED_SHA\",\"service\":\"$svc\",\"initiator\":\"${{ github.actor }}\",\"prev_digest\":\"$prev\",\"new_digest\":\"$new\",\"result\":\"success\"}" >> "$file"
+          for adir in .runtime/deploy/evidence/raw/deploy-evidence-staging-${VALIDATED_SHA}-*/; do
+            [[ -d "$adir" ]] || continue
+            container=${adir#.runtime/deploy/evidence/raw/deploy-evidence-staging-${VALIDATED_SHA}-}
+            container=${container%/}
+            ef="$adir/deploy/evidence/staging/$VALIDATED_SHA.jsonl"
+            [[ -f "$ef" ]] || continue
+            prev=$(jq -r '.prev_digest' "$ef")
+            new=$(jq -r '.new_digest' "$ef")
+            printf '%s\n' "{\"ts\":\"$ts\",\"env\":\"staging\",\"commit_sha\":\"$VALIDATED_SHA\",\"service\":\"$container\",\"initiator\":\"${{ github.actor }}\",\"prev_digest\":\"$prev\",\"new_digest\":\"$new\",\"result\":\"success\"}" >> "$file"
           done
           echo "Evidence written to $file"
           cat "$file"

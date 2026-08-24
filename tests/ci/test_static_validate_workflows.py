@@ -12,6 +12,8 @@ from scripts.ci.static_validate_workflows import (
     validate_no_deploy,
     validate_no_step_level_reusable,
     validate_gh_api_authentication,
+    validate_needs_graph,
+    validate_cross_job_file_consumption,
     validate_permissions_shape,
     validate_service_tags,
     ValidationResult,
@@ -320,6 +322,107 @@ def test_gh_api_multiline_suppression_rejected():
     )
     assert not r.passed
     assert any("suppresses" in e for e in r.errors)
+
+
+# ── R1.7: needs graph directness ────────────────────────────────────────────
+
+
+def test_indirect_needs_output_rejected():
+    r = _result()
+    validate_needs_graph(
+        {
+            "jobs": {
+                "a": {"runs-on": "x", "steps": [{"run": "echo"}]},
+                "b": {"needs": ["a"], "runs-on": "x", "steps": [{"run": "echo"}]},
+                "c": {
+                    "needs": ["b"],
+                    "env": {"S": "${{ needs.a.outputs.validated_sha }}"},
+                    "runs-on": "x",
+                    "steps": [{"run": "echo $S"}],
+                },
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("not a direct declared dependency" in e and "needs.a" in e for e in r.errors)
+
+
+def test_direct_needs_output_accepted():
+    r = _result()
+    validate_needs_graph(
+        {
+            "jobs": {
+                "a": {"runs-on": "x", "outputs": {"s": "x"}, "steps": [{"run": "echo"}]},
+                "b": {
+                    "needs": ["a"],
+                    "env": {"S": "${{ needs.a.outputs.s }}"},
+                    "runs-on": "x",
+                    "steps": [{"run": "echo $S"}],
+                },
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── R1.6: cross-job file consumption ────────────────────────────────────────
+
+
+def test_cross_job_runtime_read_without_transport_rejected():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "read": {
+                    "runs-on": "x",
+                    "steps": [{"run": 'jq -r . <<<"$(cat .runtime/deploy/evidence/staging/a.jsonl)"'}],
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("R1.6" in e and ".runtime/" in e for e in r.errors)
+
+
+def test_cross_job_runtime_read_with_artifact_download_accepted():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "read": {
+                    "runs-on": "x",
+                    "steps": [
+                        {"uses": "actions/download-artifact@v4"},
+                        {"run": "cat .runtime/deploy/evidence/staging/a.jsonl"},
+                    ],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_same_job_runtime_write_and_read_accepted():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "w": {
+                    "runs-on": "x",
+                    "steps": [
+                        {"run": 'mkdir -p .runtime/ev && echo x >> .runtime/ev/a.jsonl'},
+                        {"run": "cat .runtime/ev/a.jsonl"},
+                    ],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
 
 
 # ── Service tags ────────────────────────────────────────────────────────────

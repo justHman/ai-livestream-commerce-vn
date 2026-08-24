@@ -294,3 +294,12 @@ jobs:
             echo "- digest: $EVIDENCE_DIGEST (staging evidence ${{ needs.validate-evidence.outputs.evidence_ts }})"
             echo "- result: $RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
+      # R1.6: publish the production evidence line as a declared artifact
+      # (release evidence crosses job/run boundaries).
+      - name: Upload release evidence artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ needs.resolve.outputs.tag }}-${{ env.TAG_COMMIT }}
+          path: .runtime/deploy/evidence/prod/${{ env.TAG_COMMIT }}.jsonl
+          if-no-files-found: error
