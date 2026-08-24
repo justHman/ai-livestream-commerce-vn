@@ -1,3 +1,7 @@
+# STATUS 2026-08-24: PAUSED / STALE / DO NOT EXECUTE — historical planning
+# evidence only. Provider-first is the current strategy; a future live
+# deployment needs a fresh plan from the then-current architecture.
+
 # Stage 3 — self-host avatar (AvatarForcing half) + real LLM/TTS + LiveKit Cloud media.
 # Same LLM/TTS engine path as Stage 2 (vLLM Qwen3.5-4B-AWQ + vllm-omni VieNeu)
 # so the only Stage 2→3 variable is the avatar backend (true ablation).

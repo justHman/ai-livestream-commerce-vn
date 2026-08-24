@@ -4,6 +4,13 @@
 > the plan on any failed item. Ties to the three-stage ladder in
 > [runbook-deploy-prep.md](./runbook-deploy-prep.md) and the iron rules in
 > [runbook-live-smoke-and-teardown.md](./runbook-live-smoke-and-teardown.md).
+>
+> **STATUS 2026-08-24: Stages 2–3 = PAUSED / STALE / DO NOT EXECUTE.**
+> Retained as historical planning evidence only; do not reconcile or execute.
+> Self-host LLM/Avatar rollout and the generic S3 weight bootstrap are DEFERRED.
+> Provider-first (BYOK/third-party providers + managed LiveKit Cloud) is the current
+> strategy; AWS remains one deployment option, not the product architecture.
+> A future live deployment requires a fresh plan from the then-current architecture.
 
 ## All stages
 
