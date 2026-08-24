@@ -307,6 +307,17 @@ variable "tts_engine" {
   }
 }
 
+variable "tts_model_source" {
+  description = "TTS model source: sdk (current VieNeu SDK/provider download; no S3 URI, no forced offline) | s3_bootstrap (dormant future engine object-backed weights)"
+  type        = string
+  default     = "sdk"
+
+  validation {
+    condition     = contains(["sdk", "s3_bootstrap"], var.tts_model_source)
+    error_message = "tts_model_source must be sdk or s3_bootstrap."
+  }
+}
+
 variable "avatar_engine" {
   description = "Self-host avatar engine (service-local): avatarforcing"
   type        = string
