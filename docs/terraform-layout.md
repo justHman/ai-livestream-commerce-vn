@@ -1,6 +1,6 @@
 # Terraform layout and state bootstrap
 
-> `infra/modules/*` and `infra/environments/{global,dev,prod}` validate
+> `infra/modules/*` and `infra/environments/{global,dev,staging,prod}` validate
 > offline. No environment is assumed applied.
 
 ## Layout
@@ -19,6 +19,7 @@ infra/
 └── environments/
     ├── global/         # OIDC and remote-state primitives
     ├── dev/            # DEV root and Tier S example
+    ├── staging/        # STAGING root
     └── prod/           # PROD root
 ```
 
@@ -74,9 +75,18 @@ terraform -chdir=infra/environments/global init -backend=false
 terraform -chdir=infra/environments/global validate
 terraform -chdir=infra/environments/dev init -backend=false
 terraform -chdir=infra/environments/dev validate
+terraform -chdir=infra/environments/staging init -backend=false
+terraform -chdir=infra/environments/staging validate
 terraform -chdir=infra/environments/prod init -backend=false
 terraform -chdir=infra/environments/prod validate
 ```
+
+Offline validation uses `-backend=false`: Terraform parses the configuration,
+builds a dependency graph, and validates types/HCL without reading or writing
+any remote state, so local checks never require the paid S3 backend to exist.
+Remote state (`infra/environments/*/backend.tf`) remains an explicit deployment
+concern wired only when live deployment resumes; nothing in this repository's
+automation deletes the tfstate bucket.
 
 ## MVP exclusions
 

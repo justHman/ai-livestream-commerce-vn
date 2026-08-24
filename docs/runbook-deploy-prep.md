@@ -104,6 +104,8 @@ terraform -chdir=infra/environments/global init -backend=false
 terraform -chdir=infra/environments/global validate
 terraform -chdir=infra/environments/dev init -backend=false
 terraform -chdir=infra/environments/dev validate
+terraform -chdir=infra/environments/staging init -backend=false
+terraform -chdir=infra/environments/staging validate
 terraform -chdir=infra/environments/prod init -backend=false
 terraform -chdir=infra/environments/prod validate
 ```
