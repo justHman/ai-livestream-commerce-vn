@@ -29,26 +29,35 @@ resource "aws_ecs_task_definition" "tts" {
           protocol      = "tcp"
         }
       ]
-      environment = [
-        { name = "ENV", value = var.env },
-        # Service-local engine selector; adapters live on the backend.
-        { name = "TTS_ENGINE", value = var.tts_engine },
-        { name = "TTS_PROVIDER", value = "vieneu_v3" },
-        { name = "TTS_MODEL_REVISION", value = "pnnbao-ump/VieNeu-TTS-v3-Turbo" },
-        { name = "TTS_ACCELERATOR", value = "auto" },
-        { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}tts/" },
-        # fetch_weights.sh syncs S3 weights/tts/vieneu/* -> /models/vieneu/
-        # (atomic, validated, .ready) before the uvicorn service starts.
-        { name = "MODEL_SUBDIR", value = "vieneu" },
-        { name = "ROLE", value = "tts" },
-        # Air-gapped + HF cache separated from model dir.
-        { name = "HF_HUB_OFFLINE", value = "1" },
-        { name = "TRANSFORMERS_OFFLINE", value = "1" },
-        { name = "HF_HUB_DISABLE_TELEMETRY", value = "1" },
-        { name = "DO_NOT_TRACK", value = "1" },
-        { name = "HF_HOME", value = "/var/cache/huggingface" },
-        { name = "HF_HUB_CACHE", value = "/var/cache/huggingface/hub" },
-      ]
+      environment = concat(
+        # Always-present base: the VieNeu SDK/provider model-init path
+        # (Decision 6 / R0.5-V3). No WEIGHTS_S3_URI and no forced offline flags
+        # here so entrypoint.sh skips fetch_weights.sh and HF init stays online.
+        [
+          { name = "ENV", value = var.env },
+          # Service-local engine selector; adapters live on the backend.
+          { name = "TTS_ENGINE", value = var.tts_engine },
+          { name = "TTS_PROVIDER", value = "vieneu_v3" },
+          { name = "TTS_MODEL_REVISION", value = "pnnbao-ump/VieNeu-TTS-v3-Turbo" },
+          { name = "TTS_ACCELERATOR", value = "auto" },
+          { name = "ROLE", value = "tts" },
+          { name = "HF_HUB_DISABLE_TELEMETRY", value = "1" },
+          { name = "DO_NOT_TRACK", value = "1" },
+          { name = "HF_HOME", value = "/var/cache/huggingface" },
+          { name = "HF_HUB_CACHE", value = "/var/cache/huggingface/hub" },
+        ],
+        # Dormant S3/offline bootstrap for a future object-backed engine:
+        # explicit opt-in via tts_model_source="s3_bootstrap" only.
+        var.tts_model_source == "s3_bootstrap" ? [
+          { name = "WEIGHTS_S3_URI", value = "${trim(var.weights_s3_uri, "/")}/tts/" },
+          # fetch_weights.sh syncs S3 weights/tts/vieneu/* -> /models/vieneu/
+          # (atomic, validated, .ready) before the uvicorn service starts.
+          { name = "MODEL_SUBDIR", value = "vieneu" },
+          # Air-gapped + HF cache separated from model dir.
+          { name = "HF_HUB_OFFLINE", value = "1" },
+          { name = "TRANSFORMERS_OFFLINE", value = "1" },
+        ] : [],
+      )
       logConfiguration = {
         logDriver = "awslogs"
         options = {

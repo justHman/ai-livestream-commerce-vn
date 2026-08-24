@@ -81,19 +81,22 @@ resource "aws_ecs_task_definition" "backend" {
             valueFrom = var.secrets_arns["liveavatar/api_key"]
           },
         ] : [],
-        # Remote OpenAI-compatible LLM API key (optional, when llm_adapter is
-        # a remote endpoint needing auth).
+        # Remote OpenAI-compatible LLM credential (optional, when llm_adapter
+        # is a remote endpoint needing auth). Injected under LLM_AUTH_TOKEN —
+        # the canonical name the backend OpenAICompatibleClient reads.
         lookup(var.secrets_arns, "llm/api_key", "") != "" ? [
           {
-            name      = "LLM_API_KEY"
+            name      = "LLM_AUTH_TOKEN"
             valueFrom = var.secrets_arns["llm/api_key"]
           },
         ] : [],
-        # Stage 2 ship-fast: ElevenLabs remote TTS API key (optional, when
+        # Stage 2 ship-fast: ElevenLabs remote TTS credential (optional, when
         # tts_engine=elevenlabs). Put in SSM /dev/tts/api_key out-of-band.
+        # Injected under TTS_AUTH_TOKEN — the canonical name the backend
+        # SelfHostedTTSClient reads.
         lookup(var.secrets_arns, "tts/api_key", "") != "" ? [
           {
-            name      = "TTS_API_KEY"
+            name      = "TTS_AUTH_TOKEN"
             valueFrom = var.secrets_arns["tts/api_key"]
           },
         ] : [],
@@ -225,3 +228,37 @@ resource "aws_ecs_service" "backend" {
 
 # EC2/GPU services only exist when capacity providers exist.
 # Task defs require EC2 — never fall back to FARGATE (invalid launch type).
+
+# R2.4 capacity invariants: a hosted/provider adapter selection must force
+# unused self-host capacity to zero (fail plan, not silently allow), and
+# self-host Avatar must never be selected while only a test stub exists.
+# Mirrors the db_url_parity precondition pattern (infra/environments/prod/main.tf).
+resource "terraform_data" "capacity_invariants" {
+  input = format(
+    "%s|%s|%s|%s|%s|%s",
+    var.avatar_adapter,
+    var.desired_avatar,
+    var.tts_adapter,
+    var.desired_tts,
+    var.llm_base_url,
+    var.desired_llm,
+  )
+  lifecycle {
+    precondition {
+      condition     = var.avatar_adapter != "self_hosted" ? var.desired_avatar == 0 : true
+      error_message = "Hosted/provider Avatar selected (avatar_adapter=${var.avatar_adapter}); desired_avatar must be 0 (no unused self-host Avatar capacity)."
+    }
+    precondition {
+      condition     = var.avatar_adapter != "self_hosted" || var.allow_stub_avatar_test_only
+      error_message = "Self-host Avatar selected but only a test stub exists; no real self-host engine is production-ready. Set allow_stub_avatar_test_only=true ONLY for explicit test mode (never production)."
+    }
+    precondition {
+      condition     = var.tts_adapter == "self_hosted" ? true : var.desired_tts == 0
+      error_message = "Hosted/provider TTS selected (tts_adapter=${var.tts_adapter}); desired_tts must be 0."
+    }
+    precondition {
+      condition     = var.llm_base_url == "" ? true : var.desired_llm == 0
+      error_message = "Hosted LLM base URL override set (llm_base_url=${var.llm_base_url}); desired_llm must be 0 (no unused self-host LLM capacity)."
+    }
+  }
+}

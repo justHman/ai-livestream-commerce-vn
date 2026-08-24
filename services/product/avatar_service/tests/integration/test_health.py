@@ -28,6 +28,17 @@ def test_health_ready_stub_is_never_production_ready() -> None:
     assert body["mode"] == "test_stub"
 
 
+def test_health_ready_true_for_real_engine_after_lifespan(monkeypatch) -> None:
+    # A real self-host engine is ready after lifespan boots it.
+    monkeypatch.setenv("AVATAR_ENGINE", "avatarforcing")
+    monkeypatch.setenv("AVATAR_MODEL", "test-model")
+    app = create_app()
+    with TestClient(app) as client:
+        resp = client.get("/health/ready")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ready"
+
+
 def test_health_ready_false_when_engine_unavailable() -> None:
     app = create_app()
     with TestClient(app) as client:

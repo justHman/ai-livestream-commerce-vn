@@ -245,6 +245,12 @@ variable "avatar_adapter" {
   }
 }
 
+variable "allow_stub_avatar_test_only" {
+  description = "Explicit test-only escape for the Avatar stub; never enabled in production."
+  type        = bool
+  default     = false
+}
+
 variable "llm_adapter" {
   description = "Backend LLM adapter (always openai_compatible)"
   type        = string
@@ -298,6 +304,17 @@ variable "tts_engine" {
   validation {
     condition     = contains(["vieneu", "cosyvoice"], var.tts_engine)
     error_message = "tts_engine must be one of: vieneu, cosyvoice."
+  }
+}
+
+variable "tts_model_source" {
+  description = "TTS model source: sdk (current VieNeu SDK/provider download; no S3 URI, no forced offline) | s3_bootstrap (dormant future engine object-backed weights)"
+  type        = string
+  default     = "sdk"
+
+  validation {
+    condition     = contains(["sdk", "s3_bootstrap"], var.tts_model_source)
+    error_message = "tts_model_source must be sdk or s3_bootstrap."
   }
 }
 
