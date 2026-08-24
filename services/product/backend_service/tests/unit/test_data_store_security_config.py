@@ -30,6 +30,14 @@ def test_prod_database_requires_sslmode() -> None:
     AppConfig(app_env="prod", database_url="postgresql://u:p@h:5432/db?sslmode=verify-full")
 
 
+def test_prod_loopback_database_needs_no_sslmode() -> None:
+    # A local/embedded Postgres on loopback is an explicit dev/test store
+    # (C.3.3): the prod TLS gate exempts it so embedded-PG integration fixtures
+    # keep working without TLS.
+    AppConfig(app_env="prod", database_url="postgresql://u:p@127.0.0.1:5432/db")
+    AppConfig(app_env="prod", database_url="postgresql://u:p@localhost:5432/db")
+
+
 def test_dev_local_stores_unaffected() -> None:
     AppConfig(app_env="dev", store_backend="redis", redis_url="redis://localhost:6379/0")
     AppConfig(app_env="dev", database_url="postgresql://u:p@h:5432/db")

@@ -31,6 +31,16 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 
+def _dsn_is_loopback(database_url: str) -> bool:
+    """True when the DSN targets a loopback host (an embedded/local dev store).
+
+    The production TLS gate (C.3/R7.4) demands an explicit sslmode from a real
+    managed Postgres (remote host). A local/embedded Postgres on loopback is an
+    explicit dev/test store and must keep working without TLS (C.3.3).
+    """
+    return urlparse(database_url).hostname in {"127.0.0.1", "localhost", "::1"}
+
+
 def _dsn_sslmode(database_url: str) -> str:
     """Extract the ``sslmode`` query value from a Postgres DSN ('' when absent).
 
@@ -625,6 +635,7 @@ class AppConfig:
         if (
             self.is_production
             and self.database_url
+            and not _dsn_is_loopback(self.database_url)
             and _dsn_sslmode(self.database_url)
             not in {
                 "require",
