@@ -13,11 +13,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 import time
 import urllib.parse
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 import httpx
 
@@ -76,7 +75,6 @@ async def smoke(cfg: SmokeConfig) -> list[Check]:
         # ── engines ──
         t0 = _now_ms()
         engines = await client.get(f"{base}/api/v1/engines", headers=_headers(cfg.admin_token))
-        engines_json = engines.json() if engines.status_code == 200 else {}
         checks.append(Check(
             "engines",
             engines.status_code == 200,
