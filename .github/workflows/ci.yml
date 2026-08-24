@@ -71,6 +71,18 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITLEAKS_VERSION: "8.24.3"
 
+  workflow-lint:
+    # actionlint static validation of every workflow in .github/workflows.
+    # Version-pinned container image; the repo-tools structural tests
+    # (tests/ci) are the local equivalent that runs without a container.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint (version-pinned container)
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
   affected-area:
     runs-on: ubuntu-latest
     needs: [secret-scan]
@@ -142,6 +154,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - secret-scan
+      - workflow-lint
       - affected-area
       - mode
       - service-ci
@@ -155,6 +168,7 @@ jobs:
       - name: Aggregate required-check results
         env:
           SCAN: ${{ needs.secret-scan.result }}
+          WL: ${{ needs.workflow-lint.result }}
           AREA: ${{ needs.affected-area.result }}
           MODE: ${{ needs.mode.result }}
           # GitHub reports a reusable's result as failure when its services
@@ -166,16 +180,23 @@ jobs:
           WB: ${{ needs.workbench-check.result }}
           PLT: ${{ needs.platform-check.result }}
           TF: ${{ needs.terraform-plan.result }}
+          REPO: ${{ needs.repo-tools.result }}
         run: |
           set -euo pipefail
-          results=("$SCAN" "$AREA" "$MODE" "$SVC" "$CTN" "$WB" "$PLT" "$TF")
-          for r in "${results[@]}"; do
-            [[ "$r" == "success" || "$r" == "skipped" ]] || {
-              echo "CI / gate failed: job result '$r' is not success or skipped." >&2
-              exit 1
-            }
-          done
-          echo "CI / gate passed: all governed jobs succeeded or skipped neutrally."
+          # R8.5: the final gate aggregates EVERY governed job (including
+          # repo-tools) via the shared, failure-injection-tested script so a
+          # governed failure can never escape the aggregate.
+          python scripts/ci/gate_aggregate.py \
+            --result secret-scan="$SCAN" \
+            --result workflow-lint="$WL" \
+            --result affected-area="$AREA" \
+            --result mode="$MODE" \
+            --result service-ci="$SVC" \
+            --result container-build="$CTN" \
+            --result workbench-check="$WB" \
+            --result platform-check="$PLT" \
+            --result terraform-plan="$TF" \
+            --result repo-tools="$REPO"
 
   service-ci:
     needs: [mode, affected-area]

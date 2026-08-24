@@ -29,6 +29,16 @@ _mod = _util.module_from_spec(_gha_yaml)
 _gha_yaml.loader.exec_module(_mod)
 load_yaml = _mod.load_file
 
+# Canonical environment vocabulary (sibling module; load by file so the CLI
+# works standalone without the repo root on sys.path).
+_deploy_envs = _util.spec_from_file_location(
+    "_deploy_envs",
+    Path(__file__).resolve().parent / "deployment_environments.py",
+)
+_deploy_envs_mod = _util.module_from_spec(_deploy_envs)
+_deploy_envs.loader.exec_module(_deploy_envs_mod)
+SUPPORTED_ENVIRONMENT_NAMES = _deploy_envs_mod.SUPPORTED_ENVIRONMENT_NAMES
+
 # ── Constants ───────────────────────────────────────────────────────────────
 
 SUPPORTED_TRIGGERS = frozenset(
@@ -238,6 +248,227 @@ def validate_reusable_refs(workflow: dict, result: ValidationResult, workflows_d
             )
 
 
+def validate_no_step_level_reusable(workflow: dict, result: ValidationResult) -> None:
+    """Validate reusable workflows are invoked at job level only.
+
+    Rule (audit R1.1): a reusable workflow (local `./.github/workflows/*.yml`)
+    MUST be invoked via `jobs.<id>.uses`. Invoking it through `steps[*].uses`
+    is invalid GitHub Actions syntax and silently breaks the delivery chain.
+    External actions (`owner/repo@ref`) at step level remain allowed.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            if isinstance(uses, str) and uses.startswith("./"):
+                result.add_error(
+                    f"Job '{job_name}' step {idx} invokes local reusable workflow "
+                    f"'{uses}' via steps[].uses. Reusable workflows must be invoked "
+                    f"at job level via jobs.<id>.uses."
+                )
+
+
+def validate_gh_api_authentication(workflow: dict, result: ValidationResult) -> None:
+    """Validate governed `gh api` calls are explicitly authenticated (audit R1.2).
+
+    Rules:
+    - Every step whose run invokes `gh api` MUST declare GH_TOKEN or
+      GITHUB_TOKEN at step or job env.
+    - A governed `gh api` call MUST NOT suppress CLI failure (`2>/dev/null`,
+      `|| true`) and reinterpret it as absence of governance: an auth/API
+      error must fail the governed check.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        job_env = job.get("env") if isinstance(job.get("env"), dict) else {}
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            run = step.get("run")
+            if not isinstance(run, str) or "gh api" not in run:
+                continue
+
+            step_env = step.get("env") if isinstance(step.get("env"), dict) else {}
+            envs = {**job_env, **step_env}
+            token_keys = {k.upper() for k in envs}
+            if not ({"GH_TOKEN", "GITHUB_TOKEN"} & token_keys):
+                result.add_error(
+                    f"Job '{job_name}' step {idx} calls `gh api` without an explicit "
+                    f"GH_TOKEN/GITHUB_TOKEN env (R1.2). Declare 'env: GH_TOKEN: "
+                    f"${{{{ github.token }}}}'."
+                )
+
+            # Reconstruct each logical `gh api` command (join backslash
+            # continuations) and flag suppression of its exit status.
+            lines = run.splitlines()
+            i = 0
+            while i < len(lines):
+                if "gh api" not in lines[i]:
+                    i += 1
+                    continue
+                cmd = lines[i]
+                j = i
+                while cmd.rstrip().endswith("\\") and j + 1 < len(lines):
+                    j += 1
+                    cmd += "\n" + lines[j]
+                if "|| true" in cmd or "2>/dev/null" in cmd:
+                    result.add_error(
+                        f"Job '{job_name}' step {idx} suppresses a `gh api` failure "
+                        f"(`|| true` / `2>/dev/null`). An auth/API error must fail "
+                        f"the governed check, not be reinterpreted as missing evidence."
+                    )
+                i = j + 1
+
+
+def validate_environment_vocabulary(workflow: dict, result: ValidationResult) -> None:
+    """Validate job-level `environment:` names against the canonical vocabulary.
+
+    Rule (audit R1.3): GitHub Environment names used by workflows MUST come
+    from one canonical set so OIDC trust subjects match exactly. Dynamic
+    expressions (containing ``${{``) are validated at runtime by the owning
+    workflow's hard allowlist and are skipped here.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        env_ref = job.get("environment")
+        name = None
+        if isinstance(env_ref, str):
+            name = env_ref
+        elif isinstance(env_ref, dict):
+            name = env_ref.get("name")
+        if not isinstance(name, str) or not name.strip() or "${{" in name:
+            continue
+        if name not in SUPPORTED_ENVIRONMENT_NAMES:
+            result.add_error(
+                f"Job '{job_name}' uses environment '{name}' outside the canonical "
+                f"vocabulary {sorted(SUPPORTED_ENVIRONMENT_NAMES)} (R1.3). OIDC "
+                f"trust subjects match GitHub Environment names exactly; a "
+                f"mismatch breaks OIDC and must not be worked around by "
+                f"broadening trust."
+            )
+
+
+def validate_needs_graph(workflow: dict, result: ValidationResult) -> None:
+    """Validate every `needs.X` reference points to a DIRECT declared dependency.
+
+    Rule (audit R1.7): a job may only read another job's result/output when
+    that job is declared in its `needs`. Indirect references (reading a
+    transitively-depended job) are invalid and rejected statically.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        needs = job.get("needs")
+        deps: Set[str] = set()
+        if isinstance(needs, str):
+            deps = {needs}
+        elif isinstance(needs, list):
+            deps = {n for n in needs if isinstance(n, str)}
+        blob = json.dumps(job)
+        for m in re.finditer(r"needs\.([A-Za-z_][A-Za-z0-9_-]*)\.", blob):
+            dep = m.group(1)
+            if dep not in deps:
+                result.add_error(
+                    f"Job '{job_name}' reads needs.{dep}.outputs/.result but '{dep}' "
+                    f"is not a direct declared dependency (needs: {sorted(deps)}). "
+                    f"Indirect needs references are invalid (R1.7); pass the value "
+                    f"through a declared dependency."
+                )
+
+
+def _runtime_file_lines(run: str):
+    """Yield (line_text, is_write) for every consuming `.runtime/` mention.
+
+    Pure variable assignments (`evidence_dir=".runtime/..."`) are write-pipeline
+    precursors, not reads, so they are skipped.
+    """
+    for ln in run.splitlines():
+        if ".runtime/" not in ln:
+            continue
+        stripped = ln.strip()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", stripped):
+            # Skip plain path assignments (write-pipeline precursors); a
+            # command-substitution assignment that reads the file is a read.
+            if not any(t in stripped for t in ("$(", "cat ", "jq ", "< ", "head ", "tail ", "sha256sum", "python ")):
+                continue
+        is_write = (">>" in ln) or ("> " in ln) or ("mkdir -p" in ln)
+        yield stripped, is_write
+
+
+def validate_cross_job_file_consumption(workflow: dict, result: ValidationResult) -> None:
+    """Validate cross-job file consumption uses declared artifacts/outputs.
+
+    Rule (audit R1.6): runner-local files under `.runtime/` are NOT shared
+    across jobs. A job that READS such a path must either produce it in the
+    same job or declare an artifact download (upload-artifact/download-artifact
+    pair). A read without declared transport is invalid.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+
+        has_download = any(
+            isinstance(st, dict)
+            and isinstance(st.get("uses"), str)
+            and "download-artifact" in st["uses"]
+            for st in steps
+        )
+        writes_same_job = False
+        reads: List[str] = []
+        for st in steps:
+            if not isinstance(st, dict):
+                continue
+            run = st.get("run")
+            if not isinstance(run, str):
+                continue
+            for text, is_write in _runtime_file_lines(run):
+                if is_write:
+                    writes_same_job = True
+                else:
+                    reads.append(text)
+        if reads and not (writes_same_job or has_download):
+            result.add_error(
+                f"Job '{job_name}' reads runner-local path(s) under .runtime/ that "
+                f"are not produced in the same job and no artifact download is "
+                f"declared (R1.6): {reads[0]!r}. Cross-job evidence must move via "
+                f"declared artifacts/outputs."
+            )
+
+
 def validate_service_tags(workflow: dict, result: ValidationResult) -> None:
     """Validate service tag patterns.
 
@@ -379,10 +610,12 @@ def validate_permissions_shape(workflow: dict, result: ValidationResult) -> None
             )
         secrets = job.get("secrets")
         if secrets is not None and not isinstance(secrets, dict):
-            result.add_error(
-                f"Job '{job_name}' secrets block must be a mapping "
-                f"(shape check only); got {type(secrets).__name__}."
-            )
+            # Reusable-workflow call jobs (`uses`) may declare `secrets: inherit`.
+            if not (isinstance(secrets, str) and secrets == "inherit" and job.get("uses")):
+                result.add_error(
+                    f"Job '{job_name}' secrets block must be a mapping "
+                    f"(shape check only); got {type(secrets).__name__}."
+                )
 
     # Reusable workflow secrets (on.workflow_call.secrets): must be a mapping when present.
     on = _on_mapping(workflow.get("on"))
@@ -411,6 +644,11 @@ def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationRes
 
     validate_trigger_rules(workflow, result)
     validate_reusable_refs(workflow, result, workflows_dir)
+    validate_no_step_level_reusable(workflow, result)
+    validate_gh_api_authentication(workflow, result)
+    validate_environment_vocabulary(workflow, result)
+    validate_needs_graph(workflow, result)
+    validate_cross_job_file_consumption(workflow, result)
     validate_service_tags(workflow, result)
     validate_no_deploy(workflow, result)
     validate_permissions_shape(workflow, result)

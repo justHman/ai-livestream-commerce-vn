@@ -10,6 +10,10 @@ from scripts.ci.static_validate_workflows import (
     validate_trigger_rules,
     validate_reusable_refs,
     validate_no_deploy,
+    validate_no_step_level_reusable,
+    validate_gh_api_authentication,
+    validate_needs_graph,
+    validate_cross_job_file_consumption,
     validate_permissions_shape,
     validate_service_tags,
     ValidationResult,
@@ -183,6 +187,242 @@ def test_workflow_call_secrets_invalid_shape_rejected():
     )
     assert not r.passed
     assert any("on.workflow_call.secrets" in e for e in r.errors)
+
+
+# ── R1.1: reusable workflows never invoked via steps[*].uses ───────────────
+
+
+def test_step_level_local_reusable_rejected():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {"uses": "actions/checkout@v4"},
+                        {"uses": "./.github/workflows/_deploy-service.yml"},
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("steps[].uses" in e and "_deploy-service.yml" in e for e in r.errors)
+
+
+def test_step_level_external_action_allowed():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "build": {
+                    "steps": [
+                        {"uses": "actions/checkout@v4"},
+                        {"uses": "docker/build-push-action@v6"},
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_job_level_local_reusable_allowed():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "build": {
+                    "uses": "./.github/workflows/_container-build.yml",
+                    "with": {"image": "x"},
+                    "steps": [{"uses": "actions/checkout@v4"}],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── R1.2: gh api authentication ─────────────────────────────────────────────
+
+
+def test_gh_api_missing_token_rejected():
+    r = _result()
+    validate_gh_api_authentication(
+        {"jobs": {"v": {"steps": [{"run": 'conclusion=$(gh api "repos/x/runs" --jq y)'}]}}},
+        r,
+    )
+    assert not r.passed
+    assert any("GH_TOKEN" in e and "gh api" in e for e in r.errors)
+
+
+def test_gh_api_with_token_passes():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'conclusion=$(gh api "repos/x/runs" --jq y)',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_gh_api_suppression_rejected_even_with_token():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'gh api "repos/x/env" --jq y 2>/dev/null || true',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("suppresses" in e for e in r.errors)
+
+
+def test_gh_api_multiline_suppression_rejected():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": (
+                                'conclusion=$(gh api "repos/x/runs?head_sha=a" \\\n'
+                                '  --jq y 2>/dev/null || true)'
+                            ),
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("suppresses" in e for e in r.errors)
+
+
+# ── R1.7: needs graph directness ────────────────────────────────────────────
+
+
+def test_indirect_needs_output_rejected():
+    r = _result()
+    validate_needs_graph(
+        {
+            "jobs": {
+                "a": {"runs-on": "x", "steps": [{"run": "echo"}]},
+                "b": {"needs": ["a"], "runs-on": "x", "steps": [{"run": "echo"}]},
+                "c": {
+                    "needs": ["b"],
+                    "env": {"S": "${{ needs.a.outputs.validated_sha }}"},
+                    "runs-on": "x",
+                    "steps": [{"run": "echo $S"}],
+                },
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("not a direct declared dependency" in e and "needs.a" in e for e in r.errors)
+
+
+def test_direct_needs_output_accepted():
+    r = _result()
+    validate_needs_graph(
+        {
+            "jobs": {
+                "a": {"runs-on": "x", "outputs": {"s": "x"}, "steps": [{"run": "echo"}]},
+                "b": {
+                    "needs": ["a"],
+                    "env": {"S": "${{ needs.a.outputs.s }}"},
+                    "runs-on": "x",
+                    "steps": [{"run": "echo $S"}],
+                },
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── R1.6: cross-job file consumption ────────────────────────────────────────
+
+
+def test_cross_job_runtime_read_without_transport_rejected():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "read": {
+                    "runs-on": "x",
+                    "steps": [{"run": 'jq -r . <<<"$(cat .runtime/deploy/evidence/staging/a.jsonl)"'}],
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("R1.6" in e and ".runtime/" in e for e in r.errors)
+
+
+def test_cross_job_runtime_read_with_artifact_download_accepted():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "read": {
+                    "runs-on": "x",
+                    "steps": [
+                        {"uses": "actions/download-artifact@v4"},
+                        {"run": "cat .runtime/deploy/evidence/staging/a.jsonl"},
+                    ],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_same_job_runtime_write_and_read_accepted():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "w": {
+                    "runs-on": "x",
+                    "steps": [
+                        {"run": 'mkdir -p .runtime/ev && echo x >> .runtime/ev/a.jsonl'},
+                        {"run": "cat .runtime/ev/a.jsonl"},
+                    ],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
 
 
 # ── Service tags ────────────────────────────────────────────────────────────

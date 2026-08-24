@@ -16,7 +16,9 @@ from scripts.ci.inventory_workflows import (
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
-ACTION_REF = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$")
+ACTION_REF = re.compile(
+    r"^(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+|docker://[A-Za-z0-9_.\-/]+(?::[A-Za-z0-9_.\-]+)?)$"
+)
 LOCAL_REF = re.compile(r"^\./\.github/workflows/[a-z0-9_-]+\.yml$")
 
 
