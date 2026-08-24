@@ -27,6 +27,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -137,8 +138,12 @@ def _free_port() -> int:
 
 
 def _http_get(url: str, timeout: float = 3.0) -> tuple[int, str]:
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return resp.status, resp.read().decode("utf-8", "replace")
+    # Non-2xx (e.g. the negative-readiness 503) must be returned, not raised.
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
 
 
 def _wait_for(predicate, label: str, deadline_s: float = 120.0) -> None:
