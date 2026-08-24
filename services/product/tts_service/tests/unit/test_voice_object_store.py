@@ -64,10 +64,10 @@ def test_s3_object_store_uses_injected_client_without_boto3() -> None:
         uri = store.put("tenants/t1/ref.wav", b"RIFF...")
         assert uri == "s3://bkt/voices/tenants/t1/ref.wav"
         assert store.get(uri) == b"RIFF..."
+        assert ("bkt", "voices/tenants/t1/ref.wav") in fake_client.objects
         store.delete(uri)
         with pytest.raises(ValueError):
             store.get(uri)
-        assert ("bkt", "voices/tenants/t1/ref.wav") in fake_client.objects
     finally:
         sys.meta_path.remove(blocker)
     assert "boto3" not in sys.modules
