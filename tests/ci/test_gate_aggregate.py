@@ -49,6 +49,14 @@ def test_cli_rejects_malformed_result():
 # ── Static: the CI gate must aggregate every governed job (R8.5) ────────────
 
 
+def _gate_aggregate_run_text(gate: dict) -> str:
+    """The aggregation step text (not steps[0] — checkout may precede it)."""
+    for step in gate["steps"]:
+        if "gate_aggregate.py" in (step.get("run") or ""):
+            return step["run"]
+    raise AssertionError("gate job has no step invoking gate_aggregate.py")
+
+
 def test_ci_gate_aggregates_every_needs_job():
     from scripts.ci._gha_yaml import load_file
 
@@ -57,7 +65,7 @@ def test_ci_gate_aggregates_every_needs_job():
     needed = gate["needs"]
     assert isinstance(needed, list) and len(needed) >= 9
 
-    run_text = gate["steps"][0]["run"]
+    run_text = _gate_aggregate_run_text(gate)
     # Every governed job must be passed to gate_aggregate as --result <name>=
     for job in needed:
         assert re.search(rf"--result\s+[A-Za-z0-9_-]*{re.escape(job)}=", run_text), (
@@ -73,7 +81,8 @@ def test_repo_tools_explicitly_aggregated():
     doc = load_file(WORKFLOWS / "ci.yml")
     gate = doc["jobs"]["gate"]
     assert "repo-tools" in gate["needs"]
-    env = gate["steps"][0].get("env") or {}
+    agg = next(s for s in gate["steps"] if "gate_aggregate.py" in (s.get("run") or ""))
+    env = agg.get("env") or {}
     assert "REPO" in env, "repo-tools result must be wired into the gate env"
-    run_text = gate["steps"][0]["run"]
+    run_text = agg["run"]
     assert re.search(r"--result\s+repo-tools=", run_text)
