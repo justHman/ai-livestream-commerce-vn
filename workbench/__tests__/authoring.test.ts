@@ -70,7 +70,7 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
     const draft = await client.putDraft(set.id, "P001", { display_text: "Kem chống nắng chỉ 329 nghìn đồng." });
     expect(draft.state).toBe("DRAFT");
     const submitted = await client.submit(set.id, "P001");
-    expect(submitted.state).toBe("reviewable");
+    expect(submitted.state).toBe("REVIEWABLE");
     const beforeApprove = await client.getScriptSet(set.id);
     const approved = await client.approveProduct(set.id, "P001", beforeApprove.products[0]!.current_version!.version_id, "operator");
     expect(approved.state).toBe("APPROVED");
@@ -101,12 +101,12 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
     });
     await client.putDraft(set.id, "P001", { display_text: "Không dùng--dấu gạch dài." });
     const failed = await client.submit(set.id, "P001");
-    expect(failed.state).toBe("gate_failed");
-    expect(failed.violations?.some((v) => v.rule_id === "STYLE_DISALLOWED_PUNCTUATION")).toBe(true);
+    expect(failed.state).toBe("GATE_FAILED");
+    expect(failed.gate?.violations?.some((v) => v.rule_id === "STYLE_DISALLOWED_PUNCTUATION")).toBe(true);
     // AI fix on gate-failed version is legal and creates a new draft.
     await client.fixProduct(set.id, "P001", idempotencyKey({ op: "fix" }));
     const resubmitted = await client.submit(set.id, "P001");
-    expect(resubmitted.state).toBe("reviewable");
+    expect(resubmitted.state).toBe("REVIEWABLE");
   });
 
   it("fix is rejected with 409 when the version is not gate-failed", async () => {
@@ -192,7 +192,7 @@ describe("Generate All UX (tasks 13.4, 13.8)", () => {
     const flow = { client, state, dispatch };
     // First click succeeds.
     const first = await generateAllFlow(flow);
-    expect(first?.status).toBe("accepted");
+    expect(first?.status).toBe("queued");
     // Simulate the running state the first click set.
     state.batch.status = "running";
     // Second click must not dispatch another generate call.
@@ -220,7 +220,7 @@ describe("Generate All UX (tasks 13.4, 13.8)", () => {
     });
     await client.putDraft(set.id, "P001", { display_text: "x--y" });
     const failed = await client.submit(set.id, "P001");
-    expect(failed.state).toBe("gate_failed");
+    expect(failed.state).toBe("GATE_FAILED");
     // No automatic fix/regenerate: state stays gate_failed until human action.
     const reloaded = await client.getScriptSet(set.id);
     expect(reloaded.products[0]?.state).toBe("GATE_FAILED");

@@ -9,7 +9,9 @@ import type { ApiError } from "./api";
 import type { Api } from "./api";
 import {
   idempotencyKey,
-  type AcceptedJob,
+  type ApprovalResult,
+  type BatchGenerationResult,
+  type GateViolation,
   type GenerationPreview,
   type LiveSessionBrief,
   type ScriptClient,
@@ -175,10 +177,10 @@ export function applyBatchEvent(state: AuthoringState, event: ScriptEvent): Auth
 }
 
 function batchStatusOf(status: string | undefined): AuthoringState["batch"]["status"] {
-  if (status === "running") return "running";
-  if (status === "partial_failure") return "partial_failure";
   if (status === "completed") return "completed";
   if (status === "cancelled") return "cancelled";
+  // Backend vocabulary: partial_completed means some products failed.
+  if (status === "partial_completed" || status === "failed" || status === "partial_failure") return "partial_failure";
   return "running";
 }
 
@@ -356,7 +358,7 @@ function batchCallEstimate(state: AuthoringState): number {
   return state.preview?.estimated_semantic_calls_total ?? 0;
 }
 
-export async function generateAllFlow(deps: FlowDeps): Promise<AcceptedJob | null> {
+export async function generateAllFlow(deps: FlowDeps): Promise<BatchGenerationResult | null> {
   const { client, state, dispatch } = deps;
   const products = previewProducts(state);
   if (!products.length) {
@@ -375,10 +377,10 @@ export async function generateAllFlow(deps: FlowDeps): Promise<AcceptedJob | nul
   const targetDurationS = clampDuration(state.targets[productIds[0]!]);
   const key = idempotencyKey({ setId: state.setId, revision: state.scriptSet?.revision, product_ids: productIds, target_duration_s: targetDurationS });
   try {
-    const job = await client.generateBatch(state.setId, { product_ids: productIds, target_duration_s: targetDurationS }, key);
-    dispatch({ type: "AUTHORING_BATCH", value: { batchId: job.batch_id ?? null, status: "running", estimated_calls: estimate, transportRetrying: false, lastError: null } });
-    dispatch({ type: "AUTHORING_STATUS", status: `Generate All đã khởi động (batch ${job.batch_id ?? "?"}), ~${estimate} semantic calls.`, errors: [] });
-    return job;
+    const result = await client.generateBatch(state.setId, { product_ids: productIds, target_duration_s: targetDurationS }, key);
+    dispatch({ type: "AUTHORING_BATCH", value: { batchId: result.batch_id, status: "running", estimated_calls: estimate, transportRetrying: false, lastError: null } });
+    dispatch({ type: "AUTHORING_STATUS", status: `Generate All đã khởi động (batch ${result.batch_id}${result.idempotent ? ", replay" : ""}), ~${estimate} semantic calls.`, errors: [] });
+    return result;
   } catch (error) {
     dispatch({ type: "AUTHORING_STATUS", status: `Generate All thất bại: ${errorMessage(error)}`, errors: [errorMessage(error)] });
     return null;
@@ -419,7 +421,7 @@ export async function approveBatchFlow(deps: FlowDeps): Promise<void> {
   setBusy(deps, "approve", true);
   try {
     const result = await client.approveBatch(state.setId, ids, versionIds, AUTHORING_ACTOR);
-    dispatch({ type: "AUTHORING_STATUS", status: `Đã duyệt ${result.approvals.length} phiên bản.`, errors: [] });
+    dispatch({ type: "AUTHORING_STATUS", status: `Đã duyệt ${Object.keys(result.approvals).length} phiên bản.`, errors: [] });
     await loadSetFlow(deps, state.setId);
   } catch (error) {
     dispatch({ type: "AUTHORING_STATUS", status: `Approve batch thất bại: ${errorMessage(error)}`, errors: [errorMessage(error)] });
@@ -561,15 +563,21 @@ export function createMockScriptClient(): ScriptClient {
       };
       item.versions.push(item.current_version);
       touch(set);
-      return { version_id: item.current_version.version_id, version: item.current_version.version, state: "DRAFT", spoken_text: spoken };
+      return { ok: true, product_id: productId, state: "DRAFT" };
     },
     async submit(setId, productId) {
       const set = sets.get(setId);
       if (!set) throw new Error("not found");
       const item = set.products.find((p) => p.product_id === productId);
       if (!item) throw new Error("not found");
+      const gateFailed = (violations: GateViolation[]) => ({
+        ok: true,
+        product_id: productId,
+        state: "GATE_FAILED" as const,
+        gate: { state: "gate_failed" as const, violations },
+      });
       const current = item.current_version;
-      if (!current) return { state: "gate_failed", violations: [{ rule_id: "FORMAT_REQUIRED", severity: "ERROR", message: "Chưa có nội dung draft." }] };
+      if (!current) return gateFailed([{ rule_id: "FORMAT_REQUIRED", severity: "ERROR", message: "Chưa có nội dung draft." }]);
       item.state = "GATE_RUNNING";
       touch(set);
       if (current.display_text.includes("--")) {
@@ -577,21 +585,21 @@ export function createMockScriptClient(): ScriptClient {
         current.state = "GATE_FAILED";
         current.gate_violations = [{ rule_id: "STYLE_DISALLOWED_PUNCTUATION", severity: "ERROR", message: "Phát hiện dấu gạch ngang em-dash bị cấm." }];
         touch(set);
-        return { state: "gate_failed", violations: current.gate_violations };
+        return gateFailed(current.gate_violations);
       }
       item.state = "REVIEWABLE";
       current.state = "REVIEWABLE";
       touch(set);
-      return { state: "reviewable", version_id: current.version_id };
+      return { ok: true, product_id: productId, state: "REVIEWABLE" as const, gate: { state: "passed" as const, violations: [] } };
     },
     async previewProduct(_setId, _productId, targetDurationS) {
       const k = Math.max(1, Math.ceil(targetDurationS / 600));
-      return { product_id: _productId, target_duration_s: targetDurationS, planned_segment_count: k, estimated_semantic_calls: k + 1 };
+      return { product_id: _productId, target_duration_s: targetDurationS, planned_segment_count: k, estimated_semantic_calls: k + 1, maximum_semantic_calls: (k + 1) * 2 };
     },
     async previewBatch(_setId, req) {
       const products = req.products.map((p) => {
         const k = Math.max(1, Math.ceil(p.target_duration_s / 600));
-        return { product_id: p.product_id, target_duration_s: p.target_duration_s, planned_segment_count: k, estimated_semantic_calls: k + 1 };
+        return { product_id: p.product_id, target_duration_s: p.target_duration_s, planned_segment_count: k, estimated_semantic_calls: k + 1, maximum_semantic_calls: (k + 1) * 2 };
       });
       return { products, estimated_semantic_calls_total: products.reduce((sum, p) => sum + p.estimated_semantic_calls, 0) };
     },
@@ -614,7 +622,7 @@ export function createMockScriptClient(): ScriptClient {
         { segment_index: 1, title: item.plan.segments[1]!.title, intent: "cta", target_duration_s: item.plan.segments[1]!.target_duration_s, status: "pending", selected_version_id: null, versions: [] },
       ];
       touch(set);
-      return { status: "accepted", workflow_id: `wf-${productId}` };
+      return { workflow_id: `wf-${productId}`, product_id: productId, status: "queued" as const };
     },
     async regenerateSegment(setId, productId, segmentIndex, _key) {
       const set = sets.get(setId);
@@ -655,7 +663,7 @@ export function createMockScriptClient(): ScriptClient {
       };
       item.versions.push(item.current_version);
       touch(set);
-      return { status: "accepted", workflow_id: `wf-${productId}-seg${segmentIndex}` };
+      return { workflow_id: `wf-${productId}-seg${segmentIndex}`, product_id: productId, segment_index: segmentIndex, status: "queued" as const };
     },
     async fixProduct(setId, productId, _key) {
       const set = sets.get(setId);
@@ -673,7 +681,7 @@ export function createMockScriptClient(): ScriptClient {
         item.versions.push(fixed);
       }
       touch(set);
-      return { status: "accepted", workflow_id: `wf-fix-${productId}` };
+      return { workflow_id: `wf-fix-${productId}`, product_id: productId, status: "queued" as const };
     },
     async approveProduct(setId, productId, versionId, actor) {
       const set = sets.get(setId);
@@ -682,12 +690,13 @@ export function createMockScriptClient(): ScriptClient {
       if (!item) throw new Error("not found");
       if (item.state !== "REVIEWABLE" || !item.current_version) throw new Error("409: chỉ duyệt phiên bản REVIEWABLE");
       if (versionId !== item.current_version.version_id) throw new Error("409: version_id không khớp phiên bản hiện tại");
+      const approvedAt = new Date().toISOString();
       const approval = {
         approval_id: `appr-${productId}-${item.approvals.length + 1}`,
         version_id: versionId,
         version: item.current_version.version,
         approved_by: actor,
-        approved_at: new Date().toISOString(),
+        approved_at: approvedAt,
         approval_hash: `hash-${versionId}`,
       };
       item.approvals.push(approval);
@@ -696,19 +705,23 @@ export function createMockScriptClient(): ScriptClient {
       item.state = "APPROVED";
       item.current_version.state = "APPROVED";
       touch(set);
-      return { approval, state: "APPROVED" };
+      return {
+        ok: true,
+        product_id: productId,
+        state: "APPROVED",
+        approval: { version_id: versionId, actor, approved_at: approvedAt },
+      };
     },
     async approveBatch(setId, productIds, versionIds, actor) {
       const set = sets.get(setId);
       if (!set) throw new Error("not found");
-      const approvals = [];
+      const approvals: Record<string, ApprovalResult> = {};
       for (const productId of productIds) {
         const versionId = versionIds[productId];
         if (!versionId) throw new Error("409: thiếu version_id để duyệt");
-        const result = await client.approveProduct(setId, productId, versionId, actor);
-        approvals.push(result.approval);
+        approvals[productId] = await client.approveProduct(setId, productId, versionId, actor);
       }
-      return { approvals };
+      return { ok: true, approvals };
     },
     async generateBatch(setId, req, _key) {
       const set = sets.get(setId);
@@ -716,24 +729,18 @@ export function createMockScriptClient(): ScriptClient {
       for (const productId of req.product_ids) {
         await client.generateProduct(setId, productId, req.target_duration_s, _key);
       }
-      return { status: "accepted", batch_id: `batch-mock-${++seq}` };
-    },
-    async getBatch(_setId, batchId) {
       return {
-        batch_id: batchId,
-        script_set_id: _setId,
-        script_set_revision: 1,
-        requested_product_ids: [],
-        status: "running",
-        revision: 1,
-        products: [],
-        estimated_semantic_calls_total: 0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        batch_id: `batch-mock-${++seq}`,
+        workflow_summary: { products: [], estimated_semantic_calls_total: 0 },
+        status: "queued",
+        idempotent: false,
       };
     },
-    async cancelBatch() {
-      return { ok: true };
+    async getBatch(_setId, batchId) {
+      return { batch_id: batchId, status: "running", product_ids: [] };
+    },
+    async cancelBatch(_setId, batchId) {
+      return { batch_id: batchId, status: "cancelling" as const };
     },
   };
   return client;

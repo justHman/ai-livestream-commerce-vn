@@ -95,6 +95,9 @@ export interface CompiledScriptVersion {
   spoken_text: string;
   estimated_duration_s: number;
   gate_violations: GateViolation[];
+  /** Preserved gate outcome when the wire carried one; "DRAFT" otherwise. */
+  gate_status?: "DRAFT" | "GATE_FAILED" | "GATE_PASSED";
+  violations?: GateViolation[];
   fingerprint: GenerationFingerprint | null;
   created_at: string;
 }
@@ -142,9 +145,30 @@ export interface ScriptSet {
 
 // ---------------- Backend wire DTO (real _set_wire contract) ----------------
 
+/** Version entry as emitted by ``ScriptAuthoringServiceImpl._version_wire``. */
+export interface BackendScriptVersionWire {
+  id: string;
+  version: number;
+  source: string;
+  display_text: string;
+  spoken_text: string;
+  gate_result: string | null;
+  created_at: string;
+}
+
+/** Gate outcome as emitted by ``ScriptAuthoringServiceImpl._gate_wire``. */
+export interface GateOutcome {
+  state: "passed" | "gate_failed";
+  violations: GateViolation[];
+}
+
 /** Per-product entry in the real backend ScriptSet response. */
 export interface BackendScriptSetItem {
   state: ScriptItemState;
+  current_version_id: string | null;
+  approved_version_id: string | null;
+  current_version: BackendScriptVersionWire | null;
+  gate: GateOutcome | null;
 }
 
 /** Exact response shape returned by ``ScriptAuthoringServiceImpl._set_wire``
@@ -173,8 +197,9 @@ export interface ScriptSetPatch {
 }
 
 /** Expand a real-backend ScriptSet wire response into the local ``ScriptSet``
- * view model the authoring flows/UI consume. The wire carries only per-product
- * state; everything else is defaulted to the empty item shape. */
+ * view model the authoring flows/UI consume. Per-product identity (state,
+ * current/approved version ids, gate outcome) is preserved from the wire;
+ * plan/segments/history stay defaulted because the wire does not carry them. */
 export function mapScriptSetResponse(wire: BackendScriptSetResponse): ScriptSet {
   const productIds = wire.product_ids.length ? wire.product_ids : Object.keys(wire.items);
   return {
@@ -183,10 +208,34 @@ export function mapScriptSetResponse(wire: BackendScriptSetResponse): ScriptSet 
     revision: wire.revision,
     transition_policy: wire.transition_policy,
     brief: { title: wire.name, host_name: "", shop_name: "", note: "" },
-    products: productIds.map((productId) => emptyScriptItem(productId, wire.items[productId]?.state ?? "EMPTY")),
+    products: productIds.map((productId) => mapScriptItem(productId, wire.items[productId])),
     created_at: "",
     updated_at: "",
   };
+}
+
+function mapScriptItem(productId: string, item: BackendScriptSetItem | undefined): ScriptItem {
+  const mapped = emptyScriptItem(productId, item?.state ?? "EMPTY");
+  mapped.approved_version_id = item?.approved_version_id ?? null;
+  const cv = item?.current_version;
+  if (cv) {
+    const violations = item?.gate?.violations ?? [];
+    mapped.current_version = {
+      version_id: cv.id,
+      version: cv.version,
+      source: cv.source as ScriptSource,
+      state: item?.state ?? "DRAFT",
+      display_text: cv.display_text,
+      spoken_text: cv.spoken_text,
+      estimated_duration_s: 0,
+      gate_violations: violations,
+      gate_status: item?.gate ? (item.gate.state === "passed" ? "GATE_PASSED" : "GATE_FAILED") : "DRAFT",
+      violations,
+      fingerprint: null,
+      created_at: cv.created_at,
+    };
+  }
+  return mapped;
 }
 
 function emptyScriptItem(productId: string, state: ScriptItemState): ScriptItem {
@@ -219,6 +268,7 @@ export interface ProductPreview {
   target_duration_s: number;
   planned_segment_count: number;
   estimated_semantic_calls: number;
+  maximum_semantic_calls: number;
 }
 
 export interface GenerationPreview {
@@ -230,73 +280,90 @@ export interface PreviewRequest {
   products: Array<{ product_id: string; target_duration_s: number }>;
 }
 
-// ---------------- Command responses ----------------
+// ---------------- Command responses (real backend envelopes) ----------------
 
+/** PUT .../draft — backend returns only the resulting item state. */
 export interface DraftResult {
-  version_id: string;
-  version: number;
+  ok: boolean;
+  product_id: string;
   state: ScriptItemState;
-  spoken_text: string;
-  estimated_duration_s?: number;
-  violations?: GateViolation[];
 }
 
+/** POST .../submit — gate outcome rides in ``gate``. */
 export interface SubmitResult {
-  state: "gate_running" | "gate_failed" | "reviewable";
-  version_id?: string;
-  violations?: GateViolation[];
-}
-
-export interface AcceptedJob {
-  status: "accepted" | "existing";
-  workflow_id?: string;
-  job_id?: string;
-  batch_id?: string;
-}
-
-export interface ApprovalResult {
-  approval: ApprovalRecord;
+  ok: boolean;
+  product_id: string;
   state: ScriptItemState;
+  gate: GateOutcome | null;
 }
 
+/** Single-product async job acceptance (generate / regenerate / fix): either a
+ * queued workflow or an idempotent replay of the existing workflow. */
+export interface AcceptedJob {
+  workflow_id: string;
+  product_id?: string;
+  segment_index?: number;
+  status?: "queued";
+  idempotent?: boolean;
+}
+
+export interface ApprovalInfo {
+  version_id: string;
+  actor: string;
+  approved_at: string;
+}
+
+/** POST .../approve — per-product approval envelope. */
+export interface ApprovalResult {
+  ok: boolean;
+  product_id: string;
+  state: ScriptItemState;
+  approval: ApprovalInfo;
+}
+
+/** POST .../approve-batch — approvals keyed by product_id, NOT an array. */
 export interface BatchApprovalResult {
-  approvals: ApprovalRecord[];
+  ok: boolean;
+  approvals: Record<string, ApprovalResult>;
 }
 
 // ---------------- Batch + SSE (Decision 16) ----------------
 
-export type BatchProductStatus =
+/** Batch status vocabulary from GET .../generation-batches/{batch_id}. */
+export type BatchStatus =
   | "queued"
-  | "planning"
-  | "generating"
-  | "reviewable"
+  | "running"
+  | "completed"
+  | "partial_completed"
   | "failed"
   | "cancelled"
-  | "completed";
-
-export interface BatchProductProgress {
-  product_id: string;
-  status: BatchProductStatus;
-  current_segment_index: number | null;
-  segment_count: number | null;
-  estimated_semantic_calls: number;
-  attempts: number;
-  failure: FailureInfo | null;
-}
-
-export type BatchStatus = "queued" | "running" | "completed" | "cancelled" | "partial_failure";
+  | "cancelling";
 
 export interface GenerationBatch {
   batch_id: string;
-  script_set_id: string;
-  script_set_revision: number;
-  requested_product_ids: string[];
   status: BatchStatus;
-  revision: number;
-  products: BatchProductProgress[];
+  product_ids: string[];
+}
+
+/** Real wire shape of GET .../generation-batches/{batch_id}: the backend emits
+ * exactly ``{batch_id, status, product_ids}``. */
+export interface BatchSnapshot {
+  batch_id: string;
+  status: string;
+  product_ids: string[];
+}
+
+/** POST .../generate-batch acceptance: new queue run or idempotent replay. */
+export interface BatchGenerationResult {
+  batch_id: string;
+  workflow_summary: WorkflowSummary;
+  status: BatchStatus;
+  idempotent?: boolean;
+}
+
+export interface WorkflowSummary {
+  products: Array<{ product_id: string; estimated_semantic_calls: number }>;
   estimated_semantic_calls_total: number;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface GenerateBatchRequest {
@@ -483,8 +550,8 @@ export function createScriptClient(deps: ApiDeps) {
     );
   }
 
-  async function generateBatch(setId: string, req: GenerateBatchRequest, key: string): Promise<AcceptedJob> {
-    return requestJson<AcceptedJob>(
+  async function generateBatch(setId: string, req: GenerateBatchRequest, key: string): Promise<BatchGenerationResult> {
+    return requestJson<BatchGenerationResult>(
       `/api/v1/script-sets/${esc(setId)}/generate-batch`,
       {
         method: "POST",
@@ -494,15 +561,15 @@ export function createScriptClient(deps: ApiDeps) {
     );
   }
 
-  async function getBatch(setId: string, batchId: string): Promise<GenerationBatch> {
-    return requestJson<GenerationBatch>(
+  async function getBatch(setId: string, batchId: string): Promise<BatchSnapshot> {
+    return requestJson<BatchSnapshot>(
       `/api/v1/script-sets/${esc(setId)}/generation-batches/${esc(batchId)}`,
       { headers: adminHeaders() },
     );
   }
 
-  async function cancelBatch(setId: string, batchId: string): Promise<{ ok: boolean }> {
-    return requestJson<{ ok: boolean }>(
+  async function cancelBatch(setId: string, batchId: string): Promise<{ batch_id: string; status: BatchStatus }> {
+    return requestJson<{ batch_id: string; status: BatchStatus }>(
       `/api/v1/script-sets/${esc(setId)}/generation-batches/${esc(batchId)}/cancel`,
       { method: "POST", headers: adminHeaders() },
     );

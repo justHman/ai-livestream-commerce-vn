@@ -190,23 +190,6 @@ export interface AttachResponse {
   will_speak: boolean;
 }
 
-export interface SandboxVerifyRequest {
-  avatar_id?: string | null;
-  speech_text: string;
-}
-
-export interface SandboxVerifyResponse {
-  ready: boolean;
-  layers: VerificationLayer[];
-}
-
-export interface VerificationLayer {
-  name: string;
-  status: "pass" | "fail" | "skipped";
-  latency_ms: number;
-  error?: string;
-}
-
 export interface DebugClustersResponse {
   clusters: ClusterInfo[];
   singleton_clusters: number;

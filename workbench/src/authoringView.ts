@@ -128,9 +128,10 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
     try {
       if (action === "submit") {
         const result = await client.submit(state.setId, productId);
+        const violations = result.gate?.violations?.length ?? 0;
         addEvent(
-          `Submit ${productId}: ${result.state}${result.violations?.length ? ` (${result.violations.length} vi phạm)` : ""}.`,
-          result.state === "gate_failed" ? "warning" : "success",
+          `Submit ${productId}: ${result.state}${violations ? ` (${violations} vi phạm)` : ""}.`,
+          result.gate?.state === "gate_failed" ? "warning" : "success",
         );
       } else if (action === "generate") {
         const target = state.targets[productId] ?? MIN_TARGET_DURATION_S;
@@ -144,7 +145,7 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
         const versionId = state.scriptSet?.products.find((p) => p.product_id === productId)?.current_version?.version_id;
         if (!versionId) throw new Error("409: chưa có phiên bản REVIEWABLE để duyệt");
         const result = await client.approveProduct(state.setId, productId, versionId, AUTHORING_ACTOR);
-        addEvent(`Đã duyệt ${productId} (version ${result.approval.version}).`, "success");
+        addEvent(`Đã duyệt ${productId} (${result.approval.version_id}).`, "success");
       }
       await refresh();
     } catch (error) {
@@ -176,7 +177,7 @@ export function mountAuthoring(deps: AuthoringMountDeps): {
     }
     try {
       const result = await client.putDraft(state.setId, productId, { display_text: display, spoken_text: spoken.trim() ? spoken : undefined });
-      addEvent(`Đã lưu draft ${productId} (v${result.version}).`, "success");
+      addEvent(`Đã lưu draft ${productId} (${result.state}).`, "success");
       await refresh();
     } catch (error) {
       addEvent(`Lưu draft ${productId} thất bại: ${safeMessage(error)}`, "danger");
