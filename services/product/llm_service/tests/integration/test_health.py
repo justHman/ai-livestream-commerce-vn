@@ -29,4 +29,6 @@ def test_health_ready_false_when_engine_unavailable() -> None:
     with TestClient(app) as client:
         app.state.engine_ready = False
         resp = client.get("/health/ready")
-    assert resp.json()["status"] == "not_ready"
+    # audit R0.4: not ready must be HTTP 503, never a 200 body.
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "engine_unavailable"
