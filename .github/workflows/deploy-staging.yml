@@ -240,6 +240,7 @@ jobs:
       MIGRATE_TASK_ARN: ${{ needs.preflight.outputs.migrate_task_arn }}
       BACKEND_SUBNETS: ${{ needs.preflight.outputs.public_subnet_ids }}
       BACKEND_SG: ${{ needs.preflight.outputs.backend_sg_id }}
+      VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -252,7 +253,15 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$MIGRATE_TASK_ARN" ]]; then echo "No migration task configured; skipping."; exit 0; fi
-          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
+          # R1.10: bind migration to the EXACT candidate backend image digest
+          # (built with tag staging-<sha> this run), never the task-definition image.
+          docker login -u "${{ secrets.DOCKERHUB_USER }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" >/dev/null 2>&1
+          digest=$(docker buildx imagetools inspect "imjusthman/ai-live-backend:staging-${VALIDATED_SHA}" --format '{{.Manifest.Digest}}')
+          [[ -n "$digest" && "$digest" == sha256:* ]] || { echo "Failed to resolve candidate backend digest for migration." >&2; exit 1; }
+          candidate="imjusthman/ai-live-backend@$digest"
+          echo "Migration will run candidate backend digest $candidate"
+          overrides=$(jq -nc --arg img "$candidate" '{containerOverrides:[{"name":"backend","image":$img}]}')
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --overrides "$overrides" --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
             --query 'tasks[0].taskArn' --output text)
           [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }

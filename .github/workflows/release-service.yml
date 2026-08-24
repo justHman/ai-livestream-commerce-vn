@@ -218,7 +218,7 @@ jobs:
           echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"
 
   migrate:
-    needs: [resolve, prepare]
+    needs: [resolve, prepare, validate-evidence]
     if: ${{ always() && needs.prepare.result == 'success' && needs.resolve.outputs.service == 'backend_service' && needs.prepare.outputs.migrate_task_arn != '' }}
     runs-on: ubuntu-latest
     environment: production
@@ -227,6 +227,7 @@ jobs:
       MIGRATE_TASK_ARN: ${{ needs.prepare.outputs.migrate_task_arn }}
       BACKEND_SUBNETS: ${{ needs.prepare.outputs.public_subnet_ids }}
       BACKEND_SG: ${{ needs.prepare.outputs.backend_sg_id }}
+      EVIDENCE_DIGEST: ${{ needs.validate-evidence.outputs.evidence_digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -238,7 +239,12 @@ jobs:
       - name: Run pre-deploy migration
         run: |
           set -euo pipefail
-          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
+          # R1.10: migration runs the EXACT candidate backend image digest from
+          # staging evidence, never the task-definition image.
+          candidate="$EVIDENCE_DIGEST"
+          echo "Migration will run candidate backend digest $candidate"
+          overrides=$(jq -nc --arg img "$candidate" '{containerOverrides:[{"name":"backend","image":$img}]}')
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --overrides "$overrides" --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
             --query 'tasks[0].taskArn' --output text)
           [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
