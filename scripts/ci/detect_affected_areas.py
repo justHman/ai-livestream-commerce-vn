@@ -111,6 +111,13 @@ ROOT_PREFIX_AREA = {
     "infra/scripts/": "shared-build",
 }
 
+# R8.7: shared executable/resource directories fan out to EVERY real consumer
+# lane. Derived from actual build consumers (Dockerfile COPY of model_assets)
+# and enforced by tests/ci/test_affected_area_fanout.py.
+SHARED_RESOURCE_FANOUT = {
+    "scripts/model_assets/": frozenset({"llm_service", "tts_service", "avatar_service"}),
+}
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -167,6 +174,12 @@ def classify_path(path: str) -> List[str]:
     # 5. Root shared files (explicit, required-area precision)
     if p in ROOT_SHARED_AREA:
         return [ROOT_SHARED_AREA[p]]
+
+    # 5.5 R8.7 shared resource fan-out (BEFORE the generic scripts/ prefix so
+    # shared executables reach every consumer lane, not a dead shared-source).
+    for prefix, consumers in SHARED_RESOURCE_FANOUT.items():
+        if p == prefix.rstrip("/") or p.startswith(prefix):
+            return _fanout(consumers)
 
     # Match the MOST SPECIFIC prefix first (longest), so `scripts/ci/` wins
     # over `scripts/`.
