@@ -44,6 +44,7 @@ from enum import Enum
 from typing import Any, Callable, Optional
 
 from backend.application.db import SessionStore
+from backend.application.db.session_store import SessionLockTimeout, StaleOwnerWriteError
 
 from .models import (
     MAX_STALENESS_SEC,
@@ -141,8 +142,14 @@ class PlatformEventIngestionService:
             logger.warning("session meta read failed session=%s", session_id, exc_info=True)
             return {}
 
-    async def _save_meta(self, session_id: str, meta: dict) -> None:
+    async def _save_meta(self, session_id: str, meta: dict, *, fence: Any = None) -> None:
         if self._store is None:
+            return
+        if fence is not None:
+            # Fenced (distributed-lock) path: the write is rejected outright if
+            # we lost the lock to a newer owner — never swallow a clobber.
+            if not await self._store.commit_if_owner(fence, meta):
+                raise StaleOwnerWriteError(session_id)
             return
         try:
             await self._store.set(session_id, meta)
@@ -261,7 +268,9 @@ class PlatformEventIngestionService:
             entry["event_id"] for entry in self._dedup_entries(meta) if entry.get("ts", 0) >= cutoff
         }
 
-    async def _record_seen(self, session_id: str, meta: dict, event_id: str) -> None:
+    async def _record_seen(
+        self, session_id: str, meta: dict, event_id: str, *, fence: Any = None
+    ) -> None:
         entries = self._dedup_entries(meta)
         now = self._now()
         cutoff = now - self._dedup_window_sec
@@ -270,7 +279,7 @@ class PlatformEventIngestionService:
         if len(entries) > self._dedup_max_ids:
             entries = entries[-self._dedup_max_ids :]
         meta[_DEDUP_KEY] = entries
-        await self._save_meta(session_id, meta)
+        await self._save_meta(session_id, meta, fence=fence)
 
     # ------------------------------------------------------------------
     # Per-event processing
@@ -309,7 +318,7 @@ class PlatformEventIngestionService:
         )
 
     async def _process_event(
-        self, session_id: str, event: PlatformEvent, meta: dict, now: float
+        self, session_id: str, event: PlatformEvent, meta: dict, now: float, *, fence: Any = None
     ) -> dict:
         """Handle one event; returns the per-event result item."""
         result: dict[str, Any] = {"event_id": event.event_id}
@@ -324,7 +333,7 @@ class PlatformEventIngestionService:
             result["reason"] = reason
             self._rejection_counts[reason] = self._rejection_counts.get(reason, 0) + 1
             await self._persist_rejected(session_id, event, reason)
-            await self._record_seen(session_id, meta, event.event_id)
+            await self._record_seen(session_id, meta, event.event_id, fence=fence)
             return result
 
         result["status"] = EventStatus.ACCEPTED.value
@@ -337,7 +346,7 @@ class PlatformEventIngestionService:
         else:
             self._apply_signal(meta, event)
         self._record_viewer_key(meta, event)
-        await self._record_seen(session_id, meta, event.event_id)
+        await self._record_seen(session_id, meta, event.event_id, fence=fence)
         self._accepted_count += 1
         return result
 
@@ -356,21 +365,30 @@ class PlatformEventIngestionService:
         """
         distributed = getattr(self._store, "with_session_lock", None)
         if distributed is not None:
-            async with distributed(
-                session_id, acquire_timeout_seconds=self._lock_acquire_timeout_seconds
-            ):
-                return await self._ingest_locked(session_id, events)
+            try:
+                async with distributed(
+                    session_id, acquire_timeout_seconds=self._lock_acquire_timeout_seconds
+                ) as fence:
+                    return await self._ingest_locked(session_id, events, fence=fence)
+            except StaleOwnerWriteError as exc:
+                # Lost ownership mid-section == session busy; the route already
+                # maps SessionLockTimeout to 503, so the client retries.
+                raise SessionLockTimeout(session_id) from exc
         lock = self._ingest_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
             return await self._ingest_locked(session_id, events)
 
-    async def _ingest_locked(self, session_id: str, events: list[PlatformEvent]) -> dict:
+    async def _ingest_locked(
+        self, session_id: str, events: list[PlatformEvent], *, fence: Any = None
+    ) -> dict:
         """The locked critical section: existence check -> load -> decide -> write."""
         if not await self._session_exists(session_id):
             raise KeyError(session_id)
         meta = await self._load_meta(session_id)
         now = self._now()
-        results = [await self._process_event(session_id, event, meta, now) for event in events]
+        results = [
+            await self._process_event(session_id, event, meta, now, fence=fence) for event in events
+        ]
         counts = {"accepted": 0, "duplicate": 0, "rejected": 0}
         for item in results:
             counts[item["status"]] = counts.get(item["status"], 0) + 1

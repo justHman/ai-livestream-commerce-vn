@@ -40,21 +40,26 @@ output "db_subnet_group_name" {
 }
 
 output "redis_cluster_id" {
-  description = "ElastiCache cluster ID"
-  value       = var.create_redis ? aws_elasticache_cluster.redis[0].id : ""
+  description = "ElastiCache replication group ID"
+  value       = var.create_redis ? aws_elasticache_replication_group.redis[0].id : ""
 }
 
 output "redis_endpoint" {
   description = "Redis primary endpoint address"
-  value       = var.create_redis ? aws_elasticache_cluster.redis[0].cache_nodes[0].address : ""
+  value       = var.create_redis ? aws_elasticache_replication_group.redis[0].primary_endpoint_address : ""
 }
 
 output "redis_port" {
   description = "Redis port"
-  value       = var.create_redis ? aws_elasticache_cluster.redis[0].port : ""
+  value       = var.create_redis ? aws_elasticache_replication_group.redis[0].port : ""
 }
 
-output "redis_connection_string" {
-  description = "host:port for app config"
-  value       = var.create_redis ? "${aws_elasticache_cluster.redis[0].cache_nodes[0].address}:${aws_elasticache_cluster.redis[0].port}" : ""
+output "redis_uri" {
+  description = "TLS Redis URI (rediss://) for app config; embeds the AUTH token when set"
+  value = var.create_redis ? (
+    var.redis_auth_token != ""
+    ? "rediss://${var.redis_auth_token}@${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
+    : "rediss://${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
+  ) : ""
+  sensitive = true
 }

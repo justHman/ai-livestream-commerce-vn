@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from backend.application.db.redis_session_store import RedisSessionStore
+from backend.application.db.redis_session_store import RedisSessionStore, SessionLockFence
 from backend.application.db.session_store import SessionLockTimeout
 from backend.application.platform_events import PlatformEvent
 from backend.application.platform_events.ingestion import PlatformEventIngestionService
@@ -54,31 +54,60 @@ class _FakeRedis:
 
     One instance == one Redis server. ``set(nx=True)`` is atomic (no await in
     the body), so exactly one caller wins the lock — mirroring Redis SET NX.
+    Expiry is clock-driven via ``now`` (monotonic seconds, default 1000.0) so
+    TTL overrun is deterministic without real sleeps; expired keys read as
+    absent everywhere.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, now: float = 1000.0) -> None:
         self._data: dict[str, bytes] = {}
+        self._exp: dict[str, float] = {}
+        self.now = now
+
+    def _expire_if_past(self, key: str) -> None:
+        if key in self._data and self.now >= self._exp.get(key, float("inf")):
+            del self._data[key]
+            self._exp.pop(key, None)
 
     async def get(self, key: str) -> bytes | None:
+        self._expire_if_past(key)
         return self._data.get(key)
 
     async def set(self, key: str, value, *, ex=None, nx=False, px=None) -> bool | None:
-        raw = value.encode() if isinstance(value, str) else value
+        self._expire_if_past(key)
         if nx and key in self._data:
             return None
+        raw = value.encode() if isinstance(value, str) else value
         self._data[key] = raw
+        ttl_ms = px if px is not None else (ex * 1000 if ex is not None else None)
+        if ttl_ms is not None:
+            self._exp[key] = self.now + ttl_ms / 1000.0
+        else:
+            self._exp.pop(key, None)
         return True
 
     async def delete(self, key: str) -> int:
+        self._expire_if_past(key)
         return 1 if self._data.pop(key, None) is not None else 0
 
     async def exists(self, key: str) -> int:
+        self._expire_if_past(key)
         return 1 if key in self._data else 0
 
     async def eval(self, script: str, numkeys: int, *args) -> int:
         keys, rest = args[:numkeys], args[numkeys:]
-        if self._data.get(keys[0]) == rest[0].encode():
-            del self._data[keys[0]]
+        lock_key = keys[0]
+        self._expire_if_past(lock_key)
+        if "KEYS[2]" in script:  # commit-if-owner: also writes the session blob
+            if self._data.get(lock_key) == rest[0].encode():
+                self._data[keys[1]] = rest[1].encode()
+                self._exp[keys[1]] = self.now + int(rest[2])
+                return 1
+            return 0
+        # release-script: compare-and-delete the lock.
+        if self._data.get(lock_key) == rest[0].encode():
+            del self._data[lock_key]
+            self._exp.pop(lock_key, None)
             return 1
         return 0
 
@@ -208,6 +237,81 @@ async def test_with_session_lock_times_out_bounded() -> None:
     with pytest.raises(SessionLockTimeout):
         async with store.with_session_lock("s1", acquire_timeout_seconds=0.05):
             pass  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_write_rejected_after_lock_takeover() -> None:
+    fake = _FakeRedis()
+    store = RedisSessionStore(client=fake)
+    token_a = "token-a"
+    assert await store.acquire_session_lock("s1", token_a, ttl_seconds=10)
+    fence_a = SessionLockFence(session_id="s1", token=token_a)
+    fake.now += 11  # A overruns its 10s lock TTL
+    token_b = "token-b"
+    assert await store.acquire_session_lock("s1", token_b, ttl_seconds=10) is True
+    fence_b = SessionLockFence(session_id="s1", token=token_b)
+    assert await store.commit_if_owner(fence_b, {"status": "b"}) is True
+    assert await store.commit_if_owner(fence_a, {"status": "a-stale"}) is False
+    assert await store.get("s1") == {"status": "b"}
+
+
+@pytest.mark.asyncio
+async def test_current_owner_write_accepted() -> None:
+    fake = _FakeRedis()
+    store = RedisSessionStore(client=fake)
+    token_a = "token-a"
+    assert await store.acquire_session_lock("s1", token_a, ttl_seconds=10)
+    fence = SessionLockFence(session_id="s1", token=token_a)
+    assert await store.commit_if_owner(fence, {"status": "active"}) is True
+    assert await store.get("s1") == {"status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_ingest_maps_to_session_lock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeRedis()
+    service_a, service_b, store_a = _two_services(fake)
+    await store_a.set("s1", {"status": "active"})
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_save_meta = service_a._save_meta
+
+    async def gated_save_meta(
+        session_id: str, meta: dict, *, fence: SessionLockFence | None = None
+    ) -> None:
+        entered.set()
+        await release.wait()
+        await real_save_meta(session_id, meta, fence=fence)
+
+    monkeypatch.setattr(service_a, "_save_meta", gated_save_meta)
+
+    now = time.time()
+    ev_a = PlatformEvent(**{**_event("ev-a", text="a"), "occurred_at": now})
+    ev_b = PlatformEvent(**{**_event("ev-b", text="b"), "occurred_at": now})
+    task = asyncio.create_task(service_a.ingest("s1", [ev_a]))
+    await entered.wait()
+    fake.now += 11  # A overruns its 10s lock TTL inside the critical section
+    await service_b.ingest("s1", [ev_b])  # B acquires the expired lock + commits
+    release.set()
+    with pytest.raises(SessionLockTimeout):
+        await task
+    meta = await store_a.get("s1")
+    assert _seen_ids(meta) == ["ev-b"]
+
+
+@pytest.mark.asyncio
+async def test_non_fenced_memory_path_unchanged() -> None:
+    from backend.application.db.memory_session_store import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store)
+    now = time.time()
+    event = PlatformEvent(**{**_event("mem-1", text="hi"), "occurred_at": now})
+    result = await service.ingest("s1", [event])
+    assert result["accepted"] == 1
+    assert _seen_ids(await store.get("s1")) == ["mem-1"]
 
 
 def test_sessions_events_lock_timeout_returns_503() -> None:

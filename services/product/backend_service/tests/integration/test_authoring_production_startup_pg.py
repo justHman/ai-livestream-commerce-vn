@@ -23,6 +23,11 @@ _AUTH_VALUE = "viewer" + "-token"
 
 
 def _config(database_url: str, *, backend_api_token: str = _AUTH_VALUE, app_env: str = "prod") -> AppConfig:
+    # C.3.3: production-shaped DSNs need an explicit sslmode to pass AppConfig's
+    # fail-loud TLS gate; these fixtures exercise runtime behavior, not validation.
+    if database_url and "sslmode=" not in database_url:
+        sep = "&" if "?" in database_url else "?"
+        database_url = f"{database_url}{sep}sslmode=require"
     return AppConfig(
         app_env=app_env,
         render_backend="mock",

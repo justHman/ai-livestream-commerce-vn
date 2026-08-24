@@ -28,6 +28,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
+
+
+def _dsn_sslmode(database_url: str) -> str:
+    """Extract the ``sslmode`` query value from a Postgres DSN ('' when absent).
+
+    ``urlparse``/``parse_qs`` handle both ``postgres://`` and ``postgresql://``
+    schemes; a DSN with no query string yields '' so callers can treat a
+    missing sslmode the same as an unset one.
+    """
+    values = parse_qs(urlparse(database_url).query).get("sslmode", [])
+    return values[0] if values else ""
 
 
 def _canonical_base_sales() -> str:
@@ -450,6 +462,8 @@ class AppConfig:
     api_rate_limit_requests: int = 30
     api_rate_limit_window_seconds: float = 60.0
     api_rate_limit_max_keys: int = 10_000
+    # Explicit trusted-proxy policy (R8.10): when False, forwarded headers are ignored.
+    trusted_proxy_client_ip: bool = False
     ws_rate_limit_messages: int = 60
     ws_rate_limit_window_seconds: float = 60.0
 
@@ -544,6 +558,8 @@ class AppConfig:
                 os.environ.get("API_RATE_LIMIT_WINDOW_SECONDS", "60")
             ),
             api_rate_limit_max_keys=int(os.environ.get("API_RATE_LIMIT_MAX_KEYS", "10000")),
+            trusted_proxy_client_ip=os.environ.get("RATE_LIMIT_TRUST_PROXY_CLIENT_IP", "").lower()
+            in ("1", "true", "yes", "on"),
             ws_rate_limit_messages=int(os.environ.get("WS_RATE_LIMIT_MESSAGES", "60")),
             ws_rate_limit_window_seconds=float(
                 os.environ.get("WS_RATE_LIMIT_WINDOW_SECONDS", "60")
@@ -591,6 +607,34 @@ class AppConfig:
         MUST use this predicate, never a raw ``app_env == ...`` comparison.
         """
         return self.app_env in {"prod", "production"}
+
+    def __post_init__(self) -> None:
+        """Fail loud on a production boot against an unencrypted data store.
+
+        App-side half of R7.1 (managed Redis TLS+auth) and R7.4 (RDS TLS):
+        ``APP_ENV=prod`` must never silently start with a plaintext
+        ``redis://`` store or a DATABASE_URL that lacks an explicit sslmode.
+        Local/dev configs (the default) are unrestricted.
+        """
+        if (
+            self.is_production
+            and self.store_backend == "redis"
+            and not self.redis_url.startswith("rediss://")
+        ):
+            raise ValueError("production redis requires rediss:// (TLS)")
+        if (
+            self.is_production
+            and self.database_url
+            and _dsn_sslmode(self.database_url)
+            not in {
+                "require",
+                "verify-ca",
+                "verify-full",
+            }
+        ):
+            raise ValueError(
+                "production DATABASE_URL requires sslmode=require|verify-ca|verify-full"
+            )
 
     def cors_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
