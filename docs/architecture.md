@@ -86,9 +86,10 @@ configured failure. Persistence logs contain operation/session context only.
 
 ```text
 APP_ENV=dev|prod
-RENDER_BACKEND=mock|cloud_liveavatar|remote_avatar|self_host_*
-LLM_ENGINE=none|openai_compat|vllm|sglang|hf|llamacpp
-TTS_ENGINE=tone|remote_http|transformers|vieneu|cosyvoice
+RENDER_BACKEND=mock|cloud_liveavatar|self_host_*
+LLM_ENGINE=none|vllm|sglang|hf|llamacpp
+TTS_ENGINE=tone|transformers|vieneu|cosyvoice
+# Remote provider endpoints: LLM_BASE_URL / TTS_BASE_URL / AVATAR_BASE_URL
 SESSION_STORE=memory|redis
 DATABASE_URL=postgresql://...
 PIPECAT_ENABLED=0|1
