@@ -57,6 +57,13 @@ resource "aws_ecs_task_definition" "tts" {
           { name = "HF_HUB_OFFLINE", value = "1" },
           { name = "TRANSFORMERS_OFFLINE", value = "1" },
         ] : [],
+        # Durable voice-profile store (B5): provider-neutral URI injected
+        # whenever the operator supplies one. Production self-host TTS is
+        # required to set tts_voice_store_uri (see tts_voice_store_durability
+        # precondition) so voice profiles never land on task-local file://.
+        var.tts_voice_store_uri != "" ? [
+          { name = "TTS_VOICE_STORE_URI", value = var.tts_voice_store_uri },
+        ] : [],
       )
       logConfiguration = {
         logDriver = "awslogs"
@@ -117,5 +124,29 @@ resource "aws_ecs_service" "tts" {
   lifecycle {
     # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
     ignore_changes = [desired_count, task_definition]
+  }
+}
+
+# B5 durable voice-store invariant: production self-host TTS must never fall
+# back to task-local file:// voice profiles. When tts_require_durable_voice_store
+# is set and self-host TTS is the active adapter, tts_voice_store_uri is required
+# and the task above injects it as TTS_VOICE_STORE_URI.
+resource "terraform_data" "tts_voice_store_durability" {
+  input = format("%s|%s|%s", var.tts_adapter, var.tts_require_durable_voice_store, var.tts_voice_store_uri)
+  lifecycle {
+    precondition {
+      condition = (
+        !var.tts_require_durable_voice_store
+        || var.tts_adapter != "self_hosted"
+        || var.tts_voice_store_uri != ""
+      )
+      error_message = <<-EOT
+        Self-host TTS in production requires a durable provider-neutral
+        TTS_VOICE_STORE_URI (e.g. s3://<bucket>/voice-profiles). Refusing to let
+        voice profiles land on a task-local filesystem (V3 acceptance: local
+        filesystem is explicit dev/test only). Set tts_voice_store_uri, or select
+        a hosted TTS adapter.
+      EOT
+    }
   }
 }
