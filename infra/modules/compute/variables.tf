@@ -219,8 +219,9 @@ variable "session_store" {
 }
 
 variable "redis_url" {
-  description = "Redis connection string for SESSION_STORE=redis. Empty = memory store."
+  description = "Redis connection string for SESSION_STORE=redis. Empty = memory store. When the URI carries a credential (userinfo) it must be delivered via the redis/url SSM SecureString secret — never a plaintext env value."
   type        = string
+  sensitive   = true
   default     = ""
 }
 
@@ -243,6 +244,12 @@ variable "avatar_adapter" {
     condition     = contains(["self_hosted", "liveavatar", "baidu_xiling"], var.avatar_adapter)
     error_message = "avatar_adapter must be one of: self_hosted, liveavatar, baidu_xiling."
   }
+}
+
+variable "allow_stub_avatar_test_only" {
+  description = "Explicit test-only escape for the Avatar stub; never enabled in production."
+  type        = bool
+  default     = false
 }
 
 variable "llm_adapter" {
@@ -301,6 +308,17 @@ variable "tts_engine" {
   }
 }
 
+variable "tts_model_source" {
+  description = "TTS model source: sdk (current VieNeu SDK/provider download; no S3 URI, no forced offline) | s3_bootstrap (dormant future engine object-backed weights)"
+  type        = string
+  default     = "sdk"
+
+  validation {
+    condition     = contains(["sdk", "s3_bootstrap"], var.tts_model_source)
+    error_message = "tts_model_source must be sdk or s3_bootstrap."
+  }
+}
+
 variable "avatar_engine" {
   description = "Self-host avatar engine (service-local): avatarforcing"
   type        = string
@@ -316,6 +334,18 @@ variable "tts_base_url" {
   description = "TTS base URL. Empty = Cloud Map private DNS tts.<env>.ai-live.local for self-host adapters; override for hosted providers."
   type        = string
   default     = ""
+}
+
+variable "tts_voice_store_uri" {
+  description = "Durable provider-neutral voice-store URI for self-host TTS (e.g. s3://<bucket>/voice-profiles). Empty = TTS falls back to task-local file:// voice profiles (dev/test only). Production self-host TTS requires a durable URI."
+  type        = string
+  default     = ""
+}
+
+variable "tts_require_durable_voice_store" {
+  description = "Production contract: when self-host TTS is enabled, require a non-empty tts_voice_store_uri so voice profiles never land on a task-local filesystem. Dev/staging keep false (file:// is dev/test only)."
+  type        = bool
+  default     = false
 }
 
 variable "tts_voice_id" {

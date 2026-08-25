@@ -615,18 +615,21 @@ async def test_cancellation_does_not_fabricate_normal_final_marker():
 
     task = asyncio.create_task(orch.run(sid, "long message"))
     try:
-        await asyncio.to_thread(tts.phrase_rendered.wait, 2.0)
+        # Generous deadlines: the streaming pipeline runs through real sync
+        # LLM/TTS stubs and can be slow under loaded CI runners. The point of
+        # this test is the cancel/final-marker behavior, not render latency.
+        await asyncio.to_thread(tts.phrase_rendered.wait, 15.0)
         assert received, "audio must render before the cancel"
-        await asyncio.wait_for(first_video_captured.wait(), timeout=2.0)
+        await asyncio.wait_for(first_video_captured.wait(), timeout=15.0)
         await orch.cancel(sid)
-        await asyncio.wait_for(task, timeout=5.0)
+        await asyncio.wait_for(task, timeout=15.0)
     finally:
         stop.set()
-        await asyncio.wait_for(drainer, timeout=5.0)
+        await asyncio.wait_for(drainer, timeout=15.0)
         if not task.done():
             task.cancel()
             try:
-                await asyncio.wait_for(task, timeout=5.0)
+                await asyncio.wait_for(task, timeout=15.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 

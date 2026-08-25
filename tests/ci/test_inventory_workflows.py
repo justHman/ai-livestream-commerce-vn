@@ -16,7 +16,9 @@ from scripts.ci.inventory_workflows import (
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 
-ACTION_REF = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$")
+ACTION_REF = re.compile(
+    r"^(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+|docker://[A-Za-z0-9_.\-/]+(?::[A-Za-z0-9_.\-]+)?)$"
+)
 LOCAL_REF = re.compile(r"^\./\.github/workflows/[a-z0-9_-]+\.yml$")
 
 
@@ -75,14 +77,11 @@ def test_expected_triggers_present(name, event):
     assert event in events
 
 
-def test_deploy_prod_triggers_disabled():
-    """6.4: deploy-prod.yml is superseded by release-service.yml. It keeps
-    event triggers only so workflow edits do not produce failed empty runs
-    ('No event triggers defined in on'), but every job is guarded to skip on
-    branch pushes: no job may run on a plain branch push."""
-    wf = _inv("deploy-prod.yml")
-    for job in wf["jobs"]:
-        assert job.get("if"), "deploy-prod job must be guarded to skip on branch pushes"
+def test_deploy_prod_archived_not_active():
+    """N2: deploy-prod.yml is superseded and archived outside .github/workflows/.
+    It must not appear in the active workflow inventory, so it cannot expose a
+    live production deploy entrypoint."""
+    assert "deploy-prod.yml" not in _all_workflows()
 
 
 def test_ci_has_no_manual_deploy_trigger():
@@ -133,8 +132,8 @@ def test_mutation_classification_correct():
 
 
 def test_service_tags_captured():
-    # deploy-prod triggers are disabled (6.4); release-service owns tag releases.
-    assert _inv("deploy-prod.yml")["service_tags"] == []
+    # release-service owns tag releases; deploy-prod is archived (N2).
+    assert _inv("release-service.yml")["service_tags"]
 
 
 def test_dispatch_only_has_no_path_filters():
@@ -300,8 +299,8 @@ def test_secret_refs_captured_from_step_with():
 
 
 def test_secret_refs_captured_from_step_env():
-    """Secret references in step env: block are captured."""
-    wf = inventory_workflow(WORKFLOWS / "deploy-prod.yml", WORKFLOWS)
+    """Secret references in step env/run blocks are captured."""
+    wf = inventory_workflow(WORKFLOWS / "deploy-dev.yml", WORKFLOWS)
     all_secrets = set()
     for job in wf["jobs"]:
         all_secrets.update(job.get("secrets", []))

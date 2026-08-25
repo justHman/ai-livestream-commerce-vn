@@ -18,6 +18,7 @@ on:
     tags: ["*-v*"]
 
 permissions:
+  actions: read
   id-token: write
   contents: read
 
@@ -116,7 +117,7 @@ jobs:
           echo "evidence_digest=$digest" >> "$GITHUB_OUTPUT"
           echo "evidence_ts=$ts" >> "$GITHUB_OUTPUT"
 
-  deploy:
+  prepare:
     needs: [resolve, validate-evidence]
     runs-on: ubuntu-latest
     environment: production
@@ -124,14 +125,26 @@ jobs:
       EVIDENCE_DIGEST: ${{ needs.validate-evidence.outputs.evidence_digest }}
       TAG_COMMIT: ${{ needs.resolve.outputs.tag_commit }}
       SERVICE: ${{ needs.resolve.outputs.service }}
+    outputs:
+      ecs_cluster: ${{ steps.tf.outputs.ecs_cluster }}
+      backend_service: ${{ steps.tf.outputs.backend_service }}
+      llm_service: ${{ steps.tf.outputs.llm_service }}
+      tts_service: ${{ steps.tf.outputs.tts_service }}
+      avatar_service: ${{ steps.tf.outputs.avatar_service }}
+      migrate_task_arn: ${{ steps.tf.outputs.migrate_task_arn }}
+      public_subnet_ids: ${{ steps.tf.outputs.public_subnet_ids }}
+      backend_sg_id: ${{ steps.tf.outputs.backend_sg_id }}
+      smoke_url: ${{ steps.tf.outputs.smoke_url }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.tag_commit }}
       - name: Production readiness — approval enforcement must exist
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production" --jq '.protection_rules // []' 2>/dev/null || true)
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production" --jq '.protection_rules // []')
           if ! jq -e 'map(.type == "required_reviewers") | any' <<<"$rules" >/dev/null 2>&1; then
             echo "Production environment has no required_reviewers protection rule." >&2
             echo "Release blocked by design (5.3): approval enforcement must be configured" >&2
@@ -203,17 +216,41 @@ jobs:
           check_optional "$llm_desired" "$llm_svc" llm
           check_optional "$tts_desired" "$tts_svc" tts
           check_optional "$avatar_desired" "$avatar_svc" avatar
-          echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"
+          echo "smoke_url=$scheme://$dns/api/v1/health/ready" >> "$GITHUB_OUTPUT"
+
+  migrate:
+    needs: [resolve, prepare, validate-evidence]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.resolve.outputs.service == 'backend_service' && needs.prepare.outputs.migrate_task_arn != '' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      ECS_CLUSTER: ${{ needs.prepare.outputs.ecs_cluster }}
+      MIGRATE_TASK_ARN: ${{ needs.prepare.outputs.migrate_task_arn }}
+      BACKEND_SUBNETS: ${{ needs.prepare.outputs.public_subnet_ids }}
+      BACKEND_SG: ${{ needs.prepare.outputs.backend_sg_id }}
+      EVIDENCE_DIGEST: ${{ needs.validate-evidence.outputs.evidence_digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag_commit }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
       - name: Run pre-deploy migration
-        if: ${{ env.SERVICE == 'backend_service' && steps.tf.outputs.migrate_task_arn != '' }}
-        env:
-          ECS_CLUSTER: ${{ steps.tf.outputs.ecs_cluster }}
-          MIGRATE_TASK_ARN: ${{ steps.tf.outputs.migrate_task_arn }}
-          BACKEND_SUBNETS: ${{ steps.tf.outputs.public_subnet_ids }}
-          BACKEND_SG: ${{ steps.tf.outputs.backend_sg_id }}
         run: |
           set -euo pipefail
-          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --launch-type FARGATE \
+          # B2: migration runs the EXACT candidate backend image digest from
+          # staging evidence by registering a candidate-image task-definition
+          # revision — ECS RunTask container overrides do NOT support `image`;
+          # image identity belongs to the task definition.
+          candidate="$EVIDENCE_DIGEST"
+          echo "Migration will run candidate backend digest $candidate"
+          task=$(aws ecs describe-task-definition --task-definition "$MIGRATE_TASK_ARN" --query taskDefinition)
+          task=$(jq --arg name "backend" --arg img "$candidate" '.containerDefinitions |= map(if .name == $name then .image = $img else . end)' <<<"$task")
+          task=$(jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)' <<<"$task")
+          new_task=$(aws ecs register-task-definition --cli-input-json "$task" --query taskDefinition.taskDefinitionArn --output text)
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$new_task" --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
             --query 'tasks[0].taskArn' --output text)
           [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
@@ -221,19 +258,38 @@ jobs:
           exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$run_id" --query 'tasks[0].containers[0].exitCode' --output text)
           [[ "$exit_code" == "0" ]] || { echo "Migration failed (exit $exit_code). Release aborted." >&2; exit 1; }
           echo "Migration completed."
-      - name: Promote exact staging digest (no rebuild)
-        uses: ./.github/workflows/_deploy-service.yml
+
+  promote:
+    needs: [resolve, validate-evidence, prepare, migrate]
+    if: ${{ always() && needs.prepare.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
+    uses: ./.github/workflows/_deploy-service.yml
+    with:
+      env: production
+      commit_sha: ${{ needs.resolve.outputs.tag_commit }}
+      initiator: ${{ github.actor }}
+      cluster: ${{ needs.prepare.outputs.ecs_cluster }}
+      service: ${{ needs.prepare.outputs[format('{0}_service', needs.resolve.outputs.service_short)] }}
+      container: ${{ needs.resolve.outputs.service_short }}
+      image: ${{ needs.validate-evidence.outputs.evidence_digest }}
+      smoke_url: ${{ needs.resolve.outputs.service == 'backend_service' && needs.prepare.outputs.smoke_url || '' }}
+    secrets:
+      role_arn: ${{ secrets.AWS_ROLE_ARN_PROD }}
+      dockerhub_user: ${{ secrets.DOCKERHUB_USER }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  record-outcome:
+    needs: [resolve, validate-evidence, promote]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      EVIDENCE_DIGEST: ${{ needs.validate-evidence.outputs.evidence_digest }}
+      TAG_COMMIT: ${{ needs.resolve.outputs.tag_commit }}
+      SERVICE: ${{ needs.resolve.outputs.service }}
+    steps:
+      - uses: actions/checkout@v4
         with:
-          env: production
-          commit_sha: ${{ env.TAG_COMMIT }}
-          initiator: ${{ github.actor }}
-          cluster: ${{ steps.tf.outputs.ecs_cluster }}
-          service: ${{ steps.tf.outputs[format('{0}_service', needs.resolve.outputs.service_short)] }}
-          container: ${{ needs.resolve.outputs.service_short }}
-          image: ${{ env.EVIDENCE_DIGEST }}
-          role_arn: ${{ secrets.AWS_ROLE_ARN_PROD }}
-          aws_region: ${{ env.AWS_REGION }}
-          smoke_url: ${{ env.SERVICE == 'backend_service' && steps.tf.outputs.smoke_url || '' }}
+          ref: ${{ needs.resolve.outputs.tag_commit }}
       - name: Record release outcome
         if: ${{ always() }}
         env:
@@ -249,3 +305,12 @@ jobs:
             echo "- digest: $EVIDENCE_DIGEST (staging evidence ${{ needs.validate-evidence.outputs.evidence_ts }})"
             echo "- result: $RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
+      # R1.6: publish the production evidence line as a declared artifact
+      # (release evidence crosses job/run boundaries).
+      - name: Upload release evidence artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ needs.resolve.outputs.tag }}-${{ env.TAG_COMMIT }}
+          path: .runtime/deploy/evidence/prod/${{ env.TAG_COMMIT }}.jsonl
+          if-no-files-found: error

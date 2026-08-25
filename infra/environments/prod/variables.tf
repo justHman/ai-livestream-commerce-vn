@@ -24,12 +24,24 @@ variable "debug_enabled" {
 variable "session_store" {
   description = "Session store backend: memory or redis"
   type        = string
-  default     = "memory"
+  default     = "redis"
+
+  validation {
+    condition     = var.session_store == "redis"
+    error_message = "prod session_store must be 'redis' (multi-replica production requires shared durable state; memory is dev-only)."
+  }
 }
 
 variable "redis_url" {
   description = "Redis URL for SESSION_STORE=redis; empty derives from ElastiCache"
   type        = string
+  default     = ""
+}
+
+variable "redis_auth_token" {
+  description = "Managed Redis AUTH secret passed to the database module (empty = no auth)."
+  type        = string
+  sensitive   = true
   default     = ""
 }
 
@@ -189,11 +201,11 @@ variable "backend_capacity_provider" {
 
 variable "desired_backend" {
   type    = number
-  default = 1
+  default = 2
 
   validation {
-    condition     = var.desired_backend >= 1 && floor(var.desired_backend) == var.desired_backend
-    error_message = "desired_backend must be an integer of at least 1 in prod."
+    condition     = var.desired_backend >= 2 && floor(var.desired_backend) == var.desired_backend
+    error_message = "prod desired_backend must be at least 2 (multi-replica production minimum)."
   }
 }
 
@@ -228,29 +240,49 @@ variable "desired_avatar" {
 }
 
 variable "image_backend" {
-  type    = string
-  default = "imjusthman/ai-live-backend:latest"
+  type = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_backend))
+    error_message = "prod image_backend must be an immutable digest (repo@sha256:64hex); mutable tags are not a valid production release identity."
+  }
 }
 
 variable "image_llm" {
-  type    = string
-  default = "imjusthman/ai-live-llm:latest"
+  type = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_llm))
+    error_message = "prod image_llm must be an immutable digest (repo@sha256:64hex); mutable tags are not a valid production release identity."
+  }
 }
 
 variable "image_tts" {
-  type    = string
-  default = "imjusthman/ai-live-tts:latest"
+  type = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_tts))
+    error_message = "prod image_tts must be an immutable digest (repo@sha256:64hex); mutable tags are not a valid production release identity."
+  }
 }
 
 variable "image_lmcache" {
   description = "LMCache sidecar image URI (colocated in LLM task; evidence-gated)"
   type        = string
-  default     = "imjusthman/ai-live-lmcache:latest"
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_lmcache))
+    error_message = "prod image_lmcache must be an immutable digest (repo@sha256:64hex); mutable tags are not a valid production release identity."
+  }
 }
 
 variable "image_avatar" {
-  type    = string
-  default = "imjusthman/ai-live-avatar:latest"
+  type = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9./_-]+@sha256:[a-f0-9]{64}$", var.image_avatar))
+    error_message = "prod image_avatar must be an immutable digest (repo@sha256:64hex); mutable tags are not a valid production release identity."
+  }
 }
 
 variable "livekit_url" {
@@ -300,6 +332,12 @@ variable "tts_adapter" {
 variable "tts_base_url" {
   type    = string
   default = ""
+}
+
+variable "tts_voice_store_uri" {
+  description = "Durable provider-neutral voice-store URI for self-host TTS (e.g. s3://<bucket>/voice-profiles). Required when tts_adapter=self_hosted (enforced by the tts_voice_store_durability precondition) so voice profiles never land on task-local file://."
+  type        = string
+  default     = ""
 }
 
 variable "alert_email" {

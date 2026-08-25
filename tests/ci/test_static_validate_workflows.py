@@ -10,8 +10,19 @@ from scripts.ci.static_validate_workflows import (
     validate_trigger_rules,
     validate_reusable_refs,
     validate_no_deploy,
+    validate_no_step_level_reusable,
+    validate_gh_api_authentication,
+    validate_needs_graph,
+    validate_cross_job_file_consumption,
     validate_permissions_shape,
     validate_service_tags,
+    validate_reusable_secret_expressions,
+    validate_reusable_oidc_permissions,
+    validate_reusable_deploy_environment,
+    validate_no_container_image_override,
+    validate_smoke_readiness,
+    validate_gh_api_actions_permission,
+    validate_superseded_no_deploy_entrypoint,
     ValidationResult,
 )
 
@@ -185,6 +196,244 @@ def test_workflow_call_secrets_invalid_shape_rejected():
     assert any("on.workflow_call.secrets" in e for e in r.errors)
 
 
+# ── R1.1: reusable workflows never invoked via steps[*].uses ───────────────
+
+
+def test_step_level_local_reusable_rejected():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {"uses": "actions/checkout@v4"},
+                        {"uses": "./.github/workflows/_deploy-service.yml"},
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("steps[].uses" in e and "_deploy-service.yml" in e for e in r.errors)
+
+
+def test_step_level_external_action_allowed():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "build": {
+                    "steps": [
+                        {"uses": "actions/checkout@v4"},
+                        {"uses": "docker/build-push-action@v6"},
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_job_level_local_reusable_allowed():
+    r = _result()
+    validate_no_step_level_reusable(
+        {
+            "jobs": {
+                "build": {
+                    "uses": "./.github/workflows/_container-build.yml",
+                    "with": {"image": "x"},
+                    "steps": [{"uses": "actions/checkout@v4"}],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── R1.2: gh api authentication ─────────────────────────────────────────────
+
+
+def test_gh_api_missing_token_rejected():
+    r = _result()
+    validate_gh_api_authentication(
+        {"jobs": {"v": {"steps": [{"run": 'conclusion=$(gh api "repos/x/runs" --jq y)'}]}}},
+        r,
+    )
+    assert not r.passed
+    assert any("GH_TOKEN" in e and "gh api" in e for e in r.errors)
+
+
+def test_gh_api_with_token_passes():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'conclusion=$(gh api "repos/x/runs" --jq y)',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_gh_api_suppression_rejected_even_with_token():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'gh api "repos/x/env" --jq y 2>/dev/null || true',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("suppresses" in e for e in r.errors)
+
+
+def test_gh_api_multiline_suppression_rejected():
+    r = _result()
+    validate_gh_api_authentication(
+        {
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": (
+                                'conclusion=$(gh api "repos/x/runs?head_sha=a" \\\n'
+                                "  --jq y 2>/dev/null || true)"
+                            ),
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("suppresses" in e for e in r.errors)
+
+
+# ── R1.7: needs graph directness ────────────────────────────────────────────
+
+
+def test_indirect_needs_output_rejected():
+    r = _result()
+    validate_needs_graph(
+        {
+            "jobs": {
+                "a": {"runs-on": "x", "steps": [{"run": "echo"}]},
+                "b": {"needs": ["a"], "runs-on": "x", "steps": [{"run": "echo"}]},
+                "c": {
+                    "needs": ["b"],
+                    "env": {"S": "${{ needs.a.outputs.validated_sha }}"},
+                    "runs-on": "x",
+                    "steps": [{"run": "echo $S"}],
+                },
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("not a direct declared dependency" in e and "needs.a" in e for e in r.errors)
+
+
+def test_direct_needs_output_accepted():
+    r = _result()
+    validate_needs_graph(
+        {
+            "jobs": {
+                "a": {"runs-on": "x", "outputs": {"s": "x"}, "steps": [{"run": "echo"}]},
+                "b": {
+                    "needs": ["a"],
+                    "env": {"S": "${{ needs.a.outputs.s }}"},
+                    "runs-on": "x",
+                    "steps": [{"run": "echo $S"}],
+                },
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── R1.6: cross-job file consumption ────────────────────────────────────────
+
+
+def test_cross_job_runtime_read_without_transport_rejected():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "read": {
+                    "runs-on": "x",
+                    "steps": [
+                        {"run": 'jq -r . <<<"$(cat .runtime/deploy/evidence/staging/a.jsonl)"'}
+                    ],
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("R1.6" in e and ".runtime/" in e for e in r.errors)
+
+
+def test_cross_job_runtime_read_with_artifact_download_accepted():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "read": {
+                    "runs-on": "x",
+                    "steps": [
+                        {"uses": "actions/download-artifact@v4"},
+                        {"run": "cat .runtime/deploy/evidence/staging/a.jsonl"},
+                    ],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_same_job_runtime_write_and_read_accepted():
+    r = _result()
+    validate_cross_job_file_consumption(
+        {
+            "jobs": {
+                "w": {
+                    "runs-on": "x",
+                    "steps": [
+                        {"run": "mkdir -p .runtime/ev && echo x >> .runtime/ev/a.jsonl"},
+                        {"run": "cat .runtime/ev/a.jsonl"},
+                    ],
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
 # ── Service tags ────────────────────────────────────────────────────────────
 
 
@@ -353,6 +602,467 @@ def test_valid_secrets_mapping_passes():
     r = _result()
     validate_permissions_shape(
         {"jobs": {"deploy": {"secrets": {"TOKEN": "${{ secrets.TOKEN }}"}}}}, r
+    )
+    assert r.passed
+
+
+# ── B1: reusable deployment call contract ──────────────────────────────────
+
+
+def test_reusable_secret_bare_literal_rejected():
+    """A governed reusable-workflow call must pass secret VALUES as expressions."""
+    r = _result()
+    validate_reusable_secret_expressions(
+        {
+            "jobs": {
+                "deploy": {
+                    "uses": "./.github/workflows/_deploy-service.yml",
+                    "secrets": {"role_arn": "AWS_ROLE_ARN_DEV"},
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("literal" in e and "role_arn" in e for e in r.errors)
+
+
+def test_reusable_secret_expression_passes():
+    r = _result()
+    validate_reusable_secret_expressions(
+        {
+            "jobs": {
+                "deploy": {
+                    "uses": "./.github/workflows/_deploy-service.yml",
+                    "secrets": {
+                        "role_arn": "${{ secrets.AWS_ROLE_ARN_DEV }}",
+                        "dockerhub_user": "${{ secrets.DOCKERHUB_USER }}",
+                        "dockerhub_token": "${{ secrets.DOCKERHUB_TOKEN }}",
+                    },
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_reusable_secret_inherit_passes():
+    r = _result()
+    validate_reusable_secret_expressions(
+        {
+            "jobs": {
+                "build": {"uses": "./.github/workflows/_container-build.yml", "secrets": "inherit"}
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_reusable_oidc_missing_id_token_rejected():
+    """A reusable AWS deploy workflow must grant permissions.id-token: write."""
+    r = _result()
+    validate_reusable_oidc_permissions(
+        {
+            "on": {"workflow_call": {}},
+            "permissions": {"contents": "read"},
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {
+                            "uses": "aws-actions/configure-aws-credentials@v4",
+                            "with": {"role-to-assume": "${{ secrets.role_arn }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("id-token" in e for e in r.errors)
+
+
+def test_reusable_oidc_id_token_passes():
+    r = _result()
+    validate_reusable_oidc_permissions(
+        {
+            "on": {"workflow_call": {}},
+            "permissions": {"id-token": "write", "contents": "read"},
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {
+                            "uses": "aws-actions/configure-aws-credentials@v4",
+                            "with": {"role-to-assume": "${{ secrets.role_arn }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_reusable_deploy_job_without_environment_rejected():
+    """A reusable ECS deploy job must bind the protected environment."""
+    r = _result()
+    validate_reusable_deploy_environment(
+        {
+            "on": {"workflow_call": {}},
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {"run": "aws ecs update-service --cluster c --service s --task-definition t"}
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("environment" in e and "B1" in e for e in r.errors)
+
+
+def test_reusable_deploy_job_environment_inputs_env_passes():
+    r = _result()
+    validate_reusable_deploy_environment(
+        {
+            "on": {"workflow_call": {}},
+            "jobs": {
+                "deploy": {
+                    "environment": "${{ inputs.env }}",
+                    "steps": [
+                        {"run": "aws ecs update-service --cluster c --service s --task-definition t"}
+                    ],
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── B2: no containerOverrides.image ────────────────────────────────────────
+
+
+def test_container_image_override_rejected():
+    """ECS RunTask container overrides do not support the `image` key."""
+    r = _result()
+    validate_no_container_image_override(
+        {
+            "jobs": {
+                "migrate": {
+                    "steps": [
+                        {
+                            "run": (
+                                "overrides=$(jq -nc --arg img \"$candidate\" "
+                                "'{containerOverrides:[{\"name\":\"backend\",\"image\":$img}]}')"
+                            )
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("containerOverrides" in e and "image" in e for e in r.errors)
+
+
+def test_register_task_definition_flow_passes():
+    """A register-task-definition migration flow contains no image override."""
+    r = _result()
+    validate_no_container_image_override(
+        {
+            "jobs": {
+                "migrate": {
+                    "steps": [
+                        {
+                            "run": (
+                                "task=$(aws ecs describe-task-definition --task-definition "
+                                '"$MIGRATE_TASK_ARN" --query taskDefinition)\n'
+                                "new_task=$(aws ecs register-task-definition --cli-input-json "
+                                '"$task" --query taskDefinition.taskDefinitionArn --output text)\n'
+                                "run_id=$(aws ecs run-task --cluster \"$ECS_CLUSTER\" "
+                                '--task-definition "$new_task" ...)'
+                            )
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_dev_migration_registers_candidate_revision():
+    """The dev migration step registers a candidate-image task-definition
+    revision and RunTask against that revision, never an image override."""
+    wf = load_yaml_safe(WORKFLOWS / "deploy-dev.yml")
+    assert wf is not None
+    migrate = wf["jobs"]["migrate"]
+    step = next(s for s in migrate["steps"] if s.get("name") == "Run pre-deploy migration")
+    run = step["run"]
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run
+
+
+def test_staging_migration_registers_candidate_revision():
+    wf = load_yaml_safe(WORKFLOWS / "deploy-staging.yml")
+    assert wf is not None
+    migrate = wf["jobs"]["migrate"]
+    step = next(s for s in migrate["steps"] if s.get("name") == "Run pre-deploy migration")
+    run = step["run"]
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run
+
+
+def test_release_migration_registers_candidate_revision():
+    wf = load_yaml_safe(WORKFLOWS / "release-service.yml")
+    assert wf is not None
+    migrate = wf["jobs"]["migrate"]
+    step = next(s for s in migrate["steps"] if s.get("name") == "Run pre-deploy migration")
+    run = step["run"]
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run
+
+
+# ── B3: smoke readiness ────────────────────────────────────────────────────
+
+
+def test_smoke_url_liveness_rejected():
+    """Deployment/promotion smoke must target readiness, not liveness."""
+    r = _result()
+    validate_smoke_readiness(
+        {
+            "jobs": {
+                "preflight": {
+                    "steps": [
+                        {"run": 'echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"'}
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("ready" in e and "live" in e for e in r.errors)
+
+
+def test_smoke_url_readiness_passes():
+    r = _result()
+    validate_smoke_readiness(
+        {
+            "jobs": {
+                "preflight": {
+                    "steps": [
+                        {"run": 'echo "smoke_url=$scheme://$dns/api/v1/health/ready" >> "$GITHUB_OUTPUT"'}
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_smoke_url_liveness_path_strip_rejected():
+    """Path-stripping logic that assumes the /live suffix is also rejected."""
+    r = _result()
+    validate_smoke_readiness(
+        {
+            "jobs": {
+                "smoke": {
+                    "steps": [
+                        {"run": '-Base "${SMOKE_URL%/api/v1/health/live}" \\'}
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("ready" in e and "live" in e for e in r.errors)
+
+
+# ── N1: governed gh api calls need actions: read ───────────────────────────
+
+
+def test_gh_api_actions_permission_missing_rejected():
+    """Explicit permissions without actions: read reject a governed actions call."""
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"id-token": "write", "contents": "read"},
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": (
+                                'conclusion=$(gh api "repos/x/actions/runs?head_sha=a" '
+                                "--jq y)"
+                            ),
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("actions: read" in e and "gh api" in e for e in r.errors)
+
+
+def test_gh_api_actions_permission_present_passes():
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"actions": "read", "id-token": "write", "contents": "read"},
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'conclusion=$(gh api "repos/x/actions/runs" --jq y)',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_gh_api_environment_endpoint_requires_actions_read():
+    """Environments governance endpoints are also Actions-scoped."""
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"contents": "read"},
+            "jobs": {
+                "resolve": {
+                    "steps": [
+                        {
+                            "run": (
+                                'rules=$(gh api "repos/x/environments/production" '
+                                "--jq '.protection_rules // []')"
+                            ),
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("actions: read" in e for e in r.errors)
+
+
+def test_gh_api_non_governed_endpoint_ignored():
+    """A gh api call to a non-Actions/Environment endpoint is not flagged."""
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"contents": "read"},
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {"run": 'gh api "repos/x/issues" --jq y'}
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── N2: SUPERSEDED / DO NOT EXECUTE workflows must not deploy ───────────────
+
+
+def test_superseded_workflow_with_deploy_command_rejected(tmp_path):
+    """A workflow marked SUPERSEDED must not retain a live deploy command."""
+    wf = tmp_path / "deploy-prod.yml"
+    wf.write_text(
+        "# deploy-prod — SUPERSEDED by release-service.yml. Triggers DISABLED.\n"
+        "name: deploy-prod\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "    inputs:\n"
+        "      confirm_deploy:\n"
+        "        type: boolean\n"
+        "jobs:\n"
+        "  deploy:\n"
+        "    environment: production\n"
+        "    steps:\n"
+        "      - run: aws ecs update-service --service backend --force-new-deployment\n"
+    )
+    r = ValidationResult(str(wf))
+    validate_superseded_no_deploy_entrypoint(
+        {
+            "name": "deploy-prod",
+            "jobs": {
+                "deploy": {
+                    "environment": "production",
+                    "steps": [{"run": "aws ecs update-service --service backend"}],
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("Superseded workflow" in e and "deploy" in e for e in r.errors)
+
+
+def test_superseded_workflow_without_deploy_mutation_passes(tmp_path):
+    """A tombstone SUPERSEDED workflow with no deploy mutation is acceptable."""
+    wf = tmp_path / "_tombstone.yml"
+    wf.write_text(
+        "# _tombstone — DO NOT EXECUTE. Kept for history only.\n"
+        "name: _tombstone\n"
+        "on:\n"
+        "  push:\n"
+        "    branches: [\"**\"]\n"
+        "jobs: {}\n"
+    )
+    r = ValidationResult(str(wf))
+    validate_superseded_no_deploy_entrypoint(
+        {"name": "_tombstone", "jobs": {}},
+        r,
+    )
+    assert r.passed
+
+
+def test_unsuperseded_workflow_not_checked(tmp_path):
+    """A normal workflow without a SUPERSEDED marker is not subject to N2."""
+    wf = tmp_path / "deploy-dev.yml"
+    wf.write_text(
+        "# deploy-dev — explicit development deployment.\n"
+        "name: deploy-dev\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  deploy:\n"
+        "    steps:\n"
+        "      - run: aws ecs update-service\n"
+    )
+    r = ValidationResult(str(wf))
+    validate_superseded_no_deploy_entrypoint(
+        {
+            "name": "deploy-dev",
+            "jobs": {"deploy": {"steps": [{"run": "aws ecs update-service"}]}},
+        },
+        r,
     )
     assert r.passed
 

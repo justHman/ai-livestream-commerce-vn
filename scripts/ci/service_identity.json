@@ -1,0 +1,34 @@
+{
+  "backend": {
+    "service_dir": "backend_service",
+    "image": "imjusthman/ai-live-backend",
+    "container": "backend",
+    "dockerfile": "services/product/backend_service/Dockerfile",
+    "platforms": "linux/arm64",
+    "cache_scope": "backend"
+  },
+  "llm": {
+    "service_dir": "llm_service",
+    "image": "imjusthman/ai-live-llm",
+    "container": "llm",
+    "dockerfile": "services/product/llm_service/Dockerfile",
+    "platforms": "linux/amd64",
+    "cache_scope": "llm"
+  },
+  "tts": {
+    "service_dir": "tts_service",
+    "image": "imjusthman/ai-live-tts",
+    "container": "tts",
+    "dockerfile": "services/product/tts_service/Dockerfile",
+    "platforms": "linux/amd64",
+    "cache_scope": "tts"
+  },
+  "avatar": {
+    "service_dir": "avatar_service",
+    "image": "imjusthman/ai-live-avatar",
+    "container": "avatar",
+    "dockerfile": "services/product/avatar_service/Dockerfile",
+    "platforms": "linux/amd64",
+    "cache_scope": "avatar"
+  }
+}

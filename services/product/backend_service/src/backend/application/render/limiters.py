@@ -136,4 +136,4 @@ class MaxBodySizeMiddleware:
         await send({"type": "http.response.body", "body": payload})
 
 
-# ponytail: this limiter is per process; replace it with Redis before backend replicas exceed one.
+# Layer-2 LOCAL overload protection (per replica); logical quotas use backend.application.rate_limit.

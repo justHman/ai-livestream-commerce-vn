@@ -12,6 +12,7 @@ Canonical dependency access goes through ``app.state.container`` (see
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from fastapi import FastAPI
@@ -90,8 +91,89 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     )
 
 
+# Credential values that must never be treated as production-ready secrets.
+# Terraform injects real SSM values; a placeholder here means the deployment
+# shipped a fake credential the client would silently send unauthenticated.
+_PROVIDER_CREDENTIAL_PLACEHOLDERS = frozenset(
+    {"CHANGE_ME", "changeme", "change-me", "placeholder", "dev-token", "test-token", "dummy"}
+)
+
+
+def _validate_production_provider_credentials(config) -> None:
+    """Fail startup when an enabled remote/provider engine lacks a real credential.
+
+    R8.4: the backend's outbound clients read ``LLM_AUTH_TOKEN`` /
+    ``TTS_AUTH_TOKEN`` and send an ``Authorization`` header only when the value
+    is present. A production deployment with a missing, empty, or placeholder
+    credential would silently construct an unauthenticated client. Runs on the
+    real composition path only (no injected deps/container) and only when
+    ``config.is_production``; no remote engine enabled → no-op.
+    """
+    problems: list[str] = []
+
+    def _credential_problem(env_names: tuple[str, ...], engine_label: str) -> None:
+        value = next((os.environ.get(n, "") for n in env_names if os.environ.get(n, "")), "")
+        if not value.strip():
+            problems.append(f"missing credential env {env_names[0]} for engine {engine_label}")
+        elif value.strip() in _PROVIDER_CREDENTIAL_PLACEHOLDERS:
+            problems.append(
+                f"placeholder credential {env_names[0]}={value!r} for engine {engine_label}"
+            )
+
+    if config.llm.engine == "openai_compat":
+        if not (config.llm.base_url or "").strip():
+            problems.append("LLM_BASE_URL is empty for engine openai_compat")
+        _credential_problem(("LLM_AUTH_TOKEN",), config.llm.engine)
+    if config.tts.engine == "remote_http":
+        if not (config.tts.base_url or "").strip():
+            problems.append("TTS_BASE_URL is empty for engine remote_http")
+        _credential_problem(("TTS_AUTH_TOKEN",), config.tts.engine)
+    if config.tts.engine in ("elevenlabs", "openai_speech"):
+        _credential_problem(("TTS_API_KEY", "ELEVENLABS_API_KEY"), config.tts.engine)
+
+    if problems:
+        raise RuntimeError(
+            "production provider credential validation failed: " + "; ".join(problems)
+        )
+
+
+def _validate_production_auth_tokens(config) -> None:
+    """Fail startup when production auth tokens are empty or placeholders.
+
+    R8.1/R8.2: real production must reject known placeholder/development
+    fixture credentials and empty required auth tokens (``backend_api_token``,
+    ``admin_api_token``) before the service becomes ready — otherwise the
+    auth plane would boot accepting a known dev/placeholder credential. Runs
+    on the real composition path only (no injected deps/container) and only
+    when ``config.is_production``; dev/CI no-op. Auth tokens share the same
+    placeholder set as provider credentials.
+    """
+    if not config.is_production:
+        return
+    problems: list[str] = []
+
+    def _token_problem(attr: str) -> None:
+        value = getattr(config, attr)
+        stripped = value.strip()
+        if not stripped:
+            problems.append(f"{attr} is empty")
+        elif stripped in _PROVIDER_CREDENTIAL_PLACEHOLDERS:
+            problems.append(f"{attr}={value!r} is a placeholder")
+
+    _token_problem("backend_api_token")
+    _token_problem("admin_api_token")
+
+    if problems:
+        raise RuntimeError("production auth token validation failed: " + "; ".join(problems))
+
+
 def v1_engine_manager(config) -> Any:
     """Build an EngineManager and load configured engines (parity helper)."""
+    # Function-level import: composition pulls in the provider clients, which
+    # must never be imported at module scope here (avoids import cycles).
+    from backend.application.clients.composition import ensure_remote_engines_registered
+
+    ensure_remote_engines_registered()
     from backend.engine_manager import EngineManager
 
     manager = EngineManager()
@@ -100,6 +182,8 @@ def v1_engine_manager(config) -> Any:
             manager.load_llm(config.llm.to_engine_cfg())
             manager.set_system_prompt(config.llm.system_prompt)
     except Exception as exc:
+        if config.is_production:
+            raise  # R8.4: fail startup instead of silently degrading to a stub
         manager.llm_load_error = f"{type(exc).__name__}: {exc}"
         print(
             f"[bootstrap] LLM engine '{config.llm.engine}' unavailable "
@@ -109,6 +193,8 @@ def v1_engine_manager(config) -> Any:
         if config.tts.engine not in ("tone", "", None):
             manager.load_tts(config.tts.to_engine_cfg())
     except Exception as exc:
+        if config.is_production:
+            raise  # R8.4: fail startup instead of silently degrading to a stub
         manager.tts_load_error = f"{type(exc).__name__}: {exc}"
         print(
             f"[bootstrap] TTS engine '{config.tts.engine}' unavailable "
@@ -157,12 +243,20 @@ def _build_script_authoring(config, engine_manager, pg_store) -> Any:
 
 
 def _build_api_limiter(config) -> Any:
-    from backend.application.render.limiters import SlidingWindowLimiter
+    from backend.application.rate_limit import (
+        InMemoryRateLimitStore,
+        RedisRateLimitStore,
+        SharedQuotaLimiter,
+    )
 
-    return SlidingWindowLimiter(
-        limit=config.api_rate_limit_requests,
+    if config.store_backend == "redis":
+        store = RedisRateLimitStore(config.redis_url)
+    else:
+        store = InMemoryRateLimitStore(max_keys=config.api_rate_limit_max_keys)
+    return SharedQuotaLimiter(
+        store,
+        requests_limit=config.api_rate_limit_requests,
         window_seconds=config.api_rate_limit_window_seconds,
-        max_keys=config.api_rate_limit_max_keys,
     )
 
 
@@ -243,6 +337,54 @@ def create_app(
         raise RuntimeError(
             "CORS_ORIGINS='*' is forbidden outside APP_ENV=dev; set explicit origins"
         )
+
+    # R0.3/Decision 5 fail-loud: self-host Avatar has no production-ready
+    # engine — only a test stub exists (avatar_service builds
+    # AvatarForcingEngine(model="mock") for AVATAR_ENGINE=none). Selecting it
+    # must fail clearly at startup instead of silently booting a stub that
+    # advertises readiness. Runs BEFORE the local-engine guard so the
+    # avatar-specific message is never masked by the generic one. Real
+    # composition path only (no injected deps/container), like the guard below.
+    if container is None and deps is None and config.avatar_adapter == "self_hosted":
+        if config.is_production:
+            raise RuntimeError(
+                "self-host Avatar is not production-ready; only a test stub exists "
+                "(AVATAR_ADAPTER=self_hosted rejected in production)"
+            )
+        if not config.allow_stub_avatar_test_only:
+            raise RuntimeError(
+                "self-host Avatar selected (AVATAR_ADAPTER=self_hosted) but only a test "
+                "stub exists; set ALLOW_STUB_AVATAR_TEST_ONLY=1 for explicit test mode only"
+            )
+
+    # Production guard: the control plane must never run local model/GPU
+    # engines — remote/provider clients only. Only the real composition path
+    # (no injected deps/container) is guarded; injected deps own their engines.
+    if config.is_production and container is None and deps is None:
+        offending = []
+        if config.llm.engine in {"vllm", "llamacpp", "sglang", "hf"}:
+            offending.append(f"llm.engine={config.llm.engine}")
+        if config.tts.engine in {"transformers", "vieneu", "cosyvoice"}:
+            offending.append(f"tts.engine={config.tts.engine}")
+        if offending:
+            raise RuntimeError(
+                "backend control plane must not run local model/GPU engines "
+                "(remote/provider clients only); offending: " + ", ".join(offending)
+            )
+
+    # R8.4: production remote/provider engines must carry a real credential and
+    # base URL before the container boots — a missing/placeholder credential
+    # would silently construct an unauthenticated client. Real composition path
+    # only (no injected deps/container), like the guards above.
+    if config.is_production and container is None and deps is None:
+        _validate_production_provider_credentials(config)
+
+    # R8.1/R8.2: production auth tokens must be real before the service becomes
+    # ready — empty/placeholder BACKEND_API_TOKEN/ADMIN_API_TOKEN would boot an
+    # auth plane that accepts a known dev/placeholder credential. Real
+    # composition path only, after the provider-credential guard above.
+    if config.is_production and container is None and deps is None:
+        _validate_production_auth_tokens(config)
 
     # Resolve the typed container (canonical path) or the legacy deps path.
     resolved_container: BootstrapContainer

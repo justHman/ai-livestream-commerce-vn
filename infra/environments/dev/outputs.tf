@@ -19,8 +19,10 @@ output "rds_endpoint" {
   value = module.database.rds_endpoint
 }
 
-output "redis_connection_string" {
-  value = module.database.redis_connection_string
+output "redis_uri" {
+  description = "TLS Redis URI (rediss://) with AUTH token when set"
+  value       = module.database.redis_uri
+  sensitive   = true
 }
 
 output "backend_sg_id" {

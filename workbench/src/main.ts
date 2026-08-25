@@ -616,20 +616,24 @@ function applyRuntimeConfig(): void {
     .catch((error) => addEvent(`Runtime config bị từ chối: ${safeMessage(error)}`, "danger"));
 }
 
-async function verifySandbox(): Promise<void> {
-  dispatch({ type: "AUTO_PHASE", phase: "verifying", active: state.autoDemo.active });
-  dispatch({ type: "RESOURCES_SET", value: { status: "Đang chạy sandbox verification 3 lớp..." } });
+async function showAdminConfig(): Promise<void> {
+  dispatch({ type: "RESOURCES_SET", value: { status: "Đang tải cấu hình admin..." } });
   try {
-    const body = await store.sandboxVerify({ avatar_id: state.resources.avatarId || null, speech_text: "Xin chào, đây là phiên kiểm tra Stage 2." });
-    dispatch({ type: "VERIFICATION_SET", value: body });
-    dispatch({ type: "RESOURCES_SET", value: { status: `Sandbox verification: ${body.ready ? "PASS" : "FAIL"}. ${body.layers.map((l) => `${l.name}=${l.status}(${l.latency_ms}ms)`).join(" · ")}` } });
-    addEvent(`Sandbox verification ${body.ready ? "PASS" : "FAIL"}.`, body.ready ? "success" : "danger");
-    if (!body.ready) dispatch({ type: "AUTO_PHASE", phase: "failed", active: false });
+    const cfg = await store.adminConfig();
+    const llm = (cfg.llm ?? {}) as Record<string, unknown>;
+    const tts = (cfg.tts ?? {}) as Record<string, unknown>;
+    const secrets = (cfg.secrets ?? {}) as Record<string, unknown>;
+    const secretsSummary = Object.entries(secrets).map(([k, v]) => `${k}=${String(v)}`).join(" · ");
+    dispatch({
+      type: "RESOURCES_SET",
+      value: {
+        status: `Cấu hình: env=${String(cfg.app_env ?? "?")} · render=${String(cfg.render_backend ?? "?")} · LLM=${String(llm.engine ?? "?")} · TTS=${String(tts.engine ?? "?")} · secrets[${secretsSummary}]`,
+      },
+    });
+    addEvent("Đã tải cấu hình admin.", "success");
   } catch (error) {
-    dispatch({ type: "VERIFICATION_SET", value: { ready: false, layers: [] } });
-    dispatch({ type: "RESOURCES_SET", value: { status: `Sandbox verification thất bại: ${safeMessage(error)}` } });
-    dispatch({ type: "AUTO_PHASE", phase: "failed", active: false });
-    addEvent(`Sandbox verification thất bại: ${safeMessage(error)}`, "danger");
+    dispatch({ type: "RESOURCES_SET", value: { status: `Tải cấu hình admin thất bại: ${safeMessage(error)}` } });
+    addEvent(`Tải cấu hình admin thất bại: ${safeMessage(error)}`, "danger");
   }
 }
 
@@ -684,7 +688,7 @@ function bindEvents(): void {
     ($(`malformed-${platform}`) as HTMLButtonElement).addEventListener("click", () => handleSourceControl(platform, "malformed"));
     ($(`outage-${platform}`) as HTMLInputElement).addEventListener("change", () => handleSourceControl(platform, "pause"));
   }
-  ($("verifyBtn") as HTMLButtonElement).addEventListener("click", () => void verifySandbox());
+  ($("verifyBtn") as HTMLButtonElement).addEventListener("click", () => void showAdminConfig());
   ($("apiToken") as HTMLInputElement).addEventListener("change", () => void loadProtected());
   ($("adminToken") as HTMLInputElement).addEventListener("change", () => void loadProtected());
   ($("avatarSelect") as HTMLSelectElement).addEventListener("change", (event) => dispatch({ type: "RESOURCE_SELECT", field: "avatarId", value: (event.target as HTMLSelectElement).value }));
@@ -866,7 +870,7 @@ function boot(): void {
   hydrateLocalDraft();
   mountAuthoring({
     backendUrl: () => backendUrl(),
-    adminToken: getAdminToken,
+    viewerToken: getViewerToken,
     api: store,
     onEvent: addEvent,
   });

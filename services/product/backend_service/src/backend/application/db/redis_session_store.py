@@ -16,11 +16,12 @@ import json
 import secrets
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
 from .session_store import SessionLockTimeout, SessionStore
 
-__all__ = ["RedisSessionStore"]
+__all__ = ["RedisSessionStore", "SessionLockFence"]
 
 _LOCK_RELEASE_SCRIPT = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -29,6 +30,23 @@ else
   return 0
 end
 """
+
+_LOCK_COMMIT_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+  return 1
+else
+  return 0
+end
+"""
+
+
+@dataclass(frozen=True)
+class SessionLockFence:
+    """Proof of a held per-session lock, carried to protected writes."""
+
+    session_id: str
+    token: str
 
 
 class RedisSessionStore(SessionStore):
@@ -93,12 +111,13 @@ class RedisSessionStore(SessionStore):
         *,
         ttl_seconds: float = 10.0,
         acquire_timeout_seconds: float = 2.0,
-    ) -> AsyncIterator[None]:
+    ) -> AsyncIterator[SessionLockFence]:
         """Hold the per-session lock across the ``async with`` body.
 
         Acquires with bounded retry (~20ms backoff) and raises
         ``SessionLockTimeout`` when the lock is not gained in time — callers
-        must never proceed unlocked. Always releases on exit.
+        must never proceed unlocked. Yields a ``SessionLockFence`` so protected
+        writes can prove they still own the lock. Always releases on exit.
         """
         token = secrets.token_hex(16)
         deadline = time.monotonic() + acquire_timeout_seconds
@@ -108,7 +127,31 @@ class RedisSessionStore(SessionStore):
             if time.monotonic() >= deadline:
                 raise SessionLockTimeout(session_id)
             await asyncio.sleep(0.02)
+        # ponytail: no lease renewal; a section longer than TTL will be fenced
+        # out on its next protected write — renewal is the upgrade path.
+        fence = SessionLockFence(session_id=session_id, token=token)
         try:
-            yield
+            yield fence
         finally:
             await self.release_session_lock(session_id, token)
+
+    async def commit_if_owner(
+        self, fence: SessionLockFence, data: dict, ttl_seconds: Optional[int] = None
+    ) -> bool:
+        """Atomically write session meta only while we still hold the lock.
+
+        ONE Lua round-trip: compare the lock token, then SET the session blob
+        (with the store default TTL unless overridden). False when a newer
+        owner took over — the caller must not swallow that.
+        """
+        client = await self._ensure()
+        committed = await client.eval(
+            _LOCK_COMMIT_SCRIPT,
+            2,
+            self._lock_key(fence.session_id),
+            f"session:{fence.session_id}",
+            fence.token,
+            json.dumps(data),
+            ttl_seconds or self._ttl,
+        )
+        return bool(committed)

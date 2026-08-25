@@ -24,37 +24,45 @@ resource "aws_ecs_task_definition" "backend" {
           protocol      = "tcp"
         }
       ]
-      environment = [
-        { name = "ENV", value = var.env },
-        { name = "PORT", value = "8800" },
-        { name = "APP_ENV", value = var.app_env != "" ? var.app_env : var.env },
-        # API-only smoke: mock render + tone TTS + no LLM.
-        # SESSION_STORE: memory (single-task) or redis (multi-task via redis_url).
-        # Backend owns outbound *_ADAPTER selectors; *_ENGINE stays service-local.
-        { name = "AVATAR_ADAPTER", value = var.avatar_adapter },
-        { name = "LLM_ADAPTER", value = var.llm_adapter },
-        { name = "LLM_BASE_URL", value = var.llm_base_url != "" ? var.llm_base_url : "http://llm.${var.env}.ai-live.local:8001" },
-        { name = "LLM_MODEL", value = var.llm_model },
-        # DeepSeek reasoning model uses tokens for reasoning then content; default
-        # max_tokens=128 -> all tokens consumed by reasoning -> content="" +
-        # finish=length. Raise to 8192 so reasoning (2-4k) + content (1-2k) fit.
-        { name = "LLM_MAX_TOKENS", value = "8192" },
-        { name = "TTS_ADAPTER", value = var.tts_adapter },
-        # Cloud Map private DNS for self-host adapters; var override for hosted providers.
-        { name = "TTS_BASE_URL", value = var.tts_base_url != "" ? var.tts_base_url : "http://tts.${var.env}.ai-live.local:8002" },
-        { name = "TTS_VOICE_ID", value = var.tts_voice_id },
-        { name = "TTS_MODEL_ID", value = "eleven_turbo_v2_5" },
-        { name = "SESSION_STORE", value = var.session_store },
-        { name = "DIRECTOR_ENABLED", value = "1" },
-        { name = "DIRECTOR_EMBEDDER", value = "semantic-required" },
-        { name = "DIRECTOR_EMBEDDER_MODEL", value = "bkai-foundation-models/vietnamese-bi-encoder" },
-        { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
-        { name = "PIPECAT_ENABLED", value = "0" },
-        { name = "LIVEKIT_URL", value = var.livekit_url },
-        { name = "DEBUG_ENABLED", value = var.debug_enabled ? "1" : "0" },
-        { name = "CORS_ORIGINS", value = var.cors_origins },
-        { name = "REDIS_URL", value = var.redis_url },
-      ]
+      environment = concat(
+        [
+          { name = "ENV", value = var.env },
+          { name = "PORT", value = "8800" },
+          { name = "APP_ENV", value = var.app_env != "" ? var.app_env : var.env },
+          # API-only smoke: mock render + tone TTS + no LLM.
+          # SESSION_STORE: memory (single-task) or redis (multi-task via redis_url).
+          # Backend owns outbound *_ADAPTER selectors; *_ENGINE stays service-local.
+          { name = "AVATAR_ADAPTER", value = var.avatar_adapter },
+          { name = "LLM_ADAPTER", value = var.llm_adapter },
+          { name = "LLM_BASE_URL", value = var.llm_base_url != "" ? var.llm_base_url : "http://llm.${var.env}.ai-live.local:8001" },
+          { name = "LLM_MODEL", value = var.llm_model },
+          # DeepSeek reasoning model uses tokens for reasoning then content; default
+          # max_tokens=128 -> all tokens consumed by reasoning -> content="" +
+          # finish=length. Raise to 8192 so reasoning (2-4k) + content (1-2k) fit.
+          { name = "LLM_MAX_TOKENS", value = "8192" },
+          { name = "TTS_ADAPTER", value = var.tts_adapter },
+          # Cloud Map private DNS for self-host adapters; var override for hosted providers.
+          { name = "TTS_BASE_URL", value = var.tts_base_url != "" ? var.tts_base_url : "http://tts.${var.env}.ai-live.local:8002" },
+          { name = "TTS_VOICE_ID", value = var.tts_voice_id },
+          { name = "TTS_MODEL_ID", value = "eleven_turbo_v2_5" },
+          { name = "SESSION_STORE", value = var.session_store },
+          { name = "DIRECTOR_ENABLED", value = "1" },
+          { name = "DIRECTOR_EMBEDDER", value = "semantic-required" },
+          { name = "DIRECTOR_EMBEDDER_MODEL", value = "bkai-foundation-models/vietnamese-bi-encoder" },
+          { name = "LMCACHE_ENABLED", value = tostring(var.lmcache_enabled) },
+          { name = "PIPECAT_ENABLED", value = "0" },
+          { name = "LIVEKIT_URL", value = var.livekit_url },
+          { name = "DEBUG_ENABLED", value = var.debug_enabled ? "1" : "0" },
+          { name = "CORS_ORIGINS", value = var.cors_origins },
+        ],
+        # REDIS_URL plaintext only for unauthenticated dev/staging Redis (no
+        # credential in the URI). When the URI carries a credential it is
+        # delivered via the redis/url SSM SecureString secret below (valueFrom)
+        # and must never appear as a plaintext environment value.
+        (lookup(var.secrets_arns, "redis/url", "") == "" && var.redis_url != "") ? [
+          { name = "REDIS_URL", value = var.redis_url },
+        ] : [],
+      )
       secrets = concat(
         [
           {
@@ -81,19 +89,22 @@ resource "aws_ecs_task_definition" "backend" {
             valueFrom = var.secrets_arns["liveavatar/api_key"]
           },
         ] : [],
-        # Remote OpenAI-compatible LLM API key (optional, when llm_adapter is
-        # a remote endpoint needing auth).
+        # Remote OpenAI-compatible LLM credential (optional, when llm_adapter
+        # is a remote endpoint needing auth). Injected under LLM_AUTH_TOKEN —
+        # the canonical name the backend OpenAICompatibleClient reads.
         lookup(var.secrets_arns, "llm/api_key", "") != "" ? [
           {
-            name      = "LLM_API_KEY"
+            name      = "LLM_AUTH_TOKEN"
             valueFrom = var.secrets_arns["llm/api_key"]
           },
         ] : [],
-        # Stage 2 ship-fast: ElevenLabs remote TTS API key (optional, when
+        # Stage 2 ship-fast: ElevenLabs remote TTS credential (optional, when
         # tts_engine=elevenlabs). Put in SSM /dev/tts/api_key out-of-band.
+        # Injected under TTS_AUTH_TOKEN — the canonical name the backend
+        # SelfHostedTTSClient reads.
         lookup(var.secrets_arns, "tts/api_key", "") != "" ? [
           {
-            name      = "TTS_API_KEY"
+            name      = "TTS_AUTH_TOKEN"
             valueFrom = var.secrets_arns["tts/api_key"]
           },
         ] : [],
@@ -109,6 +120,16 @@ resource "aws_ecs_task_definition" "backend" {
           {
             name      = "LIVEKIT_API_SECRET"
             valueFrom = var.secrets_arns["livekit/api_secret"]
+          },
+        ] : [],
+        # REDIS_URL secret reference (B6): the credential-bearing rediss:// URI
+        # is delivered via the redis/url SSM SecureString (valueFrom) at the AWS
+        # edge — never a plaintext task-definition environment value. Absent for
+        # unauthenticated dev/staging Redis (delivered as plain env above).
+        lookup(var.secrets_arns, "redis/url", "") != "" ? [
+          {
+            name      = "REDIS_URL"
+            valueFrom = var.secrets_arns["redis/url"]
           },
         ] : [],
       )
@@ -225,3 +246,64 @@ resource "aws_ecs_service" "backend" {
 
 # EC2/GPU services only exist when capacity providers exist.
 # Task defs require EC2 — never fall back to FARGATE (invalid launch type).
+
+# R2.4 capacity invariants: a hosted/provider adapter selection must force
+# unused self-host capacity to zero (fail plan, not silently allow), and
+# self-host Avatar must never be selected while only a test stub exists.
+# Mirrors the db_url_parity precondition pattern (infra/environments/prod/main.tf).
+resource "terraform_data" "capacity_invariants" {
+  input = format(
+    "%s|%s|%s|%s|%s|%s",
+    var.avatar_adapter,
+    var.desired_avatar,
+    var.tts_adapter,
+    var.desired_tts,
+    var.llm_base_url,
+    var.desired_llm,
+  )
+  lifecycle {
+    precondition {
+      condition     = var.avatar_adapter != "self_hosted" ? var.desired_avatar == 0 : true
+      error_message = "Hosted/provider Avatar selected (avatar_adapter=${var.avatar_adapter}); desired_avatar must be 0 (no unused self-host Avatar capacity)."
+    }
+    precondition {
+      condition     = var.avatar_adapter != "self_hosted" || var.allow_stub_avatar_test_only
+      error_message = "Self-host Avatar selected but only a test stub exists; no real self-host engine is production-ready. Set allow_stub_avatar_test_only=true ONLY for explicit test mode (never production)."
+    }
+    precondition {
+      condition     = var.tts_adapter == "self_hosted" ? true : var.desired_tts == 0
+      error_message = "Hosted/provider TTS selected (tts_adapter=${var.tts_adapter}); desired_tts must be 0."
+    }
+    precondition {
+      condition     = var.llm_base_url == "" ? true : var.desired_llm == 0
+      error_message = "Hosted LLM base URL override set (llm_base_url=${var.llm_base_url}); desired_llm must be 0 (no unused self-host LLM capacity)."
+    }
+  }
+}
+
+# B6 Redis credential security invariant: a credential-bearing REDIS_URL must be
+# delivered via the redis/url SSM SecureString secret (secrets valueFrom) at the
+# AWS edge — never a plaintext task-definition environment value. Two guards:
+#   * when the redis/url secret is wired, do not also pass a plaintext redis_url
+#     (would double-render, and the secret must win);
+#   * when no secret is wired, a URI with userinfo (a credential) is rejected
+#     rather than silently rendered in ECS environment.
+resource "terraform_data" "redis_credential_security" {
+  input = format("%s|%s", var.redis_url, lookup(var.secrets_arns, "redis/url", ""))
+  lifecycle {
+    precondition {
+      condition = (
+        lookup(var.secrets_arns, "redis/url", "") != ""
+        ? var.redis_url == ""
+        : !can(regex("://[^/@]+@", var.redis_url))
+      )
+      error_message = <<-EOT
+        Credential-bearing REDIS_URL must be delivered via the redis/url SSM
+        SecureString secret (secrets valueFrom) at the AWS edge, never as a
+        plaintext ECS task-definition environment value. Set
+        secrets_arns["redis/url"] to the SSM parameter ARN and leave redis_url
+        empty, or use an unauthenticated URI (no userinfo).
+      EOT
+    }
+  }
+}

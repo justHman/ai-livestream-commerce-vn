@@ -3,8 +3,11 @@
 Verifies ``Authorization: Bearer <token>`` for HTTP dependencies and
 ``?token=`` for WebSockets.  Secret equality uses constant-time comparison
 (``hmac.compare_digest``).  Identity resolution stays safe: no token value is
-ever logged or echoed.  WebSocket rejection happens BEFORE ``accept()`` — the
-route must call ``ws_token_valid``/``reject_ws`` before ``await ws.accept()``.
+ever logged or echoed.  Protected HTTP dependencies FAIL CLOSED: when the
+container/auth config cannot be resolved, ``require_viewer``/``require_admin``
+raise 401 instead of letting the request through.  WebSocket rejection happens
+BEFORE ``accept()`` — the route must call ``ws_token_valid``/``reject_ws``
+before ``await ws.accept()``.
 """
 
 from __future__ import annotations
@@ -45,10 +48,11 @@ async def require_viewer(request: Request) -> None:
     - dev + empty token -> pass.
     - prod + empty configured token -> 401 (auth required, nothing to match).
     - missing/wrong bearer -> 401 (does not leak valid-vs-invalid).
+    - unresolved container/config -> 401 (fail closed, never allow).
     """
     cfg = getattr(getattr(request.app.state, "container", None), "config", None)
     if cfg is None:
-        return  # no config wired — do not block
+        raise HTTPException(status_code=401, detail="auth configuration unavailable")
     token = cfg.backend_api_token
     if auth_disabled_dev(cfg, token):
         return
@@ -64,10 +68,11 @@ async def require_admin(request: Request) -> None:
 
     401: missing/wrong credentials.
     403: presented token is a valid viewer token but lacks admin privilege.
+    Unresolved container/config -> 401 (fail closed, never allow).
     """
     cfg = getattr(getattr(request.app.state, "container", None), "config", None)
     if cfg is None:
-        return
+        raise HTTPException(status_code=401, detail="auth configuration unavailable")
     admin_token = cfg.admin_api_token
     if auth_disabled_dev(cfg, admin_token):
         return

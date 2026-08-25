@@ -263,6 +263,7 @@ def test_ready_is_false_after_configured_pg_startup_failure(monkeypatch):
         response = client.get("/api/v1/health/ready")
 
     assert pg.connect_calls == 3
+    assert response.status_code == 503, "not-ready must be HTTP 503, not a 200 body (audit R0.4)"
     assert response.json()["ok"] is False
     assert response.json()["postgres_error"] == "RuntimeError: database unavailable"
 
@@ -278,11 +279,11 @@ def test_ready_handles_pg_health_exception_without_details(monkeypatch, caplog):
         pg_store=pg,
     )
 
-    with caplog.at_level(logging.WARNING, logger="backend.api.v1"):
+    with caplog.at_level(logging.WARNING, logger="backend.api.health"):
         with TestClient(create_app(config=config, deps=deps)) as client:
             response = client.get("/api/v1/health/ready")
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert response.json()["ok"] is False
     assert response.json()["postgres"] == "not_ready"
     assert response.json()["postgres_error"] == "RuntimeError"

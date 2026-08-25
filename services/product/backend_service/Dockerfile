@@ -68,6 +68,8 @@ COPY --chown=appuser:appuser services/product/backend_service/src/backend/ ./ser
 COPY --chown=appuser:appuser services/product/llm_service/src/llm/ ./services/product/llm_service/src/llm/
 COPY --chown=appuser:appuser services/product/tts_service/src/tts/ ./services/product/tts_service/src/tts/
 COPY --chown=appuser:appuser services/product/avatar_service/src/avatar/ ./services/product/avatar_service/src/avatar/
+# Change-B runtime resources (skill/profanity/safety) must ship in the artifact.
+COPY --chown=appuser:appuser services/product/backend_service/resources/ ./services/product/backend_service/resources/
 COPY --chown=appuser:appuser services/product/backend_service/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh

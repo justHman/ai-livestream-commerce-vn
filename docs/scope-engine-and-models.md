@@ -3,6 +3,12 @@
 > Status: **CONFIRMED** 2026-07-10 (engines) + AWS stack 2026-07-11.
 > Supersedes v1.x. Companions: `brief-for-confirmation.md`, `aws-architecture.md`, `scope-tts-engines.md`.
 > Implementation plans: `../plans/00-implement-aws-stack.md`, `../plans/01-app-feature-backlog.md`.
+>
+> **SUPERSEDED 2026-08-24 (deployment/provider strategy):** the self-host
+> engine choices below are DEFERRED under the current provider-first
+> strategy (BYOK/third-party LLM, VieNeu SDK TTS, managed LiveKit Cloud).
+> AWS is one deployment option, not the product architecture. Retained as
+> historical scope evidence.
 
 ## 1. LLM engine
 

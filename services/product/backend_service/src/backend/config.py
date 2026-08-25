@@ -9,9 +9,13 @@ Engine selection (the production seam):
   RENDER_BACKEND   cloud_liveavatar | self_host_avatarforcing_half |
                    self_host_echoavatar_full | mock
   SESSION_STORE    memory(Colab) | redis(AWS)
-  LLM_ENGINE       vllm | llamacpp | sglang | hf | none(default echo)
-  TTS_ENGINE       transformers(default) | vieneu | cosyvoice | tone
+  LLM_ENGINE       vllm | llamacpp | sglang | hf | openai_compat | none(default echo)
+  TTS_ENGINE       transformers(default) | vieneu | cosyvoice | tone |
+                   remote_http | elevenlabs | openai_speech
   DIRECTOR_ENABLED 0 | 1
+  *_ADAPTER        LLM_ADAPTER / TTS_ADAPTER / AVATAR_ADAPTER deterministically
+                   derive their selector when the explicit *_ENGINE /
+                   *_BACKEND env is absent (see _resolve_adapter_defaults).
 
 Prompt ownership (OpenSpec 1.11): canonical Director prompt text lives in the
 Markdown bundle under ``backend/application/director/prompts/``. This module
@@ -24,6 +28,28 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
+
+
+def _dsn_is_loopback(database_url: str) -> bool:
+    """True when the DSN targets a loopback host (an embedded/local dev store).
+
+    The production TLS gate (C.3/R7.4) demands an explicit sslmode from a real
+    managed Postgres (remote host). A local/embedded Postgres on loopback is an
+    explicit dev/test store and must keep working without TLS (C.3.3).
+    """
+    return urlparse(database_url).hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _dsn_sslmode(database_url: str) -> str:
+    """Extract the ``sslmode`` query value from a Postgres DSN ('' when absent).
+
+    ``urlparse``/``parse_qs`` handle both ``postgres://`` and ``postgresql://``
+    schemes; a DSN with no query string yields '' so callers can treat a
+    missing sslmode the same as an unset one.
+    """
+    values = parse_qs(urlparse(database_url).query).get("sslmode", [])
+    return values[0] if values else ""
 
 
 def _canonical_base_sales() -> str:
@@ -73,6 +99,55 @@ def _build_persona(shop_profile: str = "") -> str:
     guardrails = bundle.prompt("response_guardrails_vi")
     shop = shop_profile or os.environ.get("SHOP_PROFILE") or _DEFAULT_SHOP_PROFILE
     return base + "\n\n" + guardrails + "\n\n" + shop
+
+
+def _resolve_adapter_defaults(env: dict[str, str]) -> dict[str, str | None]:
+    """Derive engine selectors from provider-shaped ``*_ADAPTER`` env.
+
+    Terraform injects ``LLM_ADAPTER``/``TTS_ADAPTER``/``AVATAR_ADAPTER`` while
+    leaving the explicit ``*_ENGINE``/``*_BACKEND`` selector unset. When an
+    explicit selector IS present, this derives ``None`` for it (explicit env
+    wins) and the caller keeps the explicit value. Unknown adapter values fail
+    loud rather than silently echo a stub engine.
+    """
+    llm_engine: str | None = None
+    llm_adapter = env.get("LLM_ADAPTER")
+    if llm_adapter and "LLM_ENGINE" not in env:
+        if llm_adapter.lower() == "openai_compatible":
+            llm_engine = "openai_compat"
+        else:
+            raise ValueError(f"unsupported LLM_ADAPTER={llm_adapter!r}")
+
+    tts_engine: str | None = None
+    tts_adapter = env.get("TTS_ADAPTER")
+    if tts_adapter and "TTS_ENGINE" not in env:
+        tts_map = {
+            "self_hosted": "remote_http",
+            "elevenlabs": "elevenlabs",
+            "openai_speech": "openai_speech",
+        }
+        key = tts_adapter.lower()
+        if key in tts_map:
+            tts_engine = tts_map[key]
+        else:
+            raise ValueError(f"unsupported TTS_ADAPTER={tts_adapter!r}")
+
+    render_backend: str | None = None
+    avatar_adapter = env.get("AVATAR_ADAPTER")
+    if avatar_adapter and "RENDER_BACKEND" not in env:
+        key = avatar_adapter.lower()
+        if key in ("liveavatar", "baidu_xiling"):
+            render_backend = "cloud_liveavatar"
+        elif key == "self_hosted":
+            render_backend = None  # self-host rendering is avatar_service's domain
+        else:
+            raise ValueError(f"unsupported AVATAR_ADAPTER={avatar_adapter!r}")
+
+    return {
+        "llm_engine": llm_engine,
+        "tts_engine": tts_engine,
+        "render_backend": render_backend,
+    }
 
 
 @dataclass
@@ -378,6 +453,12 @@ class AppConfig:
     # Renderer backend
     render_backend: str = "cloud_liveavatar"
 
+    # Avatar adapter selection (provider-shaped env). Used for the fail-loud
+    # self-host guard; NOT part of _resolve_adapter_defaults — that function
+    # stays unchanged and only derives *_ENGINE selectors from *_ADAPTER.
+    avatar_adapter: str = ""
+    allow_stub_avatar_test_only: bool = False
+
     # Session storage
     store_backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
@@ -391,6 +472,8 @@ class AppConfig:
     api_rate_limit_requests: int = 30
     api_rate_limit_window_seconds: float = 60.0
     api_rate_limit_max_keys: int = 10_000
+    # Explicit trusted-proxy policy (R8.10): when False, forwarded headers are ignored.
+    trusted_proxy_client_ip: bool = False
     ws_rate_limit_messages: int = 60
     ws_rate_limit_window_seconds: float = 60.0
 
@@ -446,9 +529,35 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
+        derived = _resolve_adapter_defaults(
+            {
+                k: os.environ[k]
+                for k in (
+                    "LLM_ADAPTER",
+                    "LLM_ENGINE",
+                    "TTS_ADAPTER",
+                    "TTS_ENGINE",
+                    "AVATAR_ADAPTER",
+                    "RENDER_BACKEND",
+                )
+                if k in os.environ
+            }
+        )
+        render_backend = os.environ.get("RENDER_BACKEND", "cloud_liveavatar").lower()
+        if derived["render_backend"] is not None and "RENDER_BACKEND" not in os.environ:
+            render_backend = derived["render_backend"]
+        llm_cfg = LLMConfig.from_env()
+        if derived["llm_engine"] is not None and "LLM_ENGINE" not in os.environ:
+            llm_cfg.engine = derived["llm_engine"]
+        tts_cfg = TTSConfig.from_env()
+        if derived["tts_engine"] is not None and "TTS_ENGINE" not in os.environ:
+            tts_cfg.engine = derived["tts_engine"]
         return cls(
             app_env=os.environ.get("APP_ENV", "dev").lower(),
-            render_backend=os.environ.get("RENDER_BACKEND", "cloud_liveavatar").lower(),
+            render_backend=render_backend,
+            avatar_adapter=os.environ.get("AVATAR_ADAPTER", "").lower(),
+            allow_stub_avatar_test_only=os.environ.get("ALLOW_STUB_AVATAR_TEST_ONLY", "0").lower()
+            in ("1", "true", "yes", "on"),
             store_backend=os.environ.get("SESSION_STORE", "memory").lower(),
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             cors_origins=os.environ.get("CORS_ORIGINS", "*"),
@@ -459,6 +568,8 @@ class AppConfig:
                 os.environ.get("API_RATE_LIMIT_WINDOW_SECONDS", "60")
             ),
             api_rate_limit_max_keys=int(os.environ.get("API_RATE_LIMIT_MAX_KEYS", "10000")),
+            trusted_proxy_client_ip=os.environ.get("RATE_LIMIT_TRUST_PROXY_CLIENT_IP", "").lower()
+            in ("1", "true", "yes", "on"),
             ws_rate_limit_messages=int(os.environ.get("WS_RATE_LIMIT_MESSAGES", "60")),
             ws_rate_limit_window_seconds=float(
                 os.environ.get("WS_RATE_LIMIT_WINDOW_SECONDS", "60")
@@ -490,8 +601,8 @@ class AppConfig:
             database_url=os.environ.get("DATABASE_URL", ""),
             livekit_publish=os.environ.get("LIVEKIT_PUBLISH", "0").lower()
             in ("1", "true", "on", "yes"),
-            llm=LLMConfig.from_env(),
-            tts=TTSConfig.from_env(),
+            llm=llm_cfg,
+            tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),
         )
 
@@ -506,6 +617,35 @@ class AppConfig:
         MUST use this predicate, never a raw ``app_env == ...`` comparison.
         """
         return self.app_env in {"prod", "production"}
+
+    def __post_init__(self) -> None:
+        """Fail loud on a production boot against an unencrypted data store.
+
+        App-side half of R7.1 (managed Redis TLS+auth) and R7.4 (RDS TLS):
+        ``APP_ENV=prod`` must never silently start with a plaintext
+        ``redis://`` store or a DATABASE_URL that lacks an explicit sslmode.
+        Local/dev configs (the default) are unrestricted.
+        """
+        if (
+            self.is_production
+            and self.store_backend == "redis"
+            and not self.redis_url.startswith("rediss://")
+        ):
+            raise ValueError("production redis requires rediss:// (TLS)")
+        if (
+            self.is_production
+            and self.database_url
+            and not _dsn_is_loopback(self.database_url)
+            and _dsn_sslmode(self.database_url)
+            not in {
+                "require",
+                "verify-ca",
+                "verify-full",
+            }
+        ):
+            raise ValueError(
+                "production DATABASE_URL requires sslmode=require|verify-ca|verify-full"
+            )
 
     def cors_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":

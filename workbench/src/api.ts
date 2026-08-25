@@ -17,8 +17,6 @@ import type {
   HealthReadyResponse,
   LiveKitRoomResponse,
   RenderPreviewResponse,
-  SandboxVerifyRequest,
-  SandboxVerifyResponse,
   SayRequest,
   SimpleEntityUpsertReq,
   StartRequest,
@@ -194,13 +192,10 @@ export function createApi(deps: ApiDeps) {
     );
   }
 
-  async function sandboxVerify(
-    req: SandboxVerifyRequest,
-  ): Promise<SandboxVerifyResponse> {
-    return requestJson<SandboxVerifyResponse>("/api/v1/admin/sandbox/verify", {
-      method: "POST",
-      headers: adminHeaders(true),
-      body: JSON.stringify(req),
+  async function adminConfig(): Promise<Record<string, unknown>> {
+    // Sanitized config dump (present/missing for secrets, no secret values).
+    return requestJson<Record<string, unknown>>("/api/v1/admin/config", {
+      headers: adminHeaders(),
     });
   }
 
@@ -310,7 +305,7 @@ export function createApi(deps: ApiDeps) {
     attach,
     postEvents,
     applyRuntimeConfig,
-    sandboxVerify,
+    adminConfig,
     livekitRoom,
     applyEngine,
     previewTts,

@@ -31,6 +31,8 @@ _AUTH_VALUE = "viewer" + "-token"
 
 
 def _config(database_url: str) -> AppConfig:
+    # Local embedded PG (loopback) is an explicit dev/test store: the prod TLS
+    # gate (C.3/R7.4) exempts loopback hosts, so no sslmode is appended here.
     return AppConfig(
         app_env="prod",
         render_backend="mock",
@@ -38,6 +40,7 @@ def _config(database_url: str) -> AppConfig:
         tts=TTSConfig(engine="tone"),  # stub — avoids offline transformers load
         cors_origins="http://localhost",  # production CORS guard forbids "*"
         backend_api_token=_AUTH_VALUE,  # production viewer auth requires a token
+        admin_api_token=_AUTH_VALUE,  # production admin auth requires a token (B.5)
     )
 
 

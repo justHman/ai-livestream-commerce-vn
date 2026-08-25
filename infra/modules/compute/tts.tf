@@ -29,26 +29,42 @@ resource "aws_ecs_task_definition" "tts" {
           protocol      = "tcp"
         }
       ]
-      environment = [
-        { name = "ENV", value = var.env },
-        # Service-local engine selector; adapters live on the backend.
-        { name = "TTS_ENGINE", value = var.tts_engine },
-        { name = "TTS_PROVIDER", value = "vieneu_v3" },
-        { name = "TTS_MODEL_REVISION", value = "pnnbao-ump/VieNeu-TTS-v3-Turbo" },
-        { name = "TTS_ACCELERATOR", value = "auto" },
-        { name = "WEIGHTS_S3_URI", value = "${var.weights_s3_uri}tts/" },
-        # fetch_weights.sh syncs S3 weights/tts/vieneu/* -> /models/vieneu/
-        # (atomic, validated, .ready) before the uvicorn service starts.
-        { name = "MODEL_SUBDIR", value = "vieneu" },
-        { name = "ROLE", value = "tts" },
-        # Air-gapped + HF cache separated from model dir.
-        { name = "HF_HUB_OFFLINE", value = "1" },
-        { name = "TRANSFORMERS_OFFLINE", value = "1" },
-        { name = "HF_HUB_DISABLE_TELEMETRY", value = "1" },
-        { name = "DO_NOT_TRACK", value = "1" },
-        { name = "HF_HOME", value = "/var/cache/huggingface" },
-        { name = "HF_HUB_CACHE", value = "/var/cache/huggingface/hub" },
-      ]
+      environment = concat(
+        # Always-present base: the VieNeu SDK/provider model-init path
+        # (Decision 6 / R0.5-V3). No WEIGHTS_S3_URI and no forced offline flags
+        # here so entrypoint.sh skips fetch_weights.sh and HF init stays online.
+        [
+          { name = "ENV", value = var.env },
+          # Service-local engine selector; adapters live on the backend.
+          { name = "TTS_ENGINE", value = var.tts_engine },
+          { name = "TTS_PROVIDER", value = "vieneu_v3" },
+          { name = "TTS_MODEL_REVISION", value = "pnnbao-ump/VieNeu-TTS-v3-Turbo" },
+          { name = "TTS_ACCELERATOR", value = "auto" },
+          { name = "ROLE", value = "tts" },
+          { name = "HF_HUB_DISABLE_TELEMETRY", value = "1" },
+          { name = "DO_NOT_TRACK", value = "1" },
+          { name = "HF_HOME", value = "/var/cache/huggingface" },
+          { name = "HF_HUB_CACHE", value = "/var/cache/huggingface/hub" },
+        ],
+        # Dormant S3/offline bootstrap for a future object-backed engine:
+        # explicit opt-in via tts_model_source="s3_bootstrap" only.
+        var.tts_model_source == "s3_bootstrap" ? [
+          { name = "WEIGHTS_S3_URI", value = "${trim(var.weights_s3_uri, "/")}/tts/" },
+          # fetch_weights.sh syncs S3 weights/tts/vieneu/* -> /models/vieneu/
+          # (atomic, validated, .ready) before the uvicorn service starts.
+          { name = "MODEL_SUBDIR", value = "vieneu" },
+          # Air-gapped + HF cache separated from model dir.
+          { name = "HF_HUB_OFFLINE", value = "1" },
+          { name = "TRANSFORMERS_OFFLINE", value = "1" },
+        ] : [],
+        # Durable voice-profile store (B5): provider-neutral URI injected
+        # whenever the operator supplies one. Production self-host TTS is
+        # required to set tts_voice_store_uri (see tts_voice_store_durability
+        # precondition) so voice profiles never land on task-local file://.
+        var.tts_voice_store_uri != "" ? [
+          { name = "TTS_VOICE_STORE_URI", value = var.tts_voice_store_uri },
+        ] : [],
+      )
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -108,5 +124,29 @@ resource "aws_ecs_service" "tts" {
   lifecycle {
     # CI owns task-definition revisions; operators/autoscaling own desired count after initial create.
     ignore_changes = [desired_count, task_definition]
+  }
+}
+
+# B5 durable voice-store invariant: production self-host TTS must never fall
+# back to task-local file:// voice profiles. When tts_require_durable_voice_store
+# is set and self-host TTS is the active adapter, tts_voice_store_uri is required
+# and the task above injects it as TTS_VOICE_STORE_URI.
+resource "terraform_data" "tts_voice_store_durability" {
+  input = format("%s|%s|%s", var.tts_adapter, var.tts_require_durable_voice_store, var.tts_voice_store_uri)
+  lifecycle {
+    precondition {
+      condition = (
+        !var.tts_require_durable_voice_store
+        || var.tts_adapter != "self_hosted"
+        || var.tts_voice_store_uri != ""
+      )
+      error_message = <<-EOT
+        Self-host TTS in production requires a durable provider-neutral
+        TTS_VOICE_STORE_URI (e.g. s3://<bucket>/voice-profiles). Refusing to let
+        voice profiles land on a task-local filesystem (V3 acceptance: local
+        filesystem is explicit dev/test only). Set tts_voice_store_uri, or select
+        a hosted TTS adapter.
+      EOT
+    }
   }
 }
