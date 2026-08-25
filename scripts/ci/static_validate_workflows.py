@@ -632,6 +632,227 @@ def validate_permissions_shape(workflow: dict, result: ValidationResult) -> None
             )
 
 
+def _is_reusable(workflow: dict) -> bool:
+    """True if the workflow exposes ``workflow_call`` (a reusable workflow)."""
+    on = _on_mapping(workflow.get("on"))
+    return "workflow_call" in on
+
+
+def _job_uses_aws_oidc(job: dict) -> bool:
+    """True if a job calls ``configure-aws-credentials`` with ``role-to-assume``.
+
+    OIDC token acquisition via ``aws-actions/configure-aws-credentials``
+    requires ``permissions.id-token: write`` on the calling workflow. A step
+    that assumes an AWS role is the deploy-path signal.
+    """
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return False
+    for st in steps:
+        if not isinstance(st, dict):
+            continue
+        uses = st.get("uses")
+        with_ = st.get("with") if isinstance(st.get("with"), dict) else {}
+        if (
+            isinstance(uses, str)
+            and uses.startswith("aws-actions/configure-aws-credentials@")
+            and "role-to-assume" in with_
+        ):
+            return True
+    return False
+
+
+def _job_updates_ecs_service(job: dict) -> bool:
+    """True if a job mutates an ECS service (a deployment/promotion leg)."""
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return False
+    return any(
+        isinstance(st, dict) and isinstance(st.get("run"), str) and "aws ecs update-service" in st["run"]
+        for st in steps
+    )
+
+
+def validate_reusable_secret_expressions(workflow: dict, result: ValidationResult) -> None:
+    """Reject bare literal values in a reusable-workflow call's ``secrets:`` map.
+
+    Rule (audit B1): GitHub resolves reusable-workflow ``secrets:`` values as
+    expressions. A bare literal string (e.g. ``AWS_ROLE_ARN_DEV``) is passed
+    as literal text, so the called workflow receives an unusable value and the
+    deployment leg fails before AWS work begins. Every value must be a
+    ``${{ ... }}`` expression. ``secrets: inherit`` remains allowed.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        uses = job.get("uses")
+        secrets = job.get("secrets")
+        if not isinstance(uses, str) or not uses.startswith("./.github/workflows/"):
+            continue
+        if secrets is None:
+            continue
+        if isinstance(secrets, str):
+            # `secrets: inherit` is valid; any other bare string is a literal.
+            if secrets == "inherit":
+                continue
+            result.add_error(
+                f"Job '{job_name}' passes secrets to reusable workflow '{uses}' "
+                f"as a bare literal ('{secrets}'). Use 'secrets: inherit' or a "
+                f"mapping of '${{{{ secrets.<NAME> }}}}' expressions (B1)."
+            )
+            continue
+        if not isinstance(secrets, dict):
+            continue
+        for key, value in secrets.items():
+            if not isinstance(value, str) or not value.startswith("${{"):
+                result.add_error(
+                    f"Job '{job_name}' passes secret '{key}' to reusable workflow "
+                    f"'{uses}' as a literal ('{value}'), not a secret expression. "
+                    f"Use '${{{{ secrets.<NAME> }}}}' (B1)."
+                )
+
+
+def validate_reusable_oidc_permissions(workflow: dict, result: ValidationResult) -> None:
+    """Require ``id-token: write`` on reusable workflows that assume an AWS role.
+
+    Rule (audit B1): when a workflow sets ``permissions`` explicitly, anything
+    omitted defaults to ``none``. ``aws-actions/configure-aws-credentials``
+    with ``role-to-assume`` therefore fails without ``permissions.id-token:
+    write``. This applies to reusable deploy workflows (the called side of the
+    reusable-deployment contract).
+    """
+    if not _is_reusable(workflow):
+        return
+
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    uses_oidc = any(_job_uses_aws_oidc(job) for job in jobs.values() if isinstance(job, dict))
+    if not uses_oidc:
+        return
+
+    perms = workflow.get("permissions")
+    if not isinstance(perms, dict) or perms.get("id-token") != "write":
+        result.add_error(
+            f"Reusable workflow '{Path(result.workflow_path).name}' calls "
+            f"aws-actions/configure-aws-credentials with role-to-assume but does "
+            f"not grant 'permissions.id-token: write'. With explicit permissions, "
+            f"omitted scopes are 'none' and OIDC token acquisition fails (B1)."
+        )
+
+
+def validate_reusable_deploy_environment(workflow: dict, result: ValidationResult) -> None:
+    """Require a reusable ECS deploy job to bind a protected environment.
+
+    Rule (audit B1): a reusable deployment job that updates an ECS service
+    must be governed by the protected environment so the secret/approval
+    boundary is preserved. The dynamic ``environment: ${{ inputs.env }}`` form
+    is accepted for reusable jobs; a missing/empty binding is rejected.
+    """
+    if not _is_reusable(workflow):
+        return
+
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        if not _job_updates_ecs_service(job):
+            continue
+        env_ref = job.get("environment")
+        name = None
+        if isinstance(env_ref, str):
+            name = env_ref
+        elif isinstance(env_ref, dict):
+            name = env_ref.get("name")
+        if isinstance(name, str) and (name.startswith("${{") or name in SUPPORTED_ENVIRONMENT_NAMES):
+            continue
+        result.add_error(
+            f"Reusable deploy job '{job_name}' updates an ECS service without a "
+            f"protected environment binding. Add 'environment: ${{{{ inputs.env }}}}' "
+            f"so the protected-environment secret/approval boundary is preserved (B1)."
+        )
+
+
+def validate_no_container_image_override(workflow: dict, result: ValidationResult) -> None:
+    """Reject ECS ``RunTask`` container overrides that set the container ``image``.
+
+    Rule (audit B2): ``containerOverrides[].image`` is not a supported ECS
+    RunTask override field — image identity belongs to the task definition. A
+    migration/promotion step must register a candidate-image task-definition
+    revision and ``run-task`` against that revision instead.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            if "containerOverrides" in run and re.search(r'"image"\s*:', run):
+                result.add_error(
+                    f"Job '{job_name}' step {idx} sets the container 'image' via "
+                    f"containerOverrides. ECS RunTask container overrides do NOT "
+                    f"support 'image' (B2). Register a task-definition revision "
+                    f"whose container image is the candidate digest, then run-task "
+                    f"against that revision."
+                )
+
+
+def validate_smoke_readiness(workflow: dict, result: ValidationResult) -> None:
+    """Reject deployment/promotion smoke URLs that target liveness.
+
+    Rule (audit B3): deployment/promotion eligibility must consume the
+    readiness endpoint ``/api/v1/health/ready`` (HTTP 200 only when ready,
+    503 otherwise). ``/health/live`` is process-liveness only and must not be
+    used as a smoke/eligibility signal.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            for line in run.splitlines():
+                if "api/v1/health/live" not in line:
+                    continue
+                # Flag any smoke-URL assignment or path-strip that encodes the
+                # liveness suffix as a smoke/eligibility target.
+                if "smoke_url" in line.lower():
+                    result.add_error(
+                        f"Job '{job_name}' step {idx} uses a smoke URL targeting "
+                        f"/api/v1/health/live. Deployment/promotion eligibility "
+                        f"must use /api/v1/health/ready (HTTP 200 only when ready); "
+                        f"/health/live is process-liveness only (B3)."
+                    )
+
+
 def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationResult:
     """Run all validation rules on a single workflow file."""
     result = ValidationResult(str(workflow_path))
@@ -655,6 +876,11 @@ def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationRes
     validate_service_tags(workflow, result)
     validate_no_deploy(workflow, result)
     validate_permissions_shape(workflow, result)
+    validate_reusable_secret_expressions(workflow, result)
+    validate_reusable_oidc_permissions(workflow, result)
+    validate_reusable_deploy_environment(workflow, result)
+    validate_no_container_image_override(workflow, result)
+    validate_smoke_readiness(workflow, result)
 
     return result
 
