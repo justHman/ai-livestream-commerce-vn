@@ -16,6 +16,11 @@ from scripts.ci.static_validate_workflows import (
     validate_cross_job_file_consumption,
     validate_permissions_shape,
     validate_service_tags,
+    validate_reusable_secret_expressions,
+    validate_reusable_oidc_permissions,
+    validate_reusable_deploy_environment,
+    validate_no_container_image_override,
+    validate_smoke_readiness,
     ValidationResult,
 )
 
@@ -597,6 +602,292 @@ def test_valid_secrets_mapping_passes():
         {"jobs": {"deploy": {"secrets": {"TOKEN": "${{ secrets.TOKEN }}"}}}}, r
     )
     assert r.passed
+
+
+# ── B1: reusable deployment call contract ──────────────────────────────────
+
+
+def test_reusable_secret_bare_literal_rejected():
+    """A governed reusable-workflow call must pass secret VALUES as expressions."""
+    r = _result()
+    validate_reusable_secret_expressions(
+        {
+            "jobs": {
+                "deploy": {
+                    "uses": "./.github/workflows/_deploy-service.yml",
+                    "secrets": {"role_arn": "AWS_ROLE_ARN_DEV"},
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("literal" in e and "role_arn" in e for e in r.errors)
+
+
+def test_reusable_secret_expression_passes():
+    r = _result()
+    validate_reusable_secret_expressions(
+        {
+            "jobs": {
+                "deploy": {
+                    "uses": "./.github/workflows/_deploy-service.yml",
+                    "secrets": {
+                        "role_arn": "${{ secrets.AWS_ROLE_ARN_DEV }}",
+                        "dockerhub_user": "${{ secrets.DOCKERHUB_USER }}",
+                        "dockerhub_token": "${{ secrets.DOCKERHUB_TOKEN }}",
+                    },
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_reusable_secret_inherit_passes():
+    r = _result()
+    validate_reusable_secret_expressions(
+        {
+            "jobs": {
+                "build": {"uses": "./.github/workflows/_container-build.yml", "secrets": "inherit"}
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_reusable_oidc_missing_id_token_rejected():
+    """A reusable AWS deploy workflow must grant permissions.id-token: write."""
+    r = _result()
+    validate_reusable_oidc_permissions(
+        {
+            "on": {"workflow_call": {}},
+            "permissions": {"contents": "read"},
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {
+                            "uses": "aws-actions/configure-aws-credentials@v4",
+                            "with": {"role-to-assume": "${{ secrets.role_arn }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("id-token" in e for e in r.errors)
+
+
+def test_reusable_oidc_id_token_passes():
+    r = _result()
+    validate_reusable_oidc_permissions(
+        {
+            "on": {"workflow_call": {}},
+            "permissions": {"id-token": "write", "contents": "read"},
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {
+                            "uses": "aws-actions/configure-aws-credentials@v4",
+                            "with": {"role-to-assume": "${{ secrets.role_arn }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_reusable_deploy_job_without_environment_rejected():
+    """A reusable ECS deploy job must bind the protected environment."""
+    r = _result()
+    validate_reusable_deploy_environment(
+        {
+            "on": {"workflow_call": {}},
+            "jobs": {
+                "deploy": {
+                    "steps": [
+                        {"run": "aws ecs update-service --cluster c --service s --task-definition t"}
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("environment" in e and "B1" in e for e in r.errors)
+
+
+def test_reusable_deploy_job_environment_inputs_env_passes():
+    r = _result()
+    validate_reusable_deploy_environment(
+        {
+            "on": {"workflow_call": {}},
+            "jobs": {
+                "deploy": {
+                    "environment": "${{ inputs.env }}",
+                    "steps": [
+                        {"run": "aws ecs update-service --cluster c --service s --task-definition t"}
+                    ],
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── B2: no containerOverrides.image ────────────────────────────────────────
+
+
+def test_container_image_override_rejected():
+    """ECS RunTask container overrides do not support the `image` key."""
+    r = _result()
+    validate_no_container_image_override(
+        {
+            "jobs": {
+                "migrate": {
+                    "steps": [
+                        {
+                            "run": (
+                                "overrides=$(jq -nc --arg img \"$candidate\" "
+                                "'{containerOverrides:[{\"name\":\"backend\",\"image\":$img}]}')"
+                            )
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("containerOverrides" in e and "image" in e for e in r.errors)
+
+
+def test_register_task_definition_flow_passes():
+    """A register-task-definition migration flow contains no image override."""
+    r = _result()
+    validate_no_container_image_override(
+        {
+            "jobs": {
+                "migrate": {
+                    "steps": [
+                        {
+                            "run": (
+                                "task=$(aws ecs describe-task-definition --task-definition "
+                                '"$MIGRATE_TASK_ARN" --query taskDefinition)\n'
+                                "new_task=$(aws ecs register-task-definition --cli-input-json "
+                                '"$task" --query taskDefinition.taskDefinitionArn --output text)\n'
+                                "run_id=$(aws ecs run-task --cluster \"$ECS_CLUSTER\" "
+                                '--task-definition "$new_task" ...)'
+                            )
+                        }
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_dev_migration_registers_candidate_revision():
+    """The dev migration step registers a candidate-image task-definition
+    revision and RunTask against that revision, never an image override."""
+    wf = load_yaml_safe(WORKFLOWS / "deploy-dev.yml")
+    assert wf is not None
+    migrate = wf["jobs"]["migrate"]
+    step = next(s for s in migrate["steps"] if s.get("name") == "Run pre-deploy migration")
+    run = step["run"]
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run
+
+
+def test_staging_migration_registers_candidate_revision():
+    wf = load_yaml_safe(WORKFLOWS / "deploy-staging.yml")
+    assert wf is not None
+    migrate = wf["jobs"]["migrate"]
+    step = next(s for s in migrate["steps"] if s.get("name") == "Run pre-deploy migration")
+    run = step["run"]
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run
+
+
+def test_release_migration_registers_candidate_revision():
+    wf = load_yaml_safe(WORKFLOWS / "release-service.yml")
+    assert wf is not None
+    migrate = wf["jobs"]["migrate"]
+    step = next(s for s in migrate["steps"] if s.get("name") == "Run pre-deploy migration")
+    run = step["run"]
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run
+
+
+# ── B3: smoke readiness ────────────────────────────────────────────────────
+
+
+def test_smoke_url_liveness_rejected():
+    """Deployment/promotion smoke must target readiness, not liveness."""
+    r = _result()
+    validate_smoke_readiness(
+        {
+            "jobs": {
+                "preflight": {
+                    "steps": [
+                        {"run": 'echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"'}
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("ready" in e and "live" in e for e in r.errors)
+
+
+def test_smoke_url_readiness_passes():
+    r = _result()
+    validate_smoke_readiness(
+        {
+            "jobs": {
+                "preflight": {
+                    "steps": [
+                        {"run": 'echo "smoke_url=$scheme://$dns/api/v1/health/ready" >> "$GITHUB_OUTPUT"'}
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_smoke_url_liveness_path_strip_rejected():
+    """Path-stripping logic that assumes the /live suffix is also rejected."""
+    r = _result()
+    validate_smoke_readiness(
+        {
+            "jobs": {
+                "smoke": {
+                    "steps": [
+                        {"run": '-Base "${SMOKE_URL%/api/v1/health/live}" \\'}
+                    ]
+                }
+            }
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("ready" in e and "live" in e for e in r.errors)
 
 
 # ── Repo-wide ───────────────────────────────────────────────────────────────

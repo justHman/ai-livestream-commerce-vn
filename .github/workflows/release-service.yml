@@ -215,7 +215,7 @@ jobs:
           check_optional "$llm_desired" "$llm_svc" llm
           check_optional "$tts_desired" "$tts_svc" tts
           check_optional "$avatar_desired" "$avatar_svc" avatar
-          echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"
+          echo "smoke_url=$scheme://$dns/api/v1/health/ready" >> "$GITHUB_OUTPUT"
 
   migrate:
     needs: [resolve, prepare, validate-evidence]
@@ -239,12 +239,17 @@ jobs:
       - name: Run pre-deploy migration
         run: |
           set -euo pipefail
-          # R1.10: migration runs the EXACT candidate backend image digest from
-          # staging evidence, never the task-definition image.
+          # B2: migration runs the EXACT candidate backend image digest from
+          # staging evidence by registering a candidate-image task-definition
+          # revision — ECS RunTask container overrides do NOT support `image`;
+          # image identity belongs to the task definition.
           candidate="$EVIDENCE_DIGEST"
           echo "Migration will run candidate backend digest $candidate"
-          overrides=$(jq -nc --arg img "$candidate" '{containerOverrides:[{"name":"backend","image":$img}]}')
-          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --overrides "$overrides" --launch-type FARGATE \
+          task=$(aws ecs describe-task-definition --task-definition "$MIGRATE_TASK_ARN" --query taskDefinition)
+          task=$(jq --arg name "backend" --arg img "$candidate" '.containerDefinitions |= map(if .name == $name then .image = $img else . end)' <<<"$task")
+          task=$(jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)' <<<"$task")
+          new_task=$(aws ecs register-task-definition --cli-input-json "$task" --query taskDefinition.taskDefinitionArn --output text)
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$new_task" --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
             --query 'tasks[0].taskArn' --output text)
           [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
@@ -267,9 +272,9 @@ jobs:
       image: ${{ needs.validate-evidence.outputs.evidence_digest }}
       smoke_url: ${{ needs.resolve.outputs.service == 'backend_service' && needs.prepare.outputs.smoke_url || '' }}
     secrets:
-      role_arn: AWS_ROLE_ARN_PROD
-      dockerhub_user: DOCKERHUB_USER
-      dockerhub_token: DOCKERHUB_TOKEN
+      role_arn: ${{ secrets.AWS_ROLE_ARN_PROD }}
+      dockerhub_user: ${{ secrets.DOCKERHUB_USER }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   record-outcome:
     needs: [resolve, validate-evidence, promote]
