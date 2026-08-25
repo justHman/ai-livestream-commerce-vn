@@ -55,11 +55,15 @@ output "redis_port" {
 }
 
 output "redis_uri" {
-  description = "TLS Redis URI (rediss://) for app config; embeds the AUTH token when set"
-  value = var.create_redis ? (
-    var.redis_auth_token != ""
-    ? "rediss://${var.redis_auth_token}@${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
-    : "rediss://${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
-  ) : ""
+  description = "TLS Redis URI (rediss://) for app config; embeds the AUTH token when set. Sensitive — deliver via redis_uri_parameter_arn, never a plaintext env value."
+  value       = local.redis_uri
+  sensitive   = true
+}
+
+output "redis_uri_parameter_arn" {
+  description = "SSM SecureString ARN holding the credential-bearing Redis URI (empty when Redis disabled or unauthenticated)"
+  value       = var.create_redis && var.redis_auth_token != "" ? aws_ssm_parameter.redis_uri[0].arn : ""
+  # The ARN is transitively sensitive (the parameter's value embeds the AUTH
+  # token); Terraform requires explicit sensitive on outputs that reference it.
   sensitive = true
 }

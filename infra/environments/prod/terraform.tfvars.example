@@ -52,11 +52,18 @@ image_avatar = "imjusthman/ai-live-avatar@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 cors_origins      = "https://example.com"
 debug_enabled     = false
 session_store     = "redis"
+# redis_url stays empty in prod: the credential-bearing REDIS_URL is delivered
+# via the redis/url SSM SecureString secret (TF-managed, SecureString). Managed
+# prod Redis REQUIRES redis_auth_token (TF_VAR_redis_auth_token, >= 16 chars).
 redis_url         = ""
 app_env           = "prod"
 avatar_adapter  = "liveavatar"
 llm_adapter     = "openai_compatible"
 tts_adapter     = "self_hosted"
+# Self-host TTS in prod needs a durable voice-profile store (B5): provider-neutral
+# URI injected as TTS_VOICE_STORE_URI. Required by the tts_voice_store_durability
+# precondition whenever tts_adapter=self_hosted.
+tts_voice_store_uri = "s3://ai-livestream-assets/voice-profiles"
 spot_capacity_percentage = 100
 
 # Replace with the approved avatar/LMCache image tags for a real GPU release.

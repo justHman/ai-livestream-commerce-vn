@@ -68,6 +68,7 @@ module "database" {
   multi_az             = false
   redis_node_type      = var.redis_node_type
   redis_auth_token     = var.redis_auth_token
+  require_redis_auth   = true # B6: managed production Redis must not run unauthenticated (R7.1)
   skip_final_snapshot  = false
   deletion_protection  = true
   tags                 = var.tags
@@ -94,6 +95,25 @@ resource "terraform_data" "db_url_parity" {
         SecureString ARN of the Postgres connection string, or set create_rds=false.
         Otherwise the backend container boots without DATABASE_URL and Script
         Authoring is silently disabled (501).
+      EOT
+    }
+  }
+}
+
+# B6: prod delivers the credential-bearing REDIS_URL exclusively via the
+# redis/url SSM SecureString secret. A directly-set redis_url would be a
+# plaintext ECS task-definition value (or a silently-ignored override) — fail
+# plan instead.
+resource "terraform_data" "redis_url_no_plaintext" {
+  input = format("%s|%s", var.create_redis, var.redis_url)
+  lifecycle {
+    precondition {
+      condition     = !var.create_redis || var.redis_url == ""
+      error_message = <<-EOT
+        prod must not set redis_url directly. The credential-bearing REDIS_URL
+        is delivered via the redis/url SSM SecureString secret
+        (module.database.redis_uri_parameter_arn -> secrets valueFrom).
+        Leave redis_url empty.
       EOT
     }
   }
@@ -135,24 +155,32 @@ module "compute" {
   weights_s3_uri            = module.storage.weights_uri
   secrets_arns = merge(module.secrets.parameter_arns, var.enable_database_url ? {
     "backend/database_url" = var.database_url_parameter_arn
+    } : {},
+    # B6: credential-bearing REDIS_URL is delivered via the redis/url SSM
+    # SecureString (module.database.redis_uri_parameter_arn) — never a
+    # plaintext task-definition environment value.
+    var.create_redis && module.database.redis_uri_parameter_arn != "" ? {
+      "redis/url" = module.database.redis_uri_parameter_arn
   } : {})
-  backend_target_group_arn = module.loadbalancer.backend_target_group_arn
-  assign_public_ip         = true
-  create_ec2_capacity      = var.create_ec2_capacity
-  spot_capacity_percentage = var.spot_capacity_percentage
-  log_group_prefix         = "/ecs/${var.project}-${var.env}"
-  cors_origins             = var.cors_origins
-  debug_enabled            = var.debug_enabled
-  session_store            = var.session_store
-  redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? module.database.redis_uri : "")
-  app_env                  = var.app_env
-  avatar_adapter           = var.avatar_adapter
-  livekit_url              = var.livekit_url
-  llm_adapter              = var.llm_adapter
-  llm_base_url             = var.llm_base_url
-  tts_adapter              = var.tts_adapter
-  tts_base_url             = var.tts_base_url
-  tags                     = var.tags
+  backend_target_group_arn        = module.loadbalancer.backend_target_group_arn
+  assign_public_ip                = true
+  create_ec2_capacity             = var.create_ec2_capacity
+  spot_capacity_percentage        = var.spot_capacity_percentage
+  log_group_prefix                = "/ecs/${var.project}-${var.env}"
+  cors_origins                    = var.cors_origins
+  debug_enabled                   = var.debug_enabled
+  session_store                   = var.session_store
+  redis_url                       = "" # delivered via redis/url SSM secret (valueFrom)
+  app_env                         = var.app_env
+  avatar_adapter                  = var.avatar_adapter
+  livekit_url                     = var.livekit_url
+  llm_adapter                     = var.llm_adapter
+  llm_base_url                    = var.llm_base_url
+  tts_adapter                     = var.tts_adapter
+  tts_base_url                    = var.tts_base_url
+  tts_voice_store_uri             = var.tts_voice_store_uri
+  tts_require_durable_voice_store = true # B5: prod self-host TTS needs a durable voice store
+  tags                            = var.tags
 }
 
 module "monitoring" {

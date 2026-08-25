@@ -334,6 +334,12 @@ variable "tts_base_url" {
   default = ""
 }
 
+variable "tts_voice_store_uri" {
+  description = "Durable provider-neutral voice-store URI for self-host TTS (e.g. s3://<bucket>/voice-profiles). Required when tts_adapter=self_hosted (enforced by the tts_voice_store_durability precondition) so voice profiles never land on task-local file://."
+  type        = string
+  default     = ""
+}
+
 variable "alert_email" {
   type    = string
   default = ""
