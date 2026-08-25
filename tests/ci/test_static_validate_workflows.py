@@ -21,6 +21,8 @@ from scripts.ci.static_validate_workflows import (
     validate_reusable_deploy_environment,
     validate_no_container_image_override,
     validate_smoke_readiness,
+    validate_gh_api_actions_permission,
+    validate_superseded_no_deploy_entrypoint,
     ValidationResult,
 )
 
@@ -888,6 +890,181 @@ def test_smoke_url_liveness_path_strip_rejected():
     )
     assert not r.passed
     assert any("ready" in e and "live" in e for e in r.errors)
+
+
+# ── N1: governed gh api calls need actions: read ───────────────────────────
+
+
+def test_gh_api_actions_permission_missing_rejected():
+    """Explicit permissions without actions: read reject a governed actions call."""
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"id-token": "write", "contents": "read"},
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": (
+                                'conclusion=$(gh api "repos/x/actions/runs?head_sha=a" '
+                                "--jq y)"
+                            ),
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("actions: read" in e and "gh api" in e for e in r.errors)
+
+
+def test_gh_api_actions_permission_present_passes():
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"actions": "read", "id-token": "write", "contents": "read"},
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {
+                            "run": 'conclusion=$(gh api "repos/x/actions/runs" --jq y)',
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+def test_gh_api_environment_endpoint_requires_actions_read():
+    """Environments governance endpoints are also Actions-scoped."""
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"contents": "read"},
+            "jobs": {
+                "resolve": {
+                    "steps": [
+                        {
+                            "run": (
+                                'rules=$(gh api "repos/x/environments/production" '
+                                "--jq '.protection_rules // []')"
+                            ),
+                            "env": {"GH_TOKEN": "${{ github.token }}"},
+                        }
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("actions: read" in e for e in r.errors)
+
+
+def test_gh_api_non_governed_endpoint_ignored():
+    """A gh api call to a non-Actions/Environment endpoint is not flagged."""
+    r = _result()
+    validate_gh_api_actions_permission(
+        {
+            "permissions": {"contents": "read"},
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {"run": 'gh api "repos/x/issues" --jq y'}
+                    ]
+                }
+            },
+        },
+        r,
+    )
+    assert r.passed
+
+
+# ── N2: SUPERSEDED / DO NOT EXECUTE workflows must not deploy ───────────────
+
+
+def test_superseded_workflow_with_deploy_command_rejected(tmp_path):
+    """A workflow marked SUPERSEDED must not retain a live deploy command."""
+    wf = tmp_path / "deploy-prod.yml"
+    wf.write_text(
+        "# deploy-prod — SUPERSEDED by release-service.yml. Triggers DISABLED.\n"
+        "name: deploy-prod\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "    inputs:\n"
+        "      confirm_deploy:\n"
+        "        type: boolean\n"
+        "jobs:\n"
+        "  deploy:\n"
+        "    environment: production\n"
+        "    steps:\n"
+        "      - run: aws ecs update-service --service backend --force-new-deployment\n"
+    )
+    r = ValidationResult(str(wf))
+    validate_superseded_no_deploy_entrypoint(
+        {
+            "name": "deploy-prod",
+            "jobs": {
+                "deploy": {
+                    "environment": "production",
+                    "steps": [{"run": "aws ecs update-service --service backend"}],
+                }
+            },
+        },
+        r,
+    )
+    assert not r.passed
+    assert any("Superseded workflow" in e and "deploy" in e for e in r.errors)
+
+
+def test_superseded_workflow_without_deploy_mutation_passes(tmp_path):
+    """A tombstone SUPERSEDED workflow with no deploy mutation is acceptable."""
+    wf = tmp_path / "_tombstone.yml"
+    wf.write_text(
+        "# _tombstone — DO NOT EXECUTE. Kept for history only.\n"
+        "name: _tombstone\n"
+        "on:\n"
+        "  push:\n"
+        "    branches: [\"**\"]\n"
+        "jobs: {}\n"
+    )
+    r = ValidationResult(str(wf))
+    validate_superseded_no_deploy_entrypoint(
+        {"name": "_tombstone", "jobs": {}},
+        r,
+    )
+    assert r.passed
+
+
+def test_unsuperseded_workflow_not_checked(tmp_path):
+    """A normal workflow without a SUPERSEDED marker is not subject to N2."""
+    wf = tmp_path / "deploy-dev.yml"
+    wf.write_text(
+        "# deploy-dev — explicit development deployment.\n"
+        "name: deploy-dev\n"
+        "on:\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  deploy:\n"
+        "    steps:\n"
+        "      - run: aws ecs update-service\n"
+    )
+    r = ValidationResult(str(wf))
+    validate_superseded_no_deploy_entrypoint(
+        {
+            "name": "deploy-dev",
+            "jobs": {"deploy": {"steps": [{"run": "aws ecs update-service"}]}},
+        },
+        r,
+    )
+    assert r.passed
 
 
 # ── Repo-wide ───────────────────────────────────────────────────────────────

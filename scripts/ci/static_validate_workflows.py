@@ -853,6 +853,120 @@ def validate_smoke_readiness(workflow: dict, result: ValidationResult) -> None:
                     )
 
 
+def _actions_permission_granted(perms: object) -> bool:
+    """True if an effective permissions block grants ``actions`` read/write.
+
+    ``read-all`` / ``write-all`` grant every read/write scope. An explicit
+    mapping grants only the keys it lists — per GitHub, once ``permissions`` is
+    declared, omitted scopes become ``none``. ``None`` (undeclared) falls back
+    to the repository default and is not the N1 failure mode.
+    """
+    if perms is None:
+        return True
+    if isinstance(perms, str):
+        return perms in {"read-all", "write-all"}
+    if isinstance(perms, dict):
+        return perms.get("actions") in {"read", "write"}
+    return True
+
+
+def validate_gh_api_actions_permission(workflow: dict, result: ValidationResult) -> None:
+    """Require effective ``actions: read`` for governed Actions/Environment API calls.
+
+    Rule (re-review N1): ``gh api`` calls to Actions endpoints (``/actions/…``)
+    and Environment endpoints (``/environments/…``) require the Actions
+    repository permission. A workflow that declares an explicit ``permissions``
+    block makes every omitted scope ``none``; without ``actions: read`` the
+    governed check cannot authenticate at runtime even though PR CI passes.
+    """
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+
+    wf_perms = workflow.get("permissions")
+
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            run = step.get("run")
+            if not isinstance(run, str) or "gh api" not in run:
+                continue
+            # Only Actions/Environment governance endpoints need actions: read.
+            if "/actions/" not in run and "/environments/" not in run:
+                continue
+            effective = job.get("permissions") if job.get("permissions") is not None else wf_perms
+            if _actions_permission_granted(effective):
+                continue
+            result.add_error(
+                f"Job '{job_name}' step {idx} calls a governed Actions/Environment "
+                f"API via `gh api` but the effective GITHUB_TOKEN permissions lack "
+                f"'actions: read'. With explicit permissions, omitted scopes are "
+                f"'none'. Add 'actions: read' to the workflow/job permissions (N1)."
+            )
+
+
+def validate_superseded_no_deploy_entrypoint(workflow: dict, result: ValidationResult) -> None:
+    """A workflow marked SUPERSEDED / DO NOT EXECUTE must not expose a deploy path.
+
+    Rule (re-review N2): a workflow whose header declares it superseded must be
+    mechanically incapable of deployment — no reachable deploy mutation may
+    remain (a deploy action, or a run step invoking a deploy keyword). History
+    is preserved by git; a live alternate production path is not.
+    """
+    path = Path(result.workflow_path)
+    header = ""
+    if path.exists():
+        try:
+            header = path.read_text(encoding="utf-8", errors="replace")[:6000]
+        except OSError:
+            header = ""
+    name = str(workflow.get("name", ""))
+    if not re.search(r"SUPERSEDED|DO NOT EXECUTE|DO-NOT-EXECUTE", header + "\n" + name):
+        return
+
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return
+    filename = path.name
+    for job_name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        job_uses = job.get("uses")
+        if isinstance(job_uses, str) and _is_deploy_uses(job_uses):
+            result.add_error(
+                f"Superseded workflow '{filename}' job '{job_name}' calls deploy "
+                f"action '{job_uses}'. A SUPERSEDED / DO NOT EXECUTE workflow must "
+                f"not expose a deploy entrypoint (N2)."
+            )
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            if isinstance(uses, str) and _is_deploy_uses(uses):
+                result.add_error(
+                    f"Superseded workflow '{filename}' job '{job_name}' step {idx} "
+                    f"uses deploy action '{uses}'. A SUPERSEDED / DO NOT EXECUTE "
+                    f"workflow must not expose a deploy entrypoint (N2)."
+                )
+            run = step.get("run")
+            if isinstance(run, str) and any(k in run.lower() for k in DEPLOY_KEYWORDS):
+                result.add_error(
+                    f"Superseded workflow '{filename}' job '{job_name}' step {idx} "
+                    f"has a deploy command. A SUPERSEDED / DO NOT EXECUTE workflow "
+                    f"must not expose a deploy entrypoint (N2)."
+                )
+
+
 def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationResult:
     """Run all validation rules on a single workflow file."""
     result = ValidationResult(str(workflow_path))
@@ -881,6 +995,8 @@ def validate_workflow(workflow_path: Path, workflows_dir: Path) -> ValidationRes
     validate_reusable_deploy_environment(workflow, result)
     validate_no_container_image_override(workflow, result)
     validate_smoke_readiness(workflow, result)
+    validate_gh_api_actions_permission(workflow, result)
+    validate_superseded_no_deploy_entrypoint(workflow, result)
 
     return result
 
