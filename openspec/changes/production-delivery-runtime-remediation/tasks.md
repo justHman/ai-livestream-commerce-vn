@@ -380,6 +380,6 @@ For every reviewable task inside its cluster:
 
 ### Re-verification after the fix wave (new exact head)
 
-- [ ] F.15 Rerun focused suites per cluster + full PR CI at the NEW exact head; capture only fresh evidence.
-- [ ] F.16 Produce one new verification report for the original agent (§6 review contract) at the new head; re-submit for verdict.
+- [x] F.15 Rerun focused suites per cluster + full PR CI at the NEW exact head; capture only fresh evidence. (head `7722ea9`: repo-tools 248 · backend unit 1839 · TTS 502 · workbench 189+tsc+lint+build · terraform test 22 · validate 4 env · openspec 20 · ruff/diff-check clean; PR CI run 32806087597 SUCCESS 17/17)
+- [x] F.16 Produce one new verification report for the original agent (§6 review contract) at the new head; re-submit for verdict. (`D:\Downloads\AI_LIVESTREAM_REMEDIATION_VERIFICATION_REPORT_V2_2026-08-25.md` — owner ships it; no Coordinator dispatch.)
 - [ ] F.17 Merge PR #55 → develop → main only after the original-agent verdict is PASS.
