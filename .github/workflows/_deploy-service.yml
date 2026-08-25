@@ -7,8 +7,10 @@
 # failure it restores ONLY this service to its previous task definition
 # (design §6 — rollback is service-scoped; other services are untouched).
 #
-# The caller owns environment protection, AWS role, and evidence; this file
-# deliberately has no `environment:` reference and no deployment trigger.
+# The deploy job binds the caller's protected environment via
+# `environment: ${{ inputs.env }}` so the protected-environment secret/
+# approval boundary is preserved on the called side; `id-token: write` is
+# granted for OIDC role assumption. This file has no deployment trigger.
 #
 # prev_digest / new_digest are recorded for the deployment evidence chain
 # (4.4): the image ref currently deployed vs the target image. new_digest is
@@ -47,10 +49,6 @@ on:
         description: "Target image ref (repo:tag or repo@sha256:...)"
         type: string
         required: true
-      role_arn:
-        description: "AWS deploy role ARN to assume"
-        type: string
-        required: true
       aws_region:
         description: "AWS region"
         type: string
@@ -59,13 +57,25 @@ on:
         description: "HTTP smoke URL (backend only; empty skips smoke)"
         type: string
         default: ""
+    secrets:
+      role_arn:
+        description: "AWS deploy role ARN to assume"
+        required: true
+      dockerhub_user:
+        description: "Docker Hub username for image push"
+        required: true
+      dockerhub_token:
+        description: "Docker Hub token for image push"
+        required: true
 
 permissions:
+  id-token: write
   contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
     env:
       ECS_CLUSTER: ${{ inputs.cluster }}
       ECS_SERVICE: ${{ inputs.service }}
@@ -77,7 +87,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ inputs.role_arn }}
+          role-to-assume: ${{ secrets.role_arn }}
           aws-region: ${{ inputs.aws_region }}
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -154,3 +164,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "new_digest=$new_digest" >> "$GITHUB_OUTPUT"
           echo "prev_digest=$prev_digest" >> "$GITHUB_OUTPUT"
+      # R1.6: the per-leg evidence line lives on this job's runner; upload it
+      # as a declared artifact (unique per env/sha/container) so downstream
+      # jobs (record-evidence / record-outcome) consume it via download-artifact
+      # instead of assuming a shared filesystem.
+      - name: Upload deployment evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-evidence-${{ inputs.env }}-${{ inputs.commit_sha }}-${{ inputs.container }}
+          path: .runtime/deploy/evidence/${{ inputs.env }}/${{ inputs.commit_sha }}.jsonl
+          if-no-files-found: error

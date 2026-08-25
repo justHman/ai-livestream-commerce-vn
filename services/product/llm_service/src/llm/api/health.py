@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from llm.engines.base import EngineUnavailable
+
 router = APIRouter()
 
 
@@ -20,6 +22,12 @@ def health_live() -> dict[str, str]:
 
 @router.get("/health/ready")
 def health_ready(request: Request) -> dict[str, str]:
+    """Readiness probe — 503 until the engine is ready (audit R0.4).
+
+    The ``EngineUnavailable`` exception handler maps this to HTTP 503 with an
+    ``engine_unavailable`` JSON envelope; a not-ready body is never returned
+    with HTTP 200.
+    """
     if getattr(request.app.state, "engine_ready", False):
         return {"status": "ready"}
-    return {"status": "not_ready", "reason": "engine_unavailable"}
+    raise EngineUnavailable("engine not ready")

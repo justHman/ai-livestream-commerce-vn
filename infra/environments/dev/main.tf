@@ -69,6 +69,7 @@ module "database" {
   allocated_storage_gb = var.db_allocated_storage_gb
   multi_az             = false
   redis_node_type      = var.redis_node_type
+  redis_auth_token     = var.redis_auth_token
   # Iron rule (no backup pile-up): DEV keeps no multi-day RDS backup pile.
   # backup_retention_days=0 disables automated backups; skip_final_snapshot=true
   # leaves no final snapshot on destroy; deletion_protection=false lets teardown
@@ -134,7 +135,7 @@ module "compute" {
   cors_origins             = var.cors_origins
   debug_enabled            = var.debug_enabled
   session_store            = var.session_store
-  redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? "redis://${module.database.redis_connection_string}" : "")
+  redis_url                = var.redis_url != "" ? var.redis_url : (var.create_redis ? module.database.redis_uri : "")
   app_env                  = var.app_env
   avatar_adapter           = var.avatar_adapter
   livekit_url              = var.livekit_url

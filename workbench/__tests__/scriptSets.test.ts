@@ -52,27 +52,27 @@ describe("script client canonical paths", () => {
   });
 
   it("submit posts to canonical product submit path", async () => {
-    const fetchMock = mockFetch(200, { state: "gate_failed", violations: [{ rule_id: "STYLE_DISALLOWED_PUNCTUATION", severity: "ERROR", message: "em-dash" }] });
+    const fetchMock = mockFetch(200, { ok: true, product_id: "P001", state: "GATE_FAILED", gate: { state: "gate_failed", violations: [{ rule_id: "STYLE_DISALLOWED_PUNCTUATION", severity: "ERROR", message: "em-dash" }] } });
     const client = makeClient(fetchMock);
     const result = await client.submit("sets-1", "P001");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://127.0.0.1:8800/api/v1/script-sets/sets-1/products/P001/submit");
     expect(init.method).toBe("POST");
-    expect(result.state).toBe("gate_failed");
+    expect(result.state).toBe("GATE_FAILED");
   });
 
   it("generate sends 202 job semantics with idempotency header", async () => {
-    const fetchMock = mockFetch(202, { status: "accepted", workflow_id: "wf-1" });
+    const fetchMock = mockFetch(202, { workflow_id: "wf-1", status: "queued" });
     const client = makeClient(fetchMock);
     const job = await client.generateProduct("sets-1", "P001", 600, "key-123");
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>)["Idempotency-Key"]).toBe("key-123");
-    expect(job.status).toBe("accepted");
+    expect(job.status).toBe("queued");
   });
 
   it("approve-batch posts product_ids + version_ids + actor to the canonical path", async () => {
-    const fetchMock = mockFetch(200, { approvals: [] });
+    const fetchMock = mockFetch(200, { ok: true, approvals: {} });
     const client = makeClient(fetchMock);
     await client.approveBatch("sets-1", ["P001", "P002"], { P001: "v1", P002: "v2" }, "operator");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -85,7 +85,7 @@ describe("script client canonical paths", () => {
   });
 
   it("approve posts version_id + actor to the per-product approve path", async () => {
-    const fetchMock = mockFetch(200, { approval: {}, state: "APPROVED" });
+    const fetchMock = mockFetch(200, { ok: true, product_id: "P001", state: "APPROVED", approval: { version_id: "v5", actor: "operator", approved_at: "2026-08-24T00:00:00Z" } });
     const client = makeClient(fetchMock);
     await client.approveProduct("sets-1", "P001", "v5", "operator");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -118,7 +118,7 @@ describe("script client canonical paths", () => {
   });
 
   it("generate-batch posts product_ids + target_duration_s (not a products list)", async () => {
-    const fetchMock = mockFetch(202, { status: "accepted", batch_id: "batch-1" });
+    const fetchMock = mockFetch(202, { batch_id: "batch-1", workflow_summary: { products: [], estimated_semantic_calls_total: 0 }, status: "queued", idempotent: false });
     const client = makeClient(fetchMock);
     await client.generateBatch("sets-1", { product_ids: ["P001", "P002"], target_duration_s: 600 }, "key-1");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -127,9 +127,9 @@ describe("script client canonical paths", () => {
   });
 
   it("gate-fail returns 200 with domain payload, not transport error", async () => {
-    const fetchMock = mockFetch(200, { state: "gate_failed", violations: [{ rule_id: "FORMAT_X", severity: "ERROR", message: "x" }] });
+    const fetchMock = mockFetch(200, { ok: true, product_id: "P001", state: "GATE_FAILED", gate: { state: "gate_failed", violations: [{ rule_id: "FORMAT_X", severity: "ERROR", message: "x" }] } });
     const client = makeClient(fetchMock);
-    await expect(client.submit("sets-1", "P001")).resolves.toMatchObject({ state: "gate_failed" });
+    await expect(client.submit("sets-1", "P001")).resolves.toMatchObject({ state: "GATE_FAILED" });
   });
 
   it("409 invalid transition surfaces ApiError with status", async () => {
@@ -172,7 +172,7 @@ function makeEvent(overrides: Partial<ScriptEvent>): ScriptEvent {
     event_id: "ev-1",
     revision: 1,
     type: "batch.progress",
-    script_set_id: "sets-1",
+    set_id: "sets-1",
     batch_id: "batch-1",
     ...overrides,
   };
@@ -187,14 +187,14 @@ describe("SseFeed snapshot + revision dedup (task 13.5)", () => {
     const seen: string[] = [];
     const feed = new SseFeed({ onEvent: (e) => seen.push(e.type) });
     feed.push(sseFrame(makeEvent({ event_id: "snap-1", revision: 10, type: "batch.snapshot" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-11", revision: 11, type: "segment.started" })));
-    expect(seen).toEqual(["batch.snapshot", "segment.started"]);
+    feed.push(sseFrame(makeEvent({ event_id: "ev-11", revision: 11, type: "batch.progress" })));
+    expect(seen).toEqual(["batch.snapshot", "batch.progress"]);
   });
 
   it("drops live events before the first snapshot", () => {
     const seen: string[] = [];
     const feed = new SseFeed({ onEvent: (e) => seen.push(e.type) });
-    feed.push(sseFrame(makeEvent({ event_id: "ev-1", revision: 1, type: "segment.started" })));
+    feed.push(sseFrame(makeEvent({ event_id: "ev-1", revision: 1, type: "batch.progress" })));
     expect(seen).toEqual([]);
   });
 
@@ -202,14 +202,14 @@ describe("SseFeed snapshot + revision dedup (task 13.5)", () => {
     const seen: string[] = [];
     const feed = new SseFeed({ onEvent: (e) => seen.push(e.type) });
     feed.push(sseFrame(makeEvent({ event_id: "snap-1", revision: 5, type: "batch.snapshot" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "segment.gate_passed" })));
+    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "product.failed" })));
     // Reconnect: server replays snapshot + events up to revision 6.
     feed.push(sseFrame(makeEvent({ event_id: "snap-1", revision: 6, type: "batch.snapshot" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "segment.gate_passed" })));
-    feed.push(sseFrame(makeEvent({ event_id: "ev-7", revision: 7, type: "product.reviewable" })));
-    expect(seen).toEqual(["batch.snapshot", "segment.gate_passed", "batch.snapshot", "product.reviewable"]);
-    // segment.gate_passed applied exactly once across the reconnect.
-    expect(seen.filter((t) => t === "segment.gate_passed")).toHaveLength(1);
+    feed.push(sseFrame(makeEvent({ event_id: "ev-6", revision: 6, type: "product.failed" })));
+    feed.push(sseFrame(makeEvent({ event_id: "ev-7", revision: 7, type: "batch.completed" })));
+    expect(seen).toEqual(["batch.snapshot", "product.failed", "batch.snapshot", "batch.completed"]);
+    // product.failed applied exactly once across the reconnect.
+    expect(seen.filter((t) => t === "product.failed")).toHaveLength(1);
   });
 
   it("dedups duplicate event ids within one session", () => {

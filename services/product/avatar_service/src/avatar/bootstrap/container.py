@@ -22,6 +22,10 @@ class AvatarContainer:
         publishing_cfg: PublishingConfig,
     ) -> None:
         self.engine = _build_engine(engine_cfg)
+        # AVATAR_ENGINE=none builds a mock-model stub; tag it explicitly so
+        # readiness can never report a stub as a production-ready self-host
+        # engine (audit R0.3).
+        self.engine_is_stub: bool = engine_cfg.engine == "none"
         self.publisher = LiveKitPublisher(publishing_cfg)
         self.sessions = SessionManager(self.engine, self.publisher)
 

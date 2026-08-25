@@ -315,6 +315,13 @@ variable "redis_url" {
   default     = ""
 }
 
+variable "redis_auth_token" {
+  description = "Managed Redis AUTH secret passed to the database module (empty = no auth)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "app_env" {
   description = "APP_ENV runtime flag. Empty → falls back to env (dev)."
   type        = string

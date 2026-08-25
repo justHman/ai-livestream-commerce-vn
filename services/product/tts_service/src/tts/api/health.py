@@ -24,11 +24,12 @@ def _liveness() -> dict[str, str]:
 
 
 def _readiness(request: Request) -> dict[str, str]:
-    if getattr(request.app.state, "engine_ready", False) and getattr(
-        request.app.state, "runtime_ready", False
+    if not (
+        getattr(request.app.state, "engine_ready", False)
+        and getattr(request.app.state, "runtime_ready", False)
     ):
-        return {"status": "ready"}
-    return {"status": "not_ready", "reason": "engine_unavailable"}
+        raise EngineUnavailable("engine not ready")
+    return {"status": "ready"}
 
 
 @router.get("/health/live")
@@ -43,15 +44,11 @@ def health() -> dict[str, str]:
 
 @router.get("/health/ready")
 def health_ready(request: Request) -> dict[str, str]:
+    """Legacy alias of the canonical ``/ready`` probe (audit R0.4)."""
     return _readiness(request)
 
 
 @router.get("/ready")
 def ready(request: Request) -> dict[str, str]:
     """Readiness probe: 503 until the engine and runtime subsystems are ready."""
-    if not (
-        getattr(request.app.state, "engine_ready", False)
-        and getattr(request.app.state, "runtime_ready", False)
-    ):
-        raise EngineUnavailable("engine not ready")
-    return {"status": "ready"}
+    return _readiness(request)

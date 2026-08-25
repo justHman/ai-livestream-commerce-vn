@@ -40,6 +40,7 @@ def create_app(
     app.state.container = None
     app.state.engine = None
     app.state.engine_ready = False
+    app.state.engine_is_stub = True
 
     register_middleware(app, cfg)
     exception_handlers.register(app)

@@ -15,7 +15,11 @@ def test_health_live() -> None:
     assert resp.json() == {"status": "ok"}
 
 
-def test_health_ready_true_after_lifespan() -> None:
+def test_health_ready_true_when_provider_none(monkeypatch) -> None:
+    # With no provider configured the legacy tone engine alone satisfies
+    # runtime readiness, so /health/ready is genuinely 200 (audit R0.4).
+    monkeypatch.setenv("TTS_PROVIDER", "none")
+    monkeypatch.setenv("TTS_ENGINE", "none")
     app = create_app()
     with TestClient(app) as client:
         resp = client.get("/health/ready")
@@ -27,5 +31,8 @@ def test_health_ready_false_when_engine_unavailable() -> None:
     app = create_app()
     with TestClient(app) as client:
         app.state.engine_ready = False
+        app.state.runtime_ready = False
         resp = client.get("/health/ready")
-    assert resp.json()["status"] == "not_ready"
+    # audit R0.4: not ready must be HTTP 503, never a 200 body.
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "engine_unavailable"

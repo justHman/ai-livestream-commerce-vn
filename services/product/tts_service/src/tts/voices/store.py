@@ -4,8 +4,13 @@ The store owns metadata + provider payload together (one JSON document per
 profile). Payloads are opaque dicts to the store — the schema versioning lives
 in ``tts.voices.payloads``.
 
-Production uses ``S3VoiceProfileStore`` so a recreated TTS task reloads every
-profile by id from shared object storage instead of losing clones on restart.
+Seam split: ``VoiceProfileStore`` is the durable METADATA seam — one small
+JSON document per profile that survives restart/replacement when pointed at a
+durable URI such as ``s3://`` (production uses ``S3VoiceProfileStore`` so a
+recreated TTS task reloads every profile by id from shared object storage).
+Binary/reference assets (reference audio, larger artifacts) resolve through
+``tts.voices.object_store.ObjectStore`` URIs instead. Core TTS code depends on
+these protocols, never on boto3.
 """
 
 from __future__ import annotations
@@ -29,7 +34,12 @@ def _now_utc() -> datetime:
 
 
 class VoiceProfileStore(Protocol):
-    """Persistent voice profile storage, metadata + provider payload together."""
+    """Durable METADATA seam: one small JSON doc per profile (metadata+payload).
+
+    Survives restart/replacement when configured with a durable URI such as
+    ``s3://``. Binary/reference assets (reference audio, larger artifacts)
+    resolve through ``tts.voices.object_store.ObjectStore`` URIs, not here.
+    """
 
     def save_profile(self, profile: VoiceProfile, payload: dict) -> None: ...
 
@@ -212,28 +222,6 @@ class S3VoiceProfileStore:
                     continue
                 profiles.append(profile)
         return profiles
-
-
-def _metadata_to_json(profile: VoiceProfile) -> dict:
-    metadata = asdict(profile)
-    metadata["created_at"] = profile.created_at.isoformat()
-    return metadata
-
-
-def _profile_from_json(metadata: dict) -> VoiceProfile:
-    from datetime import datetime
-
-    created_at = metadata.get("created_at")
-    return VoiceProfile(
-        voice_profile_id=metadata["voice_profile_id"],
-        tenant_id=metadata["tenant_id"],
-        provider_name=metadata["provider_name"],
-        provider_model_revision=metadata["provider_model_revision"],
-        profile_kind=metadata["profile_kind"],
-        display_name=metadata["display_name"],
-        provider_payload_location=metadata["provider_payload_location"],
-        created_at=datetime.fromisoformat(created_at) if created_at else _now_utc(),
-    )
 
 
 def get_store(uri: str, runtime_root: Path) -> VoiceProfileStore:

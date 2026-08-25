@@ -1,3 +1,7 @@
+# STATUS 2026-08-24: PAUSED / STALE / DO NOT EXECUTE — historical planning
+# evidence only. Provider-first is the current strategy; a future live
+# deployment needs a fresh plan from the then-current architecture.
+
 # Stage 2 — LiveAvatar cloud + real LLM/TTS (no LiveKit).
 # Avatar video flows LiveAvatar cloud → browser directly; no SFU needed.
 # LLM/TTS self-hosted on 1 Spot g6.xlarge (L4 24GB): vLLM (Qwen3.5-4B-AWQ) +

@@ -71,6 +71,21 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITLEAKS_VERSION: "8.24.3"
 
+  workflow-lint:
+    # actionlint static validation of every workflow in .github/workflows.
+    # Version-pinned container image; the repo-tools structural tests
+    # (tests/ci) are the local equivalent that runs without a container.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint (version-pinned container)
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          # Structural workflow validation is strict; the only suppressions are
+          # the two pre-existing shellcheck STYLE/INFO codes (bare codes — the
+          # docker action would otherwise pass quoted patterns literally).
+          args: -color -ignore SC2129 -ignore SC2012
+
   affected-area:
     runs-on: ubuntu-latest
     needs: [secret-scan]
@@ -142,19 +157,23 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - secret-scan
+      - workflow-lint
       - affected-area
       - mode
       - service-ci
       - container-build
+      - backend-container-smoke
       - workbench-check
       - platform-check
       - terraform-plan
       - repo-tools
     if: ${{ always() }}
     steps:
+      - uses: actions/checkout@v4
       - name: Aggregate required-check results
         env:
           SCAN: ${{ needs.secret-scan.result }}
+          WL: ${{ needs.workflow-lint.result }}
           AREA: ${{ needs.affected-area.result }}
           MODE: ${{ needs.mode.result }}
           # GitHub reports a reusable's result as failure when its services
@@ -163,19 +182,28 @@ jobs:
           # failures.
           SVC: ${{ needs.service-ci.result == 'failure' && needs.affected-area.outputs.services_json == '[]' && 'skipped' || needs.service-ci.result }}
           CTN: ${{ needs.container-build.result }}
+          BCTN: ${{ needs.backend-container-smoke.result }}
           WB: ${{ needs.workbench-check.result }}
           PLT: ${{ needs.platform-check.result }}
           TF: ${{ needs.terraform-plan.result }}
+          REPO: ${{ needs.repo-tools.result }}
         run: |
           set -euo pipefail
-          results=("$SCAN" "$AREA" "$MODE" "$SVC" "$CTN" "$WB" "$PLT" "$TF")
-          for r in "${results[@]}"; do
-            [[ "$r" == "success" || "$r" == "skipped" ]] || {
-              echo "CI / gate failed: job result '$r' is not success or skipped." >&2
-              exit 1
-            }
-          done
-          echo "CI / gate passed: all governed jobs succeeded or skipped neutrally."
+          # R8.5: the final gate aggregates EVERY governed job (including
+          # repo-tools) via the shared, failure-injection-tested script so a
+          # governed failure can never escape the aggregate.
+          python scripts/ci/gate_aggregate.py \
+            --result secret-scan="$SCAN" \
+            --result workflow-lint="$WL" \
+            --result affected-area="$AREA" \
+            --result mode="$MODE" \
+            --result service-ci="$SVC" \
+            --result container-build="$CTN" \
+            --result backend-container-smoke="$BCTN" \
+            --result workbench-check="$WB" \
+            --result platform-check="$PLT" \
+            --result terraform-plan="$TF" \
+            --result repo-tools="$REPO"
 
   service-ci:
     needs: [mode, affected-area]
@@ -231,6 +259,21 @@ jobs:
             dockerfile: services/product/avatar_service/Dockerfile
             image: imjusthman/ai-live-avatar
             platforms: linux/amd64
+
+  # F.9: built-container smoke — build a production-shaped backend image and
+  # prove packaged resources + readiness semantics from inside the container.
+  # Cheaper than the release image (no push, no cache export); catches
+  # packaging/entrypoint defects on ordinary runners without GPU/model/cloud.
+  backend-container-smoke:
+    runs-on: ubuntu-latest
+    needs: [mode, affected-area]
+    if: ${{ always() && needs.mode.result == 'success' && contains(fromJson(needs.affected-area.outputs.services_json), 'backend_service') && (needs.mode.outputs.name == 'feature-pr' || needs.mode.outputs.name == 'develop-merge' || needs.mode.outputs.name == 'release-pr' || needs.mode.outputs.name == 'main-merge') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production-shaped backend image
+        run: docker build -f services/product/backend_service/Dockerfile -t ai-live-backend:smoke .
+      - name: Run built-container artifact/readiness smoke
+        run: python services/product/backend_service/scripts/container_smoke.py --mode docker --image ai-live-backend:smoke
 
   workbench-check:
     runs-on: ubuntu-latest

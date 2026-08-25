@@ -32,6 +32,16 @@ on:
   push:
     branches: ["**"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to validate/deploy (e.g. v1.2.3)"
+        required: false
+        type: string
+      confirm_deploy:
+        description: "Set true to actually deploy the release to production"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   id-token: write

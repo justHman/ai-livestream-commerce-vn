@@ -129,7 +129,13 @@ def test_database_url_is_injected_as_ecs_secret() -> None:
 
 def test_database_url_is_not_in_backend_environment() -> None:
     task = _backend_task_definition()
-    environment = re.search(r"environment\s*=\s*\[(.*?)\]\s*secrets\s*=", task, re.DOTALL)
+    # environment may be a plain list or concat([...], [...]); either way the
+    # captured block must never contain DATABASE_URL as a plaintext value.
+    environment = re.search(
+        r"environment\s*=\s*(?:concat\()?\[(.*?)\]\s*\)?\s*secrets\s*=",
+        task,
+        re.DOTALL,
+    )
     assert environment and 'name = "DATABASE_URL"' not in environment.group(1)
 
 

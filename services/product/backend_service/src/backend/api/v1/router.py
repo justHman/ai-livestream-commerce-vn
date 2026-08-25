@@ -21,8 +21,8 @@ removed. This router exposes:
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
 if TYPE_CHECKING:
@@ -35,6 +35,7 @@ from fastapi import (
     Request,
     WebSocket,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
@@ -58,6 +59,7 @@ from backend.application.schemas.run_plan import (
 )
 
 from backend.application.platform_events import EventsIn  # noqa: F401  (re-exported for route modules)
+from backend.application.rate_limit import quota_identity_key
 
 from .auth import viewer_auth
 
@@ -370,30 +372,23 @@ class PathAttachReq(BaseModel):
 # ── Wiring (container-scoped, set by backend.bootstrap.app_factory) ──
 
 
-def _request_limit_key(request: Request, scope: str, session_id: str = "") -> str:
-    host = request.client.host if request.client is not None else "unknown"
-    return f"{host}:{scope}:{session_id}"
-
-
-async def _request_session_id(request: Request) -> str:
-    session_id = request.path_params.get("session_id", "")
-    if session_id:
-        return session_id
-    try:
-        body = await request.json()
-    except ValueError:
-        return ""
-    return str(body.get("session_id", "")) if isinstance(body, dict) else ""
+def _rate_limit_config(request: Request):
+    """Resolve runtime config for rate limiting; unwired apps fall back to defaults."""
+    cfg = getattr(getattr(request.app.state, "container", None), "config", None)
+    if cfg is None:
+        return SimpleNamespace(trusted_proxy_client_ip=False)
+    return cfg
 
 
 async def rate_limit_viewer(request: Request) -> None:
-    session_id = await _request_session_id(request)
-    if not request.app.state.api_limiter.allow(_request_limit_key(request, "viewer", session_id)):
+    key = f"viewer:{quota_identity_key(request, _rate_limit_config(request))}"
+    if not await request.app.state.api_limiter.allow(key):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
 
 
 async def rate_limit_admin(request: Request) -> None:
-    if not request.app.state.api_limiter.allow(_request_limit_key(request, "admin")):
+    key = f"admin:{quota_identity_key(request, _rate_limit_config(request))}"
+    if not await request.app.state.api_limiter.allow(key):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
 
 
@@ -618,114 +613,16 @@ async def health_live() -> dict[str, Any]:
 
 
 @router.get("/health/ready")
-async def health_ready(request: Request) -> dict[str, Any]:
-    """Readiness probe — backend + engines are ready to serve.
+async def health_ready(request: Request) -> JSONResponse:
+    """Readiness probe — explicit alias of the canonical ``/health/ready``.
 
-    For the mock backend, readiness = backend exists (the mock renderer can
-    always serve frames). For the cloud backend, readiness also requires the
-    LLM/TTS engines to be loaded (or that the configured engine is the stub
-    "none"/"tone" — in which case nothing is expected to load).
-
-    A recorded load failure (``engine_manager.llm_load_error`` /
-    ``tts_load_error``) makes readiness False and surfaces the error — even
-    though the server fell back to a stub so it could start. A prod
-    deployment with a broken engine must NOT show "ready" while running
-    echo/tone stubs.
+    The canonical implementation (audit R0.4: ready -> HTTP 200, not ready ->
+    HTTP 503) lives in ``backend.api.health``; delegating keeps this v1 alias
+    and ``/admin/health`` truthful without duplicating the readiness rules.
     """
-    container = _container()(request)
-    backend = container.backend
-    backend_name = backend.name if backend is not None else None
-    em = container.engine_manager
-    llm_engine_name = "none"
-    tts_engine_name = "tone"
-    llm_loaded = False
-    tts_loaded = False
-    llm_load_error: Optional[str] = None
-    tts_load_error: Optional[str] = None
-    if em is not None:
-        if em.llm is not None:
-            llm_loaded = True
-            llm_engine_name = em.llm.name
-        else:
-            llm_engine_name = em.llm_cfg.get("engine", "none") or "none"
-        if em.tts is not None:
-            tts_loaded = True
-            tts_engine_name = em.tts.name
-        else:
-            tts_engine_name = em.tts_cfg.get("engine", "tone") or "tone"
-        llm_load_error = getattr(em, "llm_load_error", None)
-        tts_load_error = getattr(em, "tts_load_error", None)
+    from backend.api.health import health_ready as canonical_health_ready
 
-    if backend is None:
-        ready = False
-    elif backend_name == "mock":
-        # Mock backend can always serve frames. But if a real LLM/TTS engine
-        # was configured and FAILED to load, still report not-ready.
-        ready = not (llm_load_error or tts_load_error)
-    else:
-        # Cloud / self-host: ready if engines are loaded OR the configured
-        # engine is the stub (nothing is expected to load). A recorded load
-        # failure overrides -> not-ready.
-        llm_ok = llm_loaded or llm_engine_name in ("none", "", None)
-        tts_ok = tts_loaded or tts_engine_name in ("tone", "", None)
-        if llm_load_error:
-            llm_ok = False
-        if tts_load_error:
-            tts_ok = False
-        ready = llm_ok and tts_ok
-
-    embedder: Optional[dict] = None
-    director = container.director
-    if director is not None:
-        from backend.application.director.embeddings import embedder_status
-
-        try:
-            embedder = embedder_status(director.embedder)
-        except Exception as exc:
-            embedder = {
-                "name": "unavailable",
-                "mode": "semantic-required",
-                "ready": False,
-                "degraded": False,
-                "error": type(exc).__name__,
-            }
-        if not embedder["ready"]:
-            ready = False
-        if (
-            embedder["degraded"]
-            and container.config is not None
-            and container.config.app_env != "dev"
-        ):
-            ready = False
-
-    resp: dict[str, Any] = {
-        "ok": ready,
-        "status": "ready" if ready else "not_ready",
-        "render_backend": backend_name,
-        "llm_engine": llm_engine_name,
-        "tts_engine": tts_engine_name,
-    }
-    if embedder is not None:
-        resp["embedder"] = embedder
-    if llm_load_error:
-        resp["llm_load_error"] = llm_load_error
-    if tts_load_error:
-        resp["tts_load_error"] = tts_load_error
-    pg = container.pg_store
-    if pg is not None and getattr(pg, "enabled", False):
-        try:
-            pg_ok, pg_error = await pg.health()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Postgres readiness check failed error_type=%s", type(exc).__name__)
-            pg_ok, pg_error = False, type(exc).__name__
-        resp["postgres"] = "ready" if pg_ok else "not_ready"
-        if not pg_ok:
-            resp["ok"] = False
-            resp["status"] = "not_ready"
-            resp["postgres_error"] = pg_error
-    return resp
+    return await canonical_health_ready(request)
 
 
 @router.post("/media/livekit/room/{session_id}")

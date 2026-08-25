@@ -61,10 +61,11 @@ appends `/api/v1` itself. The mock path needs no LiveAvatar key.
 
 ```text
 APP_ENV=dev|prod
-RENDER_BACKEND=mock|cloud_liveavatar|remote_avatar|self_host_*
+RENDER_BACKEND=mock|cloud_liveavatar|self_host_*
 SESSION_STORE=memory|redis
-LLM_ENGINE=none|openai_compat|vllm|sglang|hf|llamacpp
-TTS_ENGINE=tone|remote_http|transformers|vieneu|cosyvoice
+LLM_ENGINE=none|vllm|sglang|hf|llamacpp
+TTS_ENGINE=tone|transformers|vieneu|cosyvoice
+# Remote provider endpoints: LLM_BASE_URL / TTS_BASE_URL / AVATAR_BASE_URL
 DATABASE_URL=postgresql://...              # optional runtime persistence
 LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 LIVEKIT_PUBLISH=0|1                        # requires valid LiveKit credentials

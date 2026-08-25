@@ -9,6 +9,17 @@ locals {
   )
 
   name_prefix = "${var.project}-${var.env}"
+
+  # TLS Redis URI (rediss://). When AUTH is set the token is embedded here —
+  # this value is never rendered as a plaintext task-definition environment
+  # value; it is delivered to the app only via the redis/url SSM SecureString
+  # (secrets valueFrom). When unauthenticated it stays a host:port URI that
+  # dev/staging may pass through plain ECS environment.
+  redis_uri = var.create_redis ? (
+    var.redis_auth_token != ""
+    ? "rediss://${var.redis_auth_token}@${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
+    : "rediss://${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
+  ) : ""
 }
 
 # ---------------------------------------------------------------------------
@@ -31,6 +42,14 @@ resource "aws_db_parameter_group" "postgres16" {
 
   name   = "${local.name_prefix}-pg16"
   family = "postgres16"
+
+  # Server-side TLS policy (R7.4): rds.force_ssl=1 makes the engine reject
+  # non-SSL connections even if the app-side contract is ever missed.
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
+  }
 
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-pg16"
@@ -106,23 +125,67 @@ resource "aws_elasticache_parameter_group" "redis7" {
   })
 }
 
-resource "aws_elasticache_cluster" "redis" {
+resource "aws_elasticache_replication_group" "redis" {
   count = var.create_redis ? 1 : 0
 
-  cluster_id           = "${local.name_prefix}-redis"
+  replication_group_id = "${local.name_prefix}-redis"
+  description          = "Redis 7 managed cache (TLS+auth)"
   engine               = "redis"
   engine_version       = var.redis_engine_version
   node_type            = var.redis_node_type
-  num_cache_nodes      = 1
   port                 = var.redis_port
   parameter_group_name = aws_elasticache_parameter_group.redis7[0].name
   subnet_group_name    = aws_elasticache_subnet_group.this[0].name
   security_group_ids   = [var.redis_sg_id]
 
-  # AUTH/transit encryption require aws_elasticache_replication_group, not cluster.
-  # MVP: SG isolation only; redis_auth_token reserved for future replication_group.
+  # Single-node MVP unchanged: no sharding, no replicas, no failover, no snapshots.
+  num_node_groups            = 1
+  replicas_per_node_group    = 0
+  automatic_failover_enabled = false
+  snapshot_retention_limit   = 0
+
+  # Managed-Redis production contract (R7.1): transit + at-rest encryption and
+  # optional AUTH are only available on a replication group, not a cluster.
+  transit_encryption_enabled = true
+  at_rest_encryption_enabled = true
+  auth_token                 = var.redis_auth_token != "" ? var.redis_auth_token : null
 
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-redis"
+  })
+}
+
+# Fail plan/apply when managed production Redis would silently run without
+# AUTH. R7.1 requires auth for production; dev/staging keep their unauth mode
+# by leaving require_redis_auth=false.
+resource "terraform_data" "redis_auth_required" {
+  input = format("%s|%s", var.create_redis, var.require_redis_auth)
+  lifecycle {
+    precondition {
+      condition     = !var.create_redis || !var.require_redis_auth || var.redis_auth_token != ""
+      error_message = <<-EOT
+        Managed Redis with require_redis_auth=true must set a non-empty
+        redis_auth_token. Refusing to run production Redis unauthenticated
+        (R7.1). Pass the token via TF_VAR_redis_auth_token / tfvars.local.
+      EOT
+    }
+  }
+}
+
+# Secure delivery of the credential-bearing URI: the computed rediss:// URI
+# (which embeds the AUTH token) is stored as an SSM SecureString so the ECS
+# task can reference it via `secrets = [{ name = "REDIS_URL", valueFrom = ... }]`
+# instead of a plaintext task-definition environment value. Only provisioned
+# when AUTH is actually set.
+resource "aws_ssm_parameter" "redis_uri" {
+  count = var.create_redis && var.redis_auth_token != "" ? 1 : 0
+
+  name        = "/${var.env}/redis/url"
+  description = "Credential-bearing Redis URI (rediss://) for ECS secrets injection; never a plaintext task-definition env value."
+  type        = "SecureString"
+  value       = local.redis_uri
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-redis-url"
   })
 }

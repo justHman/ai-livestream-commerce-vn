@@ -4,21 +4,26 @@ Copied from ``core/api/health.py`` (COPY-DON'T-IMPORT) so the canonical
 backend service is self-contained; readiness reads the typed
 ``BootstrapContainer`` directly (no legacy v1 deps seam).
 
-Excluded from the versioned v1 contract: ``/health/live`` (liveness, no
-dependencies) and ``/health/ready`` (readiness, checks configured
-dependencies) are mounted on the app directly by the app factories
-(``backend.bootstrap.app_factory``). The ready probe fails loud when the app
-has no ``app.state.container`` (the typed ``BootstrapContainer``) — it never
-calls external services.
+Canonical readiness semantics (audit R0.4): ready -> HTTP 200, not ready ->
+HTTP 503. The diagnostic JSON body is returned on both statuses; the HTTP
+status is the contract and a body can never override it. ``/health/live`` is
+liveness only (process alive, no dependency checks) and stays 200 while the
+process lives. ``/api/v1/health/ready`` (``backend.api.v1.router``) and
+``/admin/health`` (``backend.api.v1.admin``) are explicit aliases of this
+canonical route.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health/live")
@@ -28,16 +33,24 @@ async def health_live() -> dict[str, Any]:
 
 
 @router.get("/health/ready")
-async def health_ready(request: Request) -> dict[str, Any]:
-    """Readiness probe — configured dependencies are present.
+async def health_ready(request: Request) -> JSONResponse:
+    """Canonical readiness probe — HTTP 200 only when ready, else 503.
 
-    Checks that the app's ``BootstrapContainer`` is wired (fail loud with
-    503 if missing) and that the configured render backend + engines report
-    ready via the v1 deps. Does NOT call external services.
+    Checks that the app's ``BootstrapContainer`` is wired, that the
+    configured render backend + engines are ready, and that any enabled
+    embedder/postgres dependency is ready. Does NOT call external services.
     """
     container = getattr(request.app.state, "container", None)
     if container is None:
-        raise HTTPException(status_code=503, detail="application state has no container")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "status": "not_ready",
+                "detail": "application state has no container",
+            },
+        )
+
     backend = container.backend
     backend_name = backend.name if backend is not None else None
     em = container.engine_manager
@@ -64,8 +77,13 @@ async def health_ready(request: Request) -> dict[str, Any]:
     if backend is None:
         ready = False
     elif backend_name == "mock":
+        # Mock backend can always serve frames. But if a real LLM/TTS engine
+        # was configured and FAILED to load, still report not-ready.
         ready = not (llm_load_error or tts_load_error)
     else:
+        # Cloud / self-host: ready if engines are loaded OR the configured
+        # engine is the stub (nothing is expected to load). A recorded load
+        # failure overrides -> not-ready.
         llm_ok = llm_loaded or llm_engine_name in ("none", "", None)
         tts_ok = tts_loaded or tts_engine_name in ("tone", "", None)
         if llm_load_error:
@@ -74,6 +92,30 @@ async def health_ready(request: Request) -> dict[str, Any]:
             tts_ok = False
         ready = llm_ok and tts_ok
 
+    embedder: dict[str, Any] | None = None
+    director = container.director
+    if director is not None:
+        from backend.application.director.embeddings import embedder_status
+
+        try:
+            embedder = embedder_status(director.embedder)
+        except Exception as exc:
+            embedder = {
+                "name": "unavailable",
+                "mode": "semantic-required",
+                "ready": False,
+                "degraded": False,
+                "error": type(exc).__name__,
+            }
+        if not embedder["ready"]:
+            ready = False
+        if (
+            embedder["degraded"]
+            and container.config is not None
+            and container.config.app_env != "dev"
+        ):
+            ready = False
+
     resp: dict[str, Any] = {
         "ok": ready,
         "status": "ready" if ready else "not_ready",
@@ -81,8 +123,25 @@ async def health_ready(request: Request) -> dict[str, Any]:
         "llm_engine": llm_engine_name,
         "tts_engine": tts_engine_name,
     }
+    if embedder is not None:
+        resp["embedder"] = embedder
     if llm_load_error:
         resp["llm_load_error"] = llm_load_error
     if tts_load_error:
         resp["tts_load_error"] = tts_load_error
-    return resp
+    pg = container.pg_store
+    if pg is not None and getattr(pg, "enabled", False):
+        try:
+            pg_ok, pg_error = await pg.health()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Postgres readiness check failed error_type=%s", type(exc).__name__)
+            pg_ok, pg_error = False, type(exc).__name__
+        resp["postgres"] = "ready" if pg_ok else "not_ready"
+        if not pg_ok:
+            resp["ok"] = False
+            resp["status"] = "not_ready"
+            resp["postgres_error"] = pg_error
+
+    return JSONResponse(status_code=200 if resp["ok"] else 503, content=resp)

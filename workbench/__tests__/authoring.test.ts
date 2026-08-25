@@ -19,7 +19,7 @@ import {
   type AuthoringState,
 } from "../src/authoring";
 import { createScriptClient, idempotencyKey, mapScriptSetResponse } from "../src/scriptSets";
-import type { BackendScriptSetResponse, ScriptSet } from "../src/scriptSets";
+import type { BackendScriptSetResponse, ScriptEvent, ScriptSet } from "../src/scriptSets";
 
 describe("legal-state guards (task 13.2)", () => {
   it("fix is allowed only for GATE_FAILED", () => {
@@ -70,7 +70,7 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
     const draft = await client.putDraft(set.id, "P001", { display_text: "Kem chống nắng chỉ 329 nghìn đồng." });
     expect(draft.state).toBe("DRAFT");
     const submitted = await client.submit(set.id, "P001");
-    expect(submitted.state).toBe("reviewable");
+    expect(submitted.state).toBe("REVIEWABLE");
     const beforeApprove = await client.getScriptSet(set.id);
     const approved = await client.approveProduct(set.id, "P001", beforeApprove.products[0]!.current_version!.version_id, "operator");
     expect(approved.state).toBe("APPROVED");
@@ -101,12 +101,12 @@ describe("zero-LLM manual PASS flow (task 13.8)", () => {
     });
     await client.putDraft(set.id, "P001", { display_text: "Không dùng--dấu gạch dài." });
     const failed = await client.submit(set.id, "P001");
-    expect(failed.state).toBe("gate_failed");
-    expect(failed.violations?.some((v) => v.rule_id === "STYLE_DISALLOWED_PUNCTUATION")).toBe(true);
+    expect(failed.state).toBe("GATE_FAILED");
+    expect(failed.gate?.violations?.some((v) => v.rule_id === "STYLE_DISALLOWED_PUNCTUATION")).toBe(true);
     // AI fix on gate-failed version is legal and creates a new draft.
     await client.fixProduct(set.id, "P001", idempotencyKey({ op: "fix" }));
     const resubmitted = await client.submit(set.id, "P001");
-    expect(resubmitted.state).toBe("reviewable");
+    expect(resubmitted.state).toBe("REVIEWABLE");
   });
 
   it("fix is rejected with 409 when the version is not gate-failed", async () => {
@@ -192,7 +192,7 @@ describe("Generate All UX (tasks 13.4, 13.8)", () => {
     const flow = { client, state, dispatch };
     // First click succeeds.
     const first = await generateAllFlow(flow);
-    expect(first?.status).toBe("accepted");
+    expect(first?.status).toBe("queued");
     // Simulate the running state the first click set.
     state.batch.status = "running";
     // Second click must not dispatch another generate call.
@@ -220,7 +220,7 @@ describe("Generate All UX (tasks 13.4, 13.8)", () => {
     });
     await client.putDraft(set.id, "P001", { display_text: "x--y" });
     const failed = await client.submit(set.id, "P001");
-    expect(failed.state).toBe("gate_failed");
+    expect(failed.state).toBe("GATE_FAILED");
     // No automatic fix/regenerate: state stays gate_failed until human action.
     const reloaded = await client.getScriptSet(set.id);
     expect(reloaded.products[0]?.state).toBe("GATE_FAILED");
@@ -255,35 +255,41 @@ describe("approval invalidation (task 13.7)", () => {
 });
 
 describe("SSE event application (task 13.5)", () => {
-  it("snapshot sets batch id; transport failure marks retryable", () => {
+  it("applies real-contract batch events (snapshot status, batch.error, product.failed)", () => {
     let state = initialStateAuthoring();
+    // Snapshot status is at TOP level (not event.snapshot.status).
     const snapshot: ScriptEvent = {
-      event_id: "snap-1",
       revision: 3,
       type: "batch.snapshot",
-      script_set_id: "sets-1",
+      set_id: "sets-1",
       batch_id: "batch-9",
-      snapshot: { status: "running" } as never,
+      status: "running",
     };
     state = applyBatchEvent(state, snapshot);
     expect(state.batch.batchId).toBe("batch-9");
     expect(state.batch.status).toBe("running");
-    const transportFail: ScriptEvent = {
-      event_id: "ev-4",
-      revision: 4,
+    const productFail: ScriptEvent = {
       type: "product.failed",
-      script_set_id: "sets-1",
+      set_id: "sets-1",
       batch_id: "batch-9",
-      failure: { reason: "transport", message: "provider timeout" },
+      product_id: "P001",
+      reason: "provider timeout",
     };
-    state = applyBatchEvent(state, transportFail);
-    expect(state.batch.transportRetrying).toBe(true);
+    state = applyBatchEvent(state, productFail);
     expect(state.batch.lastError).toContain("provider timeout");
+    expect(state.batch.status).toBe("running");
+    const batchError: ScriptEvent = {
+      type: "batch.error",
+      set_id: "sets-1",
+      batch_id: "batch-9",
+      code: "not_found",
+    };
+    state = applyBatchEvent(state, batchError);
+    expect(state.batch.lastError).toContain("not_found");
+    expect(state.batch.transportRetrying).toBe(false);
     const completed: ScriptEvent = {
-      event_id: "ev-5",
-      revision: 5,
       type: "batch.completed",
-      script_set_id: "sets-1",
+      set_id: "sets-1",
       batch_id: "batch-9",
     };
     state = applyBatchEvent(state, completed);
@@ -295,7 +301,7 @@ describe("SSE event application (task 13.5)", () => {
     let state = initialStateAuthoring();
     state = authoringReducer(state, {
       type: "AUTHORING_SSE_EVENT",
-      value: { event_id: "e1", revision: 1, type: "batch.snapshot", script_set_id: "s", batch_id: "b" },
+      value: { event_id: "e1", revision: 1, type: "batch.snapshot", set_id: "s", batch_id: "b", status: "running" },
     });
     expect(state.batch.batchId).toBe("b");
   });
