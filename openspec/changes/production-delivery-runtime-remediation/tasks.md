@@ -383,3 +383,13 @@ For every reviewable task inside its cluster:
 - [x] F.15 Rerun focused suites per cluster + full PR CI at the NEW exact head; capture only fresh evidence. (head `7722ea9`: repo-tools 248 · backend unit 1839 · TTS 502 · workbench 189+tsc+lint+build · terraform test 22 · validate 4 env · openspec 20 · ruff/diff-check clean; PR CI run 32806087597 SUCCESS 17/17)
 - [x] F.16 Produce one new verification report for the original agent (§6 review contract) at the new head; re-submit for verdict. (`D:\Downloads\AI_LIVESTREAM_REMEDIATION_VERIFICATION_REPORT_V2_2026-08-25.md` — owner ships it; no Coordinator dispatch.)
 - [ ] F.17 Merge PR #55 → develop → main only after the original-agent verdict is PASS.
+
+### N-wave — re-review V3 blockers N1/N2 (2026-08-25)
+
+> The original agent's re-review V3 (`AI_LIVESTREAM_REMEDIATION_ORIGINAL_AUDIT_REVIEW_V3_2026-08-25(1).md`) closed B1–B7 and raised 2 new delivery-only blockers. One small wave repaired both; CI green at head `94b1209`.
+
+- [x] N1 Add `actions: read` to deploy-dev/staging + release-service workflow-level permissions; new validator `validate_gh_api_actions_permission` (+ 4 unit tests) rejects governed `gh api` Actions/Environment calls without it.
+- [x] N2 Archive `.github/workflows/deploy-prod.yml` → `archived/github-workflows/` (mechanically incapable of deployment); new validator `validate_superseded_no_deploy_entrypoint` (+ 3 unit tests) rejects reintroducing a SUPERSEDED workflow with a deploy entrypoint; inventory tests updated.
+- [x] N.CI Full PR CI green at head `94b1209` (run 32813452662); static validator 11/11 PASS; `tests/ci/` 255 passed.
+- [x] N.REPORT Re-review report V3 written (`D:\Downloads\AI_LIVESTREAM_REMEDIATION_VERIFICATION_REPORT_V3_2026-08-25.md`); owner ships it.
+- [ ] N.VERDICT F.17 merge to develop → main gated on the original-agent verdict PASS.
