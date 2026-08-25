@@ -133,23 +133,38 @@ def _migrate_run_text(workflow_name):
     raise AssertionError(f"{workflow_name}: migrate job has no 'Run pre-deploy migration' step")
 
 
+# Ruling: these tests previously asserted `containerOverrides` with an `image`
+# key — the unsupported ECS RunTask override shape (audit B2). ECS image
+# identity belongs to the task definition, so the migration now registers a
+# candidate-image task-definition revision and runs RunTask against that
+# revision. The intent (migration binds the EXACT candidate backend digest) is
+# unchanged; the assertions now prove the correct mechanism.
+
+
 def test_dev_migration_binds_candidate_digest():
     run = _migrate_run_text("deploy-dev.yml")
-    assert "containerOverrides" in run, "migration must override the candidate container image"
-    assert '"image"' in run, "migration must bind the exact candidate image"
-    assert "--overrides" in run, "migration must pass an ECS overrides document"
-    assert "backend" in run, "override must target the canonical backend container"
+    assert "aws ecs register-task-definition --cli-input-json" in run, (
+        "migration must register a candidate-image task-definition revision"
+    )
+    assert "$candidate" in run, "migration must bind the exact candidate digest"
+    assert "containerOverrides" not in run, "RunTask overrides must not set image"
+    assert '--task-definition "$new_task"' in run, (
+        "RunTask must target the candidate-image revision"
+    )
+    assert "backend" in run, "the candidate image must target the canonical backend container"
 
 
 def test_staging_migration_binds_candidate_digest():
     run = _migrate_run_text("deploy-staging.yml")
-    assert "containerOverrides" in run
-    assert '"image"' in run
-    assert "--overrides" in run
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "$candidate" in run
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run
 
 
 def test_release_migration_binds_candidate_digest():
     run = _migrate_run_text("release-service.yml")
-    assert "containerOverrides" in run
-    assert '"image"' in run
-    assert "--overrides" in run
+    assert "aws ecs register-task-definition --cli-input-json" in run
+    assert "$EVIDENCE_DIGEST" in run, "release migration must bind the staging-evidence digest"
+    assert "containerOverrides" not in run
+    assert '--task-definition "$new_task"' in run

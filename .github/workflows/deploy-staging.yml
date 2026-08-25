@@ -251,15 +251,20 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$MIGRATE_TASK_ARN" ]]; then echo "No migration task configured; skipping."; exit 0; fi
-          # R1.10: bind migration to the EXACT candidate backend image digest
-          # (built with tag staging-<sha> this run), never the task-definition image.
+          # B2: bind migration to the EXACT candidate backend image digest
+          # (built with tag staging-<sha> this run) by registering a candidate-image
+          # task-definition revision — ECS RunTask container overrides do NOT
+          # support `image`; image identity belongs to the task definition.
           docker login -u "${{ secrets.DOCKERHUB_USER }}" -p "${{ secrets.DOCKERHUB_TOKEN }}" >/dev/null 2>&1
           digest=$(docker buildx imagetools inspect "imjusthman/ai-live-backend:staging-${VALIDATED_SHA}" --format '{{.Manifest.Digest}}')
           [[ -n "$digest" && "$digest" == sha256:* ]] || { echo "Failed to resolve candidate backend digest for migration." >&2; exit 1; }
           candidate="imjusthman/ai-live-backend@$digest"
           echo "Migration will run candidate backend digest $candidate"
-          overrides=$(jq -nc --arg img "$candidate" '{containerOverrides:[{"name":"backend","image":$img}]}')
-          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$MIGRATE_TASK_ARN" --overrides "$overrides" --launch-type FARGATE \
+          task=$(aws ecs describe-task-definition --task-definition "$MIGRATE_TASK_ARN" --query taskDefinition)
+          task=$(jq --arg name "backend" --arg img "$candidate" '.containerDefinitions |= map(if .name == $name then .image = $img else . end)' <<<"$task")
+          task=$(jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)' <<<"$task")
+          new_task=$(aws ecs register-task-definition --cli-input-json "$task" --query taskDefinition.taskDefinitionArn --output text)
+          run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$new_task" --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$(echo "$BACKEND_SUBNETS" | jq -r 'join(",")')],securityGroups=[$(echo "$BACKEND_SG" | jq -r 'join(",")')],assignPublicIp=ENABLED}" \
             --query 'tasks[0].taskArn' --output text)
           [[ -n "$run_id" && "$run_id" != "None" ]] || { echo "Migration task failed to start." >&2; exit 1; }
