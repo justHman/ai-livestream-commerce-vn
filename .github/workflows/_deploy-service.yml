@@ -7,8 +7,10 @@
 # failure it restores ONLY this service to its previous task definition
 # (design §6 — rollback is service-scoped; other services are untouched).
 #
-# The caller owns environment protection, AWS role, and evidence; this file
-# deliberately has no `environment:` reference and no deployment trigger.
+# The deploy job binds the caller's protected environment via
+# `environment: ${{ inputs.env }}` so the protected-environment secret/
+# approval boundary is preserved on the called side; `id-token: write` is
+# granted for OIDC role assumption. This file has no deployment trigger.
 #
 # prev_digest / new_digest are recorded for the deployment evidence chain
 # (4.4): the image ref currently deployed vs the target image. new_digest is
@@ -67,11 +69,13 @@ on:
         required: true
 
 permissions:
+  id-token: write
   contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
     env:
       ECS_CLUSTER: ${{ inputs.cluster }}
       ECS_SERVICE: ${{ inputs.service }}

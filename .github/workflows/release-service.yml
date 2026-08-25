@@ -267,9 +267,9 @@ jobs:
       image: ${{ needs.validate-evidence.outputs.evidence_digest }}
       smoke_url: ${{ needs.resolve.outputs.service == 'backend_service' && needs.prepare.outputs.smoke_url || '' }}
     secrets:
-      role_arn: AWS_ROLE_ARN_PROD
-      dockerhub_user: DOCKERHUB_USER
-      dockerhub_token: DOCKERHUB_TOKEN
+      role_arn: ${{ secrets.AWS_ROLE_ARN_PROD }}
+      dockerhub_user: ${{ secrets.DOCKERHUB_USER }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
 
   record-outcome:
     needs: [resolve, validate-evidence, promote]
