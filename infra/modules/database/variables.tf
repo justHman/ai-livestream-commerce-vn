@@ -133,7 +133,7 @@ variable "redis_port" {
 }
 
 variable "redis_auth_token" {
-  description = "Managed Redis AUTH secret (empty = no auth). Prefer SSM out-of-band. Passed into the replication group and embedded in redis_uri."
+  description = "Managed Redis AUTH secret (empty = no auth). Passed into the replication group and embedded in the redis_uri SecureString."
   type        = string
   sensitive   = true
   default     = ""
@@ -142,6 +142,12 @@ variable "redis_auth_token" {
     condition     = var.redis_auth_token == "" || (length(var.redis_auth_token) >= 16 && !strcontains(var.redis_auth_token, " "))
     error_message = "redis_auth_token must be empty or at least 16 chars with no spaces."
   }
+}
+
+variable "require_redis_auth" {
+  description = "Production contract: when create_redis, refuse to run unauthenticated (redis_auth_token must be non-empty). Dev/staging may leave false to keep their existing unauth mode."
+  type        = bool
+  default     = false
 }
 
 variable "tags" {

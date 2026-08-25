@@ -9,6 +9,17 @@ locals {
   )
 
   name_prefix = "${var.project}-${var.env}"
+
+  # TLS Redis URI (rediss://). When AUTH is set the token is embedded here —
+  # this value is never rendered as a plaintext task-definition environment
+  # value; it is delivered to the app only via the redis/url SSM SecureString
+  # (secrets valueFrom). When unauthenticated it stays a host:port URI that
+  # dev/staging may pass through plain ECS environment.
+  redis_uri = var.create_redis ? (
+    var.redis_auth_token != ""
+    ? "rediss://${var.redis_auth_token}@${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
+    : "rediss://${aws_elasticache_replication_group.redis[0].primary_endpoint_address}:${aws_elasticache_replication_group.redis[0].port}"
+  ) : ""
 }
 
 # ---------------------------------------------------------------------------
@@ -141,5 +152,40 @@ resource "aws_elasticache_replication_group" "redis" {
 
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-redis"
+  })
+}
+
+# Fail plan/apply when managed production Redis would silently run without
+# AUTH. R7.1 requires auth for production; dev/staging keep their unauth mode
+# by leaving require_redis_auth=false.
+resource "terraform_data" "redis_auth_required" {
+  input = format("%s|%s", var.create_redis, var.require_redis_auth)
+  lifecycle {
+    precondition {
+      condition     = !var.create_redis || !var.require_redis_auth || var.redis_auth_token != ""
+      error_message = <<-EOT
+        Managed Redis with require_redis_auth=true must set a non-empty
+        redis_auth_token. Refusing to run production Redis unauthenticated
+        (R7.1). Pass the token via TF_VAR_redis_auth_token / tfvars.local.
+      EOT
+    }
+  }
+}
+
+# Secure delivery of the credential-bearing URI: the computed rediss:// URI
+# (which embeds the AUTH token) is stored as an SSM SecureString so the ECS
+# task can reference it via `secrets = [{ name = "REDIS_URL", valueFrom = ... }]`
+# instead of a plaintext task-definition environment value. Only provisioned
+# when AUTH is actually set.
+resource "aws_ssm_parameter" "redis_uri" {
+  count = var.create_redis && var.redis_auth_token != "" ? 1 : 0
+
+  name        = "/${var.env}/redis/url"
+  description = "Credential-bearing Redis URI (rediss://) for ECS secrets injection; never a plaintext task-definition env value."
+  type        = "SecureString"
+  value       = local.redis_uri
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-redis-url"
   })
 }

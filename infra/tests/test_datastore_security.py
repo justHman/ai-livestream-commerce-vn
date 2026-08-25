@@ -50,13 +50,30 @@ def test_postgres_parameter_group_forces_ssl() -> None:
 
 
 def test_redis_uri_output_is_sensitive_rediss() -> None:
-    source = _read(DB_OUTPUTS)
+    # URI construction moved to a local in main.tf (shared by the SSM
+    # SecureString and the redis_uri output); the output stays sensitive.
+    source = _read(DB_MAIN) + _read(DB_OUTPUTS)
     assert "rediss://" in source
     assert "sensitive   = true" in source
+    assert "redis_uri_parameter_arn" in _read(DB_OUTPUTS)
 
 
 def test_environments_use_module_redis_uri() -> None:
     for main in ENVIRONMENTS:
         source = _read(main)
-        assert "module.database.redis_uri" in source
+        # prod delivers REDIS_URL via the redis/url SSM SecureString ARN;
+        # dev/staging derive the plain URI from the module output.
+        assert (
+            "module.database.redis_uri" in source
+            or "module.database.redis_uri_parameter_arn" in source
+        )
         assert '"redis://${' not in source
+
+
+def test_prod_requires_redis_auth_and_durable_tts_voice_store() -> None:
+    # B6/B5: prod root must actually turn on the production guards (managed
+    # Redis AUTH required; self-host TTS needs a durable voice-store URI), so a
+    # refactor cannot silently weaken them back to dev-mode defaults.
+    source = _read(ROOT / "infra/environments/prod/main.tf")
+    assert re.search(r"require_redis_auth\s*=\s*true", source)
+    assert re.search(r"tts_require_durable_voice_store\s*=\s*true", source)
