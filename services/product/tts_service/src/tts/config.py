@@ -10,6 +10,9 @@ from typing import Optional
 SELF_HOST_ENGINES = frozenset({"vieneu", "cosyvoice"})
 SERVICE_NAME = "tts"
 DEFAULT_PORT = 8002
+# Canonical production predicate (mirrors backend AppConfig.is_production):
+# APP_ENV=prod is the deployment literal, "production" the accepted legacy alias.
+_PRODUCTION_ENVS = frozenset({"prod", "production"})
 
 # Change T: provider-neutral runtime defaults (cluster 1.5). These configure
 # the scheduler/provider runtime introduced by Change T; the legacy EngineConfig
@@ -162,6 +165,34 @@ def _parse_bool(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _is_production_env() -> bool:
+    """Production predicate: APP_ENV in {prod, production} (see _PRODUCTION_ENVS)."""
+    return os.environ.get("APP_ENV", "").strip().lower() in _PRODUCTION_ENVS
+
+
+def _validate_voice_store_env(voice_store: str) -> None:
+    """Fail loud when production would use the local filesystem voice store.
+
+    Local filesystem (``file://``) is explicit dev/test only — voice profiles
+    stored there vanish on task replacement/restart. Production must not
+    silently fall back to it; an explicit ``TTS_VOICE_STORE_TEST_ONLY=1`` is
+    the only opt-out for genuine test/one-off runs. Provider-neutral: any
+    non-``file://`` durable URI (``s3://`` or a future provider) is accepted.
+    """
+    if (
+        _is_production_env()
+        and voice_store.startswith("file://")
+        and not _parse_bool(os.environ.get("TTS_VOICE_STORE_TEST_ONLY"))
+    ):
+        raise ValueError(
+            "production TTS requires a durable voice store URI (set "
+            "TTS_VOICE_STORE_URI, e.g. s3://bucket[/prefix]); local filesystem "
+            "file:// is dev/test only and voice profiles would be lost on task "
+            "replacement/restart. Set TTS_VOICE_STORE_TEST_ONLY=1 only for an "
+            "explicit test-only override."
+        )
+
+
 def _parse_int(value: str | None, default: int) -> int:
     if value is None or value == "":
         return default
@@ -211,6 +242,7 @@ def load_runtime_config() -> RuntimeConfig:
     if not voice_store:
         runtime_root = Path(os.environ.get("RUNTIME_ROOT", ".runtime"))
         voice_store = f"file://{(runtime_root / 'voice_profiles').as_posix()}"
+    _validate_voice_store_env(voice_store)
     return RuntimeConfig(
         provider=os.environ.get("TTS_PROVIDER", DEFAULT_TTS_PROVIDER).strip().lower(),
         accelerator=os.environ.get("TTS_ACCELERATOR", "auto").strip().lower(),
