@@ -187,7 +187,7 @@ jobs:
           check_optional "$llm_desired" "$llm_svc" llm
           check_optional "$tts_desired" "$tts_svc" tts
           check_optional "$avatar_desired" "$avatar_svc" avatar
-          echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"
+          echo "smoke_url=$scheme://$dns/api/v1/health/ready" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [validate, preflight]
