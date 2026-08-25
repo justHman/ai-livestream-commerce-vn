@@ -335,48 +335,48 @@ For every reviewable task inside its cluster:
 
 ### W — Delivery workflow contract (B1 reusable-deploy secrets/OIDC/environment, B2 migration task-def, B3 promotion readiness)
 
-- [ ] B1.1 RED static tests reject bare literal values in governed reusable-workflow `secrets:` maps.
-- [ ] B1.2 RED static tests reject a reusable AWS deploy workflow missing `id-token: write`.
-- [ ] B1.3 RED static tests reject a deployment reusable job not bound to the expected protected environment.
-- [ ] B1.4 Repair `_deploy-service.yml` (permissions `id-token: write` + `contents: read`; deploy job bound to `environment: ${{ inputs.env }}`) and caller `secrets:` maps to real secret expressions (`${{ secrets.* }}`) in deploy-dev/staging + release-service.
-- [ ] B1.5 GREEN + regression; commit.
+- [x] B1.1 RED static tests reject bare literal values in governed reusable-workflow `secrets:` maps.
+- [x] B1.2 RED static tests reject a reusable AWS deploy workflow missing `id-token: write`.
+- [x] B1.3 RED static tests reject a deployment reusable job not bound to the expected protected environment.
+- [x] B1.4 Repair `_deploy-service.yml` (permissions `id-token: write` + `contents: read`; deploy job bound to `environment: ${{ inputs.env }}`) and caller `secrets:` maps to real secret expressions (`${{ secrets.* }}`) in deploy-dev/staging + release-service.
+- [x] B1.5 GREEN + regression; commit.
 
-- [ ] B2.1 RED static test rejects `containerOverrides.*.image` in any workflow migration step.
-- [ ] B2.2 RED unit test proves migration registers a task-definition revision carrying the exact candidate digest and runs `RunTask` against that revision (no `image` override).
-- [ ] B2.3 Repair migration in deploy-dev/staging + release-service: register candidate-digest task-def revision (copy `_deploy-service` proven pattern), run against it.
-- [ ] B2.4 GREEN + regression; commit.
+- [x] B2.1 RED static test rejects `containerOverrides.*.image` in any workflow migration step.
+- [x] B2.2 RED unit test proves migration registers a task-definition revision carrying the exact candidate digest and runs `RunTask` against that revision (no `image` override).
+- [x] B2.3 Repair migration in deploy-dev/staging + release-service: register candidate-digest task-def revision (copy `_deploy-service` proven pattern), run against it.
+- [x] B2.4 GREEN + regression; commit.
 
-- [ ] B3.1 RED static test rejects a deployment/promotion smoke URL that targets liveness where readiness is required.
-- [ ] B3.2 Repair `smoke_url` in deploy-dev/staging + release-service to canonical `/api/v1/health/ready` (liveness stays `/health/live`).
-- [ ] B3.3 GREEN + regression; commit.
+- [x] B3.1 RED static test rejects a deployment/promotion smoke URL that targets liveness where readiness is required.
+- [x] B3.2 Repair `smoke_url` in deploy-dev/staging + release-service to canonical `/api/v1/health/ready` (liveness stays `/health/live`).
+- [x] B3.3 GREEN + regression; commit.
 
 ### BE — Backend auth + TTS voice-store guard (B4 unify auth, B5 app-side)
 
-- [ ] B4.1 RED integration tests hit real protected `/api/v1` viewer + admin routes: unresolved auth config → denied; dev explicit auth-disabled → allowed; valid viewer/admin → allowed by scope.
-- [ ] B4.2 Unify auth: make `backend/api/v1/auth.py` delegate to the fail-closed `backend.api.security.authentication` (or remove duplication and re-point routes). One canonical token-validation truth.
-- [ ] B4.3 GREEN + regression; commit.
+- [x] B4.1 RED integration tests hit real protected `/api/v1` viewer + admin routes: unresolved auth config → denied; dev explicit auth-disabled → allowed; valid viewer/admin → allowed by scope.
+- [x] B4.2 Unify auth: make `backend/api/v1/auth.py` delegate to the fail-closed `backend.api.security.authentication` (or remove duplication and re-point routes). One canonical token-validation truth.
+- [x] B4.3 GREEN + regression; commit.
 
-- [ ] B5.1 RED test: `APP_ENV=prod` + default/`file://` voice store → fail configuration/readiness unless explicit test-only mode.
-- [ ] B5.2 RED test: production-shaped self-host TTS config + durable URI → accepted.
-- [ ] B5.3 Repair `tts/config.py` voice-store resolution with the prod guard (local filesystem is dev/test only).
-- [ ] B5.4 Regression: non-S3 adapter path still imports/runs without `boto3`; restart/replacement persistence test green.
-- [ ] B5.5 GREEN + regression; commit.
+- [x] B5.1 RED test: `APP_ENV=prod` + default/`file://` voice store → fail configuration/readiness unless explicit test-only mode.
+- [x] B5.2 RED test: production-shaped self-host TTS config + durable URI → accepted.
+- [x] B5.3 Repair `tts/config.py` voice-store resolution with the prod guard (local filesystem is dev/test only).
+- [x] B5.4 Regression: non-S3 adapter path still imports/runs without `boto3`; restart/replacement persistence test green.
+- [x] B5.5 GREEN + regression; commit.
 
 ### TF — Infrastructure/state security (B6 Redis secret, B5 deployment-side wiring)
 
-- [ ] B6.1 RED static Terraform tests: production managed Redis cannot silently run unauthenticated; no credential-bearing `REDIS_URL` rendered into ECS `environment`; secret reference (`valueFrom` SSM/Secrets Manager) used at the AWS edge.
-- [ ] B6.2 Repair database/compute wiring: require production Redis auth; inject the credential-bearing URI through SSM/Secrets Manager `valueFrom`; keep app core cloud-neutral (`REDIS_URL` still the app contract).
-- [ ] B6.3 GREEN + regression (terraform fmt/validate/test offline); commit.
+- [x] B6.1 RED static Terraform tests: production managed Redis cannot silently run unauthenticated; no credential-bearing `REDIS_URL` rendered into ECS `environment`; secret reference (`valueFrom` SSM/Secrets Manager) used at the AWS edge.
+- [x] B6.2 Repair database/compute wiring: require production Redis auth; inject the credential-bearing URI through SSM/Secrets Manager `valueFrom`; keep app core cloud-neutral (`REDIS_URL` still the app contract).
+- [x] B6.3 GREEN + regression (terraform fmt/validate/test offline); commit.
 
-- [ ] B5.tf RED static Terraform test: self-host TTS enabled in prod without a durable `TTS_VOICE_STORE_URI` → fail loudly.
-- [ ] B5.tf Repair: prod composition supplies a durable provider-neutral voice-store URI whenever self-host TTS is enabled.
-- [ ] B5.tf GREEN + regression; commit.
+- [x] B5.tf RED static Terraform test: self-host TTS enabled in prod without a durable `TTS_VOICE_STORE_URI` → fail loudly.
+- [x] B5.tf Repair: prod composition supplies a durable provider-neutral voice-store URI whenever self-host TTS is enabled.
+- [x] B5.tf GREEN + regression; commit.
 
 ### OS — Commit canonical OpenSpec change (B7)
 
-- [ ] B7.1 Update `tasks.md` to reflect this fix wave (this section).
-- [ ] B7.2 Commit `openspec/changes/production-delivery-runtime-remediation/` (proposal/design/tasks/spec only — no custom supporting files) into the repair branch.
-- [ ] B7.3 Run strict `openspec validate --change production-delivery-runtime-remediation` at the new head.
+- [x] B7.1 Update `tasks.md` to reflect this fix wave (this section).
+- [x] B7.2 Commit `openspec/changes/production-delivery-runtime-remediation/` (proposal/design/tasks/spec only — no custom supporting files) into the repair branch.
+- [x] B7.3 Run strict `openspec validate --change production-delivery-runtime-remediation` at the new head.
 
 ### Re-verification after the fix wave (new exact head)
 
