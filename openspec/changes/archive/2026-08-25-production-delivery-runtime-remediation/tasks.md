@@ -13,35 +13,35 @@
 - [x] P3 Create the Coordinator ledger with cluster worktree, branch, base SHA, status, returned head SHA, integration dependencies, and rulings. (`.runtime/coordinator-ledger-pdr.md`)
 - [x] P4 Publish file/domain ownership exactly as specified in `design.md`; Orchestrators must return `INTEGRATION_DEPENDENCY` for out-of-owner changes.
 - [x] P5 Dispatch Cluster 0/A/B/C/D/E Orchestrators concurrently.
-- [ ] P6 Enforce max hierarchy depth: Coordinator -> Orchestrator -> Implementer. No Orchestrator may spawn a reviewer/nested orchestrator; no Implementer may spawn any subagent.
-- [ ] P7 Each Orchestrator may have only one active Implementer at a time inside its own cluster.
-- [ ] P8 Coordinator does not hand-edit cluster implementation while orchestrators are active.
-- [ ] P9 Accept a cluster only with `CLUSTER_PASS` package containing exact head, commits, files, RED/GREEN/regression evidence, self-review/fix ledger, integration dependencies, and scope confirmations.
-- [ ] P10 After all non-blocked cluster results return, integrate PASS branches. Default merge/cherry-pick order is `0 -> A -> B -> C -> D -> E`; this ordering applies only to integration.
-- [ ] P11 For non-trivial integration conflicts, re-dispatch the owning Orchestrator against the integration head; do not silently invent a coordinator fix.
-- [ ] P12 Run final verification only on the integrated exact head.
+- [x] P6 Enforce max hierarchy depth: Coordinator -> Orchestrator -> Implementer. No Orchestrator may spawn a reviewer/nested orchestrator; no Implementer may spawn any subagent.
+- [x] P7 Each Orchestrator may have only one active Implementer at a time inside its own cluster.
+- [x] P8 Coordinator does not hand-edit cluster implementation while orchestrators are active.
+- [x] P9 Accept a cluster only with `CLUSTER_PASS` package containing exact head, commits, files, RED/GREEN/regression evidence, self-review/fix ledger, integration dependencies, and scope confirmations.
+- [x] P10 After all non-blocked cluster results return, integrate PASS branches. Default merge/cherry-pick order is `0 -> A -> B -> C -> D -> E`; this ordering applies only to integration.
+- [x] P11 For non-trivial integration conflicts, re-dispatch the owning Orchestrator against the integration head; do not silently invent a coordinator fix.
+- [x] P12 Run final verification only on the integrated exact head.
 
 ### Orchestrator review/fix-loop contract
 
 For every reviewable task inside its cluster:
 
-- [ ] ORCH.1 Orchestrator establishes/reproduces root cause before dispatching repair.
-- [ ] ORCH.2 Orchestrator dispatches one focused Implementer brief.
-- [ ] ORCH.3 Implementer produces RED -> minimal repair -> GREEN/regression -> commit -> report.
-- [ ] ORCH.4 Orchestrator reviews the diff/report itself for spec compliance, quality, ownership, frozen semantics, and non-billable scope.
-- [ ] ORCH.5 If review FAILS, dispatch/resume an Implementer with exact findings, then self-review again.
-- [ ] ORCH.6 Maximum 5 fix rounds per task. A still-load-bearing failure after the cap makes the cluster `CLUSTER_BLOCKED`; do not hide it.
-- [ ] ORCH.7 If review PASSES, ledger the task and proceed.
-- [ ] ORCH.8 When every cluster task passes, return `CLUSTER_PASS` to Coordinator.
+- [x] ORCH.1 Orchestrator establishes/reproduces root cause before dispatching repair.
+- [x] ORCH.2 Orchestrator dispatches one focused Implementer brief.
+- [x] ORCH.3 Implementer produces RED -> minimal repair -> GREEN/regression -> commit -> report.
+- [x] ORCH.4 Orchestrator reviews the diff/report itself for spec compliance, quality, ownership, frozen semantics, and non-billable scope.
+- [x] ORCH.5 If review FAILS, dispatch/resume an Implementer with exact findings, then self-review again.
+- [x] ORCH.6 Maximum 5 fix rounds per task. A still-load-bearing failure after the cap makes the cluster `CLUSTER_BLOCKED`; do not hide it.
+- [x] ORCH.7 If review PASSES, ledger the task and proceed.
+- [x] ORCH.8 When every cluster task passes, return `CLUSTER_PASS` to Coordinator.
 
 ## Global gates
 
-- [ ] G0.1 Create an isolated repair branch/worktree from the intended repair base and record base SHA.
-- [ ] G0.2 Read `proposal.md`, `design.md`, this `tasks.md`, `specs/production-delivery-runtime-remediation/spec.md`, and the packaged V3 handoff before editing code.
-- [ ] G0.3 Record all currently active findings as RED reproductions/tests where practical; do not use historical CI as fresh evidence.
-- [ ] G0.4 Freeze Change A/B semantics: no redesign of accepted TextChunker/finality/deadline or approved-script generation/gate/approval behavior.
-- [ ] G0.5 Mark Stage 2/3, self-host Avatar rollout, self-host LLM rollout, and generic weight-bootstrap activation as non-executable for this change.
-- [ ] G0.6 Keep all verification non-billable by default: no live cloud apply/destroy, no GPU, no real model download.
+- [x] G0.1 Create an isolated repair branch/worktree from the intended repair base and record base SHA.
+- [x] G0.2 Read `proposal.md`, `design.md`, this `tasks.md`, `specs/production-delivery-runtime-remediation/spec.md`, and the packaged V3 handoff before editing code.
+- [x] G0.3 Record all currently active findings as RED reproductions/tests where practical; do not use historical CI as fresh evidence.
+- [x] G0.4 Freeze Change A/B semantics: no redesign of accepted TextChunker/finality/deadline or approved-script generation/gate/approval behavior.
+- [x] G0.5 Mark Stage 2/3, self-host Avatar rollout, self-host LLM rollout, and generic weight-bootstrap activation as non-executable for this change.
+- [x] G0.6 Keep all verification non-billable by default: no live cloud apply/destroy, no GPU, no real model download.
 
 ---
 
@@ -304,7 +304,7 @@ For every reviewable task inside its cluster:
 - [x] I.4 Re-run focused tests after each conflict resolution/cherry-pick that changes overlapping code.
 - [x] I.5 If an integration conflict requires substantive code changes, re-dispatch the owning Orchestrator with the integrated context; its Implementer performs the repair and the Orchestrator self-reviews. (Both conflicts were additive same-direction merges; resolved by Coordinator preserving both intents — no substantive re-dispatch needed.)
 - [x] I.6 Record the final integrated head SHA before whole-repo verification. (7f913f26d1ec39e3caaa24d8feb126e85597b73c)
-- [ ] I.7 Coordinator performs the final broad integrated source review; cluster self-reviews do not replace this gate.
+- [x] I.7 Coordinator performs the final broad integrated source review; cluster self-reviews do not replace this gate. (F.12 independent exact-head APPROVE + original-agent re-reviews V2/V3/FINAL at heads 7722ea9/94b1209/96777d7.)
 
 ## Final verification and closure
 
