@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from typing import Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-MAX_COMMENT_TEXT = 500
+MAX_COMMENT_TEXT = 1000  # Python str length counts Unicode code points.
+P0_COMMENT_CONTRACT = "p0.v1"
 MAX_EVENTS_PER_REQUEST = 100
 MAX_STALENESS_SEC = 24 * 60 * 60  # |now - occurred_at| > 24h is rejected
 
@@ -51,12 +52,43 @@ class CountPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class P0SessionBinding(BaseModel):
+    """Prepared Livento-owned scope for a p0.v1 runtime session."""
+
+    contract_version: Literal["p0.v1"]
+    tenant_id: str = Field(min_length=1, max_length=128)
+    business_session_id: str = Field(min_length=1, max_length=128)
+    platform: str = Field(min_length=1, max_length=32)
+    connected_account_id: str = Field(min_length=1, max_length=256)
+    external_session_id: str = Field(min_length=1, max_length=256)
+
+    @field_validator(
+        "tenant_id",
+        "business_session_id",
+        "platform",
+        "connected_account_id",
+        "external_session_id",
+    )
+    @classmethod
+    def require_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("P0 session binding fields must be nonblank")
+        return value
+
+
 class PlatformEvent(BaseModel):
     """One normalized viewer event from any source platform."""
 
     event_id: str = Field(min_length=1, max_length=128)
     platform: str = Field(min_length=1, max_length=32)
     source_stream_id: str = Field(min_length=1, max_length=256)
+    contract_version: Optional[Literal["p0.v1"]] = None
+    tenant_id: Optional[str] = Field(default=None, max_length=128)
+    business_session_id: Optional[str] = Field(default=None, max_length=128)
+    connected_account_id: Optional[str] = Field(default=None, max_length=256)
+    external_session_id: Optional[str] = Field(default=None, max_length=256)
+    source_message_id: Optional[str] = Field(default=None, max_length=128)
+    moderation_ref: Optional[str] = Field(default=None, max_length=256)
     occurred_at: float
     type: EventType
     viewer: Optional[ViewerRef] = None
@@ -75,6 +107,21 @@ class PlatformEvent(BaseModel):
         (``input_too_long``) without echoing the submitted text.
         """
         if self.type == "viewer.comment":
+            if self.contract_version == P0_COMMENT_CONTRACT:
+                for name in (
+                    "tenant_id",
+                    "business_session_id",
+                    "connected_account_id",
+                    "external_session_id",
+                    "source_message_id",
+                    "moderation_ref",
+                ):
+                    if not (getattr(self, name) or "").strip():
+                        raise ValueError(f"{name} is required for {P0_COMMENT_CONTRACT}")
+                if self.viewer is None or not self.viewer.viewer_id.strip():
+                    raise ValueError("viewer identity is required for p0.v1")
+                if self.occurred_at <= 0:
+                    raise ValueError("original occurred_at is required for p0.v1")
             raw_text = (
                 self.payload.text
                 if isinstance(self.payload, CommentPayload)

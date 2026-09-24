@@ -156,6 +156,14 @@ export interface CountPayload {
 
 export interface PlatformEvent {
   event_id: string;
+  /** p0.v1 requires every P0 provenance field and a prepared session binding. */
+  contract_version?: "p0.v1";
+  tenant_id?: string;
+  business_session_id?: string;
+  connected_account_id?: string;
+  external_session_id?: string;
+  source_message_id?: string;
+  moderation_ref?: string;
   platform: string;
   source_stream_id: string;
   occurred_at: number;

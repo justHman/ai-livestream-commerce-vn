@@ -181,7 +181,7 @@
         "description": "Payload for ``viewer.comment`` \u2014 the only semantically reduced event.",
         "properties": {
           "text": {
-            "maxLength": 500,
+            "maxLength": 1000,
             "minLength": 1,
             "title": "Text",
             "type": "string"
@@ -809,8 +809,68 @@
         "title": "LiveSessionBriefIn",
         "type": "object"
       },
+      "P0SessionBinding": {
+        "description": "Prepared Livento-owned scope for a p0.v1 runtime session.",
+        "properties": {
+          "business_session_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Business Session Id",
+            "type": "string"
+          },
+          "connected_account_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Connected Account Id",
+            "type": "string"
+          },
+          "contract_version": {
+            "const": "p0.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "external_session_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "External Session Id",
+            "type": "string"
+          },
+          "platform": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Platform",
+            "type": "string"
+          },
+          "tenant_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "tenant_id",
+          "business_session_id",
+          "platform",
+          "connected_account_id",
+          "external_session_id"
+        ],
+        "title": "P0SessionBinding",
+        "type": "object"
+      },
       "PathAttachReq": {
         "properties": {
+          "platform_event_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/P0SessionBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "products": {
             "items": {
               "$ref": "#/components/schemas/ProductEntityIn"
@@ -1050,11 +1110,71 @@
       "PlatformEvent": {
         "description": "One normalized viewer event from any source platform.",
         "properties": {
+          "business_session_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Session Id"
+          },
+          "connected_account_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected Account Id"
+          },
+          "contract_version": {
+            "anyOf": [
+              {
+                "const": "p0.v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Version"
+          },
           "event_id": {
             "maxLength": 128,
             "minLength": 1,
             "title": "Event Id",
             "type": "string"
+          },
+          "external_session_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Session Id"
+          },
+          "moderation_ref": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moderation Ref"
           },
           "occurred_at": {
             "title": "Occurred At",
@@ -1081,11 +1201,35 @@
             "title": "Platform",
             "type": "string"
           },
+          "source_message_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Id"
+          },
           "source_stream_id": {
             "maxLength": 256,
             "minLength": 1,
             "title": "Source Stream Id",
             "type": "string"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Id"
           },
           "type": {
             "enum": [

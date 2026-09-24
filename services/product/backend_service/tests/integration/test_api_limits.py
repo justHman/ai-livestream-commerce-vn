@@ -280,8 +280,20 @@ def test_event_text_over_limit_is_rejected() -> None:
             source_stream_id="s",
             occurred_at=1_700_000_000.0,
             type="viewer.comment",
-            payload={"text": "x" * 501},
+            payload={"text": "x" * 1001},
         )
+
+
+def test_event_body_with_malformed_utf8_is_rejected() -> None:
+    config = AppConfig(render_backend="mock", app_env="dev")
+    body = b'{"events":[{"event_id":"e1","platform":"t","source_stream_id":"s","occurred_at":1,"type":"viewer.comment","payload":{"text":"\xff"}}]}'
+    with _client(config) as client:
+        response = client.post(
+            "/api/v1/sessions/session/events",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code in (400, 422)
 
 
 def test_validation_413_does_not_echo_submitted_marker() -> None:
@@ -298,7 +310,7 @@ def test_validation_413_does_not_echo_submitted_marker() -> None:
                         "source_stream_id": "s",
                         "occurred_at": 1.0,
                         "type": "viewer.comment",
-                        "payload": {"text": marker * 20},
+                        "payload": {"text": marker * 40},
                     }
                 ]
             },

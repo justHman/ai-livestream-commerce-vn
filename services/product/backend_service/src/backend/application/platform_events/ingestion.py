@@ -48,6 +48,7 @@ from backend.application.db.session_store import SessionLockTimeout, StaleOwnerW
 
 from .models import (
     MAX_STALENESS_SEC,
+    P0_COMMENT_CONTRACT,
     CommentPayload,
     PlatformEvent,
 )
@@ -58,6 +59,24 @@ _DEDUP_KEY = "platform_event_ids"
 _PENDING_KEY = "pending_platform_chat"
 _SIGNALS_KEY = "signal_counts"
 _VIEWERS_KEY = "unique_viewer_ids"
+_BINDING_KEY = "platform_event_binding"
+
+
+def _provenance(event: PlatformEvent) -> dict[str, Any]:
+    return {
+        "contract_version": event.contract_version,
+        "tenant_id": event.tenant_id,
+        "business_session_id": event.business_session_id,
+        "platform": event.platform,
+        "connected_account_id": event.connected_account_id,
+        "external_session_id": event.external_session_id,
+        "source_message_id": event.source_message_id,
+        "source_stream_id": event.source_stream_id,
+        "event_id": event.event_id,
+        "viewer_id": event.viewer.viewer_id if event.viewer else None,
+        "occurred_at": event.occurred_at,
+        "moderation_ref": event.moderation_ref,
+    }
 
 
 class EventStatus(str, Enum):
@@ -199,6 +218,7 @@ class PlatformEventIngestionService:
                 "author": author,
                 "ts": ts,
                 "platform": event.platform,
+                "provenance": _provenance(event),
             }
         )
         meta[_PENDING_KEY] = pending[-100:]
@@ -223,12 +243,7 @@ class PlatformEventIngestionService:
                 ),
                 comment_id=None,
                 source=event.platform,
-                payload={
-                    "platform": event.platform,
-                    "source_stream_id": event.source_stream_id,
-                    "event_id": event.event_id,
-                    "occurred_at": event.occurred_at,
-                },
+                payload=_provenance(event),
             )
         except Exception:
             logger.warning(
@@ -291,6 +306,27 @@ class PlatformEventIngestionService:
             return _REASON_STALE
         return None
 
+    def _binding_reject_reason(self, event: PlatformEvent, meta: dict) -> Optional[str]:
+        binding = meta.get(_BINDING_KEY)
+        if event.contract_version != P0_COMMENT_CONTRACT and binding is None:
+            return None  # existing non-P0 sessions retain their reader contract
+        if event.contract_version != P0_COMMENT_CONTRACT:
+            return "p0_contract_required"
+        if not isinstance(binding, dict) or binding.get("contract_version") != P0_COMMENT_CONTRACT:
+            return "p0_binding_missing"
+        for name in (
+            "tenant_id",
+            "business_session_id",
+            "platform",
+            "connected_account_id",
+            "external_session_id",
+        ):
+            if getattr(event, name) != binding.get(name):
+                return f"p0_{name}_mismatch"
+        if event.source_stream_id != binding.get("business_session_id"):
+            return "p0_source_stream_id_mismatch"
+        return None
+
     def _notify_reducer(
         self, session_id: str, event: PlatformEvent, comment_id: Optional[str]
     ) -> None:
@@ -314,6 +350,7 @@ class PlatformEventIngestionService:
                 text=event.payload.text if isinstance(event.payload, CommentPayload) else "",
                 ts=event.occurred_at,
                 viewer_key=self._unique_viewer_key_fn(event),
+                provenance=_provenance(event),
             ),
         )
 
@@ -327,7 +364,7 @@ class PlatformEventIngestionService:
             result["status"] = EventStatus.DUPLICATE.value
             return result
 
-        reason = self._reject_reason(event, now)
+        reason = self._binding_reject_reason(event, meta) or self._reject_reason(event, now)
         if reason is not None:
             result["status"] = EventStatus.REJECTED.value
             result["reason"] = reason

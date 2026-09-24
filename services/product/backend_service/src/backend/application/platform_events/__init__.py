@@ -8,6 +8,7 @@ from .models import (
     CountPayload,
     EventsIn,
     PlatformEvent,
+    P0SessionBinding,
     ViewerRef,
 )
 
@@ -19,6 +20,7 @@ __all__ = [
     "MAX_COMMENT_TEXT",
     "MAX_EVENTS_PER_REQUEST",
     "PlatformEvent",
+    "P0SessionBinding",
     "PlatformEventIngestionService",
     "ViewerRef",
 ]

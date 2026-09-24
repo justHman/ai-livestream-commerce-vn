@@ -59,6 +59,7 @@ from backend.application.schemas.run_plan import (
 )
 
 from backend.application.platform_events import EventsIn  # noqa: F401  (re-exported for route modules)
+from backend.application.platform_events import P0SessionBinding
 from backend.application.rate_limit import quota_identity_key
 
 from .auth import viewer_auth
@@ -355,6 +356,7 @@ class PathAttachReq(BaseModel):
     products: list[ProductEntityIn] = Field(max_length=100)
     shop_profile: Optional[ShopProfileIn | str] = None
     runtime_config: Optional[RuntimeConfigReq] = None
+    platform_event_binding: Optional["P0SessionBinding"] = None
 
     @model_validator(mode="after")
     def validate_product_ids(self) -> "PathAttachReq":
