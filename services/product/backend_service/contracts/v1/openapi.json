@@ -177,6 +177,62 @@
         "title": "BatchGenerateReq",
         "type": "object"
       },
+      "CommandRequest": {
+        "properties": {
+          "actor_id": {
+            "minLength": 1,
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "business_session_id": {
+            "minLength": 1,
+            "title": "Business Session Id",
+            "type": "string"
+          },
+          "command": {
+            "minLength": 1,
+            "title": "Command",
+            "type": "string"
+          },
+          "command_id": {
+            "minLength": 1,
+            "title": "Command Id",
+            "type": "string"
+          },
+          "generation": {
+            "minLength": 1,
+            "title": "Generation",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "runtime_session_id": {
+            "minLength": 1,
+            "title": "Runtime Session Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "business_session_id",
+          "runtime_session_id",
+          "generation",
+          "command_id",
+          "command",
+          "actor_id",
+          "requested_at"
+        ],
+        "title": "CommandRequest",
+        "type": "object"
+      },
       "CommentPayload": {
         "description": "Payload for ``viewer.comment`` \u2014 the only semantically reduced event.",
         "properties": {
@@ -446,6 +502,99 @@
           "events"
         ],
         "title": "EventsIn",
+        "type": "object"
+      },
+      "Evidence": {
+        "properties": {
+          "business_session_id": {
+            "minLength": 1,
+            "title": "Business Session Id",
+            "type": "string"
+          },
+          "generation": {
+            "minLength": 1,
+            "title": "Generation",
+            "type": "string"
+          },
+          "healthy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Healthy"
+          },
+          "kind": {
+            "enum": [
+              "runtime_ready",
+              "first_ai_broadcast",
+              "health",
+              "phase_changed",
+              "terminal"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "phase": {
+            "enum": [
+              "preparing",
+              "ready",
+              "warming",
+              "selling",
+              "closing",
+              "ending",
+              "ended",
+              "failed"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "runtime_session_id": {
+            "minLength": 1,
+            "title": "Runtime Session Id",
+            "type": "string"
+          },
+          "sequence": {
+            "exclusiveMinimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "tenant_id": {
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "business_session_id",
+          "runtime_session_id",
+          "generation",
+          "sequence",
+          "kind",
+          "phase",
+          "occurred_at"
+        ],
+        "title": "Evidence",
         "type": "object"
       },
       "Fact": {
@@ -1903,10 +2052,54 @@
             ],
             "title": "Avatar Id"
           },
+          "business_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Session Id"
+          },
+          "execution_contract": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Contract"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
           "is_sandbox": {
             "default": true,
             "title": "Is Sandbox",
             "type": "boolean"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Id"
           }
         },
         "title": "StartReq",
@@ -3942,6 +4135,149 @@
           }
         },
         "summary": "Sessions Events"
+      }
+    },
+    "/api/v1/sessions/{session_id}/execution": {
+      "get": {
+        "operationId": "get_execution_api_v1_sessions__session_id__execution_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Execution Api V1 Sessions  Session Id  Execution Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Execution"
+      }
+    },
+    "/api/v1/sessions/{session_id}/execution/commands": {
+      "post": {
+        "operationId": "request_execution_command_api_v1_sessions__session_id__execution_commands_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Request Execution Command Api V1 Sessions  Session Id  Execution Commands Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Execution Command"
+      }
+    },
+    "/api/v1/sessions/{session_id}/execution/evidence": {
+      "post": {
+        "operationId": "record_execution_evidence_api_v1_sessions__session_id__execution_evidence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Evidence"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Record Execution Evidence Api V1 Sessions  Session Id  Execution Evidence Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Execution Evidence"
       }
     },
     "/api/v1/sessions/{session_id}/interrupt": {

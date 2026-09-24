@@ -123,6 +123,9 @@ async def health_ready(request: Request) -> JSONResponse:
         "llm_engine": llm_engine_name,
         "tts_engine": tts_engine_name,
     }
+    from backend.application.execution_contract import Capabilities
+
+    resp["capabilities"] = Capabilities().model_dump()
     if embedder is not None:
         resp["embedder"] = embedder
     if llm_load_error:

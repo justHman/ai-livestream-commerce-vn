@@ -37,6 +37,17 @@ async def sessions_start(
 ) -> dict[str, Any]:
     d = _container(request)
     from backend.application.render.engines_base import StartOptions
+    from backend.application.execution_contract import Capabilities, VERSION
+
+    if req.execution_contract is not None:
+        if req.execution_contract != VERSION or not all(
+            (req.tenant_id, req.business_session_id, req.generation)
+        ):
+            raise HTTPException(status_code=422, detail={"code": "unsupported_capability"})
+        if not Capabilities().supports(
+            "comment.p0.v1", "execution.evidence.v1", "execution.command_result.v1"
+        ):
+            raise HTTPException(status_code=409, detail={"code": "unsupported_capability"})
 
     try:
         result = await asyncio.to_thread(
@@ -48,7 +59,20 @@ async def sessions_start(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    await d.store.set(result.session_id, {"status": "active", "mode": result.mode})
+    meta: dict[str, Any] = {"status": "active", "mode": result.mode}
+    if req.execution_contract:
+        meta["execution_contract"] = {
+            "tenant_id": req.tenant_id,
+            "business_session_id": req.business_session_id,
+            "runtime_session_id": result.session_id,
+            "generation": req.generation,
+            "sequence": 0,
+            "phase": "preparing",
+            "runtime_ready": False,
+            "first_ai_broadcast": False,
+        }
+        meta["execution_command_outcomes"] = {}
+    await d.store.set(result.session_id, meta)
     if d.livekit_publishers is not None:
         d.livekit_publishers.activate(result.session_id)
     if d.pg_store is not None and getattr(d.pg_store, "enabled", False):

@@ -109,6 +109,10 @@ class ControlHub:
 class StartReq(BaseModel):
     avatar_id: Optional[str] = Field(default=None, max_length=128)
     is_sandbox: bool = True
+    execution_contract: Optional[str] = None
+    tenant_id: Optional[str] = None
+    business_session_id: Optional[str] = None
+    generation: Optional[str] = None
 
 
 class SayReq(BaseModel):
