@@ -66,7 +66,9 @@ async def _load(store: Any, session_id: str) -> tuple[dict[str, Any], ExecutionS
 
 
 @router.get("/sessions/{session_id}/execution")
-async def get_execution(session_id: str, request: Request, _: None = Depends(viewer_auth)) -> dict[str, Any]:
+async def get_execution(
+    session_id: str, request: Request, _: None = Depends(viewer_auth)
+) -> dict[str, Any]:
     d = container_from_request(request)
     _, state = await _load(d.store, session_id)
     return {"state": state.model_dump(mode="json"), "capabilities": Capabilities().model_dump()}
@@ -100,16 +102,23 @@ async def request_execution_command(
             # An ID is bound to its original request, including actor and
             # execution generation; it cannot be replayed with new intent.
             original = CommandOutcome.model_validate(prior)
-            if original.model_dump(include=set(CommandRequest.model_fields)) != command.model_dump():
+            if (
+                original.model_dump(include=set(CommandRequest.model_fields))
+                != command.model_dump()
+            ):
                 raise HTTPException(status_code=409, detail={"code": "duplicate_command_conflict"})
             return {"outcome": original.model_dump(mode="json"), "replayed": True}
         reason = command_rejection(state, command, Capabilities())
         # No command behavior is advertised by this task. A future supported
         # command must write an applied result only after its effect completes.
         outcome = CommandOutcome(
-            **command.model_dump(), status="rejected",
-            reason_code=reason or "unsupported_capability", result_at=datetime.now(timezone.utc),
+            **command.model_dump(),
+            status="rejected",
+            reason_code=reason or "unsupported_capability",
+            result_at=datetime.now(timezone.utc),
         )
-        meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(mode="json")
+        meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(
+            mode="json"
+        )
         await _save(d.store, session_id, meta, fence)
     return {"outcome": outcome.model_dump(mode="json"), "replayed": False}

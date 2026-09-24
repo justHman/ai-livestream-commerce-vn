@@ -54,7 +54,13 @@ async def ws_control(ws: WebSocket, session_id: str) -> None:
             elif mtype == "ping":
                 await ws.send_json({"type": "pong"})
             else:
-                await ws.send_json({"type": "error", "code": "rejected_command", "detail": "unknown control message"})
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "rejected_command",
+                        "detail": "unknown control message",
+                    }
+                )
     except WebSocketDisconnect:
         if d.hub is not None:
             d.hub.disconnect(session_id)

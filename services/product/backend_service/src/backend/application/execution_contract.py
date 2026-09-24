@@ -20,7 +20,12 @@ AVAILABLE_CAPABILITIES = ("comment.p0.v1", "execution.evidence.v1", "execution.c
 
 def legacy_runtime_phase_hint(status: str) -> Phase | None:
     """Map only what old runtime status proves; active is not READY or live."""
-    return {"starting": "preparing", "active": "preparing", "stopping": "ending", "failed": "failed"}.get(status)  # type: ignore[return-value]
+    return {
+        "starting": "preparing",
+        "active": "preparing",
+        "stopping": "ending",
+        "failed": "failed",
+    }.get(status)  # type: ignore[return-value]
 
 
 class ExecutionIdentity(BaseModel):
@@ -122,7 +127,9 @@ class CommandOutcome(CommandRequest):
     sequence: int | None = None
 
 
-def command_rejection(state: ExecutionState, request: CommandRequest, capabilities: Capabilities) -> str | None:
+def command_rejection(
+    state: ExecutionState, request: CommandRequest, capabilities: Capabilities
+) -> str | None:
     if state.model_dump(include=set(ExecutionIdentity.model_fields)) != request.model_dump(
         include=set(ExecutionIdentity.model_fields)
     ):
