@@ -127,16 +127,19 @@ class _FakeItemRepo:
         self.rows: dict[str, ScriptItem] = {}
 
     async def get(self, item_id: str, *, conn=None) -> ScriptItem | None:
-        return self.rows.get(item_id)
+        item = self.rows.get(item_id)
+        # A SQL read materializes a detached value. Returning the stored object
+        # leaked workflow mutations before this fake's later update() call.
+        return item.model_copy(deep=True) if item is not None else None
 
     async def get_by_product(self, set_id: str, product_id: str, *, conn=None) -> ScriptItem | None:
         for item in self.rows.values():
             if item.script_set_id == set_id and item.product_id == product_id:
-                return item
+                return item.model_copy(deep=True)
         return None
 
     async def insert(self, item: ScriptItem, *, conn=None) -> None:
-        self.rows[item.id] = item
+        self.rows[item.id] = item.model_copy(deep=True)
 
     async def update(self, item: ScriptItem, *, expected_revision: int, conn=None) -> None:
         current = self.rows.get(item.id)
@@ -144,8 +147,9 @@ class _FakeItemRepo:
             raise StaleRevisionError(
                 f"script_item {item.id}: revision {expected_revision} not current"
             )
-        item.revision = current.revision + 1
-        self.rows[item.id] = item
+        persisted = item.model_copy(deep=True)
+        persisted.revision = current.revision + 1
+        self.rows[item.id] = persisted
 
 
 class _FakeVersionRepo:
