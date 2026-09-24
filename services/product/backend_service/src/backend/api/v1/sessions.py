@@ -294,6 +294,11 @@ async def sessions_attach(
 
     if await d.store.get(session_id) is None:
         raise HTTPException(status_code=404, detail="unknown session_id")
+    binding = req.platform_event_binding.model_dump() if req.platform_event_binding else None
+    if binding is not None:
+        existing = (await d.store.get(session_id) or {}).get("platform_event_binding")
+        if existing is not None and existing != binding:
+            raise HTTPException(status_code=409, detail="platform_event_binding_conflict")
     products = [p.to_entity() for p in req.products]
     shop_profile = req.shop_profile_text()
     # Re-attach updates the existing runtime/coordinator atomically. Stopping
@@ -315,6 +320,10 @@ async def sessions_attach(
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if binding is not None:
+        meta = dict(await d.store.get(session_id) or {})
+        meta["platform_event_binding"] = binding
+        await d.store.set(session_id, meta)
     # M3: freeze the product snapshot into the runtime DB (fire-and-forget).
     # The snapshot stores the entity document JSON so persisted rows and the
     # accepted snapshot share one shape (id/name/price columns + full payload).

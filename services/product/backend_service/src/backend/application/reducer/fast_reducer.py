@@ -52,6 +52,7 @@ class AcceptedComment:
     text: str
     ts: float
     viewer_key: Optional[str] = None
+    provenance: Optional[dict[str, Any]] = None
 
 
 @dataclass

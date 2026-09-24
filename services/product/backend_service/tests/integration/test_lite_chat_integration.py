@@ -87,6 +87,40 @@ def _make_app(mock_env) -> TestClient:
     return TestClient(app)
 
 
+def test_p0_attach_binding_enforced_at_http_events_boundary(mock_env: None) -> None:
+    binding = {
+        "contract_version": "p0.v1", "tenant_id": "tenant-1",
+        "business_session_id": "business-1", "platform": "facebook",
+        "connected_account_id": "page-1", "external_session_id": "live-1",
+    }
+    with _make_app(mock_env) as client:
+        sid = client.post("/api/v1/sessions", json={"is_sandbox": True}).json()["session_id"]
+        attached = client.post(
+            f"/api/v1/sessions/{sid}/attach",
+            json={"products": [], "platform_event_binding": binding},
+        )
+        assert attached.status_code == 200, attached.text
+        event = {
+            **binding, "event_id": "event-1", "source_stream_id": "business-1",
+            "source_message_id": "message-1", "moderation_ref": "queue-1",
+            "occurred_at": time.time(), "type": "viewer.comment",
+            "viewer": {"viewer_id": "viewer-1"}, "payload": {"text": "ắ" * 1000},
+        }
+        accepted = client.post(f"/api/v1/sessions/{sid}/events", json={"events": [event]})
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["accepted"] == 1
+        wrong = client.post(
+            f"/api/v1/sessions/{sid}/events",
+            json={"events": [{**event, "event_id": "event-2", "connected_account_id": "viewer-1"}]},
+        )
+        assert wrong.json()["events"][0]["reason"] == "p0_connected_account_id_mismatch"
+        legacy = client.post(
+            f"/api/v1/sessions/{sid}/events",
+            json={"events": [_event("legacy", "viewer-2", "event-3")]},
+        )
+        assert legacy.json()["events"][0]["reason"] == "p0_contract_required"
+
+
 def test_events_10_comments_accepted(mock_env: None) -> None:
     """start -> attach -> /events x10 -> stop; all accepted with unique ids."""
     with _make_app(mock_env) as client:
@@ -207,7 +241,7 @@ def test_events_without_attach_are_accepted_and_parked(mock_env: None) -> None:
 
 
 def test_events_text_too_long_rejected_413(mock_env: None) -> None:
-    """Event text > 500 chars -> pydantic string_too_long -> 413 envelope."""
+    """Event text > 1000 code points -> pydantic string_too_long -> 413 envelope."""
     with _make_app(mock_env) as client:
         r = client.post("/api/v1/sessions", json={"is_sandbox": True})
         sid = r.json()["session_id"]
@@ -218,7 +252,7 @@ def test_events_text_too_long_rejected_413(mock_env: None) -> None:
 
         r = client.post(
             f"/api/v1/sessions/{sid}/events",
-            json={"events": [_event("x" * 501, "test", "evt-long")]},
+            json={"events": [_event("x" * 1001, "test", "evt-long")]},
         )
         assert r.status_code == 413
 
