@@ -62,7 +62,13 @@ class P0SessionBinding(BaseModel):
     connected_account_id: str = Field(min_length=1, max_length=256)
     external_session_id: str = Field(min_length=1, max_length=256)
 
-    @field_validator("tenant_id", "business_session_id", "platform", "connected_account_id", "external_session_id")
+    @field_validator(
+        "tenant_id",
+        "business_session_id",
+        "platform",
+        "connected_account_id",
+        "external_session_id",
+    )
     @classmethod
     def require_nonblank(cls, value: str) -> str:
         if not value.strip():
@@ -103,8 +109,12 @@ class PlatformEvent(BaseModel):
         if self.type == "viewer.comment":
             if self.contract_version == P0_COMMENT_CONTRACT:
                 for name in (
-                    "tenant_id", "business_session_id", "connected_account_id",
-                    "external_session_id", "source_message_id", "moderation_ref",
+                    "tenant_id",
+                    "business_session_id",
+                    "connected_account_id",
+                    "external_session_id",
+                    "source_message_id",
+                    "moderation_ref",
                 ):
                     if not (getattr(self, name) or "").strip():
                         raise ValueError(f"{name} is required for {P0_COMMENT_CONTRACT}")
