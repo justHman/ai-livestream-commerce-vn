@@ -36,18 +36,40 @@ def event(text="xin chào", **overrides):
     return PlatformEvent(**values)
 
 
-@pytest.mark.parametrize("text", ["a", *["a" * n for n in (499, 500, 501, 999, 1000)], "ắ" * 1000, "😀" * 1000, "a\u0301" * 500, "a  b"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a",
+        *["a" * n for n in (499, 500, 501, 999, 1000)],
+        "ắ" * 1000,
+        "😀" * 1000,
+        "a\u0301" * 500,
+        "a  b",
+    ],
+)
 def test_exact_text_to_1000_code_points(text):
     assert event(text).payload.text == text
 
 
-@pytest.mark.parametrize("text", ["", "   ", "a" * 1001, "ắ" * 1001, "😀" * 1001, "a\u0301" * 500 + "a"])
+@pytest.mark.parametrize(
+    "text", ["", "   ", "a" * 1001, "ắ" * 1001, "😀" * 1001, "a\u0301" * 500 + "a"]
+)
 def test_empty_or_overbound_rejected(text):
     with pytest.raises(ValidationError):
         event(text)
 
 
-@pytest.mark.parametrize("field", ["tenant_id", "business_session_id", "connected_account_id", "external_session_id", "source_message_id", "moderation_ref"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "tenant_id",
+        "business_session_id",
+        "connected_account_id",
+        "external_session_id",
+        "source_message_id",
+        "moderation_ref",
+    ],
+)
 def test_missing_required_p0_provenance_rejected(field):
     with pytest.raises(ValidationError):
         event(**{field: None})
@@ -110,7 +132,10 @@ async def test_p0_binding_and_reducer_provenance():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["tenant_id", "business_session_id", "platform", "connected_account_id", "external_session_id"])
+@pytest.mark.parametrize(
+    "field",
+    ["tenant_id", "business_session_id", "platform", "connected_account_id", "external_session_id"],
+)
 async def test_p0_wrong_binding_rejected(field):
     store = InMemorySessionStore()
     await store.set("runtime-1", {"platform_event_binding": BINDING})
@@ -124,8 +149,24 @@ async def test_p0_missing_binding_and_legacy_cannot_enter_p0_session():
     store = InMemorySessionStore()
     await store.set("runtime-1", {"platform_event_binding": BINDING})
     service = PlatformEventIngestionService(store=store)
-    legacy = event().model_dump(exclude={"contract_version", "tenant_id", "business_session_id", "connected_account_id", "external_session_id", "source_message_id", "moderation_ref"})
-    assert (await service.ingest("runtime-1", [PlatformEvent(**legacy)]))["events"][0]["reason"] == "p0_contract_required"
+    legacy = event().model_dump(
+        exclude={
+            "contract_version",
+            "tenant_id",
+            "business_session_id",
+            "connected_account_id",
+            "external_session_id",
+            "source_message_id",
+            "moderation_ref",
+        }
+    )
+    assert (await service.ingest("runtime-1", [PlatformEvent(**legacy)]))["events"][0][
+        "reason"
+    ] == "p0_contract_required"
     await store.set("legacy-1", {"status": "active"})
-    assert (await service.ingest("legacy-1", [PlatformEvent(**{**legacy, "event_id": "legacy"})]))["accepted"] == 1
-    assert (await service.ingest("legacy-1", [event(event_id="p0-other")]))["events"][0]["reason"] == "p0_binding_missing"
+    assert (await service.ingest("legacy-1", [PlatformEvent(**{**legacy, "event_id": "legacy"})]))[
+        "accepted"
+    ] == 1
+    assert (await service.ingest("legacy-1", [event(event_id="p0-other")]))["events"][0][
+        "reason"
+    ] == "p0_binding_missing"

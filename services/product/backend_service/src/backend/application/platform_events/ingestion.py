@@ -315,8 +315,11 @@ class PlatformEventIngestionService:
         if not isinstance(binding, dict) or binding.get("contract_version") != P0_COMMENT_CONTRACT:
             return "p0_binding_missing"
         for name in (
-            "tenant_id", "business_session_id", "platform",
-            "connected_account_id", "external_session_id",
+            "tenant_id",
+            "business_session_id",
+            "platform",
+            "connected_account_id",
+            "external_session_id",
         ):
             if getattr(event, name) != binding.get(name):
                 return f"p0_{name}_mismatch"

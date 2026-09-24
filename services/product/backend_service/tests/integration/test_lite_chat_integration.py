@@ -89,9 +89,12 @@ def _make_app(mock_env) -> TestClient:
 
 def test_p0_attach_binding_enforced_at_http_events_boundary(mock_env: None) -> None:
     binding = {
-        "contract_version": "p0.v1", "tenant_id": "tenant-1",
-        "business_session_id": "business-1", "platform": "facebook",
-        "connected_account_id": "page-1", "external_session_id": "live-1",
+        "contract_version": "p0.v1",
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "platform": "facebook",
+        "connected_account_id": "page-1",
+        "external_session_id": "live-1",
     }
     with _make_app(mock_env) as client:
         sid = client.post("/api/v1/sessions", json={"is_sandbox": True}).json()["session_id"]
@@ -101,10 +104,15 @@ def test_p0_attach_binding_enforced_at_http_events_boundary(mock_env: None) -> N
         )
         assert attached.status_code == 200, attached.text
         event = {
-            **binding, "event_id": "event-1", "source_stream_id": "business-1",
-            "source_message_id": "message-1", "moderation_ref": "queue-1",
-            "occurred_at": time.time(), "type": "viewer.comment",
-            "viewer": {"viewer_id": "viewer-1"}, "payload": {"text": "ắ" * 1000},
+            **binding,
+            "event_id": "event-1",
+            "source_stream_id": "business-1",
+            "source_message_id": "message-1",
+            "moderation_ref": "queue-1",
+            "occurred_at": time.time(),
+            "type": "viewer.comment",
+            "viewer": {"viewer_id": "viewer-1"},
+            "payload": {"text": "ắ" * 1000},
         }
         accepted = client.post(f"/api/v1/sessions/{sid}/events", json={"events": [event]})
         assert accepted.status_code == 200, accepted.text
