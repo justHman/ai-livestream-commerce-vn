@@ -45,7 +45,10 @@ def _config(database_url: str) -> AppConfig:
 
 
 def _auth() -> dict[str, str]:
-    return {"Authorization": "Bearer " + _AUTH_VALUE}
+    return {
+        "Authorization": "Bearer " + _AUTH_VALUE,
+        "X-Livento-Approval-Actor": "reviewer",
+    }
 
 
 def _long_spoken() -> str:
@@ -93,7 +96,7 @@ async def test_http_read_then_approve_exact_version(pg_url: str) -> None:
         #    rejection (no production change; the guard is preserved).
         stale = client.post(
             f"/api/v1/script-sets/{set_id}/products/P1/approve",
-            json={"version_id": "version_does_not_exist", "actor": "reviewer"},
+            json={"version_id": "version_does_not_exist"},
             headers=_auth(),
         )
         assert stale.status_code == 409, stale.text
@@ -115,7 +118,7 @@ async def test_http_read_then_approve_exact_version(pg_url: str) -> None:
         # 6. HTTP POST approve with EXACTLY that version_id.
         approved = client.post(
             f"/api/v1/script-sets/{set_id}/products/P1/approve",
-            json={"version_id": version_id, "actor": "reviewer"},
+            json={"version_id": version_id},
             headers=_auth(),
         )
         assert approved.status_code == 200, approved.text

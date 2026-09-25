@@ -152,6 +152,8 @@ async def test_vieneu_playback_manual_zero_llm_e2e(pg_url: str) -> None:
             product_id="P1",
             version_id=item.current_version_id,
             actor="admin",
+            is_human=True,
+            authorized=True,
         )
         assert approved["state"] == "APPROVED"
         item = await repos.items.get_by_product(set_id, "P1")

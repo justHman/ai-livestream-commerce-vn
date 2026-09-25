@@ -399,6 +399,13 @@ class ScriptAuthoringServiceImpl:
             shop_name=brief.get("shop_name", ""),
             notes=brief.get("notes", brief.get("note", "")),
             transition_policy=transition_policy,
+            tenant_id=brief.get("tenant_id", ""),
+            business_session_id=brief.get("business_session_id", ""),
+            fact_source=brief.get("fact_source", ""),
+            product_facts_version=brief.get("product_facts_version", ""),
+            promotion_version=brief.get("promotion_version", ""),
+            persona_brief_version=brief.get("persona_brief_version", ""),
+            facts_valid_until=brief.get("facts_valid_until", ""),
             product_facts=brief.get("product_facts") or {},
         )
 
@@ -490,7 +497,7 @@ class ScriptAuthoringServiceImpl:
                 "current_version": ScriptAuthoringServiceImpl._version_wire(cv),
                 "gate": gate_by_item.get(item.id),
             }
-        return {
+        wire = {
             "id": script_set.id,
             "name": script_set.title,
             "transition_policy": script_set.brief.transition_policy,
@@ -498,6 +505,17 @@ class ScriptAuthoringServiceImpl:
             "revision": script_set.revision,
             "items": out_items,
         }
+        if script_set.brief.tenant_id or script_set.brief.business_session_id:
+            wire["merchant_scope"] = {
+                "tenant_id": script_set.brief.tenant_id,
+                "business_session_id": script_set.brief.business_session_id,
+                "fact_source": script_set.brief.fact_source,
+                "product_facts_version": script_set.brief.product_facts_version,
+                "promotion_version": script_set.brief.promotion_version,
+                "persona_brief_version": script_set.brief.persona_brief_version,
+                "facts_valid_until": script_set.brief.facts_valid_until,
+            }
+        return wire
 
     @staticmethod
     def _gate_wire(result: GateRunResult) -> dict[str, Any]:
@@ -526,10 +544,13 @@ class ScriptAuthoringServiceImpl:
         item: ScriptItem,
         current_version: ScriptVersion | None,
         persist: _SyncPersistBridge,
-        transition_policy: str,
+        brief: LiveSessionBrief,
     ) -> ProductGenerationWorkflow:
         gate = self._gate
-        context = ScriptGateContext(transition_policy=transition_policy, facts=ProductFacts())
+        context = ScriptGateContext(
+            transition_policy=brief.transition_policy,
+            facts=self._product_facts(brief, item.product_id),
+        )
 
         def segment_gate(text: str, target_duration_s: float | None = None) -> GateRunResult:
             # Manual drafts have no plan -> no per-segment target; the lenient
@@ -1392,6 +1413,61 @@ class ScriptAuthoringServiceImpl:
         items = await self._repos.items.list_by_set(set_id)
         return await self._set_wire_with_versions(script_set, items)
 
+    async def get_binding_script_set(self, *, set_id: str) -> ScriptSet | None:
+        """Internal binding read retaining the authoritative preparation brief."""
+        return await self._repos.script_sets.get(set_id)
+
+    async def get_script_item(self, *, set_id: str, product_id: str) -> ScriptItem | None:
+        return await self._repos.items.get_by_product(set_id, product_id)
+
+    async def get_script_version(
+        self, *, set_id: str, product_id: str, version_id: str | None
+    ) -> ScriptVersion | None:
+        item = await self._repos.items.get_by_product(set_id, product_id)
+        if item is None or not version_id:
+            return None
+        version = await self._repos.versions.get(version_id)
+        return version if version is not None and version.script_item_id == item.id else None
+
+    async def get_approval(
+        self, *, set_id: str, product_id: str, version_id: str | None
+    ) -> Approval | None:
+        item = await self._repos.items.get_by_product(set_id, product_id)
+        if item is None or not version_id:
+            return None
+        approval = await self._repos.approvals.get_by_item(item.id)
+        return (
+            approval if approval is not None and approval.script_version_id == version_id else None
+        )
+
+    async def get_recorded_dependencies(self, *, script_item_id: str) -> dict[str, Any]:
+        return await self._repos.approvals.recorded_dependencies(script_item_id)
+
+    def current_dependencies(self) -> Any:
+        """Current deterministic policy fingerprint, excluding set-specific facts."""
+        from backend.application.script_authoring.session_binding import DependencyFingerprint
+
+        result = self._gate.run_full_script(
+            [], ScriptGateContext(transition_policy="ORDER_AGNOSTIC", facts=ProductFacts())
+        )
+        return DependencyFingerprint(rule_set_version=rule_set_version_key(result.fingerprint))
+
+    async def get_approved_version(self, *, script_set_id: str, product_id: str) -> Any:
+        """Return the immutable approved text for the runtime handoff seam."""
+        item = await self._repos.items.get_by_product(script_set_id, product_id)
+        if item is None or item.approved_version_id is None:
+            return None
+        version = await self._repos.versions.get(item.approved_version_id)
+        if version is None:
+            return None
+        from backend.application.script_authoring.runtime_handoff import ResolvedApprovedScript
+
+        return ResolvedApprovedScript(
+            product_id=product_id,
+            approved_version_id=version.id,
+            spoken_text=version.spoken_text,
+        )
+
     async def update_script_set(
         self,
         *,
@@ -1472,9 +1548,7 @@ class ScriptAuthoringServiceImpl:
             else compile_spoken_text(display_text).spoken_text
         )
         bridge = _SyncPersistBridge()
-        workflow = self._make_workflow(
-            item, current_version, bridge, script_set.brief.transition_policy
-        )
+        workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
         try:
             workflow.create_manual_draft(display_text=display_text, spoken_text=spoken)
         except IllegalTransitionError as exc:
@@ -1498,9 +1572,7 @@ class ScriptAuthoringServiceImpl:
         if current_version is None:
             raise ScriptAuthoringError("illegal_transition", "current draft version is missing")
         bridge = _SyncPersistBridge()
-        workflow = self._make_workflow(
-            item, current_version, bridge, script_set.brief.transition_policy
-        )
+        workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
         try:
             result = workflow.submit()
         except IllegalTransitionError as exc:
@@ -1554,6 +1626,8 @@ class ScriptAuthoringServiceImpl:
         product_id: str,
         version_id: str,
         actor: str,
+        is_human: bool = False,
+        authorized: bool = False,
     ) -> dict[str, Any] | None:
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
@@ -1574,7 +1648,8 @@ class ScriptAuthoringServiceImpl:
             self._raise_not_found("script version", version_id)
 
         context = ScriptGateContext(
-            transition_policy=script_set.brief.transition_policy, facts=ProductFacts()
+            transition_policy=script_set.brief.transition_policy,
+            facts=self._product_facts(script_set.brief, product_id),
         )
         result = self._gate.run_full_script([version.spoken_text], context)  # exactly once
         run = GateRun(
@@ -1593,12 +1668,12 @@ class ScriptAuthoringServiceImpl:
             segment_version_ids=tuple(version.segment_version_ids),
             plan_version=version.plan_version,
             rule_set_key=rule_set_version_key(result.fingerprint),
-            product_facts_version="",
-            promotion_version="",
-            persona_brief_version="",
+            product_facts_version=script_set.brief.product_facts_version,
+            promotion_version=script_set.brief.promotion_version,
+            persona_brief_version=script_set.brief.persona_brief_version,
             actor_id=actor,
-            is_human=True,
-            authorized=True,
+            is_human=is_human,
+            authorized=authorized,
         )
         try:
             record = approve_script(
@@ -1617,7 +1692,7 @@ class ScriptAuthoringServiceImpl:
             gate_run_id=run.id,
         )
         bridge = _SyncPersistBridge()
-        workflow = self._make_workflow(item, version, bridge, script_set.brief.transition_policy)
+        workflow = self._make_workflow(item, version, bridge, script_set.brief)
         try:
             workflow.approve(actor=actor)
         except IllegalTransitionError as exc:
@@ -1651,6 +1726,8 @@ class ScriptAuthoringServiceImpl:
         product_ids: list[str],
         version_ids: dict[str, str],
         actor: str,
+        is_human: bool = False,
+        authorized: bool = False,
     ) -> dict[str, Any] | None:
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
@@ -1661,7 +1738,12 @@ class ScriptAuthoringServiceImpl:
             if version_id is None:
                 raise ScriptAuthoringError("illegal_transition", f"missing version_id for {pid}")
             approvals[pid] = await self.approve_product(
-                set_id=set_id, product_id=pid, version_id=version_id, actor=actor
+                set_id=set_id,
+                product_id=pid,
+                version_id=version_id,
+                actor=actor,
+                is_human=is_human,
+                authorized=authorized,
             )
         return {"ok": True, "approvals": approvals}
 
@@ -1767,7 +1849,7 @@ class ScriptAuthoringServiceImpl:
         if current_version is None:
             raise ScriptAuthoringError("fix_not_eligible", "current draft version is missing")
         workflow = self._make_workflow(
-            item, current_version, _SyncPersistBridge(), script_set.brief.transition_policy
+            item, current_version, _SyncPersistBridge(), script_set.brief
         )
         try:
             workflow.fix_eligible()
@@ -2480,9 +2562,7 @@ class ScriptAuthoringServiceImpl:
         self, job, item: ScriptItem, script_set: ScriptSet, current_version, llm_fn
     ) -> None:
         bridge = _SyncPersistBridge()
-        workflow = self._make_workflow(
-            item, current_version, bridge, script_set.brief.transition_policy
-        )
+        workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
         workflow.generate = self._make_fix_generate(
             current_version, llm_fn, await self._failed_rule_ids(item.id)
         )

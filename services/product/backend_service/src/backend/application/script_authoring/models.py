@@ -128,6 +128,15 @@ class LiveSessionBrief(BaseModel):
     transition_policy: TransitionPolicy = "ORDER_AGNOSTIC"
     shop_name: str = ""
     notes: str = ""
+    # Scope and revisions supplied by the Livento control plane.  They are
+    # immutable inputs to approval, never inferred from script text.
+    tenant_id: str = ""
+    business_session_id: str = ""
+    fact_source: str = ""
+    product_facts_version: str = ""
+    promotion_version: str = ""
+    persona_brief_version: str = ""
+    facts_valid_until: str = ""
     # Authoritative per-product facts the generation gate/prompt may use:
     # product_id -> {"product_name", "prices", "discounts", "skus",
     # "allowed_claims"}. These are the ONLY values a generated script may

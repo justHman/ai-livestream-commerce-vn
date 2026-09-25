@@ -9,6 +9,7 @@ Dependencies come from the typed ``BootstrapContainer`` via
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import os
 
 from typing import Any
@@ -480,6 +481,50 @@ class ScriptSetBindReq(BaseModel):
     """Bind a pre-live ScriptSet to a runtime session (Decision 17)."""
 
     script_set_id: str = Field(min_length=1, max_length=128)
+    tenant_id: str | None = Field(default=None, min_length=1, max_length=128)
+    business_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class _MerchantPreparationCatalog:
+    """Product identities admitted by the scoped approved-preparation binding.
+
+    Merchant preparation intentionally does not attach raw facts to the
+    Director catalog. The binding validator still needs an identity catalog,
+    so the bounded path supplies only the ScriptSet's product IDs; approval
+    and scope checks below remain the authority for every ID.
+    """
+
+    def __init__(self, product_ids: list[str]) -> None:
+        self._product_ids = set(product_ids)
+
+    def contains(self, product_id: str) -> bool:
+        return product_id in self._product_ids
+
+
+def _merchant_preparation_scope(raw_set: Any) -> tuple[str, str, list[str]]:
+    """Read the authoritative merchant scope without relying on request fields.
+
+    Binding sources return either a wire dict or the persisted ScriptSet model.
+    The set brief is the only source that can classify a bind as merchant P0;
+    an omitted request scope must never turn that set into a generic bind.
+    """
+    if isinstance(raw_set, dict):
+        brief = raw_set.get("brief")
+        product_ids = raw_set.get("product_ids", [])
+    else:
+        brief = getattr(raw_set, "brief", None)
+        product_ids = getattr(raw_set, "product_ids", [])
+    if isinstance(brief, dict):
+        tenant_id = brief.get("tenant_id", "")
+        business_session_id = brief.get("business_session_id", "")
+    else:
+        tenant_id = getattr(brief, "tenant_id", "")
+        business_session_id = getattr(brief, "business_session_id", "")
+    return (
+        str(tenant_id or "").strip(),
+        str(business_session_id or "").strip(),
+        list(product_ids or []),
+    )
 
 
 @_router.put("/sessions/{session_id}/script-set")
@@ -504,7 +549,14 @@ async def sessions_bind_script_set(
     meta = await d.store.get(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="unknown session_id")
-
+    if (req.tenant_id is None) != (req.business_session_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "merchant_scope_invalid",
+                "message": "tenant and business session are required together",
+            },
+        )
     from backend.application.script_authoring.runtime_handoff import (
         RuntimeCatalogProxy,
         RuntimePlan,
@@ -516,24 +568,72 @@ async def sessions_bind_script_set(
     # The authoring service is the source of truth for the aggregate and its
     # approvals. When no authoring service is wired the capability is
     # unavailable (501), matching the /script-sets surface. The service
-    # satisfies the BindingSource protocol structurally; recorded dependency
-    # fingerprints come from the service's approval records (task 4.4) and
-    # are absent (no staleness signal) until that cluster lands.
+    # satisfies the BindingSource protocol structurally; it loads the
+    # dependency fingerprint persisted with each approval before binding.
     source = getattr(request.app.state.container, "script_authoring_service", None)
     if source is None:
         raise HTTPException(status_code=501, detail="script authoring not enabled")
-    recorded_dependencies = getattr(source, "recorded_dependencies_by_item", None)
 
+    load_binding_set = getattr(source, "get_binding_script_set", None) or getattr(
+        source, "get_script_set", None
+    )
+    raw_set = (
+        await load_binding_set(set_id=req.script_set_id) if load_binding_set is not None else None
+    )
+    set_tenant_id, set_business_session_id, set_product_ids = _merchant_preparation_scope(raw_set)
+    is_merchant_preparation = bool(set_tenant_id or set_business_session_id)
+    if is_merchant_preparation:
+        if not set_tenant_id or not set_business_session_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_scope_invalid",
+                    "message": "merchant preparation is missing an authoritative scope",
+                },
+            )
+        if req.tenant_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "merchant_scope_required",
+                    "message": "merchant preparation requires tenant and business session scope",
+                },
+            )
+        if req.tenant_id != set_tenant_id or req.business_session_id != set_business_session_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_scope_mismatch",
+                    "message": "request scope does not match merchant preparation",
+                },
+            )
+
+    if req.tenant_id is not None:
+        execution = meta.get("execution_contract")
+        if not isinstance(execution, dict) or (
+            execution.get("tenant_id") != req.tenant_id
+            or execution.get("business_session_id") != req.business_session_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_scope_mismatch",
+                    "message": "runtime session scope does not match merchant preparation",
+                },
+            )
+    runtime_catalog: Any = RuntimeCatalogProxy(
+        getattr(d, "director", None),
+        getattr(d, "coordinator", None),
+    )
+    if is_merchant_preparation:
+        runtime_catalog = _MerchantPreparationCatalog(set_product_ids)
     check = await validate_binding(
         script_set_id=req.script_set_id,
         source=source,
         runtime_plan=RuntimePlan(order_locked=False),
-        runtime_catalog=RuntimeCatalogProxy(
-            getattr(d, "director", None),
-            getattr(d, "coordinator", None),
-        ),
+        runtime_catalog=runtime_catalog,
         requested_products=None,
-        recorded_dependencies_by_item=recorded_dependencies,
+        recorded_dependencies_by_item=None,
     )
     if not check.ok:
         # Stable domain error code + structured missing/stale details
@@ -546,6 +646,39 @@ async def sessions_bind_script_set(
                 "details": check.as_dict(),
             },
         )
+
+    if is_merchant_preparation and (
+        check.script_set.brief.tenant_id != req.tenant_id
+        or check.script_set.brief.business_session_id != req.business_session_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "merchant_scope_mismatch",
+                "message": "script set scope does not match runtime session",
+            },
+        )
+    if is_merchant_preparation and check.script_set.brief.facts_valid_until:
+        try:
+            valid_until = datetime.fromisoformat(
+                check.script_set.brief.facts_valid_until.replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_facts_invalid",
+                    "message": "merchant fact validity is invalid",
+                },
+            ) from exc
+        if valid_until.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_facts_expired",
+                    "message": "merchant promotion facts have expired",
+                },
+            )
 
     # Persist the binding snapshot into session state (task 12.3). The
     # snapshot is derived from approved artifacts; authoring rows are never

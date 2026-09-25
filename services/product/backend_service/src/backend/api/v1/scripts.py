@@ -42,6 +42,7 @@ from backend.application.script_authoring.service import (
     ScriptAuthoringService,
 )
 
+from .auth import admin_auth
 from .router import router as _router, viewer_auth
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,13 @@ class LiveSessionBriefIn(BaseModel):
     host_name: str = Field(default="", max_length=128)
     shop_name: str = Field(default="", max_length=256)
     note: str = Field(default="", max_length=2_000)
+    tenant_id: str = Field(default="", max_length=128)
+    business_session_id: str = Field(default="", max_length=128)
+    fact_source: str = Field(default="", max_length=128)
+    product_facts_version: str = Field(default="", max_length=256)
+    promotion_version: str = Field(default="", max_length=256)
+    persona_brief_version: str = Field(default="", max_length=256)
+    facts_valid_until: str = Field(default="", max_length=64)
     # Authoritative facts a generated script may claim, per product
     # (product_id -> {product_name, prices, discounts, skus, allowed_claims}).
     product_facts: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -176,7 +184,6 @@ class ApproveReq(BaseModel):
     """Human approval of the exact current compiled version (Decision 14)."""
 
     version_id: str = Field(min_length=1, max_length=128)
-    actor: str = Field(min_length=1, max_length=128)
 
 
 class BatchGenerateReq(BaseModel):
@@ -192,12 +199,28 @@ class ApproveBatchReq(BaseModel):
 
     product_ids: list[str] = Field(default_factory=list, max_length=200)
     version_ids: dict[str, str] = Field(default_factory=dict, max_length=200)
-    actor: str = Field(min_length=1, max_length=128)
 
 
 def _idempotency_key(request: Request, body_key: str | None) -> str:
     """Client idempotency identity: header first, then body (task 11.8)."""
     return request.headers.get("idempotency-key") or body_key or ""
+
+
+def _trusted_approval_actor(request: Request) -> str:
+    """Read the audited actor assertion from the authenticated service boundary.
+
+    Approval is allowed only on the existing ADMIN_API_TOKEN plane. The
+    Livento API resolves the Owner/Admin user before calling this endpoint and
+    passes that resolved identity in this header; JSON body flags are never an
+    authorization input.
+    """
+    actor = request.headers.get("x-livento-approval-actor", "").strip()
+    if not actor or len(actor) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="trusted approval actor is required",
+        )
+    return actor
 
 
 # ── ScriptSet CRUD ──────────────────────────────────────────────────
@@ -449,12 +472,12 @@ async def approve_product(
     product_id: str,
     req: ApproveReq,
     request: Request,
-    _: None = Depends(viewer_auth),
+    _: None = Depends(admin_auth),
 ) -> dict[str, Any]:
     """Human-only approval of the exact current version (task 11.7).
 
-    Requires an authenticated human actor; approval binds the exact version
-    (gate PASS never approves).
+    Requires an authenticated Livento approval boundary; approval binds the
+    exact version (gate PASS never approves).
     """
     service = _service(request)
     try:
@@ -462,7 +485,9 @@ async def approve_product(
             set_id=set_id,
             product_id=product_id,
             version_id=req.version_id,
-            actor=req.actor,
+            actor=_trusted_approval_actor(request),
+            is_human=True,
+            authorized=True,
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc
@@ -508,7 +533,7 @@ async def approve_batch(
     set_id: str,
     req: ApproveBatchReq,
     request: Request,
-    _: None = Depends(viewer_auth),
+    _: None = Depends(admin_auth),
 ) -> dict[str, Any]:
     """Approve multiple products; each approval is a separate immutable record
     (task 11.7). ``version_ids`` maps product_id -> exact version to approve.
@@ -519,7 +544,9 @@ async def approve_batch(
             set_id=set_id,
             product_ids=list(req.product_ids),
             version_ids=dict(req.version_ids),
-            actor=req.actor,
+            actor=_trusted_approval_actor(request),
+            is_human=True,
+            authorized=True,
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc

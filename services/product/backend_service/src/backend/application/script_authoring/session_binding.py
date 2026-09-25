@@ -23,6 +23,7 @@ artifacts: binding writes a snapshot into session/runtime state (task
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Optional, Protocol, Sequence
@@ -329,6 +330,47 @@ class BindingSource(Protocol):
 
     def current_dependencies(self) -> DependencyFingerprint: ...
 
+    async def get_recorded_dependencies(self, *, script_item_id: str) -> dict[str, Any]: ...
+
+
+async def _source_current_dependencies(source: BindingSource) -> DependencyFingerprint:
+    value = source.current_dependencies()
+    if inspect.isawaitable(value):
+        value = await value
+    return value if isinstance(value, DependencyFingerprint) else DependencyFingerprint()
+
+
+def _dependency_fingerprint(raw: Any) -> DependencyFingerprint:
+    if isinstance(raw, DependencyFingerprint):
+        return raw
+    if not isinstance(raw, dict):
+        return DependencyFingerprint()
+    return DependencyFingerprint(
+        rule_set_version=str(raw.get("rule_set_version", raw.get("rule_set", ""))),
+        product_facts_version=str(raw.get("product_facts_version", "")),
+        promotion_version=str(raw.get("promotion_version", "")),
+        persona_brief_version=str(raw.get("persona_brief_version", "")),
+    )
+
+
+def _current_for_set(base: DependencyFingerprint, script_set: ScriptSet) -> DependencyFingerprint:
+    """Overlay the authoritative merchant versions stored with the set."""
+    brief = script_set.brief
+    if not any(
+        (
+            brief.product_facts_version,
+            brief.promotion_version,
+            brief.persona_brief_version,
+        )
+    ):
+        return base
+    return DependencyFingerprint(
+        rule_set_version=base.rule_set_version,
+        product_facts_version=brief.product_facts_version,
+        promotion_version=brief.promotion_version,
+        persona_brief_version=brief.persona_brief_version,
+    )
+
 
 async def validate_binding(
     *,
@@ -348,7 +390,12 @@ async def validate_binding(
     dependency fingerprint per item (persisted at approval time) may be
     supplied explicitly; when omitted, no staleness signal is raised.
     """
-    raw_set = await source.get_script_set(set_id=script_set_id)
+    binding_set_loader = getattr(source, "get_binding_script_set", None)
+    raw_set = (
+        await binding_set_loader(set_id=script_set_id)
+        if binding_set_loader is not None
+        else await source.get_script_set(set_id=script_set_id)
+    )
     script_set = _coerce_script_set(raw_set)
     if script_set is None:
         return check_binding(
@@ -356,7 +403,7 @@ async def validate_binding(
             items_by_product={},
             versions_by_item={},
             approvals_by_item={},
-            current_dependencies=source.current_dependencies(),
+            current_dependencies=await _source_current_dependencies(source),
             runtime_plan=runtime_plan,
             runtime_catalog=runtime_catalog,
             requested_products=requested_products,
@@ -384,12 +431,25 @@ async def validate_binding(
         if approval is not None:
             approvals_by_item[item.id] = approval
 
+    if recorded_dependencies_by_item is None:
+        loader = getattr(source, "get_recorded_dependencies", None)
+        if loader is not None:
+            loaded: dict[str, DependencyFingerprint] = {}
+            for item in items_by_product.values():
+                raw_dependencies = loader(script_item_id=item.id)
+                if inspect.isawaitable(raw_dependencies):
+                    raw_dependencies = await raw_dependencies
+                loaded[item.id] = _dependency_fingerprint(raw_dependencies)
+            recorded_dependencies_by_item = loaded
+
     return check_binding(
         script_set=script_set,
         items_by_product=items_by_product,
         versions_by_item=versions_by_item,
         approvals_by_item=approvals_by_item,
-        current_dependencies=source.current_dependencies(),
+        current_dependencies=_current_for_set(
+            await _source_current_dependencies(source), script_set
+        ),
         runtime_plan=runtime_plan,
         runtime_catalog=runtime_catalog,
         requested_products=requested_products,
@@ -413,7 +473,7 @@ def _coerce_script_set(raw: Any) -> Optional[ScriptSet]:
         return ScriptSet(
             id=raw.get("id", ""),
             shop_id=raw.get("shop_id", ""),
-            title=raw.get("title", ""),
+            title=raw.get("title", raw.get("name", "")),
             brief=brief_model,
             product_ids=list(raw.get("product_ids") or []),
             revision=raw.get("revision", 0),

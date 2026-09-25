@@ -45,13 +45,16 @@ class _FakeGate:
         self._result = result
         self.full_calls = 0
         self.segment_calls = 0
+        self.contexts = []
 
     def run_full_script(self, segments, context) -> GateRunResult:
         self.full_calls += 1
+        self.contexts.append(context)
         return self._result
 
     def run_segment(self, text, context) -> GateRunResult:
         self.segment_calls += 1
+        self.contexts.append(context)
         return self._result
 
 
@@ -629,7 +632,12 @@ async def test_approve_product_persists_approval_and_gate_run() -> None:
     )
     version_id = await _reviewable(service, repos, created["id"], "P1")
     result = await service.approve_product(
-        set_id=created["id"], product_id="P1", version_id=version_id, actor="nam"
+        set_id=created["id"],
+        product_id="P1",
+        version_id=version_id,
+        actor="nam",
+        is_human=True,
+        authorized=True,
     )
     assert result["ok"] is True
     assert result["state"] == "APPROVED"
@@ -642,6 +650,83 @@ async def test_approve_product_persists_approval_and_gate_run() -> None:
     assert len(repos.approvals.rows) == 1
     assert len(repos.gate_runs.rows) == 2  # one from submit + one from approve
     assert gate.full_calls == 2  # gate ran exactly once during approve
+
+
+@pytest.mark.asyncio
+async def test_merchant_approval_rejects_nonhuman_actor() -> None:
+    repos = _FakeRepos()
+    service = ScriptAuthoringServiceImpl(
+        repos, config=ScriptAuthoringConfig(), gate=_FakeGate(_pass_result())
+    )
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    version_id = await _reviewable(service, repos, created["id"], "P1")
+
+    with pytest.raises(ScriptAuthoringError, match="authenticated human"):
+        await service.approve_product(
+            set_id=created["id"],
+            product_id="P1",
+            version_id=version_id,
+            actor="runtime-service",
+            is_human=False,
+            authorized=True,
+        )
+
+    assert not repos.approvals.rows
+
+
+@pytest.mark.asyncio
+async def test_merchant_approval_records_facts_and_promotion_versions() -> None:
+    repos = _FakeRepos()
+    gate = _FakeGate(_pass_result())
+    service = ScriptAuthoringServiceImpl(repos, config=ScriptAuthoringConfig(), gate=gate)
+    created = await service.create_script_set(
+        name="A",
+        transition_policy="ORDER_AGNOSTIC",
+        product_ids=["P1"],
+        brief={
+            "product_facts_version": "facts:tenant-1:rev-2",
+            "promotion_version": "promotion:tenant-1:rev-3",
+            "product_facts": {"P1": {"product_name": "Kem Livento"}},
+        },
+    )
+    version_id = await _reviewable(service, repos, created["id"], "P1")
+    await service.approve_product(
+        set_id=created["id"],
+        product_id="P1",
+        version_id=version_id,
+        actor="merchant-1",
+        is_human=True,
+        authorized=True,
+    )
+
+    dependencies = next(iter(repos.approvals.dependencies.values()))
+    assert dependencies["product_facts_version"] == "facts:tenant-1:rev-2"
+    assert dependencies["promotion_version"] == "promotion:tenant-1:rev-3"
+
+
+@pytest.mark.asyncio
+async def test_manual_gate_receives_the_product_facts_in_the_brief() -> None:
+    repos = _FakeRepos()
+    gate = _FakeGate(_pass_result())
+    service = ScriptAuthoringServiceImpl(repos, config=ScriptAuthoringConfig(), gate=gate)
+    created = await service.create_script_set(
+        name="A",
+        transition_policy="ORDER_AGNOSTIC",
+        product_ids=["P1"],
+        brief={"product_facts": {"P1": {"product_name": "Kem Livento"}}},
+    )
+    await service.save_draft(
+        set_id=created["id"],
+        product_id="P1",
+        display_text="Kem Livento",
+        spoken_text="Kem Livento",
+        revision=None,
+    )
+    await service.submit_for_gate(set_id=created["id"], product_id="P1")
+
+    assert gate.contexts[-1].facts.product_name == "Kem Livento"
 
 
 @pytest.mark.asyncio
@@ -690,7 +775,12 @@ async def test_approve_batch_wire() -> None:
     for pid in ("P1", "P2"):
         version_ids[pid] = await _reviewable(service, repos, created["id"], pid)
     result = await service.approve_batch(
-        set_id=created["id"], product_ids=["P1", "P2"], version_ids=version_ids, actor="nam"
+        set_id=created["id"],
+        product_ids=["P1", "P2"],
+        version_ids=version_ids,
+        actor="nam",
+        is_human=True,
+        authorized=True,
     )
     assert result["ok"] is True
     assert result["approvals"]["P1"]["state"] == "APPROVED"
@@ -1027,7 +1117,12 @@ async def test_approve_gate_fail_maps_illegal_transition() -> None:
     version = await _reviewable_with_version(repos, service, created["id"], "P1")
     with pytest.raises(ScriptAuthoringError) as exc:
         await service.approve_product(
-            set_id=created["id"], product_id="P1", version_id=version.id, actor="nam"
+            set_id=created["id"],
+            product_id="P1",
+            version_id=version.id,
+            actor="nam",
+            is_human=True,
+            authorized=True,
         )
     assert exc.value.code == "illegal_transition"
 
@@ -1045,7 +1140,12 @@ async def test_approve_stale_revision_mapping() -> None:
     repos.items.fail_update = True
     with pytest.raises(ScriptAuthoringError) as exc:
         await service.approve_product(
-            set_id=created["id"], product_id="P1", version_id=version.id, actor="nam"
+            set_id=created["id"],
+            product_id="P1",
+            version_id=version.id,
+            actor="nam",
+            is_human=True,
+            authorized=True,
         )
     assert exc.value.code == "stale_revision"
 

@@ -4,12 +4,6 @@
       "ApproveBatchReq": {
         "description": "Approve multiple products; each approval is a separate immutable record.",
         "properties": {
-          "actor": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Actor",
-            "type": "string"
-          },
           "product_ids": {
             "items": {
               "type": "string"
@@ -27,21 +21,12 @@
             "type": "object"
           }
         },
-        "required": [
-          "actor"
-        ],
         "title": "ApproveBatchReq",
         "type": "object"
       },
       "ApproveReq": {
         "description": "Human approval of the exact current compiled version (Decision 14).",
         "properties": {
-          "actor": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Actor",
-            "type": "string"
-          },
           "version_id": {
             "maxLength": 128,
             "minLength": 1,
@@ -50,8 +35,7 @@
           }
         },
         "required": [
-          "version_id",
-          "actor"
+          "version_id"
         ],
         "title": "ApproveReq",
         "type": "object"
@@ -919,6 +903,24 @@
       "LiveSessionBriefIn": {
         "description": "Lightweight pre-live brief; no runtime session is created.",
         "properties": {
+          "business_session_id": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Business Session Id",
+            "type": "string"
+          },
+          "fact_source": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Fact Source",
+            "type": "string"
+          },
+          "facts_valid_until": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Facts Valid Until",
+            "type": "string"
+          },
           "host_name": {
             "default": "",
             "maxLength": 128,
@@ -931,6 +933,12 @@
             "title": "Note",
             "type": "string"
           },
+          "persona_brief_version": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Persona Brief Version",
+            "type": "string"
+          },
           "product_facts": {
             "additionalProperties": {
               "additionalProperties": true,
@@ -939,10 +947,28 @@
             "title": "Product Facts",
             "type": "object"
           },
+          "product_facts_version": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Product Facts Version",
+            "type": "string"
+          },
+          "promotion_version": {
+            "default": "",
+            "maxLength": 256,
+            "title": "Promotion Version",
+            "type": "string"
+          },
           "shop_name": {
             "default": "",
             "maxLength": 256,
             "title": "Shop Name",
+            "type": "string"
+          },
+          "tenant_id": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Tenant Id",
             "type": "string"
           },
           "title": {
@@ -1447,9 +1473,15 @@
             "type": "string"
           },
           "in_stock": {
-            "default": true,
-            "title": "In Stock",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Stock"
           },
           "material": {
             "anyOf": [
@@ -1800,11 +1832,37 @@
       "ScriptSetBindReq": {
         "description": "Bind a pre-live ScriptSet to a runtime session (Decision 17).",
         "properties": {
+          "business_session_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Session Id"
+          },
           "script_set_id": {
             "maxLength": 128,
             "minLength": 1,
             "title": "Script Set Id",
             "type": "string"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Id"
           }
         },
         "required": [
@@ -3517,7 +3575,7 @@
     },
     "/api/v1/script-sets/{set_id}/products/{product_id}/approve": {
       "post": {
-        "description": "Human-only approval of the exact current version (task 11.7).\n\nRequires an authenticated human actor; approval binds the exact version\n(gate PASS never approves).",
+        "description": "Human-only approval of the exact current version (task 11.7).\n\nRequires an authenticated Livento approval boundary; approval binds the\nexact version (gate PASS never approves).",
         "operationId": "approve_product_api_v1_script_sets__set_id__products__product_id__approve_post",
         "parameters": [
           {
