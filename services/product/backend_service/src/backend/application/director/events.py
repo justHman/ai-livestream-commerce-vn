@@ -49,6 +49,9 @@ def speech_item(decision: Any, state: str = "queued") -> dict:
         # ponytail: latency_spans kept for diagnostics; prompt/input/score
         # dropped to avoid leaking customer data in WS events.
         "latency_spans": dict(decision.latency_spans),
+        "validation": (
+            decision.approved_speech.evidence() if decision.approved_speech is not None else None
+        ),
     }
 
 

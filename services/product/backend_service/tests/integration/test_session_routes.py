@@ -43,9 +43,10 @@ def test_sessions_start_and_stop_alias(mock_env: None) -> None:
         sid = r.json()["session_id"]
         # canonical say path
         r2 = client.post(f"/api/v1/sessions/{sid}/say", json={"text": "xin chào"})
-        assert r2.status_code == 200, r2.text
+        assert r2.status_code == 409, r2.text
+        assert r2.json()["error"]["code"] == "missing_binding"
         r3 = client.post(f"/api/v1/sessions/{sid}/say", json={"text": "deal hot"})
-        assert r3.status_code == 200, r3.text
+        assert r3.status_code == 409, r3.text
         r4 = client.post(f"/api/v1/sessions/{sid}/stop")
         assert r4.status_code == 200, r4.text
         assert r4.json()["stopped"] == sid

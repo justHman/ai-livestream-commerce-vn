@@ -37,6 +37,8 @@ from backend.application.text_chunker import TextChunk
 from tts.engines.base import AudioChunk, TTSEngine, TTSRequest
 
 
+from approved_speech_helpers import authorize_session
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -211,6 +213,7 @@ async def test_concurrent_say_one_200_one_409(mock_env: None):
         sid = start.json()["session_id"]
 
         # Fire two says concurrently on that session.
+        await authorize_session(app.state.container, sid, "".join(f"chunk {i}." for i in range(10)))
         r1, r2 = await asyncio.gather(
             client.post(f"/api/v1/sessions/{sid}/say", json={"text": "first"}),
             client.post(f"/api/v1/sessions/{sid}/say", json={"text": "second"}),
@@ -236,6 +239,7 @@ async def test_lock_released_after_say_completes(mock_env: None):
         start = await client.post("/api/v1/sessions", json={})
         sid = start.json()["session_id"]
 
+        await authorize_session(app.state.container, sid, "Quick reply.")
         first = await client.post(f"/api/v1/sessions/{sid}/say", json={"text": "one"})
         assert first.status_code == 200
 
@@ -267,6 +271,9 @@ async def test_interrupt_during_long_say_returns_200(mock_env: None):
         sid = start.json()["session_id"]
 
         # Start a long say in a task.
+        await authorize_session(
+            app.state.container, sid, "".join(f"chunk {i}." for i in range(100))
+        )
         say_task = asyncio.create_task(
             client.post(f"/api/v1/sessions/{sid}/say", json={"text": "long"})
         )
@@ -305,7 +312,7 @@ class _FakeCloudBackend(FullPipelineBackend):
 
     def say(self, session_id: str, text: str, generate: bool = True) -> str:
         self.said.append((session_id, text, generate))
-        return f"reply:{text}"
+        return text
 
     def interrupt(self, session_id: str) -> None:
         return None
@@ -314,9 +321,8 @@ class _FakeCloudBackend(FullPipelineBackend):
         return None
 
 
-async def test_cloud_backend_say_path_unchanged(mock_env: None):
-    """For a non-mock backend, /lite/say must call backend.say() (NOT the
-    streaming coordinator path)."""
+async def test_cloud_backend_receives_only_validated_generated_text(mock_env: None):
+    """Cloud playback receives validated output with internal generation disabled."""
     from backend.main import create_app
 
     cloud = _FakeCloudBackend()
@@ -328,13 +334,13 @@ async def test_cloud_backend_say_path_unchanged(mock_env: None):
         start = await client.post("/api/v1/sessions", json={})
         sid = start.json()["session_id"]
 
+        await authorize_session(app.state.container, sid, "Quick reply.")
         r = await client.post(f"/api/v1/sessions/{sid}/say", json={"text": "hello"})
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["ok"] is True
-        assert body["reply"] == "reply:hello"
-        # The compatibility default still asks the cloud backend to generate.
-        assert ("fake-cloud-session", "hello", True) in cloud.said
+        assert body["reply"] == "Quick reply."
+        assert ("fake-cloud-session", "Quick reply.", False) in cloud.said
 
 
 async def test_cloud_manual_say_forwards_verbatim_mode(mock_env: None):
@@ -348,6 +354,7 @@ async def test_cloud_manual_say_forwards_verbatim_mode(mock_env: None):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         start = await client.post("/api/v1/sessions", json={})
         sid = start.json()["session_id"]
+        await authorize_session(app.state.container, sid, "Nói nguyên văn câu này.")
         response = await client.post(
             f"/api/v1/sessions/{sid}/say",
             json={"session_id": sid, "text": "Nói nguyên văn câu này.", "generate": False},
@@ -371,6 +378,7 @@ async def test_streaming_manual_say_bypasses_llm(mock_env: None):
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         sid = (await client.post("/api/v1/sessions", json={})).json()["session_id"]
+        await authorize_session(app.state.container, sid, "Ba trăm năm mươi nghìn đồng.")
         response = await client.post(
             f"/api/v1/sessions/{sid}/say",
             json={"session_id": sid, "text": "Ba trăm năm mươi nghìn đồng.", "generate": False},

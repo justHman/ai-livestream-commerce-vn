@@ -413,6 +413,14 @@ def create_app(
     else:
         resolved_container = _build_container(config, container=None)
 
+    from backend.application.script_authoring.approved_speech import ApprovedSpeech
+
+    resolved_container.approved_speech = ApprovedSpeech(
+        resolved_container.store, lambda: resolved_container.script_authoring_service
+    )
+    if resolved_container.coordinator is not None:
+        resolved_container.coordinator.approved_speech = resolved_container.approved_speech
+
     app_lifespan = lifespan if lifespan is not None else build_lifespan(resolved_container)
     app = FastAPI(title="VN Live-Commerce Host — core API", lifespan=app_lifespan)
 
