@@ -196,6 +196,38 @@ def _start_session(client: TestClient) -> str:
     return r.json()["session_id"]
 
 
+def _merchant_source(*, facts_valid_until: str = "") -> _FakeSource:
+    source = _FakeSource()
+    source.script_set["brief"].update(
+        {
+            "tenant_id": "tenant-1",
+            "business_session_id": "business-1",
+            "product_facts_version": "facts:approved",
+            "promotion_version": "promotions:approved",
+            "facts_valid_until": facts_valid_until,
+        }
+    )
+    source.recorded_dependencies_by_item = {
+        item_id: {
+            "product_facts_version": "facts:approved",
+            "promotion_version": "promotions:approved",
+        }
+        for item_id in source.approvals
+    }
+    return source
+
+
+def _set_merchant_execution_scope(client: TestClient, session_id: str) -> None:
+    store = client.app.state.container.store
+    meta = asyncio.run(store.get(session_id))
+    assert meta is not None
+    meta["execution_contract"] = {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+    }
+    asyncio.run(store.set(session_id, meta))
+
+
 def test_bind_unknown_session_404(mock_env: None) -> None:
     with TestClient(_make_app(_FakeSource())) as client:
         r = client.put(
@@ -366,32 +398,10 @@ def test_bind_ok_snapshot_in_session_store(mock_env: None) -> None:
 
 def test_merchant_scoped_binding_uses_only_approved_product_ids(mock_env: None) -> None:
     """Merchant binding needs no raw Director catalog attachment before approval."""
-    source = _FakeSource()
-    source.script_set["brief"].update(
-        {
-            "tenant_id": "tenant-1",
-            "business_session_id": "business-1",
-            "product_facts_version": "facts:approved",
-            "promotion_version": "promotions:approved",
-        }
-    )
-    source.recorded_dependencies_by_item = {
-        item_id: {
-            "product_facts_version": "facts:approved",
-            "promotion_version": "promotions:approved",
-        }
-        for item_id in source.approvals
-    }
+    source = _merchant_source()
     with TestClient(_make_app(source)) as client:
         sid = _start_session(client)
-        store = client.app.state.container.store
-        meta = asyncio.run(store.get(sid))
-        assert meta is not None
-        meta["execution_contract"] = {
-            "tenant_id": "tenant-1",
-            "business_session_id": "business-1",
-        }
-        asyncio.run(store.set(sid, meta))
+        _set_merchant_execution_scope(client, sid)
 
         r = client.put(
             f"/api/v1/sessions/{sid}/script-set",
@@ -406,3 +416,102 @@ def test_merchant_scoped_binding_uses_only_approved_product_ids(mock_env: None) 
             "P001",
             "P002",
         }
+
+
+def test_merchant_binding_requires_exact_scope_and_retries_after_rejection(mock_env: None) -> None:
+    source = _merchant_source()
+    director = _FakeDirectorRuntime({"P001", "P002"})
+    with TestClient(_make_app(source, director=director)) as client:
+        sid = _start_session(client)
+        _set_merchant_execution_scope(client, sid)
+
+        omitted = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={"script_set_id": SET_ID},
+        )
+        assert omitted.status_code == 422, omitted.text
+        assert omitted.json()["error"]["code"] == "merchant_scope_required"
+
+        omitted_tenant = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={"script_set_id": SET_ID, "business_session_id": "business-1"},
+        )
+        assert omitted_tenant.status_code == 422, omitted_tenant.text
+        omitted_session = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={"script_set_id": SET_ID, "tenant_id": "tenant-1"},
+        )
+        assert omitted_session.status_code == 422, omitted_session.text
+
+        mismatch = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={
+                "script_set_id": SET_ID,
+                "tenant_id": "tenant-2",
+                "business_session_id": "business-1",
+            },
+        )
+        assert mismatch.status_code == 409, mismatch.text
+        assert mismatch.json()["error"]["code"] == "merchant_scope_mismatch"
+
+        mismatched_session = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={
+                "script_set_id": SET_ID,
+                "tenant_id": "tenant-1",
+                "business_session_id": "business-2",
+            },
+        )
+        assert mismatched_session.status_code == 409, mismatched_session.text
+        assert mismatched_session.json()["error"]["code"] == "merchant_scope_mismatch"
+
+        exact = {
+            "script_set_id": SET_ID,
+            "tenant_id": "tenant-1",
+            "business_session_id": "business-1",
+        }
+        first = client.put(f"/api/v1/sessions/{sid}/script-set", json=exact)
+        assert first.status_code == 200, first.text
+        retry = client.put(f"/api/v1/sessions/{sid}/script-set", json=exact)
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["binding"] == first.json()["binding"]
+
+
+def test_merchant_binding_rejects_expired_or_stale_preparation(mock_env: None) -> None:
+    expired = _merchant_source(facts_valid_until="2000-01-01T00:00:00Z")
+    director = _FakeDirectorRuntime({"P001", "P002"})
+    with TestClient(_make_app(expired, director=director)) as client:
+        sid = _start_session(client)
+        _set_merchant_execution_scope(client, sid)
+        response = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={
+                "script_set_id": SET_ID,
+                "tenant_id": "tenant-1",
+                "business_session_id": "business-1",
+            },
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "merchant_facts_expired"
+
+    stale = _merchant_source()
+    stale.recorded_dependencies_by_item = {
+        item_id: {
+            "product_facts_version": "facts:old",
+            "promotion_version": "promotions:approved",
+        }
+        for item_id in stale.approvals
+    }
+    with TestClient(_make_app(stale, director=director)) as client:
+        sid = _start_session(client)
+        _set_merchant_execution_scope(client, sid)
+        response = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={
+                "script_set_id": SET_ID,
+                "tenant_id": "tenant-1",
+                "business_session_id": "business-1",
+            },
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "missing_or_stale_script"

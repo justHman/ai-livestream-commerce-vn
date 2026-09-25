@@ -42,6 +42,7 @@ from backend.application.script_authoring.service import (
     ScriptAuthoringService,
 )
 
+from .auth import admin_auth
 from .router import router as _router, viewer_auth
 
 logger = logging.getLogger(__name__)
@@ -183,11 +184,6 @@ class ApproveReq(BaseModel):
     """Human approval of the exact current compiled version (Decision 14)."""
 
     version_id: str = Field(min_length=1, max_length=128)
-    actor: str = Field(min_length=1, max_length=128)
-    # The Livento API sets these only after its workspace owner/admin check.
-    # Missing assertions fail closed, so a service or model cannot approve.
-    actor_is_human: bool = False
-    actor_authorized: bool = False
 
 
 class BatchGenerateReq(BaseModel):
@@ -203,14 +199,28 @@ class ApproveBatchReq(BaseModel):
 
     product_ids: list[str] = Field(default_factory=list, max_length=200)
     version_ids: dict[str, str] = Field(default_factory=dict, max_length=200)
-    actor: str = Field(min_length=1, max_length=128)
-    actor_is_human: bool = False
-    actor_authorized: bool = False
 
 
 def _idempotency_key(request: Request, body_key: str | None) -> str:
     """Client idempotency identity: header first, then body (task 11.8)."""
     return request.headers.get("idempotency-key") or body_key or ""
+
+
+def _trusted_approval_actor(request: Request) -> str:
+    """Read the audited actor assertion from the authenticated service boundary.
+
+    Approval is allowed only on the existing ADMIN_API_TOKEN plane. The
+    Livento API resolves the Owner/Admin user before calling this endpoint and
+    passes that resolved identity in this header; JSON body flags are never an
+    authorization input.
+    """
+    actor = request.headers.get("x-livento-approval-actor", "").strip()
+    if not actor or len(actor) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="trusted approval actor is required",
+        )
+    return actor
 
 
 # ── ScriptSet CRUD ──────────────────────────────────────────────────
@@ -462,12 +472,12 @@ async def approve_product(
     product_id: str,
     req: ApproveReq,
     request: Request,
-    _: None = Depends(viewer_auth),
+    _: None = Depends(admin_auth),
 ) -> dict[str, Any]:
     """Human-only approval of the exact current version (task 11.7).
 
-    Requires an authenticated human actor; approval binds the exact version
-    (gate PASS never approves).
+    Requires an authenticated Livento approval boundary; approval binds the
+    exact version (gate PASS never approves).
     """
     service = _service(request)
     try:
@@ -475,9 +485,9 @@ async def approve_product(
             set_id=set_id,
             product_id=product_id,
             version_id=req.version_id,
-            actor=req.actor,
-            is_human=req.actor_is_human,
-            authorized=req.actor_authorized,
+            actor=_trusted_approval_actor(request),
+            is_human=True,
+            authorized=True,
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc
@@ -523,7 +533,7 @@ async def approve_batch(
     set_id: str,
     req: ApproveBatchReq,
     request: Request,
-    _: None = Depends(viewer_auth),
+    _: None = Depends(admin_auth),
 ) -> dict[str, Any]:
     """Approve multiple products; each approval is a separate immutable record
     (task 11.7). ``version_ids`` maps product_id -> exact version to approve.
@@ -534,9 +544,9 @@ async def approve_batch(
             set_id=set_id,
             product_ids=list(req.product_ids),
             version_ids=dict(req.version_ids),
-            actor=req.actor,
-            is_human=req.actor_is_human,
-            authorized=req.actor_authorized,
+            actor=_trusted_approval_actor(request),
+            is_human=True,
+            authorized=True,
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc

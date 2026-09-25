@@ -501,6 +501,30 @@ class _MerchantPreparationCatalog:
         return product_id in self._product_ids
 
 
+def _merchant_preparation_scope(raw_set: Any) -> tuple[str, str, list[str]]:
+    """Read the authoritative merchant scope without relying on request fields.
+
+    Binding sources return either a wire dict or the persisted ScriptSet model.
+    The set brief is the only source that can classify a bind as merchant P0;
+    an omitted request scope must never turn that set into a generic bind.
+    """
+    if isinstance(raw_set, dict):
+        brief = raw_set.get("brief")
+        product_ids = raw_set.get("product_ids", [])
+    else:
+        brief = getattr(raw_set, "brief", None)
+        product_ids = getattr(raw_set, "product_ids", [])
+    if isinstance(brief, dict):
+        tenant_id = brief.get("tenant_id", "")
+        business_session_id = brief.get("business_session_id", "")
+    else:
+        tenant_id = getattr(brief, "tenant_id", "")
+        business_session_id = getattr(brief, "business_session_id", "")
+    return str(tenant_id or "").strip(), str(business_session_id or "").strip(), list(
+        product_ids or []
+    )
+
+
 @_router.put("/sessions/{session_id}/script-set")
 async def sessions_bind_script_set(
     session_id: str,
@@ -531,20 +555,6 @@ async def sessions_bind_script_set(
                 "message": "tenant and business session are required together",
             },
         )
-    if req.tenant_id is not None:
-        execution = meta.get("execution_contract")
-        if not isinstance(execution, dict) or (
-            execution.get("tenant_id") != req.tenant_id
-            or execution.get("business_session_id") != req.business_session_id
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "merchant_scope_mismatch",
-                    "message": "runtime session scope does not match merchant preparation",
-                },
-            )
-
     from backend.application.script_authoring.runtime_handoff import (
         RuntimeCatalogProxy,
         RuntimePlan,
@@ -561,23 +571,63 @@ async def sessions_bind_script_set(
     source = getattr(request.app.state.container, "script_authoring_service", None)
     if source is None:
         raise HTTPException(status_code=501, detail="script authoring not enabled")
+
+    load_binding_set = getattr(source, "get_binding_script_set", None) or getattr(
+        source, "get_script_set", None
+    )
+    raw_set = (
+        await load_binding_set(set_id=req.script_set_id) if load_binding_set is not None else None
+    )
+    set_tenant_id, set_business_session_id, set_product_ids = _merchant_preparation_scope(raw_set)
+    is_merchant_preparation = bool(set_tenant_id or set_business_session_id)
+    if is_merchant_preparation:
+        if not set_tenant_id or not set_business_session_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_scope_invalid",
+                    "message": "merchant preparation is missing an authoritative scope",
+                },
+            )
+        if req.tenant_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "merchant_scope_required",
+                    "message": "merchant preparation requires tenant and business session scope",
+                },
+            )
+        if (
+            req.tenant_id != set_tenant_id
+            or req.business_session_id != set_business_session_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_scope_mismatch",
+                    "message": "request scope does not match merchant preparation",
+                },
+            )
+
+    if req.tenant_id is not None:
+        execution = meta.get("execution_contract")
+        if not isinstance(execution, dict) or (
+            execution.get("tenant_id") != req.tenant_id
+            or execution.get("business_session_id") != req.business_session_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "merchant_scope_mismatch",
+                    "message": "runtime session scope does not match merchant preparation",
+                },
+            )
     runtime_catalog: Any = RuntimeCatalogProxy(
         getattr(d, "director", None),
         getattr(d, "coordinator", None),
     )
-    if req.tenant_id is not None:
-        load_binding_set = getattr(source, "get_binding_script_set", None)
-        raw_set = (
-            await load_binding_set(set_id=req.script_set_id)
-            if load_binding_set is not None
-            else None
-        )
-        product_ids = (
-            raw_set.get("product_ids", [])
-            if isinstance(raw_set, dict)
-            else getattr(raw_set, "product_ids", [])
-        )
-        runtime_catalog = _MerchantPreparationCatalog(list(product_ids or []))
+    if is_merchant_preparation:
+        runtime_catalog = _MerchantPreparationCatalog(set_product_ids)
     check = await validate_binding(
         script_set_id=req.script_set_id,
         source=source,
@@ -598,7 +648,7 @@ async def sessions_bind_script_set(
             },
         )
 
-    if req.tenant_id is not None and (
+    if is_merchant_preparation and (
         check.script_set.brief.tenant_id != req.tenant_id
         or check.script_set.brief.business_session_id != req.business_session_id
     ):
@@ -609,7 +659,7 @@ async def sessions_bind_script_set(
                 "message": "script set scope does not match runtime session",
             },
         )
-    if req.tenant_id is not None and check.script_set.brief.facts_valid_until:
+    if is_merchant_preparation and check.script_set.brief.facts_valid_until:
         try:
             valid_until = datetime.fromisoformat(
                 check.script_set.brief.facts_valid_until.replace("Z", "+00:00")

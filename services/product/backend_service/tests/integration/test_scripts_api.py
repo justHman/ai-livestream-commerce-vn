@@ -545,7 +545,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "dev")
 
 
-def _auth_app(backend_token: str | None = None):
+def _auth_app(backend_token: str | None = None, admin_token: str = ""):
     """Build a prod-env app with viewer auth enabled (non-empty token)."""
     from backend.application.render.mock import MockRenderBackend
     from backend.config import AppConfig
@@ -558,6 +558,7 @@ def _auth_app(backend_token: str | None = None):
             render_backend="mock",
             app_env="prod",
             backend_api_token=backend_token,
+            admin_api_token=admin_token,
             cors_origins="https://example.com",
         ),
     )
@@ -589,9 +590,14 @@ def client(mock_env: None):
         yield test_client
 
 
-def _new_set(client: TestClient, product_ids: list[str] | None = None) -> str:
+def _new_set(
+    client: TestClient,
+    product_ids: list[str] | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+) -> str:
     body = {"name": "Set demo", "product_ids": product_ids or ["P001"]}
-    resp = client.post("/api/v1/script-sets", json=body)
+    resp = client.post("/api/v1/script-sets", json=body, headers=headers)
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
@@ -821,13 +827,15 @@ def test_approve_requires_current_reviewable_version(client: TestClient) -> None
     client.post(f"/api/v1/script-sets/{set_id}/products/P001/submit")
     bad = client.post(
         f"/api/v1/script-sets/{set_id}/products/P001/approve",
-        json={"version_id": "wrong-version", "actor": "nam"},
+        json={"version_id": "wrong-version"},
+        headers={"X-Livento-Approval-Actor": "nam"},
     )
     assert bad.status_code == 409, bad.text
     assert bad.json()["error"]["code"] == "illegal_transition"
     ok = client.post(
         f"/api/v1/script-sets/{set_id}/products/P001/approve",
-        json={"version_id": "v1", "actor": "nam", "actor_is_human": True, "actor_authorized": True},
+        json={"version_id": "v1"},
+        headers={"X-Livento-Approval-Actor": "nam"},
     )
     assert ok.status_code == 200, ok.text
     body = ok.json()
@@ -849,16 +857,59 @@ def test_approve_batch_preserves_per_version_records(client: TestClient) -> None
         json={
             "product_ids": ["P001", "P002"],
             "version_ids": {"P001": "v1", "P002": "v1"},
-            "actor": "nam",
-            "actor_is_human": True,
-            "actor_authorized": True,
         },
+        headers={"X-Livento-Approval-Actor": "nam"},
     )
     assert resp.status_code == 200, resp.text
     approvals = resp.json()["approvals"]
     assert approvals["P001"]["state"] == "APPROVED"
     assert approvals["P001"]["approval"]["version_id"] == "v1"
     assert approvals["P002"]["approval"]["actor"] == "nam"
+
+
+def test_approve_uses_admin_boundary_and_trusted_actor_assertion(mock_env: None) -> None:
+    """JSON actor flags cannot turn a viewer into a merchant approver."""
+    viewer_headers = {"Authorization": "Bearer viewer-secret"}
+    admin_headers = {
+        "Authorization": "Bearer admin-secret",
+        "X-Livento-Approval-Actor": "owner-1",
+    }
+    with TestClient(_auth_app("viewer-secret", "admin-secret")) as client:
+        set_id = _new_set(client, headers=viewer_headers)
+        client.put(
+            f"/api/v1/script-sets/{set_id}/products/P001/draft",
+            json={"display_text": "Kem ABC giá 299.000 đồng."},
+            headers=viewer_headers,
+        )
+        client.post(
+            f"/api/v1/script-sets/{set_id}/products/P001/submit",
+            headers=viewer_headers,
+        )
+
+        forged = client.post(
+            f"/api/v1/script-sets/{set_id}/products/P001/approve",
+            json={
+                "version_id": "v1",
+                "actor": "forged-viewer",
+                "actor_is_human": True,
+                "actor_authorized": True,
+            },
+            headers=viewer_headers,
+        )
+        assert forged.status_code == 403, forged.text
+
+        approved = client.post(
+            f"/api/v1/script-sets/{set_id}/products/P001/approve",
+            json={
+                "version_id": "v1",
+                "actor": "forged-body-actor",
+                "actor_is_human": True,
+                "actor_authorized": True,
+            },
+            headers=admin_headers,
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["approval"]["actor"] == "owner-1"
 
 
 # ── batch generation (task 11.8) ────────────────────────────────────
