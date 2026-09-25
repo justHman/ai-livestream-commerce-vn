@@ -356,6 +356,7 @@ class _FakeBindingSource:
         self._versions = versions
         self._approvals = approvals
         self._deps = deps
+        self._recorded: dict[str, dict[str, str]] = {}
 
     async def get_script_set(self, *, set_id: str) -> ScriptSet | None:
         return self._set if self._set is not None and self._set.id == set_id else None
@@ -382,6 +383,9 @@ class _FakeBindingSource:
     def current_dependencies(self) -> DependencyFingerprint:
         return self._deps
 
+    async def get_recorded_dependencies(self, *, script_item_id: str) -> dict[str, str]:
+        return self._recorded.get(script_item_id, {})
+
 
 @pytest.mark.asyncio
 async def test_validate_binding_adapter_ok() -> None:
@@ -407,6 +411,42 @@ async def test_validate_binding_adapter_ok() -> None:
     )
     assert check.ok
     assert check.script_set is not None and check.script_set.id == SET_ID
+
+
+@pytest.mark.asyncio
+async def test_validate_binding_loads_recorded_merchant_versions_and_rejects_stale_facts() -> None:
+    script_set = _approved_set(product_ids=["P001"], product_count=1)
+    script_set.brief.product_facts_version = "facts:rev-1"
+    script_set.brief.promotion_version = "promotion:rev-1"
+    source = _FakeBindingSource(
+        script_set,
+        {"P001": _item("P001", ITEM_ID_P1)},
+        {ITEM_ID_P1: _version()},
+        {ITEM_ID_P1: _approval()},
+        DependencyFingerprint(rule_set_version="rules-1"),
+    )
+    source._recorded[ITEM_ID_P1] = {
+        "rule_set": "rules-1",
+        "product_facts_version": "facts:rev-1",
+        "promotion_version": "promotion:rev-1",
+    }
+    check = await validate_binding(
+        script_set_id=SET_ID,
+        source=source,
+        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_catalog=_Catalog({"P001"}),
+    )
+    assert check.ok
+
+    script_set.brief.product_facts_version = "facts:rev-2"
+    stale = await validate_binding(
+        script_set_id=SET_ID,
+        source=source,
+        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_catalog=_Catalog({"P001"}),
+    )
+    assert not stale.ok
+    assert stale.stale[0].product_id == "P001"
 
 
 @pytest.mark.asyncio

@@ -132,7 +132,12 @@ async def test_production_approve_e2e_via_read_api(pg_url: str) -> None:
 
         version_id = item["current_version_id"]
         approved = await service.approve_product(
-            set_id=set_id, product_id="P1", version_id=version_id, actor="reviewer"
+            set_id=set_id,
+            product_id="P1",
+            version_id=version_id,
+            actor="reviewer",
+            is_human=True,
+            authorized=True,
         )
         assert approved["state"] == "APPROVED"
         assert approved["approval"]["version_id"] == version_id

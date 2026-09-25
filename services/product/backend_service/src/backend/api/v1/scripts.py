@@ -107,6 +107,13 @@ class LiveSessionBriefIn(BaseModel):
     host_name: str = Field(default="", max_length=128)
     shop_name: str = Field(default="", max_length=256)
     note: str = Field(default="", max_length=2_000)
+    tenant_id: str = Field(default="", max_length=128)
+    business_session_id: str = Field(default="", max_length=128)
+    fact_source: str = Field(default="", max_length=128)
+    product_facts_version: str = Field(default="", max_length=256)
+    promotion_version: str = Field(default="", max_length=256)
+    persona_brief_version: str = Field(default="", max_length=256)
+    facts_valid_until: str = Field(default="", max_length=64)
     # Authoritative facts a generated script may claim, per product
     # (product_id -> {product_name, prices, discounts, skus, allowed_claims}).
     product_facts: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -177,6 +184,10 @@ class ApproveReq(BaseModel):
 
     version_id: str = Field(min_length=1, max_length=128)
     actor: str = Field(min_length=1, max_length=128)
+    # The Livento API sets these only after its workspace owner/admin check.
+    # Missing assertions fail closed, so a service or model cannot approve.
+    actor_is_human: bool = False
+    actor_authorized: bool = False
 
 
 class BatchGenerateReq(BaseModel):
@@ -193,6 +204,8 @@ class ApproveBatchReq(BaseModel):
     product_ids: list[str] = Field(default_factory=list, max_length=200)
     version_ids: dict[str, str] = Field(default_factory=dict, max_length=200)
     actor: str = Field(min_length=1, max_length=128)
+    actor_is_human: bool = False
+    actor_authorized: bool = False
 
 
 def _idempotency_key(request: Request, body_key: str | None) -> str:
@@ -463,6 +476,8 @@ async def approve_product(
             product_id=product_id,
             version_id=req.version_id,
             actor=req.actor,
+            is_human=req.actor_is_human,
+            authorized=req.actor_authorized,
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc
@@ -520,6 +535,8 @@ async def approve_batch(
             product_ids=list(req.product_ids),
             version_ids=dict(req.version_ids),
             actor=req.actor,
+            is_human=req.actor_is_human,
+            authorized=req.actor_authorized,
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc

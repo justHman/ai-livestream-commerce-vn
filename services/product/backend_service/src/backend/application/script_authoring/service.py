@@ -117,6 +117,8 @@ class ScriptAuthoringService(Protocol):
         product_id: str,
         version_id: str,
         actor: str,
+        is_human: bool = False,
+        authorized: bool = False,
     ) -> dict[str, Any] | None: ...
 
     async def approve_batch(
@@ -126,6 +128,8 @@ class ScriptAuthoringService(Protocol):
         product_ids: list[str],
         version_ids: dict[str, str],
         actor: str,
+        is_human: bool = False,
+        authorized: bool = False,
     ) -> dict[str, Any] | None: ...
 
     # ── Batch ────────────────────────────────────────────────────────

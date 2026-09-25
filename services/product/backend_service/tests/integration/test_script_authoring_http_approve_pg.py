@@ -115,7 +115,12 @@ async def test_http_read_then_approve_exact_version(pg_url: str) -> None:
         # 6. HTTP POST approve with EXACTLY that version_id.
         approved = client.post(
             f"/api/v1/script-sets/{set_id}/products/P1/approve",
-            json={"version_id": version_id, "actor": "reviewer"},
+            json={
+                "version_id": version_id,
+                "actor": "reviewer",
+                "actor_is_human": True,
+                "actor_authorized": True,
+            },
             headers=_auth(),
         )
         assert approved.status_code == 200, approved.text

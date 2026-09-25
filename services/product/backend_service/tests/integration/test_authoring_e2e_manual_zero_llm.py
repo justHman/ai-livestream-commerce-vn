@@ -68,7 +68,12 @@ async def test_manual_zero_llm_full_path_pg(pg_url: str) -> None:
         assert version_id is not None
 
         approved = await service.approve_product(
-            set_id=set_id, product_id="P1", version_id=version_id, actor="admin"
+            set_id=set_id,
+            product_id="P1",
+            version_id=version_id,
+            actor="admin",
+            is_human=True,
+            authorized=True,
         )
         assert approved["state"] == "APPROVED"
         assert approved["approval"]["version_id"] == version_id

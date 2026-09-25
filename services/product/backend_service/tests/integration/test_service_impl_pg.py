@@ -118,7 +118,12 @@ async def test_save_draft_submit_approve_pg(pg_url: str) -> None:
         assert item is not None
         version_id = item.current_version_id
         approved = await service.approve_product(
-            set_id=created["id"], product_id="P1", version_id=version_id, actor="nam"
+            set_id=created["id"],
+            product_id="P1",
+            version_id=version_id,
+            actor="nam",
+            is_human=True,
+            authorized=True,
         )
         assert approved["state"] == "APPROVED"
         assert approved["approval"]["version_id"] == version_id

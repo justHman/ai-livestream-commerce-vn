@@ -13,6 +13,8 @@ authoring source injected into the container). Covers:
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -106,6 +108,9 @@ class _FakeSource:
     async def get_script_set(self, *, set_id: str) -> dict | None:
         return self.script_set if set_id == SET_ID else None
 
+    async def get_binding_script_set(self, *, set_id: str) -> dict | None:
+        return await self.get_script_set(set_id=set_id)
+
     async def get_script_item(self, *, set_id: str, product_id: str) -> dict | None:
         return self.items.get(product_id)
 
@@ -129,6 +134,9 @@ class _FakeSource:
         from backend.application.script_authoring.session_binding import DependencyFingerprint
 
         return getattr(self, "current_deps", None) or DependencyFingerprint()
+
+    async def get_recorded_dependencies(self, *, script_item_id: str) -> dict:
+        return getattr(self, "recorded_dependencies_by_item", {}).get(script_item_id, {})
 
     def get_approved_version(self, *, script_set_id: str, product_id: str) -> dict | None:
         """ApprovedScriptStore protocol: exact version + spoken_text."""
@@ -338,8 +346,6 @@ def test_bind_ok_persists_snapshot_without_mutating_authoring(mock_env: None) ->
 
 def test_bind_ok_snapshot_in_session_store(mock_env: None) -> None:
     """The binding snapshot is stored under session metadata, not authoring rows."""
-    import asyncio
-
     source = _FakeSource()
     director = _FakeDirectorRuntime({"P001", "P002"})
     with TestClient(_make_app(source, director=director)) as client:
@@ -356,3 +362,47 @@ def test_bind_ok_snapshot_in_session_store(mock_env: None) -> None:
         binding = meta.get("script_set_binding")
         assert binding is not None
         assert binding["script_set_id"] == SET_ID
+
+
+def test_merchant_scoped_binding_uses_only_approved_product_ids(mock_env: None) -> None:
+    """Merchant binding needs no raw Director catalog attachment before approval."""
+    source = _FakeSource()
+    source.script_set["brief"].update(
+        {
+            "tenant_id": "tenant-1",
+            "business_session_id": "business-1",
+            "product_facts_version": "facts:approved",
+            "promotion_version": "promotions:approved",
+        }
+    )
+    source.recorded_dependencies_by_item = {
+        item_id: {
+            "product_facts_version": "facts:approved",
+            "promotion_version": "promotions:approved",
+        }
+        for item_id in source.approvals
+    }
+    with TestClient(_make_app(source)) as client:
+        sid = _start_session(client)
+        store = client.app.state.container.store
+        meta = asyncio.run(store.get(sid))
+        assert meta is not None
+        meta["execution_contract"] = {
+            "tenant_id": "tenant-1",
+            "business_session_id": "business-1",
+        }
+        asyncio.run(store.set(sid, meta))
+
+        r = client.put(
+            f"/api/v1/sessions/{sid}/script-set",
+            json={
+                "script_set_id": SET_ID,
+                "tenant_id": "tenant-1",
+                "business_session_id": "business-1",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert {p["product_id"] for p in r.json()["binding"]["products"]} == {
+            "P001",
+            "P002",
+        }

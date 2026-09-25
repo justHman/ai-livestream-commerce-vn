@@ -71,7 +71,12 @@ async def _approved_script(pg_url: str):
     item = await repos.items.get_by_product(set_id, "P1")
     assert item is not None and item.current_version_id is not None
     await service.approve_product(
-        set_id=set_id, product_id="P1", version_id=item.current_version_id, actor="admin"
+        set_id=set_id,
+        product_id="P1",
+        version_id=item.current_version_id,
+        actor="admin",
+        is_human=True,
+        authorized=True,
     )
     item = await repos.items.get_by_product(set_id, "P1")
     assert item is not None and item.state is ScriptState.APPROVED

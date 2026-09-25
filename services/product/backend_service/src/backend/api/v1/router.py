@@ -148,7 +148,9 @@ class ProductEntityIn(BaseModel):
     material: Optional[str] = Field(default=None, max_length=256)
     shipping: Optional[str] = Field(default=None, max_length=500)
     warranty: Optional[str] = Field(default=None, max_length=500)
-    in_stock: bool = True
+    # ``None`` means Livento has no authoritative inventory observation.  Do
+    # not turn absence into a false availability claim.
+    in_stock: Optional[bool] = None
     stock_total: Optional[int] = Field(default=None, ge=0)
     ref_image: Optional[str] = Field(default=None, max_length=2_048)
     features: list[ProductArrayItem] = Field(default_factory=list, max_length=32)
@@ -189,7 +191,8 @@ class ProductEntityIn(BaseModel):
             )
             if (value := getattr(self, field_name, None)) is not None
         ]
-        facts.append(Fact(key=COMMERCE_STOCK_AVAILABLE, type="bool", value=self.in_stock))
+        if self.in_stock is not None:
+            facts.append(Fact(key=COMMERCE_STOCK_AVAILABLE, type="bool", value=self.in_stock))
         facts.append(
             Fact(
                 key=IDENTITY_SKU,

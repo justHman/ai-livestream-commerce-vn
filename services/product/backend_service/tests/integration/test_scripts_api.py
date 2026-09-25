@@ -353,7 +353,13 @@ class FakeScriptAuthoringService:
         product_id: str,
         version_id: str,
         actor: str,
+        is_human: bool = False,
+        authorized: bool = False,
     ) -> dict[str, Any] | None:
+        if not is_human or not authorized:
+            raise ScriptAuthoringError(
+                "illegal_transition", "approval requires an authenticated human actor"
+            )
         item = self._item(set_id, product_id)
         if item["state"] != "REVIEWABLE" or item.get("current_version_id") != version_id:
             raise ScriptAuthoringError(
@@ -380,6 +386,8 @@ class FakeScriptAuthoringService:
         product_ids: list[str],
         version_ids: dict[str, str],
         actor: str,
+        is_human: bool = False,
+        authorized: bool = False,
     ) -> dict[str, Any] | None:
         approvals: dict[str, Any] = {}
         for pid in product_ids:
@@ -391,6 +399,8 @@ class FakeScriptAuthoringService:
                 product_id=pid,
                 version_id=version_id,
                 actor=actor,
+                is_human=is_human,
+                authorized=authorized,
             )
         return {"ok": True, "approvals": approvals}
 
@@ -817,7 +827,7 @@ def test_approve_requires_current_reviewable_version(client: TestClient) -> None
     assert bad.json()["error"]["code"] == "illegal_transition"
     ok = client.post(
         f"/api/v1/script-sets/{set_id}/products/P001/approve",
-        json={"version_id": "v1", "actor": "nam"},
+        json={"version_id": "v1", "actor": "nam", "actor_is_human": True, "actor_authorized": True},
     )
     assert ok.status_code == 200, ok.text
     body = ok.json()
@@ -840,6 +850,8 @@ def test_approve_batch_preserves_per_version_records(client: TestClient) -> None
             "product_ids": ["P001", "P002"],
             "version_ids": {"P001": "v1", "P002": "v1"},
             "actor": "nam",
+            "actor_is_human": True,
+            "actor_authorized": True,
         },
     )
     assert resp.status_code == 200, resp.text

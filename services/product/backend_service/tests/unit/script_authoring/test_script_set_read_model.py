@@ -285,7 +285,12 @@ async def test_approve_e2e_via_read_wire_exact_text_binding() -> None:
     assert cv["spoken_text"] == SPOKEN
     version_id = item["current_version_id"]
     approved = await service.approve_product(
-        set_id=set_id, product_id="P1", version_id=version_id, actor="nam"
+        set_id=set_id,
+        product_id="P1",
+        version_id=version_id,
+        actor="nam",
+        is_human=True,
+        authorized=True,
     )
     assert approved["state"] == "APPROVED"
     wire2 = await service.get_script_set(set_id=set_id)
