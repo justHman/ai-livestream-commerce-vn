@@ -520,8 +520,10 @@ def _merchant_preparation_scope(raw_set: Any) -> tuple[str, str, list[str]]:
     else:
         tenant_id = getattr(brief, "tenant_id", "")
         business_session_id = getattr(brief, "business_session_id", "")
-    return str(tenant_id or "").strip(), str(business_session_id or "").strip(), list(
-        product_ids or []
+    return (
+        str(tenant_id or "").strip(),
+        str(business_session_id or "").strip(),
+        list(product_ids or []),
     )
 
 
@@ -597,10 +599,7 @@ async def sessions_bind_script_set(
                     "message": "merchant preparation requires tenant and business session scope",
                 },
             )
-        if (
-            req.tenant_id != set_tenant_id
-            or req.business_session_id != set_business_session_id
-        ):
+        if req.tenant_id != set_tenant_id or req.business_session_id != set_business_session_id:
             raise HTTPException(
                 status_code=409,
                 detail={
