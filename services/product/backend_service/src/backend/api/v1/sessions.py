@@ -115,6 +115,22 @@ async def _say(request: Request, req: router.SayReq) -> dict[str, Any]:
     from backend.application.render.engines_base import FullPipelineBackend, StreamingAvatarBackend
 
     boundary = d.approved_speech
+    if req.generate:
+        # Active direct generation is another input to the LLM. Reuse the
+        # canonical gate and session replay window, never synthesize an API
+        # approval or turn this operator request into a canonical viewer event.
+        if d.event_ingestion is None:
+            raise HTTPException(status_code=409, detail={"code": "safety_gate_unavailable"})
+        try:
+            evidence = await d.event_ingestion.screen_direct_generation(req.session_id, req.text)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown session_id")
+        except SessionLockTimeout:
+            raise HTTPException(status_code=503, detail="session busy")
+        if not evidence["accepted"]:
+            raise HTTPException(
+                status_code=409, detail={"code": "unsafe_input", "details": {"safety": evidence}}
+            )
     try:
         speech = await boundary.prepare(
             req.session_id,

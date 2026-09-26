@@ -66,6 +66,7 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     pg_store = _build_pg_store(config)
     script_authoring = _build_script_authoring(config, engine_manager, pg_store)
     from backend.application.platform_events import PlatformEventIngestionService
+    from backend.application.safety_gate import SafetyGate
     from backend.application.publishing import LiveKitPublisherRegistry, publish_enabled
 
     director, coordinator, reducer = _build_director_pipeline(config, backend, engine_manager)
@@ -87,6 +88,7 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
             coordinator=coordinator,
             runtime=director,
             reducer=reducer,
+            safety_gate=SafetyGate(),
         ),
     )
 
@@ -414,6 +416,18 @@ def create_app(
         resolved_container = _build_container(config, container=None)
 
     from backend.application.script_authoring.approved_speech import ApprovedSpeech
+    from backend.application.platform_events import PlatformEventIngestionService
+
+    # Injected provider/test containers must retain the same effective safety
+    # boundary as the deployed composition, including active direct generation.
+    if resolved_container.event_ingestion is None:
+        resolved_container.event_ingestion = PlatformEventIngestionService(
+            store=resolved_container.store,
+            pg_store=resolved_container.pg_store,
+            coordinator=resolved_container.coordinator,
+            runtime=resolved_container.director,
+            reducer=resolved_container.reducer,
+        )
 
     resolved_container.approved_speech = ApprovedSpeech(
         resolved_container.store, lambda: resolved_container.script_authoring_service
