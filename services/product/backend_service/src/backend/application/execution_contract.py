@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -10,16 +11,17 @@ from pydantic import BaseModel, Field
 VERSION = "p0.execution.v1"
 Phase = Literal["preparing", "ready", "warming", "selling", "closing", "ending", "ended", "failed"]
 Kind = Literal["runtime_ready", "first_ai_broadcast", "health", "phase_changed", "terminal"]
-Command = Literal["hold", "resume", "interrupt", "end", "emergency_end"]
+Command = Literal["start", "hold", "resume", "interrupt", "end", "emergency_end"]
 
 # Contract processing, the accepted comment envelope and approved speech are implemented.
-# Real rescue, autonomous opening, terminal reconciliation and signed usage
+# Real rescue, terminal reconciliation and signed usage
 # remain unavailable until their owning tasks implement them.
 AVAILABLE_CAPABILITIES = (
     "comment.p0.v1",
     "execution.evidence.v1",
     "execution.command_result.v1",
     "content.approved_speech.v1",
+    "command.start",
 )
 
 
@@ -48,6 +50,29 @@ class Capabilities(BaseModel):
         return self.version == VERSION and set(required).issubset(self.available)
 
 
+def start_command_id(identity: ExecutionIdentity) -> str:
+    # Length-prefixed UTF-8 is shared with Go; delimiters inside IDs are safe.
+    values = (
+        identity.tenant_id,
+        identity.business_session_id,
+        identity.runtime_session_id,
+        identity.generation,
+    )
+    data = b"".join(str(len(v.encode())).encode() + b":" + v.encode() for v in values)
+    return "start:" + hashlib.sha256(data).hexdigest()
+
+
+class MediaReadiness(BaseModel):
+    readiness_id: str = Field(min_length=1)
+    destination_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    media_ready: bool
+    platform_ready: bool
+
+    def ready(self) -> bool:
+        return self.media_ready and self.platform_ready
+
+
 class Evidence(ExecutionIdentity):
     sequence: int = Field(gt=0)
     kind: Kind
@@ -55,6 +80,10 @@ class Evidence(ExecutionIdentity):
     reason_code: str | None = None
     occurred_at: datetime
     healthy: bool | None = None
+    media_readiness: MediaReadiness | None = None
+    opening_turn_id: str | None = None
+    media_utterance_id: str | None = None
+    media_evidence_id: str | None = None
 
 
 class ExecutionState(ExecutionIdentity):
@@ -64,6 +93,11 @@ class ExecutionState(ExecutionIdentity):
     first_ai_broadcast: bool = False
     healthy: bool | None = None
     terminal_reason: str | None = None
+    media_readiness: MediaReadiness | None = None
+    approved_envelope_hash: str | None = None
+    start_command_id: str | None = None
+    opening_turn_id: str | None = None
+    first_playable_evidence_id: str | None = None
 
 
 class ContractRejection(ValueError):
@@ -96,10 +130,25 @@ def apply_evidence(state: ExecutionState, event: Evidence) -> ExecutionState:
         if state.phase != "preparing" or event.phase != "ready":
             raise ContractRejection("invalid_lifecycle_state")
         changes["runtime_ready"] = True
+        changes["media_readiness"] = event.media_readiness
     elif event.kind == "first_ai_broadcast":
         if not state.runtime_ready or event.phase not in ("warming", "selling"):
             raise ContractRejection("runtime_not_ready")
+        if (
+            not state.start_command_id
+            or not state.opening_turn_id
+            or event.opening_turn_id != state.opening_turn_id
+            or state.media_readiness is None
+            or not state.media_readiness.ready()
+            or event.media_readiness != state.media_readiness
+            or not event.media_utterance_id
+            or not event.media_evidence_id
+        ):
+            raise ContractRejection("uncorrelated_media")
+        if state.first_ai_broadcast:
+            raise ContractRejection("already_live")
         changes["first_ai_broadcast"] = True
+        changes["first_playable_evidence_id"] = event.media_evidence_id
     elif event.kind == "health":
         if event.healthy is None or event.phase != state.phase:
             raise ContractRejection("invalid_lifecycle_state")
@@ -130,6 +179,7 @@ class CommandOutcome(CommandRequest):
     reason_code: str | None = None
     result_at: datetime
     sequence: int | None = None
+    opening_turn_id: str | None = None
 
 
 def command_rejection(
@@ -141,7 +191,7 @@ def command_rejection(
         return "stale_generation"
     if state.phase in ("ended", "failed"):
         return "already_terminal"
-    if request.command not in ("hold", "resume", "interrupt", "end", "emergency_end"):
+    if request.command not in ("start", "hold", "resume", "interrupt", "end", "emergency_end"):
         return "rejected_command"
     if not capabilities.supports(f"command.{request.command}"):
         return "unsupported_capability"
