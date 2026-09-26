@@ -278,11 +278,11 @@ async def test_stale_owner_ingest_maps_to_session_lock_timeout(
     real_save_meta = service_a._save_meta
 
     async def gated_save_meta(
-        session_id: str, meta: dict, *, fence: SessionLockFence | None = None
+        session_id: str, meta: dict, *, fence: SessionLockFence | None = None, strict: bool = False
     ) -> None:
         entered.set()
         await release.wait()
-        await real_save_meta(session_id, meta, fence=fence)
+        await real_save_meta(session_id, meta, fence=fence, strict=strict)
 
     monkeypatch.setattr(service_a, "_save_meta", gated_save_meta)
 
@@ -290,7 +290,7 @@ async def test_stale_owner_ingest_maps_to_session_lock_timeout(
     ev_a = PlatformEvent(**{**_event("ev-a", text="a"), "occurred_at": now})
     ev_b = PlatformEvent(**{**_event("ev-b", text="b"), "occurred_at": now})
     task = asyncio.create_task(service_a.ingest("s1", [ev_a]))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), timeout=2)
     fake.now += 11  # A overruns its 10s lock TTL inside the critical section
     await service_b.ingest("s1", [ev_b])  # B acquires the expired lock + commits
     release.set()

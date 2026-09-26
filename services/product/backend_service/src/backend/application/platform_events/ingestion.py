@@ -38,6 +38,9 @@ processed unlocked.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+import hashlib
+import json
 import logging
 import time
 from enum import Enum
@@ -45,6 +48,8 @@ from typing import Any, Callable, Optional
 
 from backend.application.db import SessionStore
 from backend.application.db.session_store import SessionLockTimeout, StaleOwnerWriteError
+from backend.application.safety_gate import SafetyGate
+from backend.application.safety_gate.intake import IntakeSafety
 
 from .models import (
     MAX_STALENESS_SEC,
@@ -87,7 +92,7 @@ class EventStatus(str, Enum):
     REJECTED = "rejected"
 
 
-# Structural rejection reason (the full SafetyGate is a later cluster).
+# Structural rejection precedes the Runtime SafetyGate.
 _REASON_STALE = "occurred_at_out_of_range"
 
 
@@ -118,12 +123,14 @@ class PlatformEventIngestionService:
         now_fn: Optional[Callable[[], float]] = None,
         reducer: Any = None,
         lock_acquire_timeout_seconds: float = 2.0,
+        safety_gate: SafetyGate | None = None,
     ) -> None:
         self._store = store
         self._pg_store = pg_store
         self._coordinator = coordinator
         self._runtime = runtime
         self._reducer = reducer
+        self._safety = IntakeSafety(safety_gate or SafetyGate())
         self._max_events_per_request = max_events_per_request
         self._dedup_window_sec = dedup_window_sec
         self._dedup_max_ids = dedup_max_ids
@@ -159,9 +166,11 @@ class PlatformEventIngestionService:
             return dict(await self._store.get(session_id) or {})
         except Exception:
             logger.warning("session meta read failed session=%s", session_id, exc_info=True)
-            return {}
+            raise
 
-    async def _save_meta(self, session_id: str, meta: dict, *, fence: Any = None) -> None:
+    async def _save_meta(
+        self, session_id: str, meta: dict, *, fence: Any = None, strict: bool = False
+    ) -> None:
         if self._store is None:
             return
         if fence is not None:
@@ -173,7 +182,49 @@ class PlatformEventIngestionService:
         try:
             await self._store.set(session_id, meta)
         except Exception:
+            if strict:
+                raise
             logger.warning("session meta write failed session=%s", session_id, exc_info=True)
+
+    async def _screen(self, session_id, meta, text, *, fence=None, defer_replay=False, **context):
+        previous_recent = (meta.get("runtime_safety") or {}).get("recent", [])
+        evidence = self._safety.evaluate(meta, text, now=self._now(), **context)
+        # Record the decision before downstream work. For canonical events the
+        # replay observation commits with existing acceptance/dedup state, so
+        # a failed routing attempt does not consume a legitimate retry's budget.
+        persisted = meta
+        if defer_replay and evidence["accepted"]:
+            persisted = {
+                **meta,
+                "runtime_safety": {**meta["runtime_safety"], "recent": previous_recent},
+            }
+        await self._save_meta(session_id, persisted, fence=fence, strict=True)
+        logger.info("runtime.safety_decision session=%s evidence=%s", session_id, evidence)
+        if self._pg_store is not None and getattr(self._pg_store, "enabled", False):
+            try:
+                await self._pg_store.insert_audit_event(
+                    "runtime.safety_decision",
+                    session_id=session_id,
+                    actor="runtime",
+                    resource=context.get("event_id") or context["route"],
+                    detail=evidence,
+                )
+            except Exception:
+                logger.warning("Safety audit persistence failed session=%s", session_id)
+        return evidence
+
+    async def screen_direct_generation(self, session_id: str, text: str) -> dict:
+        """Existing active /say generation uses the same local gate/window.
+
+        This is not canonical viewer ingestion or API moderation approval;
+        it never supplies a moderation reference or queues a viewer event.
+        The approved-speech boundary still controls every output byte.
+        """
+        async with self._session_lock(session_id) as fence:
+            if not await self._session_exists(session_id):
+                raise KeyError(session_id)
+            meta = await self._load_meta(session_id)
+            return await self._screen(session_id, meta, text, fence=fence, route="direct_say")
 
     # ------------------------------------------------------------------
     # Session signals (join/follow/like) — never embedded
@@ -284,13 +335,19 @@ class PlatformEventIngestionService:
         }
 
     async def _record_seen(
-        self, session_id: str, meta: dict, event_id: str, *, fence: Any = None
+        self,
+        session_id: str,
+        meta: dict,
+        event_id: str,
+        *,
+        fence: Any = None,
+        source_key: str | None = None,
     ) -> None:
         entries = self._dedup_entries(meta)
         now = self._now()
         cutoff = now - self._dedup_window_sec
         entries = [entry for entry in entries if entry.get("ts", 0) >= cutoff]
-        entries.append({"event_id": event_id, "ts": now})
+        entries.append({"event_id": event_id, "ts": now, "source_key": source_key})
         if len(entries) > self._dedup_max_ids:
             entries = entries[-self._dedup_max_ids :]
         meta[_DEDUP_KEY] = entries
@@ -301,14 +358,18 @@ class PlatformEventIngestionService:
     # ------------------------------------------------------------------
 
     def _reject_reason(self, event: PlatformEvent, now: float) -> Optional[str]:
-        """Structural pre-embedding rejection (full SafetyGate is a later cluster)."""
+        """Structural pre-embedding rejection before safety evaluation."""
         if abs(now - event.occurred_at) > MAX_STALENESS_SEC:
             return _REASON_STALE
         return None
 
     def _binding_reject_reason(self, event: PlatformEvent, meta: dict) -> Optional[str]:
         binding = meta.get(_BINDING_KEY)
-        if event.contract_version != P0_COMMENT_CONTRACT and binding is None:
+        if (
+            event.contract_version != P0_COMMENT_CONTRACT
+            and binding is None
+            and not meta.get("execution_contract")
+        ):
             return None  # existing non-P0 sessions retain their reader contract
         if event.contract_version != P0_COMMENT_CONTRACT:
             return "p0_contract_required"
@@ -359,18 +420,62 @@ class PlatformEventIngestionService:
     ) -> dict:
         """Handle one event; returns the per-event result item."""
         result: dict[str, Any] = {"event_id": event.event_id}
+        # Validate scope before consulting or mutating dedup/replay state.
+        # A forged cross-tenant event must not suppress a legitimate retry.
+        binding_reason = self._binding_reject_reason(event, meta)
+        if binding_reason is not None:
+            await self._persist_rejected(session_id, event, binding_reason)
+            return {**result, "status": EventStatus.REJECTED.value, "reason": binding_reason}
+        source_key = None
+        if event.contract_version == P0_COMMENT_CONTRACT and event.source_message_id:
+            source_key = hashlib.sha256(
+                json.dumps(
+                    [
+                        event.tenant_id,
+                        event.business_session_id,
+                        event.platform,
+                        event.connected_account_id,
+                        event.external_session_id,
+                        event.source_message_id,
+                    ]
+                ).encode()
+            ).hexdigest()
         seen = self._seen_event_ids(meta, now)
-        if event.event_id in seen:
+        source_seen = source_key is not None and any(
+            entry.get("source_key") == source_key
+            and entry.get("ts", 0) >= now - self._dedup_window_sec
+            for entry in self._dedup_entries(meta)
+        )
+        if event.event_id in seen or source_seen:
             result["status"] = EventStatus.DUPLICATE.value
             return result
 
-        reason = self._binding_reject_reason(event, meta) or self._reject_reason(event, now)
+        reason = self._reject_reason(event, now)
+        if reason is None and event.type == "viewer.comment":
+            evidence = await self._screen(
+                session_id,
+                meta,
+                event.payload.text,
+                fence=fence,
+                route="canonical_events",
+                defer_replay=True,
+                event_id=event.event_id,
+                moderation_ref=event.moderation_ref,
+            )
+            result["safety"] = evidence
+            if not evidence["accepted"]:
+                reason = evidence["reason_codes"][0]
         if reason is not None:
             result["status"] = EventStatus.REJECTED.value
             result["reason"] = reason
             self._rejection_counts[reason] = self._rejection_counts.get(reason, 0) + 1
             await self._persist_rejected(session_id, event, reason)
-            await self._record_seen(session_id, meta, event.event_id, fence=fence)
+            # Replay-flood is a bounded-window rejection, not permanent
+            # delivery ownership. A retry after expiry must be reevaluated.
+            if reason != "replay_flood":
+                await self._record_seen(
+                    session_id, meta, event.event_id, fence=fence, source_key=source_key
+                )
             return result
 
         result["status"] = EventStatus.ACCEPTED.value
@@ -383,7 +488,9 @@ class PlatformEventIngestionService:
         else:
             self._apply_signal(meta, event)
         self._record_viewer_key(meta, event)
-        await self._record_seen(session_id, meta, event.event_id, fence=fence)
+        await self._record_seen(
+            session_id, meta, event.event_id, fence=fence, source_key=source_key
+        )
         self._accepted_count += 1
         return result
 
@@ -400,20 +507,27 @@ class PlatformEventIngestionService:
         ``SET NX`` distributed lock (``with_session_lock``); the in-process
         ``asyncio.Lock`` remains only for single-process memory stores.
         """
+        async with self._session_lock(session_id) as fence:
+            return await self._ingest_locked(session_id, events, fence=fence)
+
+    @asynccontextmanager
+    async def _session_lock(self, session_id):
+        """Canonical and direct input share the existing session serialization."""
         distributed = getattr(self._store, "with_session_lock", None)
         if distributed is not None:
             try:
                 async with distributed(
                     session_id, acquire_timeout_seconds=self._lock_acquire_timeout_seconds
                 ) as fence:
-                    return await self._ingest_locked(session_id, events, fence=fence)
+                    yield fence
+                return
             except StaleOwnerWriteError as exc:
                 # Lost ownership mid-section == session busy; the route already
                 # maps SessionLockTimeout to 503, so the client retries.
                 raise SessionLockTimeout(session_id) from exc
         lock = self._ingest_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
-            return await self._ingest_locked(session_id, events)
+            yield None
 
     async def _ingest_locked(
         self, session_id: str, events: list[PlatformEvent], *, fence: Any = None
