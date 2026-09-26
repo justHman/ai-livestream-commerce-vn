@@ -455,7 +455,7 @@ class PlatformEventIngestionService:
             evidence = await self._screen(
                 session_id,
                 meta,
-                event.payload.text,
+                event.payload.text if isinstance(event.payload, CommentPayload) else "",
                 fence=fence,
                 route="canonical_events",
                 defer_replay=True,

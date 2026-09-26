@@ -2,9 +2,11 @@
 
 from collections import deque
 import hashlib
+from typing import Any
 
 from .checks import ReplayWindow
 from .decision import ReasonCode
+from .engine import SafetyGate
 from .injection_patterns import detect_injection
 from .resources import load_all_curated_patterns, match_curated
 
@@ -18,21 +20,30 @@ class FingerprintReplayWindow(ReplayWindow):
 
 
 class IntakeSafety:
-    def __init__(self, gate):
+    def __init__(self, gate: SafetyGate) -> None:
         self.gate = gate
         self.patterns = load_all_curated_patterns()
 
-    def _curated(self, text):
+    def _curated(self, text: str) -> tuple[ReasonCode, ...]:
         return tuple(ReasonCode(kind) for kind in match_curated(text, self.patterns))
 
-    def evaluate(self, meta, text, *, now, route, event_id=None, moderation_ref=None):
+    def evaluate(
+        self,
+        meta: dict[str, Any],
+        text: str,
+        *,
+        now: float,
+        route: str,
+        event_id: str | None = None,
+        moderation_ref: str | None = None,
+    ) -> dict[str, Any]:
         # The store and lock are already scoped to the Runtime session. Take
         # tenant/business identity only from server-owned session metadata.
         binding = meta.get("platform_event_binding") or meta.get("execution_contract") or {}
         scope = [binding.get("tenant_id"), binding.get("business_session_id")]
-        state = dict(meta.get("runtime_safety") or {})
+        state = dict[str, Any](meta.get("runtime_safety") or {})
         if state.get("scope") != scope:
-            state = {"scope": scope}
+            state = dict[str, Any](scope=scope)
         # Epoch timestamps survive workers/restarts; clamp rollback to keep the
         # gate's clock monotonic within this persisted session window.
         now = max(now, state.get("last_ts", now))
