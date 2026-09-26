@@ -53,6 +53,7 @@ from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetri
 
 from ..render.orchestrator import StreamOrchestrator, StreamingControllerConfig
 from ..text_chunker import FixedChunkPolicyConfig
+from ..script_authoring.approved_speech import SpeechRejected
 
 if TYPE_CHECKING:
     # The hub is only used through its async ``emit(session_id, event)``
@@ -161,6 +162,8 @@ class DirectorCoordinator:
         # persistence. Fire-and-forget: a failure must never break the speak loop.
         self._pg_store = pg_store
         self._audio_window_callback = audio_window_callback
+        # The app composition root installs the same boundary used by /say.
+        self.approved_speech = None
 
     async def _emit(self, session_id: str, event: dict) -> None:
         """Send a WS event via the ControlHub if one is wired. No-op otherwise."""
@@ -258,6 +261,8 @@ class DirectorCoordinator:
         If the orchestrator is currently speaking for this session, cancel it.
         Idempotent.
         """
+        if self.approved_speech is not None:
+            self.approved_speech.cancel(session_id)
         current = self._current_speech.get(session_id)
         if current is not None:
             current.is_cancelled = True
@@ -345,6 +350,8 @@ class DirectorCoordinator:
 
     async def interrupt(self, session_id: str) -> str:
         """Cancel active playback and invalidate every queued/prepared turn."""
+        if self.approved_speech is not None:
+            self.approved_speech.cancel(session_id)
         token = self._runtime.invalidate_generation(session_id)
         current = self._current_speech.get(session_id)
         if current is not None:
@@ -725,7 +732,12 @@ class DirectorCoordinator:
                 await asyncio.sleep(0)
             decision.prompt_layers = self._runtime.prompt_layers(session_id, decision)
             can_prepare = getattr(self._llm, "name", "none") != "none"
-            if decision.prompt is not None and can_prepare:
+            if self.approved_speech is not None:
+                speech = await self._prepare_approved(session_id, decision)
+                decision.approved_speech = speech
+                decision.prepared_script = speech.text
+                decision.prepared_variants = (speech.text,)
+            elif decision.prompt is not None and can_prepare:
                 from .decision_preparation import generate_variants
 
                 variant_count = (
@@ -760,6 +772,16 @@ class DirectorCoordinator:
         except asyncio.CancelledError:
             self._record_cancelled(session_id, decision, "preparation_cancelled")
             raise
+        except SpeechRejected as exc:
+            self._record_cancelled(session_id, decision, exc.code)
+            await self._emit(
+                session_id,
+                {
+                    "type": "speech.content_rejected",
+                    "turn_id": decision.turn_id,
+                    "reason": exc.code,
+                },
+            )
         except Exception as exc:
             decision.is_cancelled = False
             failed = {
@@ -820,6 +842,32 @@ class DirectorCoordinator:
         except asyncio.CancelledError:
             return
 
+    def _speech_live(self, session_id: str, decision: Decision) -> bool:
+        return (
+            not decision.is_cancelled
+            and self._runtime.has(session_id)
+            and decision.revision_token == self._runtime.current_generation_token(session_id)
+        )
+
+    async def _prepare_approved(self, session_id: str, decision: Decision):
+        return await self.approved_speech.prepare(
+            session_id,
+            decision.prepared_script or decision.prompt or decision.text or "",
+            llm=self._llm,
+            generate=decision.prompt is not None and decision.prepared_script is None,
+            product_id=decision.product_id,
+            select_locked=(
+                decision.prepared_script is None
+                and decision.action
+                in (
+                    "introduce_product",
+                    "sell_product",
+                )
+            ),
+            route="director",
+            live=lambda: self._speech_live(session_id, decision),
+        )
+
     async def _maybe_speak(self, session_id: str, decision: Decision) -> bool:
         """Attempt to acquire the lock and run the orchestrator for a decision.
 
@@ -832,6 +880,34 @@ class DirectorCoordinator:
         st = self._stats.get(session_id)
         if st is None:
             return True
+
+        speech = None
+
+        def live():
+            return self._speech_live(session_id, decision)
+
+        if self.approved_speech is not None:
+            try:
+                speech = decision.approved_speech
+                if speech is None:
+                    speech = await self._prepare_approved(session_id, decision)
+                    decision.prepared_script = speech.text
+                    decision.approved_speech = speech
+                if decision.prepared_script != speech.text:
+                    raise SpeechRejected("altered_prepared_text")
+                await self.approved_speech.revalidate(speech, live=live)
+            except SpeechRejected as exc:
+                st.skips += 1
+                self._record_cancelled(session_id, decision, exc.code)
+                await self._emit(
+                    session_id,
+                    {
+                        "type": "speech.content_rejected",
+                        "turn_id": decision.turn_id,
+                        "reason": exc.code,
+                    },
+                )
+                return True
 
         # Playback is serialized. A lock may belong to manual speech or an
         # active backend turn, so never release it from a queued decision.
@@ -888,13 +964,21 @@ class DirectorCoordinator:
         metrics = CoordinatorMetrics()
         orchestrator = StreamOrchestrator(
             llm=self._llm,
-            tts=self._tts,
+            tts=self.approved_speech.guarded_tts(speech, self._tts, live=live, emit=self._emit)
+            if speech is not None
+            else self._tts,
             backend=self._backend,
             queue=queue,
             metrics=metrics,
             fixed_config=self._fixed_config,
             controller_config=self._controller_config,
-            audio_window_callback=self._audio_window_callback,
+            audio_window_callback=(
+                self.approved_speech.guarded_audio(
+                    speech, live=live, callback=self._audio_window_callback
+                )
+                if speech is not None
+                else self._audio_window_callback
+            ),
         )
         self._register_speaking(session_id, orchestrator, queue)
         try:
@@ -916,12 +1000,26 @@ class DirectorCoordinator:
                 decision.attempt = attempt
                 try:
                     generate = decision.prompt is not None and decision.prepared_script is None
-                    if isinstance(self._backend, FullPipelineBackend):
-                        spoken_script = await asyncio.to_thread(
-                            self._backend.say,
+                    if speech is not None:
+                        await self.approved_speech.revalidate(speech, live=live)
+                        await self._emit(
                             session_id,
-                            text,
-                            generate,
+                            {
+                                "type": "speech.content_validated",
+                                "turn_id": decision.turn_id,
+                                **speech.evidence(),
+                            },
+                        )
+                        self.approved_speech.check_live(speech, live)
+                    if isinstance(self._backend, FullPipelineBackend):
+
+                        def cloud_say():
+                            if speech is not None:
+                                self.approved_speech.check_live(speech, live)
+                            return self._backend.say(session_id, text, generate)
+
+                        spoken_script = await asyncio.to_thread(
+                            cloud_say,
                         )
                     elif decision.prepared_script is not None or not generate:
                         spoken_script = await orchestrator.speak_verbatim(session_id, text)
@@ -963,6 +1061,7 @@ class DirectorCoordinator:
                 "task_id": decision.task_id,
                 "script": spoken_script,
                 "attempt": decision.attempt,
+                "validation": speech.evidence() if speech is not None else None,
             }
             self._completed_speech[session_id] = completed
             history = self._completed_history.setdefault(

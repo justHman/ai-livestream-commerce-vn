@@ -62,6 +62,7 @@ class Decision:
     revision_token: str = ""
     prepared_script: Optional[str] = None
     prepared_variants: tuple[str, ...] = ()
+    approved_speech: object = None
     prepared_from_projection: bool = False
     is_cancelled: bool = False
     attempt: int = 0

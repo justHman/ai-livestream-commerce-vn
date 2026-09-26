@@ -12,10 +12,15 @@ Phase = Literal["preparing", "ready", "warming", "selling", "closing", "ending",
 Kind = Literal["runtime_ready", "first_ai_broadcast", "health", "phase_changed", "terminal"]
 Command = Literal["hold", "resume", "interrupt", "end", "emergency_end"]
 
-# Only contract processing and the accepted comment envelope are implemented.
+# Contract processing, the accepted comment envelope and approved speech are implemented.
 # Real rescue, autonomous opening, terminal reconciliation and signed usage
 # remain unavailable until their owning tasks implement them.
-AVAILABLE_CAPABILITIES = ("comment.p0.v1", "execution.evidence.v1", "execution.command_result.v1")
+AVAILABLE_CAPABILITIES = (
+    "comment.p0.v1",
+    "execution.evidence.v1",
+    "execution.command_result.v1",
+    "content.approved_speech.v1",
+)
 
 
 def legacy_runtime_phase_hint(status: str) -> Phase | None:

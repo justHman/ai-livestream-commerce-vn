@@ -45,6 +45,7 @@ class DirectorSession:
     generation_token: str = ""
     runtime_config: dict = field(default_factory=dict)
     accepted_snapshot: dict = field(default_factory=dict)
+    approved_envelope: object = None
     t0: float = field(default_factory=time.monotonic)
 
     def now(self) -> float:

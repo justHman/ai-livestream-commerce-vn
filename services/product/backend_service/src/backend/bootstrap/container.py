@@ -67,6 +67,7 @@ class BootstrapContainer:
     # and the session binding endpoint (task 12.2). When None, the
     # /script-sets and session binding surfaces return 501.
     script_authoring_service: Any = None
+    approved_speech: Any = None
 
     # -- Canonical multi-platform event ingress (multi-platform change) --
     # PlatformEventIngestionService or None. When None, the /events endpoint

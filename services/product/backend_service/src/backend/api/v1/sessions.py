@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
 from backend.application.db.session_store import SessionLockTimeout
+from backend.application.script_authoring.approved_speech import SpeechRejected
 
 from . import router
 from .router import logger
@@ -113,10 +114,23 @@ async def _say(request: Request, req: router.SayReq) -> dict[str, Any]:
     d = _container(request)
     from backend.application.render.engines_base import FullPipelineBackend, StreamingAvatarBackend
 
+    boundary = d.approved_speech
+    try:
+        speech = await boundary.prepare(
+            req.session_id,
+            req.text,
+            generate=req.generate,
+            llm=getattr(d.engine_manager, "llm", None),
+            route="direct_say",
+        )
+    except SpeechRejected as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+    req = req.model_copy(update={"text": speech.text, "generate": False})
+
     # Phase E: streaming coordinator path for StreamingAvatarBackend (mock +
     # future self-host). FullPipelineBackend (cloud) keeps backend.say().
     if isinstance(d.backend, StreamingAvatarBackend):
-        return await _streaming_say(d, req)
+        return await _streaming_say(d, req, speech=speech)
     if not isinstance(d.backend, FullPipelineBackend):
         raise HTTPException(status_code=501, detail="backend does not support say()")
     # Cloud / FullPipelineBackend path.
@@ -129,7 +143,17 @@ async def _say(request: Request, req: router.SayReq) -> dict[str, Any]:
     if d.hub is not None:
         await d.hub.emit(sid, {"type": "avatar.speak_started", "text": req.text})
     try:
-        reply = await asyncio.to_thread(d.backend.say, sid, req.text, req.generate)
+        await boundary.revalidate(speech)
+        if d.hub is not None:
+            await d.hub.emit(sid, {"type": "speech.content_validated", **speech.evidence()})
+
+        def cloud_say():
+            boundary.check_live(speech, lambda: True)
+            return d.backend.say(sid, speech.text, False)
+
+        reply = await asyncio.to_thread(cloud_say)
+    except SpeechRejected as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     except NotImplementedError as exc:
@@ -138,10 +162,10 @@ async def _say(request: Request, req: router.SayReq) -> dict[str, Any]:
         d.locks.release(sid)
     if d.hub is not None:
         await d.hub.emit(sid, {"type": "avatar.speak_ended", "reply": reply})
-    return {"ok": True, "reply": reply}
+    return {"ok": True, "reply": reply, "validation": speech.evidence()}
 
 
-async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
+async def _streaming_say(d: Any, req: router.SayReq, *, speech=None) -> dict[str, Any]:
     """Run the LLM->chunker->TTS->backend streaming coordinator for one turn.
 
     Per-session lock: if a turn is already running for this session, reject
@@ -158,6 +182,8 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
     from tts.engines.base import TTSEngine, ToneEngine
 
     sid = req.session_id
+    if speech is None:
+        raise HTTPException(status_code=409, detail={"code": "missing_speech_validation"})
     if not d.locks.try_acquire(sid):
         raise HTTPException(status_code=409, detail="already_speaking")
 
@@ -190,31 +216,38 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
     # deliberately owns no policy-mode selection (Change A contract).
     chunk_policy = os.environ.get("TEXT_CHUNK_POLICY", ChunkPolicy.ADAPTIVE_VI.value)
     try:
+
+        async def emit(sid, event):
+            if d.hub is not None:
+                await d.hub.emit(sid, event)
+
         orchestrator = StreamOrchestrator(
             llm=llm,
-            tts=tts,
+            tts=d.approved_speech.guarded_tts(
+                speech,
+                tts,
+                live=lambda: True,
+                emit=emit,
+            ),
             backend=d.backend,
             queue=queue,
             metrics=metrics,
             fixed_config=fixed_config,
             controller_config=controller_config,
             chunk_policy=chunk_policy,
-            audio_window_callback=d.livekit_publishers.publish
-            if d.livekit_publishers is not None
-            else None,
+            audio_window_callback=d.approved_speech.guarded_audio(
+                speech,
+                live=lambda: True,
+                callback=d.livekit_publishers.publish if d.livekit_publishers is not None else None,
+            ),
         )
         # Register the orchestrator so /sessions/{id}/interrupt can cancel it.
         d.orchestrators[sid] = {"orchestrator": orchestrator, "queue": queue}
 
         if d.hub is not None:
             await d.hub.emit(sid, {"type": "avatar.speak_started", "text": req.text})
-        if req.generate:
-            system_prompt = None
-            if em is not None and hasattr(em, "_system_prompt"):
-                system_prompt = em._system_prompt or None
-            spoken = await orchestrator.run(sid, req.text, system_prompt=system_prompt)
-        else:
-            spoken = await orchestrator.speak_verbatim(sid, req.text)
+        await d.approved_speech.revalidate(speech)
+        spoken = await orchestrator.speak_verbatim(sid, speech.text)
         # Drain the queue: emit one WS event per VideoWindow to the control
         # hub so connected clients see frame updates. In production the MEDIA
         # plane carries the actual video; this control event is for telemetry.
@@ -239,7 +272,10 @@ async def _streaming_say(d: Any, req: router.SayReq) -> dict[str, Any]:
             "reply": spoken,
             "windows": windows_emitted,
             "metrics": metrics.to_dict(),
+            "validation": speech.evidence(),
         }
+    except SpeechRejected as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     finally:
@@ -254,6 +290,7 @@ async def sessions_interrupt(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
+    d.approved_speech.cancel(session_id)
     # Task 8: if there is an active streaming orchestrator for this session,
     # cancel it first (stops emission + drains the bounded queue).
     try:
@@ -279,6 +316,7 @@ async def sessions_stop(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
+    d.approved_speech.cancel(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
         d.coordinator.stop(session_id)
@@ -326,6 +364,15 @@ async def sessions_attach(
             raise HTTPException(status_code=409, detail="platform_event_binding_conflict")
     products = [p.to_entity() for p in req.products]
     shop_profile = req.shop_profile_text()
+    meta = await d.store.get(session_id) or {}
+    envelope = None
+    if meta.get("execution_contract") or meta.get("script_set_binding"):
+        try:
+            envelope = await d.approved_speech.resolve(session_id)
+        except SpeechRejected as exc:
+            raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+        products = envelope.catalog()
+        shop_profile = ""
     # Re-attach updates the existing runtime/coordinator atomically. Stopping
     # the coordinator here would erase the active checkpoint and rolling window.
     has_coordinator = d.coordinator is not None and d.coordinator.has(session_id)
@@ -340,9 +387,13 @@ async def sessions_attach(
             session_id,
             products,
             shop_profile=shop_profile,
-            run_plan=router.build_run_plan(req.products, persona=shop_profile),
+            run_plan=None
+            if envelope
+            else router.build_run_plan(req.products, persona=shop_profile),
             runtime_config=runtime_values,
         )
+        if envelope is not None:
+            d.director.get_session(session_id).approved_envelope = envelope
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if binding is not None:
@@ -696,4 +747,7 @@ async def sessions_bind_script_set(
     meta = dict(meta)
     meta["script_set_binding"] = snapshot.as_dict()
     await d.store.set(session_id, meta)
+    d.approved_speech.rebind(session_id)
+    if d.coordinator is not None and d.coordinator.has(session_id):
+        await d.coordinator.interrupt(session_id)
     return {"ok": True, "session_id": session_id, "binding": snapshot.as_dict()}
