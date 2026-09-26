@@ -44,6 +44,8 @@ class LLM:
 
 
 class TTS:
+    name = "controlled"
+
     def __init__(self, events):
         self.calls = []
         self.events = events
@@ -64,6 +66,8 @@ class TTS:
 
 
 class Cloud(FullPipelineBackend):
+    name = "controlled-cloud"
+
     def __init__(self, events):
         self.calls = []
         self.events = events
