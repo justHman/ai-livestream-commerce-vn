@@ -522,10 +522,53 @@
             "title": "Kind",
             "type": "string"
           },
+          "media_evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Evidence Id"
+          },
+          "media_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media_utterance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Utterance Id"
+          },
           "occurred_at": {
             "format": "date-time",
             "title": "Occurred At",
             "type": "string"
+          },
+          "opening_turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opening Turn Id"
           },
           "phase": {
             "enum": [
@@ -982,6 +1025,42 @@
           "title"
         ],
         "title": "LiveSessionBriefIn",
+        "type": "object"
+      },
+      "MediaReadiness": {
+        "properties": {
+          "destination_id": {
+            "minLength": 1,
+            "title": "Destination Id",
+            "type": "string"
+          },
+          "media_ready": {
+            "title": "Media Ready",
+            "type": "boolean"
+          },
+          "platform_ready": {
+            "title": "Platform Ready",
+            "type": "boolean"
+          },
+          "readiness_id": {
+            "minLength": 1,
+            "title": "Readiness Id",
+            "type": "string"
+          },
+          "source_id": {
+            "minLength": 1,
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "readiness_id",
+          "destination_id",
+          "source_id",
+          "media_ready",
+          "platform_ready"
+        ],
+        "title": "MediaReadiness",
         "type": "object"
       },
       "P0SessionBinding": {

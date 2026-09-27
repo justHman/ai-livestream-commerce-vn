@@ -15,6 +15,7 @@ from backend.application.execution_contract import (
     apply_evidence,
     command_rejection,
     legacy_runtime_phase_hint,
+    MediaReadiness,
 )
 
 
@@ -43,7 +44,24 @@ def test_readiness_ordering_generation_and_terminal_precedence():
         apply_evidence(state, evidence(1, "runtime_ready", "ready"))
     with pytest.raises(ContractRejection, match="stale_generation"):
         apply_evidence(state, evidence(2, "health", "ready", generation="old", healthy=True))
-    state = apply_evidence(state, evidence(2, "first_ai_broadcast", "warming"))
+    media = MediaReadiness(
+        readiness_id="r", destination_id="d", source_id="s", media_ready=True, platform_ready=True
+    )
+    state = state.model_copy(
+        update={"start_command_id": "start", "opening_turn_id": "opening", "media_readiness": media}
+    )
+    state = apply_evidence(
+        state,
+        evidence(
+            2,
+            "first_ai_broadcast",
+            "warming",
+            media_readiness=media,
+            opening_turn_id="opening",
+            media_utterance_id="u",
+            media_evidence_id="e",
+        ),
+    )
     assert state.first_ai_broadcast
     with pytest.raises(ContractRejection, match="invalid_lifecycle_state"):
         apply_evidence(state, evidence(3, "phase_changed", "ready"))

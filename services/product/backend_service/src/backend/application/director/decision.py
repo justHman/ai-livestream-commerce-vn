@@ -467,6 +467,9 @@ class Director:
         if decision.pivot and decision.product_id:
             self._start_pivot(decision.product_id)
         if decision.stage == "opening":
+            if decision.action == "autonomous_opening":
+                # P0 has one complete approved opening, not three template hooks.
+                self.state.cursor.opening_turn_index = 2
             self._mark_opening_spoken()
         if decision.product_id and decision.action in (
             "introduce_product",

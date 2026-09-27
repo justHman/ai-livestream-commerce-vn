@@ -158,6 +158,8 @@ class DirectorCoordinator:
         self._completed_history: dict[str, deque[dict]] = {}
         self._completed_history_size = completed_history_size
         self._activated: set[str] = set()
+        self._autonomous_openings: dict[str, str] = {}
+        self._opening_media: dict[str, dict] = {}
         # Optional Postgres runtime store (durable rows). None/disabled -> no
         # persistence. Fire-and-forget: a failure must never break the speak loop.
         self._pg_store = pg_store
@@ -294,6 +296,8 @@ class DirectorCoordinator:
         self._active_score.pop(session_id, None)
         self._last_tick.pop(session_id, None)
         self._activated.discard(session_id)
+        self._autonomous_openings.pop(session_id, None)
+        self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
 
@@ -382,8 +386,56 @@ class DirectorCoordinator:
         if queue is None:
             raise KeyError(f"No active coordinator session: {session_id}")
         comment = queue.put(text, author, ts=ts)
-        self._activated.add(session_id)
+        # Approved P0 sessions require the authorized execution start command.
+        if self._runtime.get_session(session_id).approved_envelope is None:
+            self._activated.add(session_id)
         return comment
+
+    def activate_approved(self, session_id: str, opening_turn_id: str, envelope) -> None:
+        """Queue exactly one locked opening; called under the execution lock."""
+        if session_id in self._autonomous_openings:
+            return
+        ds = self._runtime.get_session(session_id)
+        if not self.has(session_id) or ds.approved_envelope != envelope:
+            raise SpeechRejected("session_not_attached")
+        product = envelope.products[0]
+        decision = Decision(
+            action="autonomous_opening",
+            stage="opening",
+            task_id="approved-opening",
+            turn_id=opening_turn_id,
+            product_id=product.product_id,
+            prepared_script=product.spoken_text,
+            revision_token=self._runtime.current_generation_token(session_id),
+        )
+        self._autonomous_openings[session_id] = opening_turn_id
+        self._activated.add(session_id)
+        self._decision_queue[session_id].append(decision)
+        task = asyncio.create_task(self._prepare_turn(session_id, decision))
+        self._prepare_tasks[session_id].add(task)
+        task.add_done_callback(
+            lambda done: self._prepare_tasks.get(session_id, set()).discard(done)
+        )
+
+    def opening_media(self, session_id: str) -> dict | None:
+        return self._opening_media.get(session_id)
+
+    async def _record_opening_media(
+        self, session_id: str, decision: Decision, utterance_id: str, speech
+    ) -> None:
+        if (
+            self._autonomous_openings.get(session_id) == decision.turn_id
+            and self._speech_live(session_id, decision)
+            and speech is not None
+        ):
+            receipt = {
+                "opening_turn_id": decision.turn_id,
+                "media_utterance_id": utterance_id,
+                "approved_envelope_hash": speech.envelope.fingerprint,
+            }
+            if session_id not in self._opening_media:
+                self._opening_media[session_id] = receipt
+                await self._emit(session_id, {"type": "execution.opening_media", **receipt})
 
     @staticmethod
     def _speech_item(decision: Decision, state: str = "queued") -> dict:
@@ -680,6 +732,12 @@ class DirectorCoordinator:
         ds = self._runtime._sessions.get(session_id)
         if ds is None:
             return
+        # Finish the sole approved opening before projecting selling turns.
+        if (
+            session_id in self._autonomous_openings
+            and not ds.director.state.cursor.opening_completed
+        ):
+            return
         async with self._decision_locks[session_id]:
             depth = ds.director.cfg.prepared_turn_depth
             prepared = self._speech_queue[session_id]
@@ -962,6 +1020,12 @@ class DirectorCoordinator:
 
         queue = BoundedVideoQueue(max_size=self._max_queue_windows)
         metrics = CoordinatorMetrics()
+
+        async def opening_audio(window):
+            await self._record_opening_media(session_id, decision, window.utterance_id, speech)
+            if self._audio_window_callback is not None:
+                await self._audio_window_callback(window)
+
         orchestrator = StreamOrchestrator(
             llm=self._llm,
             tts=self.approved_speech.guarded_tts(speech, self._tts, live=live, emit=self._emit)
@@ -973,9 +1037,7 @@ class DirectorCoordinator:
             fixed_config=self._fixed_config,
             controller_config=self._controller_config,
             audio_window_callback=(
-                self.approved_speech.guarded_audio(
-                    speech, live=live, callback=self._audio_window_callback
-                )
+                self.approved_speech.guarded_audio(speech, live=live, callback=opening_audio)
                 if speech is not None
                 else self._audio_window_callback
             ),
@@ -995,6 +1057,9 @@ class DirectorCoordinator:
                 },
             )
             max_attempts = 1 + (ds.director.cfg.transient_retry_count if ds is not None else 0)
+            if decision.action == "autonomous_opening":
+                # A timed-out provider may already have emitted media.
+                max_attempts = 1
             spoken_script = None
             for attempt in range(max_attempts):
                 decision.attempt = attempt
@@ -1020,6 +1085,10 @@ class DirectorCoordinator:
 
                         spoken_script = await asyncio.to_thread(
                             cloud_say,
+                        )
+                        # Provider completion is a correlation receipt, not viewer-live.
+                        await self._record_opening_media(
+                            session_id, decision, decision.turn_id, speech
                         )
                     elif decision.prepared_script is not None or not generate:
                         spoken_script = await orchestrator.speak_verbatim(session_id, text)

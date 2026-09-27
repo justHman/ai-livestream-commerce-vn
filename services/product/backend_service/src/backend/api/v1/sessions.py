@@ -336,6 +336,15 @@ async def sessions_stop(
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
         d.coordinator.stop(session_id)
+    # Cancellation above is immediate. Serialize teardown with 007's start
+    # receipt writes so a late save cannot resurrect deleted session metadata.
+    from .execution import _locked
+
+    async with _locked(d.store, session_id):
+        return await _stop_cancelled_session(d, session_id)
+
+
+async def _stop_cancelled_session(d: Any, session_id: str) -> dict[str, Any]:
     entry = d.orchestrators.get(session_id)
     if entry is not None:
         orchestrator = entry["orchestrator"]
