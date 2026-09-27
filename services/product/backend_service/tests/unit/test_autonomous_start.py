@@ -259,29 +259,34 @@ async def test_attach_room_join_and_scheduling_are_not_media_evidence(case_facto
         return await original(*args, **kwargs)
 
     monkeypatch.setattr(case.d.approved_speech, "prepare", delayed)
-    await case.d.hub.emit(case.sid, {"type": "room.joined"})
-    before = await state(case)
-    assert not before["first_ai_broadcast"]
-    await request(case)
-    await asyncio.wait_for(entered.wait(), 2)
-    no_output(case)
-    assert not (await state(case))["first_ai_broadcast"]
-    # A forged playback claim cannot pass just because the opening was scheduled.
-    event = dict(
-        **identity(case),
-        kind="first_ai_broadcast",
-        phase="warming",
-        sequence=2,
-        occurred_at=datetime.now(timezone.utc).isoformat(),
-        media_readiness=MEDIA,
-        opening_turn_id=command(case)["command_id"] + ":opening",
-        media_utterance_id="fabricated",
-        media_evidence_id="fake",
-    )
-    assert (
-        await case.client.post(f"/api/v1/sessions/{case.sid}/execution/evidence", json=event)
-    ).status_code == 409
-    release.set()
+    try:
+        await case.d.hub.emit(case.sid, {"type": "room.joined"})
+        before = await state(case)
+        assert not before["first_ai_broadcast"]
+        await request(case)
+        await asyncio.wait_for(entered.wait(), 2)
+        no_output(case)
+        assert not (await state(case))["first_ai_broadcast"]
+        # A forged playback claim cannot pass just because the opening was scheduled.
+        event = dict(
+            **identity(case),
+            kind="first_ai_broadcast",
+            phase="warming",
+            sequence=2,
+            occurred_at=datetime.now(timezone.utc).isoformat(),
+            media_readiness=MEDIA,
+            opening_turn_id=command(case)["command_id"] + ":opening",
+            media_utterance_id="fabricated",
+            media_evidence_id="fake",
+        )
+        assert (
+            await case.client.post(f"/api/v1/sessions/{case.sid}/execution/evidence", json=event)
+        ).status_code == 409
+    finally:
+        # Do not launch streaming work as pytest closes this test's event loop.
+        # Cancel the controlled preparation through the existing stop seam first.
+        await case.client.post(f"/api/v1/sessions/{case.sid}/stop")
+        release.set()
 
 
 @pytest.mark.asyncio
