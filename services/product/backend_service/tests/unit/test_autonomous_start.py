@@ -12,6 +12,8 @@ from . import test_approved_speech_active as speech_tests
 from backend.api.v1 import execution
 
 case_factory = speech_tests.case_factory
+# Bound asynchronous race/teardown failures in CI; this is not a runtime timer.
+pytestmark = pytest.mark.timeout(30)
 MEDIA = dict(
     readiness_id="fixture-ready-1",
     destination_id="fixture-destination",
