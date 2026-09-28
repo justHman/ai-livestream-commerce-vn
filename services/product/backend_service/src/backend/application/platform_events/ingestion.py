@@ -676,9 +676,33 @@ class PlatformEventIngestionService:
             event=event, delivery=delivery, event_type=event.type, attach_seq=seq
         )
 
-    def mark_consumed(self, session_id: str, event_id: str) -> None:
-        """Clear an in-flight delivery the coordinator actually consumed."""
-        self._in_flight.get(session_id, {}).pop(event_id, None)
+    def mark_consumed(self, session_id: str, comment_ids: set[str]) -> None:
+        """Record that the coordinator really consumed these queued comments.
+
+        The consumption boundary is the coordinator's tick, which owns the
+        ``ChatQueue`` — the only place a comment is read out of it. It is
+        handed this ONE sink rather than this service, so the coordinator
+        never imports or holds the ingress ledger and no dependency cycle
+        exists. A consumed comment becomes terminal ``consumed`` — kept in
+        the outcome log so the audit surface still answers for it. A comment
+        that never reaches here stays in flight and a teardown reconciles it
+        as audited ``non_deliverable`` (P0-FB-013).
+        """
+        if not comment_ids:
+            return
+        outcomes = self._outcomes(session_id)
+        for entry_id, entry in list(self._in_flight.get(session_id, {}).items()):
+            if entry.delivery.comment_id in comment_ids:
+                outcomes[entry_id] = dataclasses.replace(
+                    entry,
+                    delivery=DeliveryResult(
+                        EventStatus.CONSUMED,
+                        "coordinator_consumed",
+                        entry.delivery.action_identity,
+                        entry.delivery.comment_id,
+                    ),
+                )
+                del self._in_flight[session_id][entry_id]
 
     def terminal_outcomes(self, session_id: str) -> dict[str, DeliveryResult]:
         """Every delivery outcome reached for this session, by event id.

@@ -434,6 +434,12 @@ def create_app(
     )
     if resolved_container.coordinator is not None:
         resolved_container.coordinator.approved_speech = resolved_container.approved_speech
+        # The tick reports the comments it really consumed so teardown does
+        # not reconcile them as non_deliverable (P0-FB-013). The sink runs
+        # here, after ingress is resolved, so injected containers get it too.
+        resolved_container.coordinator.comment_consumed = (
+            resolved_container.event_ingestion.mark_consumed
+        )
 
     app_lifespan = lifespan if lifespan is not None else build_lifespan(resolved_container)
     app = FastAPI(title="VN Live-Commerce Host — core API", lifespan=app_lifespan)

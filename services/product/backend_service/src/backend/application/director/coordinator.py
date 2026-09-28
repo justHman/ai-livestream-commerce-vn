@@ -167,6 +167,12 @@ class DirectorCoordinator:
         # persistence. Fire-and-forget: a failure must never break the speak loop.
         self._pg_store = pg_store
         self._audio_window_callback = audio_window_callback
+        # Sink for "these queued comments were really read out of the queue".
+        # The app composition root points it at
+        # PlatformEventIngestionService.mark_consumed so a comment the tick
+        # consumed is not reconciled as lost at teardown (P0-FB-013). One
+        # unbound callable keeps the ingress ledger out of this module.
+        self.comment_consumed = None
         # The app composition root installs the same boundary used by /say.
         self.approved_speech = None
 
@@ -742,6 +748,15 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
+        # This is the consumption boundary: the comments left ChatQueue and
+        # are now Director state, so a teardown must not reconcile them as
+        # non_deliverable (P0-FB-013). Only ``new_only`` counts — a comment
+        # re-read from the window on a later tick was already consumed.
+        if self.comment_consumed is not None and new_only:
+            try:
+                self.comment_consumed(session_id, {c.id for c in new_only})
+            except Exception:
+                logger.warning("consumed-comment sink failed session=%s", session_id, exc_info=True)
         # Bound the old comment/embedding history at write time (5.10): the
         # ClusterStore owns the long-term demand — this state only feeds the
         # Director's selection window.

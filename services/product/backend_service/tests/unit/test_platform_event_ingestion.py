@@ -675,8 +675,9 @@ async def test_consumed_comment_is_never_reconciled_as_non_deliverable() -> None
     await service.ingest(
         "s1", [PlatformEvent(**_event("td-3", text="hi"))], delivery_outcomes_v1=True
     )
-    # The coordinator drained the queue before the teardown.
-    service.mark_consumed("s1", "td-3")
+    # The coordinator drained the queue before the teardown. The tick reports
+    # the ChatQueue comment ids it read, which is what the ledger indexed.
+    service.mark_consumed("s1", {"comment-1"})
 
     assert await service.reconcile_session("s1", attach_seq=0) == []
 
@@ -716,3 +717,46 @@ async def _assert_stop_reconciles(case, binding, p0_event) -> None:
 
     outcomes = case.d.event_ingestion.terminal_outcomes(case.sid)
     assert outcomes["e2e-1"].outcome == "non_deliverable"
+
+
+@pytest.mark.asyncio
+async def test_comment_the_coordinator_actually_consumed_is_not_non_deliverable() -> None:
+    """A routed comment the tick loop consumed must never be reconciled as lost.
+
+    The consumption boundary is ``DirectorCoordinator._tick_once``: the only
+    place a comment leaves ``ChatQueue`` into Director state. Without the
+    ledger being cleared there, teardown reconciles a genuinely consumed
+    comment as ``non_deliverable`` — a false audit record.
+    """
+    from .test_p0_comment_contract import BINDING, event as p0_event
+
+    patch = pytest.MonkeyPatch()
+    create_case = await anext(_case_factory.__wrapped__(patch))
+    try:
+        case = await create_case()
+        meta = dict(await case.d.store.get(case.sid))
+        meta["platform_event_binding"] = BINDING
+        await case.d.store.set(case.sid, meta)
+
+        posted = await case.client.post(
+            f"/api/v1/sessions/{case.sid}/events",
+            json={
+                "events": [p0_event("hi", event_id="e2e-2", source_message_id="msg-e2e-2").model_dump()],
+                "delivery_outcomes_v1": True,
+            },
+        )
+        assert posted.status_code == 200, posted.text
+        assert posted.json()["events"][0]["status"] == "routed"
+
+        # The coordinator really drains the queue into Director state.
+        case.d.coordinator._activated.add(case.sid)
+        await case.d.coordinator._tick_once(case.sid)
+
+        stopped = await case.client.post(f"/api/v1/sessions/{case.sid}/stop")
+        assert stopped.status_code == 200, stopped.text
+
+        outcomes = case.d.event_ingestion.terminal_outcomes(case.sid)
+        assert outcomes["e2e-2"].outcome == "consumed"
+    finally:
+        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        patch.undo()
