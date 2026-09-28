@@ -143,6 +143,9 @@ class DirectorCoordinator:
         # (tests that do not exercise MJPEG).
         self._orchestrator_registry = orchestrator_registry
         self._queues: dict[str, ChatQueue] = {}
+        # Per-session count of comments routed into the queue. Fences teardown
+        # reconciliation against stale reports (P0-FB-013).
+        self._delivery_seq: dict[str, int] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._playback_tasks: dict[str, asyncio.Task] = {}
         self._prepare_tasks: dict[str, set[asyncio.Task]] = {}
@@ -257,14 +260,21 @@ class DirectorCoordinator:
             name=f"coordinator-playback-{session_id}",
         )
 
-    def stop(self, session_id: str) -> None:
+    def stop(self, session_id: str) -> int:
         """Cancel the tick task, drop the queue, detach runtime.
 
         If the orchestrator is currently speaking for this session, cancel it.
         Idempotent.
+
+        Returns the delivery counter as of teardown. The caller passes it to
+        ``PlatformEventIngestionService.reconcile_session(session_id,
+        attach_seq=...)`` so comments that were routed but never consumed are
+        reconciled as audited non_deliverable instead of dying with the queue
+        (P0-FB-013). The counter is captured BEFORE the state is dropped.
         """
         if self.approved_speech is not None:
             self.approved_speech.cancel(session_id)
+        attach_seq = self._delivery_seq.get(session_id, 0)
         current = self._current_speech.get(session_id)
         if current is not None:
             current.is_cancelled = True
@@ -285,6 +295,7 @@ class DirectorCoordinator:
             asyncio.create_task(entry["orchestrator"].cancel(session_id))
 
         self._queues.pop(session_id, None)
+        self._delivery_seq.pop(session_id, None)
         self._decision_queue.pop(session_id, None)
         self._speech_queue.pop(session_id, None)
         self._decision_locks.pop(session_id, None)
@@ -300,6 +311,7 @@ class DirectorCoordinator:
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
+        return attach_seq
 
     def stop_all(self) -> None:
         """Cancel every active coordinator session."""
@@ -385,6 +397,7 @@ class DirectorCoordinator:
         queue = self._queues.get(session_id)
         if queue is None:
             raise KeyError(f"No active coordinator session: {session_id}")
+        self._delivery_seq[session_id] = self._delivery_seq.get(session_id, 0) + 1
         comment = queue.put(text, author, ts=ts)
         # Approved P0 sessions require the authorized execution start command.
         if self._runtime.get_session(session_id).approved_envelope is None:
@@ -636,6 +649,30 @@ class DirectorCoordinator:
     def has(self, session_id: str) -> bool:
         """True if a coordinator session is active for this session_id."""
         return session_id in self._tasks
+
+    def queue_capacity(self, session_id: str) -> int:
+        """Free slots left in the session's ChatQueue; 0 when full.
+
+        ``ChatQueue.put`` evicts the oldest comment once it exceeds
+        ``max_size``, so a producer must be able to ask for headroom BEFORE
+        putting or it silently drops someone else's comment (P0-FB-013).
+        An unknown session is 0 — there is nowhere to put the comment.
+        """
+        queue = self._queues.get(session_id)
+        if queue is None:
+            return 0
+        return max(0, queue.max_size - len(queue))
+
+    def next_delivery_tick(self, session_id: str | None = None) -> int:
+        """Monotonic count of comments routed through the session's queue.
+
+        Read by the ingress service to fence teardown reconciliation: a
+        delivery stamped with a counter above the teardown's was routed
+        after it and must not be reconciled (P0-FB-013).
+        """
+        if session_id is None:
+            return sum(self._delivery_seq.values())
+        return self._delivery_seq.get(session_id, 0)
 
     def _advance_timers(self, session_id: str, now: float, state: StreamState) -> None:
         """Increment all three elapsed counters by delta since last tick."""

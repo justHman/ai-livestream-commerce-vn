@@ -11,8 +11,12 @@ Lives below the HTTP transport: the /events route validates the request
   4. persists accepted/rejected event metadata fire-and-forget via the
      optional pg_store (failures logged, never blocking),
   5. routes ``viewer.comment`` into the coordinator ChatQueue when a
-     coordinator session is active, otherwise parks them on session meta
-     (``pending_platform_chat``) so they are not lost; the old sync
+     coordinator session is active. When the caller opts in with
+     ``delivery_outcomes_v1`` (P0-FB-013), the ABSENCE of a coordinator is
+     retryable ``not_ready`` and nothing is parked — the API owns durable
+     retry, so the Runtime never presents a park as success. Without the
+     opt-in the legacy park-on-meta + ``accepted`` contract is kept exactly,
+     because the deployed API cannot read the new vocabulary; the old sync
      DirectorRuntime.ingest fallback is removed (OpenSpec 2.12),
   6. notifies the FastReducer of every accepted comment — the event-driven
      wakeup for the fast lane (OpenSpec 4.1); duplicate/rejected events
@@ -39,6 +43,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import dataclasses
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -90,6 +96,52 @@ class EventStatus(str, Enum):
     ACCEPTED = "accepted"
     DUPLICATE = "duplicate"
     REJECTED = "rejected"
+    # Truthful delivery outcomes (P0-FB-013). Emitted ONLY when the request
+    # opts in via ``delivery_outcomes_v1``; the deployed API does not
+    # understand them yet, so the flag and the parking removal below are one
+    # activation slice.
+    ROUTED = "routed"
+    CONSUMED = "consumed"
+    NOT_READY = "not_ready"
+    NON_DELIVERABLE = "non_deliverable"
+
+
+# Retryable outcomes must not consume the dedup/action identity: a later
+# retry of the same event has to be able to succeed.
+_RETRYABLE_OUTCOMES = frozenset({EventStatus.NOT_READY, EventStatus.NON_DELIVERABLE})
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """What actually happened to one event, and the identity it would occupy.
+
+    ``action_identity`` is the stable identity a retry must reuse: the
+    p0.v1 source hash when one exists, otherwise the event id.
+    """
+
+    outcome: EventStatus
+    reason: str
+    action_identity: str
+    comment_id: Optional[str] = None
+
+    @property
+    def is_retryable(self) -> bool:
+        return self.outcome in _RETRYABLE_OUTCOMES
+
+
+@dataclass(frozen=True)
+class _InFlightDelivery:
+    """A routed delivery awaiting consumption by the coordinator.
+
+    ``attach_seq`` is the coordinator's delivery counter when the event was
+    routed; a teardown reporting an older counter is stale and must not
+    overwrite this entry.
+    """
+
+    event: PlatformEvent
+    delivery: DeliveryResult
+    event_type: str
+    attach_seq: int
 
 
 # Structural rejection precedes the Runtime SafetyGate.
@@ -146,6 +198,10 @@ class PlatformEventIngestionService:
         # Sanitized rejection counters (no raw viewer content), observable via stats().
         self._rejection_counts: dict[str, int] = {}
         self._accepted_count: int = 0
+        # Delivery ledger: routed work awaiting consumption, and the terminal
+        # outcome log a teardown reconciles into (P0-FB-013 Task 2).
+        self._in_flight: dict[str, dict[str, _InFlightDelivery]] = {}
+        self._outcome_log: dict[str, dict[str, _InFlightDelivery]] = {}
 
     async def _session_exists(self, session_id: str) -> bool:
         """A session exists if it has store meta or a live coordinator session."""
@@ -246,12 +302,22 @@ class PlatformEventIngestionService:
             viewers.append(viewer_key)
             meta[_VIEWERS_KEY] = viewers[-1000:]
 
-    def _route_comment(self, meta: dict, session_id: str, event: PlatformEvent) -> Optional[str]:
-        """Enqueue a comment into the coordinator queue or park it on meta.
+    def _route_comment(
+        self,
+        meta: dict,
+        session_id: str,
+        event: PlatformEvent,
+        action_identity: str,
+        *,
+        truthful_outcomes: bool,
+    ) -> DeliveryResult:
+        """Enqueue a comment into the coordinator queue, or park it on meta.
 
-        Returns the comment id when the coordinator accepted it (the queue
-        never rejects), None when the event was parked on ``meta`` for later
-        pickup (the caller persists ``meta`` once via _record_seen).
+        With ``truthful_outcomes`` the absence of a coordinator is reported as
+        retryable ``not_ready`` and nothing is parked (P0-FB-013) — the API
+        owns durable retry, so the Runtime must not present a park as
+        success. Without it, the legacy park-and-report-accepted contract is
+        preserved exactly for the API that does not understand the vocabulary.
         """
         text = event.payload.text if isinstance(event.payload, CommentPayload) else ""
         author = "viewer"
@@ -259,8 +325,16 @@ class PlatformEventIngestionService:
             author = event.viewer.display_name or event.viewer.viewer_id
         ts = event.occurred_at
         if self._coordinator is not None and self._coordinator.has(session_id):
+            if truthful_outcomes and not self._has_queue_capacity(session_id):
+                # ChatQueue.put evicts the oldest comment when it is over
+                # max_size. Reporting that as routed would be a silent loss
+                # wearing a success label, so refuse and keep the identity.
+                return DeliveryResult(EventStatus.NOT_READY, "queue_full", action_identity)
             comment = self._coordinator.ingest(session_id, text, author=author, ts=ts)
-            return comment.id
+            outcome = EventStatus.ROUTED if truthful_outcomes else EventStatus.ACCEPTED
+            return DeliveryResult(outcome, "coordinator_queued", action_identity, comment.id)
+        if truthful_outcomes:
+            return DeliveryResult(EventStatus.NOT_READY, "no_coordinator_attached", action_identity)
         pending = list(meta.get(_PENDING_KEY) or [])
         pending.append(
             {
@@ -273,7 +347,26 @@ class PlatformEventIngestionService:
             }
         )
         meta[_PENDING_KEY] = pending[-100:]
-        return None
+        return DeliveryResult(EventStatus.ACCEPTED, "parked_on_meta", action_identity)
+
+    def _has_queue_capacity(self, session_id: str) -> bool:
+        """True when the coordinator's chat queue can take one more comment.
+
+        ``ChatQueue`` silently evicts its oldest entry past ``max_size`` and
+        exposes no headroom of its own, so the coordinator publishes
+        ``queue_capacity()`` (free slots, 0 when full) and a coordinator
+        without it is treated as unbounded rather than assumed full.
+        """
+        capacity_fn = getattr(self._coordinator, "queue_capacity", None)
+        if capacity_fn is None:
+            return True
+        try:
+            return int(capacity_fn(session_id)) > 0
+        except Exception:
+            logger.warning(
+                "coordinator.queue_capacity failed session=%s", session_id, exc_info=True
+            )
+            return True
 
     # ------------------------------------------------------------------
     # Persistence (fire-and-forget, never blocks semantic processing)
@@ -304,15 +397,43 @@ class PlatformEventIngestionService:
 
     async def _persist_rejected(self, session_id: str, event: PlatformEvent, reason: str) -> None:
         """Audit a rejected event with a sanitized reason (no raw viewer text)."""
+        await self._audit(session_id, "event_ingress.rejected", event, reason)
+
+    async def _persist_non_deliverable(self, session_id: str, entry: _InFlightDelivery) -> None:
+        """Audit routed work that died with the coordinator (P0-FB-013)."""
+        await self._audit(
+            session_id,
+            "event_ingress.non_deliverable",
+            entry.event,
+            entry.delivery.reason,
+            extra={
+                "action_identity": entry.delivery.action_identity,
+                "comment_id": entry.delivery.comment_id,
+            },
+        )
+
+    async def _audit(
+        self,
+        session_id: str,
+        kind: str,
+        event: PlatformEvent,
+        reason: str,
+        *,
+        extra: dict | None = None,
+    ) -> None:
         if self._pg_store is None or not getattr(self._pg_store, "enabled", False):
             return
         try:
             await self._pg_store.insert_audit_event(
-                "event_ingress.rejected",
+                kind,
                 session_id=session_id,
                 actor=event.platform,
                 resource=f"{event.type}:{event.event_id}",
-                detail={"reason": reason, "source_stream_id": event.source_stream_id},
+                detail={
+                    "reason": reason,
+                    "source_stream_id": event.source_stream_id,
+                    **(extra or {}),
+                },
             )
         except Exception:
             logger.warning(
@@ -416,7 +537,14 @@ class PlatformEventIngestionService:
         )
 
     async def _process_event(
-        self, session_id: str, event: PlatformEvent, meta: dict, now: float, *, fence: Any = None
+        self,
+        session_id: str,
+        event: PlatformEvent,
+        meta: dict,
+        now: float,
+        *,
+        fence: Any = None,
+        truthful_outcomes: bool = False,
     ) -> dict:
         """Handle one event; returns the per-event result item."""
         result: dict[str, Any] = {"event_id": event.event_id}
@@ -478,14 +606,35 @@ class PlatformEventIngestionService:
                 )
             return result
 
-        result["status"] = EventStatus.ACCEPTED.value
         if event.type == "viewer.comment":
-            comment_id = self._route_comment(meta, session_id, event)
-            if comment_id is not None:
-                result["comment_id"] = comment_id
+            # Routing decides the outcome; it is never assumed up front.
+            delivery = self._route_comment(
+                meta,
+                session_id,
+                event,
+                source_key or event.event_id,
+                truthful_outcomes=truthful_outcomes,
+            )
+            result["status"] = delivery.outcome.value
+            if truthful_outcomes:
+                # New keys ride the opt-in only: the deployed API's response
+                # shape is byte-for-byte unchanged while the flag is off.
+                result["reason"] = delivery.reason
+                result["action_identity"] = delivery.action_identity
+            if delivery.comment_id is not None:
+                result["comment_id"] = delivery.comment_id
+            if delivery.outcome is EventStatus.ROUTED:
+                self._track_routed(
+                    session_id, event, delivery, seq=self._next_delivery_seq(session_id)
+                )
+            if delivery.is_retryable:
+                # Identity preserved: no dedup record, so a durable retry can
+                # re-drive this exact event once a coordinator exists.
+                return result
             await self._persist_accepted(session_id, event)
-            self._notify_reducer(session_id, event, comment_id)
+            self._notify_reducer(session_id, event, delivery.comment_id)
         else:
+            result["status"] = EventStatus.ACCEPTED.value
             self._apply_signal(meta, event)
         self._record_viewer_key(meta, event)
         await self._record_seen(
@@ -494,8 +643,99 @@ class PlatformEventIngestionService:
         self._accepted_count += 1
         return result
 
-    async def ingest(self, session_id: str, events: list[PlatformEvent]) -> dict:
+    # ------------------------------------------------------------------
+    # Delivery ledger (P0-FB-013 Task 2)
+    #
+    # Work handed to the coordinator is not done when it is queued. If the
+    # coordinator tears down first, the queue is dropped and the comment dies
+    # with it. The ledger remembers what is still in flight so the teardown
+    # can be reconciled as audited ``non_deliverable`` instead of being lost.
+    # Every entry carries a monotonic sequence, so a reconciliation that
+    # predates a newer outcome cannot overwrite it.
+    # ------------------------------------------------------------------
+
+    def _next_delivery_seq(self, session_id: str) -> int:
+        """Monotonic delivery sequence; 0 means the coordinator has none."""
+        seq_fn = getattr(self._coordinator, "next_delivery_tick", None)
+        if seq_fn is None:
+            return 0
+        try:
+            return int(seq_fn())
+        except Exception:
+            logger.warning("coordinator.next_delivery_tick failed", exc_info=True)
+            return 0
+
+    def _track_routed(
+        self, session_id: str, event: PlatformEvent, delivery: DeliveryResult, *, seq: int
+    ) -> None:
+        """Record a routed comment as still in flight until it is consumed."""
+        entries = self._in_flight.setdefault(session_id, {})
+        if event.event_id in entries:
+            return
+        entries[event.event_id] = _InFlightDelivery(
+            event=event, delivery=delivery, event_type=event.type, attach_seq=seq
+        )
+
+    def mark_consumed(self, session_id: str, event_id: str) -> None:
+        """Clear an in-flight delivery the coordinator actually consumed."""
+        self._in_flight.get(session_id, {}).pop(event_id, None)
+
+    def terminal_outcomes(self, session_id: str) -> dict[str, DeliveryResult]:
+        """Every delivery outcome reached for this session, by event id.
+
+        The audit surface for a caller that has to answer "what happened to
+        this event" after the session is gone. In-flight (routed, not yet
+        consumed) work is included: its current truthful outcome is ``routed``.
+        """
+        entries = {**self._in_flight.get(session_id, {}), **self._outcomes(session_id)}
+        return {event_id: entry.delivery for event_id, entry in entries.items()}
+
+    def _outcomes(self, session_id: str) -> dict[str, _InFlightDelivery]:
+        return self._outcome_log.setdefault(session_id, {})
+
+    async def reconcile_session(self, session_id: str, *, attach_seq: int) -> list[str]:
+        """Reconcile work lost to a teardown as audited ``non_deliverable``.
+
+        Call once the coordinator for ``session_id`` has stopped consuming.
+        Every still-in-flight delivery becomes a terminal
+        ``non_deliverable`` and is written to the audit store, so no routed
+        comment is dropped without a record.
+
+        ``attach_seq`` is the coordinator's delivery counter at teardown. A
+        delivery stamped with a NEWER sequence was routed after this teardown
+        and is left alone: a stale report must never overwrite a newer outcome.
+        Returns the event ids that were reconciled.
+        """
+        reconciled: list[str] = []
+        for event_id, entry in list(self._in_flight.get(session_id, {}).items()):
+            if entry.attach_seq > attach_seq:
+                continue
+            entry = dataclasses.replace(
+                entry,
+                delivery=DeliveryResult(
+                    EventStatus.NON_DELIVERABLE,
+                    "coordinator_torn_down_before_consumption",
+                    entry.delivery.action_identity,
+                    entry.delivery.comment_id,
+                ),
+            )
+            self._outcomes(session_id)[event_id] = entry
+            del self._in_flight[session_id][event_id]
+            await self._persist_non_deliverable(session_id, entry)
+            reconciled.append(event_id)
+        return reconciled
+
+    async def ingest(
+        self, session_id: str, events: list[PlatformEvent], *, delivery_outcomes_v1: bool = False
+    ) -> dict:
         """Process a bounded batch; returns the per-event result list + counts.
+
+        ``delivery_outcomes_v1`` is the P0-FB-013 activation opt-in: the
+        caller declares it can interpret ``routed`` / ``not_ready`` /
+        ``non_deliverable``. It is OFF by default so the deployed API, which
+        only knows accepted/duplicate/rejected, keeps today's contract
+        verbatim; when it is ON, parking is gone and a comment with no
+        coordinator is retryable ``not_ready`` rather than a false success.
 
         Raises KeyError when the session is unknown (no meta, no coordinator).
         Raises SessionLockTimeout when a Redis-backed store's distributed
@@ -508,7 +748,9 @@ class PlatformEventIngestionService:
         ``asyncio.Lock`` remains only for single-process memory stores.
         """
         async with self._session_lock(session_id) as fence:
-            return await self._ingest_locked(session_id, events, fence=fence)
+            return await self._ingest_locked(
+                session_id, events, fence=fence, truthful_outcomes=delivery_outcomes_v1
+            )
 
     @asynccontextmanager
     async def _session_lock(self, session_id):
@@ -530,7 +772,12 @@ class PlatformEventIngestionService:
             yield None
 
     async def _ingest_locked(
-        self, session_id: str, events: list[PlatformEvent], *, fence: Any = None
+        self,
+        session_id: str,
+        events: list[PlatformEvent],
+        *,
+        fence: Any = None,
+        truthful_outcomes: bool = False,
     ) -> dict:
         """The locked critical section: existence check -> load -> decide -> write."""
         if not await self._session_exists(session_id):
@@ -538,8 +785,13 @@ class PlatformEventIngestionService:
         meta = await self._load_meta(session_id)
         now = self._now()
         results = [
-            await self._process_event(session_id, event, meta, now, fence=fence) for event in events
+            await self._process_event(
+                session_id, event, meta, now, fence=fence, truthful_outcomes=truthful_outcomes
+            )
+            for event in events
         ]
+        # The legacy three keys are always present: existing readers index
+        # them directly and expect 0, never a missing key.
         counts = {"accepted": 0, "duplicate": 0, "rejected": 0}
         for item in results:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
