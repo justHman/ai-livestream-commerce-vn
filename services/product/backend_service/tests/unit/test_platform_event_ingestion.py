@@ -526,6 +526,7 @@ class _AttachableCoordinator:
     def __init__(self) -> None:
         self.attached = False
         self.ingested: list[str] = []
+        self.queued_ts: list[float] = []
 
     def attach(self) -> None:
         self.attached = True
@@ -535,6 +536,7 @@ class _AttachableCoordinator:
 
     def ingest(self, session_id, text, author, ts=None):
         self.ingested.append(text)
+        self.queued_ts.append(ts)
         return type("C", (), {"id": "comment-retry"})()
 
 
@@ -595,6 +597,9 @@ class _RoutedTeardownCoordinator:
         self.attached = True
         self._monotonic = 0
         self.ingested: list[str] = []
+        # The ts the ingress actually handed over, per routed comment. A
+        # delivery-path reset would be visible here and nowhere else.
+        self.queued_ts: list[float] = []
 
     def has(self, session_id: str) -> bool:
         return self.attached
@@ -602,6 +607,7 @@ class _RoutedTeardownCoordinator:
     def ingest(self, session_id, text, author, ts=None):
         self._monotonic += 1
         self.ingested.append(text)
+        self.queued_ts.append(ts)
         return type("C", (), {"id": f"comment-{self._monotonic}"})()
 
     def next_delivery_tick(self) -> int:
@@ -835,6 +841,242 @@ async def test_process_shutdown_reconciles_routed_work_instead_of_dropping_it() 
 
         outcomes = case.d.event_ingestion.terminal_outcomes(case.sid)
         assert outcomes["bulk-1"].outcome == "non_deliverable"
+    finally:
+        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        patch.undo()
+
+
+# ---------------------------------------------------------------------------
+# Hard expiry — the ORIGINAL ``occurred_at`` is retained, never reset to "now".
+#
+# ``_reject_reason`` only rejects; nothing in the delivery path is allowed to
+# rewrite the timestamp. A reset would turn a hard-expired comment back into a
+# fresh one and defeat the 24h staleness bound entirely, so these are the
+# regression guards for that specific false-success class.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hard_expired_rejection_audits_the_original_occurred_at() -> None:
+    """A hard-expired event is audited as rejected against the ORIGINAL instant.
+
+    The audit surface is where an operator answers "when did this comment
+    actually happen?". Recording the ingestion time instead would make an
+    expired comment indistinguishable from a live one after the fact.
+    """
+    audit = _AuditSink()
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store, pg_store=audit)
+    expired_at = time.time() - 60 * 60 * 24 * 3
+    event = PlatformEvent(**_event("exp-1", text="old", occurred_at=expired_at))
+    await service.ingest("s1", [event])
+
+    # The rejected event is audited, not just counted.
+    rejected = [row for kind, row in audit.audits if kind == "event_ingress.rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["resource"] == "viewer.comment:exp-1"
+    # Retention on the object the rejection was decided against: had any step
+    # stamped a present-tense value onto the event, this would not hold.
+    assert event.occurred_at == expired_at
+    # Rejected work never enters the delivery ledger.
+    assert "exp-1" not in service._in_flight.get("s1", {})
+
+
+@pytest.mark.asyncio
+async def test_hard_expired_event_is_never_retried_as_fresh() -> None:
+    """A hard-expired event stays expired no matter how often it is retried.
+
+    This is the bound the requirement defends: a hard-expired comment must not
+    come back as a success on a later attempt, which is exactly what a silent
+    ``occurred_at = now`` reset would produce.
+    """
+    now = time.time()
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store)
+    expired_at = now - 60 * 60 * 24 * 3
+    event = PlatformEvent(**_event("exp-2", text="old", occurred_at=expired_at))
+
+    first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert first["events"][0]["status"] == "rejected"
+
+    # Retry much later, when the original timestamp is even more ancient.
+    service._now = lambda: now + 60 * 60 * 24
+    retry = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+
+    assert retry["events"][0]["status"] == "rejected"
+    assert retry["events"][0]["reason"] == "occurred_at_out_of_range"
+
+
+@pytest.mark.asyncio
+async def test_routed_delivery_path_never_mutates_occurred_at() -> None:
+    """Routing, consumption, and reconciliation leave the event untouched.
+
+    The delivery ledger keeps the whole ``PlatformEvent``, and every terminal
+    outcome is a ``dataclasses.replace`` that swaps only the ``DeliveryResult``.
+    If any of those transitions rebuilt the event with a fresh timestamp, the
+    retained provenance would be a lie.
+    """
+    coordinator = _RoutedTeardownCoordinator()
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store, coordinator=coordinator)
+    occurred_at = time.time() - 120.0
+    event = PlatformEvent(**_event("ts-1", text="hi", occurred_at=occurred_at))
+
+    await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    in_flight = service._in_flight["s1"]["ts-1"]
+    assert in_flight.event.occurred_at == occurred_at
+
+    # The instant handed to the coordinator is the ORIGINAL one. This is the
+    # assertion a delivery-path timestamp reset actually breaks: the ledger
+    # would still read correctly while the queued comment silently went stale.
+    assert coordinator.queued_ts == [occurred_at]
+    service.mark_consumed("s1", {"comment-1"})
+    consumed = service.terminal_outcomes("s1")["ts-1"]
+
+    # Consumed is terminal and still keyed to the original timestamp.
+    assert consumed.outcome == "consumed"
+    assert service._outcome_log["s1"]["ts-1"].event.occurred_at == occurred_at
+
+    # The non_deliverable leg mutates the outcome the same way: event untouched.
+    second_at = time.time() - 90.0
+    await service.ingest(
+        "s1",
+        [PlatformEvent(**_event("ts-2", text="hi2", occurred_at=second_at))],
+        delivery_outcomes_v1=True,
+    )
+    await service.reconcile_session("s1", attach_seq=coordinator.next_delivery_tick())
+
+    assert coordinator.queued_ts == [occurred_at, second_at]
+    reconciled = service._outcome_log["s1"]["ts-2"]
+    assert reconciled.delivery.outcome == "non_deliverable"
+    assert reconciled.event.occurred_at == second_at
+
+
+@pytest.mark.asyncio
+async def test_not_ready_retry_succeeding_later_keeps_the_original_occurred_at() -> None:
+    """A retry that succeeds must not have refreshed the event's timestamp.
+
+    The ``not_ready`` leg leaves nothing behind, so the API re-drives the exact
+    same event. If the retry path stamped a fresh ``occurred_at``, a comment
+    that was already near the 24h bound would be handed a second, younger
+    lifetime and could be delivered long after the platform reported it.
+    """
+    coordinator = _AttachableCoordinator()
+    store = InMemorySessionStore()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store, coordinator=coordinator)
+    now = time.time()
+    occurred_at = now - 60 * 60 * 12  # still inside the 24h bound
+    event = PlatformEvent(**{**_event("ts-3", text="hi"), "occurred_at": occurred_at})
+
+    first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert first["events"][0]["status"] == "not_ready"
+
+    # A day later the ORIGINAL timestamp is at the edge of the bound.
+    service._now = lambda: now + 60 * 60 * 11
+    coordinator.attach()
+    second = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+
+    # Retention is what makes this legal: the instant never moved.
+    assert second["events"][0]["status"] == "routed"
+    assert service._in_flight["s1"]["ts-3"].event.occurred_at == occurred_at
+    # The successful retry queued the ORIGINAL instant, not its own "now".
+    assert coordinator.queued_ts == [occurred_at]
+
+
+@pytest.mark.asyncio
+async def test_p0_v1_binding_path_preserves_the_original_occurred_at() -> None:
+    """The p0.v1 HTTP path must carry the caller's ``occurred_at`` through.
+
+    This is the production ingress: the request body is validated by Pydantic
+    and handed to the service untouched. A default or overwrite applied while
+    parsing would silently re-date every p0.v1 comment.
+    """
+    from .test_p0_comment_contract import BINDING, event as p0_event
+
+    patch = pytest.MonkeyPatch()
+    create_case = await anext(_case_factory.__wrapped__(patch))
+    try:
+        case = await create_case()
+        meta = dict(await case.d.store.get(case.sid))
+        meta["platform_event_binding"] = BINDING
+        await case.d.store.set(case.sid, meta)
+        occurred_at = time.time() - 60 * 60 * 2
+
+        posted = await case.client.post(
+            f"/api/v1/sessions/{case.sid}/events",
+            json={
+                "events": [
+                    p0_event(
+                        "hi", event_id="ts-p0", source_message_id="msg-ts", occurred_at=occurred_at
+                    ).model_dump()
+                ],
+                "delivery_outcomes_v1": True,
+            },
+        )
+
+        assert posted.status_code == 200, posted.text
+        assert posted.json()["events"][0]["status"] == "routed"
+        # The event the ledger holds still carries the caller's instant.
+        assert case.d.event_ingestion._in_flight[case.sid]["ts-p0"].event.occurred_at == occurred_at
+        # ...and so does the comment the coordinator actually queued.
+        queued = case.d.coordinator._queues[case.sid].snapshot()
+        assert [comment.ts for comment in queued] == [occurred_at]
+    finally:
+        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        patch.undo()
+
+
+@pytest.mark.asyncio
+async def test_p0_v1_hard_expired_comment_stays_rejected_over_http() -> None:
+    """A p0.v1 comment past the bound is rejected, and stays rejected on retry.
+
+    The p0.v1 validator already refuses ``occurred_at <= 0``, so this proves the
+    OTHER half of the requirement: a real but hard-expired instant is preserved
+    and rejected rather than defaulted to a present-tense one.
+    """
+    from .test_p0_comment_contract import BINDING, event as p0_event
+
+    patch = pytest.MonkeyPatch()
+    create_case = await anext(_case_factory.__wrapped__(patch))
+    try:
+        case = await create_case()
+        meta = dict(await case.d.store.get(case.sid))
+        meta["platform_event_binding"] = BINDING
+        await case.d.store.set(case.sid, meta)
+        occurred_at = time.time() - 60 * 60 * 24 * 3
+
+        async def post(event_id: str) -> dict:
+            response = await case.client.post(
+                f"/api/v1/sessions/{case.sid}/events",
+                json={
+                    "events": [
+                        p0_event(
+                            "hi",
+                            event_id=event_id,
+                            source_message_id=f"msg-{event_id}",
+                            occurred_at=occurred_at,
+                        ).model_dump()
+                    ],
+                    "delivery_outcomes_v1": True,
+                },
+            )
+            assert response.status_code == 200, response.text
+            return response.json()["events"][0]
+
+        assert await post("ts-p0-stale") == {
+            "event_id": "ts-p0-stale",
+            "status": "rejected",
+            "reason": "occurred_at_out_of_range",
+        }
+        # An immediate retry of the same id is deduped off the recorded
+        # rejection — never delivered, and never re-dated into a fresh event.
+        retry = await post("ts-p0-stale")
+        assert retry["status"] == "duplicate"
+        assert retry["status"] not in ("accepted", "routed")
     finally:
         await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
         patch.undo()
