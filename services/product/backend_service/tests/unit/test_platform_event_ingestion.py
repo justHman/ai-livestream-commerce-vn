@@ -748,7 +748,9 @@ async def test_comment_the_coordinator_actually_consumed_is_not_non_deliverable(
         posted = await case.client.post(
             f"/api/v1/sessions/{case.sid}/events",
             json={
-                "events": [p0_event("hi", event_id="e2e-2", source_message_id="msg-e2e-2").model_dump()],
+                "events": [
+                    p0_event("hi", event_id="e2e-2", source_message_id="msg-e2e-2").model_dump()
+                ],
                 "delivery_outcomes_v1": True,
             },
         )
