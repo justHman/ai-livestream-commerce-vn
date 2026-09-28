@@ -427,6 +427,7 @@ async def test_comment_without_coordinator_is_not_ready_never_accepted() -> None
 
 
 from .test_approved_speech_active import case_factory as _case_factory  # noqa: E402
+from backend.bootstrap.lifespan import _shutdown  # noqa: E402
 
 case_factory = _case_factory  # real-app fixture from the approved-speech suite
 
@@ -757,6 +758,83 @@ async def test_comment_the_coordinator_actually_consumed_is_not_non_deliverable(
 
         outcomes = case.d.event_ingestion.terminal_outcomes(case.sid)
         assert outcomes["e2e-2"].outcome == "consumed"
+    finally:
+        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        patch.undo()
+
+
+@pytest.mark.asyncio
+async def test_stop_all_returns_the_fence_each_session_needed() -> None:
+    """``stop_all`` must hand back what ``stop`` returns, per session.
+
+    The fence is the only thing that lets a caller reconcile; dropping it is
+    what made bulk teardown lose routed work silently.
+    """
+    from .test_p0_comment_contract import BINDING, event as p0_event
+
+    patch = pytest.MonkeyPatch()
+    create_case = await anext(_case_factory.__wrapped__(patch))
+    try:
+        case = await create_case()
+        meta = dict(await case.d.store.get(case.sid))
+        meta["platform_event_binding"] = BINDING
+        await case.d.store.set(case.sid, meta)
+        await case.client.post(
+            f"/api/v1/sessions/{case.sid}/events",
+            json={
+                "events": [
+                    p0_event("hi", event_id="fence-1", source_message_id="msg-fence").model_dump()
+                ],
+                "delivery_outcomes_v1": True,
+            },
+        )
+
+        fences = case.d.coordinator.stop_all()
+
+        assert fences == {case.sid: 1}
+        assert await case.d.event_ingestion.reconcile_session(
+            case.sid, attach_seq=fences[case.sid]
+        ) == ["fence-1"]
+    finally:
+        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        patch.undo()
+
+
+@pytest.mark.asyncio
+async def test_process_shutdown_reconciles_routed_work_instead_of_dropping_it() -> None:
+    """A bulk teardown must audit routed work, not lose it.
+
+    ``/stop`` reconciles; the shutdown path (coordinator ``stop_all``) only
+    stopped the coordinator, so a comment that was routed but never consumed
+    died with the queue and left NO audit row at all — silent loss.
+    """
+    from .test_p0_comment_contract import BINDING, event as p0_event
+
+    patch = pytest.MonkeyPatch()
+    create_case = await anext(_case_factory.__wrapped__(patch))
+    try:
+        case = await create_case()
+        meta = dict(await case.d.store.get(case.sid))
+        meta["platform_event_binding"] = BINDING
+        await case.d.store.set(case.sid, meta)
+
+        posted = await case.client.post(
+            f"/api/v1/sessions/{case.sid}/events",
+            json={
+                "events": [
+                    p0_event("hi", event_id="bulk-1", source_message_id="msg-bulk").model_dump()
+                ],
+                "delivery_outcomes_v1": True,
+            },
+        )
+        assert posted.status_code == 200, posted.text
+        assert posted.json()["events"][0]["status"] == "routed"
+
+        # Process shutdown: every session's coordinator goes away at once.
+        await _shutdown(case.d)
+
+        outcomes = case.d.event_ingestion.terminal_outcomes(case.sid)
+        assert outcomes["bulk-1"].outcome == "non_deliverable"
     finally:
         await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
         patch.undo()

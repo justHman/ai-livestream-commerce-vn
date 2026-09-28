@@ -319,10 +319,15 @@ class DirectorCoordinator:
         self._lock_registry.drop(session_id)
         return attach_seq
 
-    def stop_all(self) -> None:
-        """Cancel every active coordinator session."""
-        for session_id in list(self._tasks):
-            self.stop(session_id)
+    def stop_all(self) -> dict[str, int]:
+        """Cancel every active coordinator session.
+
+        Returns each session's delivery fence as of its teardown, the same
+        value ``stop`` hands back. A caller that bulk-stops (process
+        shutdown) needs it for every session, otherwise routed work dies
+        with the queues and is never audited (P0-FB-013).
+        """
+        return {session_id: self.stop(session_id) for session_id in list(self._tasks)}
 
     def update_catalog(self, session_id: str, products: list[EntityDocument]) -> None:
         """Refresh catalog and invalidate work created before Re-attach."""
