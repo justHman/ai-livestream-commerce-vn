@@ -423,7 +423,8 @@ async def test_comment_without_coordinator_is_not_ready_never_accepted() -> None
     assert item["reason"] == "no_coordinator_attached"
     assert item["action_identity"] == "nr-1"
     # No parking: a not-ready event leaves nothing behind to be drained.
-    assert "pending_platform_chat" not in (await store.get("s1"))
+    stored = await store.get("s1")
+    assert stored is None or "pending_platform_chat" not in stored
 
 
 from .test_approved_speech_active import case_factory as _case_factory  # noqa: E402
@@ -534,7 +535,7 @@ class _AttachableCoordinator:
     def has(self, session_id: str) -> bool:
         return self.attached
 
-    def ingest(self, session_id, text, author, ts=None):
+    def ingest(self, session_id, text, author, ts: float = 0.0):
         self.ingested.append(text)
         self.queued_ts.append(ts)
         return type("C", (), {"id": "comment-retry"})()
@@ -580,7 +581,9 @@ async def test_default_opt_in_off_keeps_existing_accepted_parking_behaviour() ->
     assert set(item) == {"event_id", "status", "safety"}
     assert item["status"] == "accepted"
     assert result["accepted"] == 1
-    assert (await store.get("s1"))["pending_platform_chat"][0]["event_id"] == "legacy-1"
+    legacy_meta = await store.get("s1")
+    assert legacy_meta is not None
+    assert legacy_meta["pending_platform_chat"][0]["event_id"] == "legacy-1"
     assert (await service.ingest("s1", [event]))["events"][0]["status"] == "duplicate"
 
 
@@ -604,7 +607,7 @@ class _RoutedTeardownCoordinator:
     def has(self, session_id: str) -> bool:
         return self.attached
 
-    def ingest(self, session_id, text, author, ts=None):
+    def ingest(self, session_id, text, author, ts: float = 0.0):
         self._monotonic += 1
         self.ingested.append(text)
         self.queued_ts.append(ts)
