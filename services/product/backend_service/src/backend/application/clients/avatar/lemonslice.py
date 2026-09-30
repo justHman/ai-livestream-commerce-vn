@@ -315,6 +315,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     async def _stream(self, sess: _Sess, w: AudioWindow) -> None:
         if w.utterance_id in sess.cleared:  # late window of an interrupted utterance
             return
+        assert w.pcm is not None  # checked in stream_audio
         out = await sess.channel.send(
             w.pcm,
             src_rate=w.sample_rate,
