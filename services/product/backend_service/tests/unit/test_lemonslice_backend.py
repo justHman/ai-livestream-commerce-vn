@@ -392,3 +392,24 @@ async def test_opening_media_bytes_match_shared_api_fixture(case_factory):
     case.d.backend.playback_info = lambda sid, uid: {"playback_started_at": 1759226400.25}
     body = (await case.client.get(f"/api/v1/sessions/{case.sid}/execution")).json()
     assert body["opening_media"] == fixture
+
+
+def test_resampler_fails_closed_when_livekit_rtc_is_missing(monkeypatch):
+    """A rate change needs livekit-rtc; without it we raise, never pass 24 kHz audio off as 16 kHz."""
+    import builtins
+
+    from backend.application.publishing.datastream import UtteranceResampler
+
+    real_import = builtins.__import__
+
+    def no_livekit(name, *args, **kwargs):
+        if name == "livekit" or name.startswith("livekit."):
+            raise ImportError("No module named 'livekit'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_livekit)
+    with pytest.raises(ImportError):
+        UtteranceResampler(24000, 16000)
+    assert (
+        UtteranceResampler(16000, 16000).push(b"\x01\x00") == b"\x01\x00"
+    )  # same rate needs no livekit
