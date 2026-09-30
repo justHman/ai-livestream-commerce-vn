@@ -60,9 +60,10 @@ def available_capabilities(rescue: bool = False) -> tuple[str, ...]:
 
     A session is rescue-enabled only when the API marked it at start
     (``rescue_commands``, Facebook P0 with the API switch on) AND this
-    Runtime's switch is on. Either side off fails closed.
+    Runtime's switch was on at start (sessions.py). After start the marker
+    is the only gate; the live switch is never re-read.
     """
-    if rescue and rescue_switch_on():
+    if rescue:
         return AVAILABLE_CAPABILITIES + tuple(f"command.{c}" for c in RESCUE_COMMANDS)
     return AVAILABLE_CAPABILITIES
 

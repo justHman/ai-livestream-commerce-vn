@@ -132,7 +132,7 @@ def spoken(case):
 
 @pytest.mark.asyncio
 async def test_rescue_capabilities_are_disabled_until_compatible(case_factory):
-    case = await live(case_factory)
+    case = await live(case_factory, marker=False)
     before = await state(case)
     assert not set(before["capabilities"]["available"]) & {f"command.{c}" for c in RESCUE}
     for command in RESCUE:
@@ -459,12 +459,53 @@ async def test_unmarked_p0_session_never_sees_rescue_with_switch_on(case_factory
 
 
 @pytest.mark.asyncio
-async def test_marked_session_fails_closed_when_runtime_switch_is_off(case_factory):
-    """Partial deployment: API marker without the Runtime switch advertises nothing."""
+async def test_marker_is_the_only_gate_after_start_switch_off(case_factory, monkeypatch):
+    """Codex r3 F1: flipping the process switch off after start changes nothing."""
+    monkeypatch.setenv(RESCUE_SWITCH, "1")
     case = await live(case_factory)
+    monkeypatch.setenv(RESCUE_SWITCH, "0")
     caps = (await state(case))["capabilities"]["available"]
-    assert not {f"command.{c}" for c in RESCUE} & set(caps)
+    assert {f"command.{c}" for c in RESCUE} <= set(caps)
+    assert Capabilities.for_session({"p0_rescue": True}).supports("command.interrupt")
+    applied(await send(case, "hold"), "hold")
+    response = await case.client.post(f"/api/v1/sessions/{case.sid}/interrupt")
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_marker_is_the_only_gate_after_start_switch_on(case_factory, monkeypatch):
+    """Flipping the switch on after start does not enable an unmarked session."""
+    monkeypatch.setenv(RESCUE_SWITCH, "0")
+    case = await live(case_factory, marker=False)
+    monkeypatch.setenv(RESCUE_SWITCH, "1")
+    assert not {f"command.{c}" for c in RESCUE} & set(
+        (await state(case))["capabilities"]["available"]
+    )
     rejected(await send(case, "hold"), "unsupported_capability")
+
+
+@pytest.mark.asyncio
+async def test_legacy_stop_on_marked_session_is_internal_only(case_factory):
+    """Codex r3 F2: viewer-plane /stop cannot bypass End/Emergency on a marked session."""
+    case = await live(case_factory)
+    case.d.config.admin_api_token = "admin-secret"
+    url = f"/api/v1/sessions/{case.sid}/stop"
+    for headers in ({}, {"X-Livento-Internal-Cleanup": "wrong"}):
+        response = await case.client.post(url, headers=headers)
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "use_execution_command"
+    assert await case.d.store.get(case.sid) is not None
+    ok = await case.client.post(url, headers={"X-Livento-Internal-Cleanup": "admin-secret"})
+    assert ok.status_code == 200, ok.text
+    assert await case.d.store.get(case.sid) is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_stop_on_unmarked_session_is_unchanged(case_factory):
+    case = await live(case_factory, marker=False)
+    case.d.config.admin_api_token = "admin-secret"
+    response = await case.client.post(f"/api/v1/sessions/{case.sid}/stop")
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.asyncio

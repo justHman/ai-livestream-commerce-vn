@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
 from backend.application.db.session_store import SessionLockTimeout
+from backend.application.execution_contract import rescue_switch_on
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
 from . import router
@@ -74,7 +75,7 @@ async def sessions_start(
             "first_ai_broadcast": False,
         }
         meta["execution_command_outcomes"] = {}
-        if req.rescue_commands:
+        if req.rescue_commands and rescue_switch_on():  # start-time only
             # Per-session gate; capabilities/commands/legacy guard all read it.
             meta["p0_rescue"] = True
     await d.store.set(result.session_id, meta)
@@ -333,6 +334,17 @@ async def sessions_interrupt(
     return {"ok": True}
 
 
+def _internal_cleanup(request: Request) -> bool:
+    from backend.api.security.authentication import auth_disabled_dev, tokens_match
+
+    cfg = request.app.state.container.config
+    token = cfg.admin_api_token
+    if auth_disabled_dev(cfg, token):
+        return True
+    presented = request.headers.get("x-livento-internal-cleanup", "")
+    return bool(token and presented and tokens_match(presented, token))
+
+
 @_router.post("/sessions/{session_id}/stop")
 async def sessions_stop(
     session_id: str,
@@ -340,6 +352,13 @@ async def sessions_stop(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
+    from .execution import use_execution_command
+
+    # P0-FB-016: on a marked P0 session legacy stop bypasses End/Emergency
+    # truth; only the API's internal cleanup (admin token in a dedicated
+    # header the viewer plane cannot supply) may use it.
+    if await use_execution_command(d, session_id) and not _internal_cleanup(request):
+        raise HTTPException(status_code=409, detail={"code": "use_execution_command"})
     d.approved_speech.cancel(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
