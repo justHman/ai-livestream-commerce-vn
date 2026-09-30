@@ -31,6 +31,9 @@ AVAILABLE_CAPABILITIES = (
 # `entitlement_exhausted` for system-originated end, owned by P0-FB-018).
 ENDED_REASONS = ("normal_end", "merchant_emergency_end")
 RESCUE_COMMANDS = ("hold", "resume", "interrupt", "end", "emergency_end")
+# TRUTH (open product decision F4): at P0 `end` performs NO spoken closing. The
+# approved envelope has no closing artifact, so End hard-cancels the utterance in
+# flight, moves closing -> ending at once, and viewers hear no farewell.
 RESCUE_SWITCH = "LIVENTO_P0_RESCUE_COMMANDS"
 RESCUE_EFFECTS = {
     "hold": "held_at_safe_boundary",

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from backend.api.v1 import execution as execution_module
 from backend.application.director.clustering import Comment
 from backend.application.director.decision import Decision
 from backend.application.execution_contract import (
@@ -276,6 +277,44 @@ async def test_interrupt_cancels_playback_and_preserves_hold(case_factory, rescu
     assert not audio, "late audio reached media after interrupt"
     assert (await state(case))["state"]["hold"]["held"] is held
     assert (await state(case))["state"]["phase"] == "selling"
+
+
+@pytest.mark.asyncio
+async def test_hold_start_fence_is_set_before_held_is_persisted(case_factory, rescue, monkeypatch):
+    case = await live(case_factory)
+    seen = {}
+    original = execution_module._save
+
+    async def spy(store, sid, meta, fence):
+        seen["blocked_before_persist"] = case.d.approved_speech.blocked(sid)
+        await original(store, sid, meta, fence)
+
+    monkeypatch.setattr(execution_module, "_save", spy)
+    applied(await send(case, "hold"), "hold")
+    assert seen["blocked_before_persist"] == "held"
+
+
+@pytest.mark.asyncio
+async def test_failed_hold_persist_restores_the_start_fence(case_factory, rescue, monkeypatch):
+    case = await live(case_factory)
+
+    async def boom(store, sid, meta, fence):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(execution_module, "_save", boom)
+    with pytest.raises(RuntimeError):
+        await send(case, "hold")
+    assert case.d.approved_speech.blocked(case.sid) is None
+
+
+@pytest.mark.asyncio
+async def test_end_has_no_spoken_closing_and_ends_immediately(case_factory, rescue):
+    """F4 truth: End at P0 is an immediate ending with no closing speech."""
+    case = await live(case_factory)
+    applied(await send(case, "end"), "end")
+    await until(lambda: any(e.get("type") == "execution.phase_changed" for e in case.events))
+    assert (await state(case))["state"]["phase"] == "ending"
+    assert not case.tts.calls and not spoken(case)
 
 
 @pytest.mark.asyncio

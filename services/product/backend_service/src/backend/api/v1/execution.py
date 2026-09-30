@@ -169,7 +169,18 @@ async def request_execution_command(
             mode="json"
         )
         # Persist before the effect: a lost fence answers 503 with no effect.
-        await _save(d.store, session_id, meta, fence)
+        # Hold sets its start fence first so no turn can begin between the
+        # persisted `held` and the block; a failed save restores it.
+        hold_fenced = outcome.status == "applied" and command.command == "hold"
+        if hold_fenced:
+            prior_block = d.approved_speech.blocked(session_id)
+            d.approved_speech.block(session_id, "held")
+        try:
+            await _save(d.store, session_id, meta, fence)
+        except BaseException:
+            if hold_fenced:
+                d.approved_speech.block(session_id, prior_block)
+            raise
         if outcome.status == "applied":
             await _apply_rescue_effect(d, session_id, command.command)
     if outcome.status == "applied":

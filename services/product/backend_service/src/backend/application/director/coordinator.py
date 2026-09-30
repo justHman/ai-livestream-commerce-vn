@@ -393,7 +393,9 @@ class DirectorCoordinator:
             seen = {c.id: c.t for c in ds.director.state.rolling_comments}
             now = ds.now()
             for queue in (self._decision_queue.get(session_id), self._speech_queue.get(session_id)):
-                for decision in list(queue or ()):
+                if queue is None:
+                    continue
+                for decision in list(queue):
                     if decision.action not in ("answer_cluster", "answer_fact"):
                         continue
                     times = [seen[i] for i in decision.cluster_member_ids if i in seen]
