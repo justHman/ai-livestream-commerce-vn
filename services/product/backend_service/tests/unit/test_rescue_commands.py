@@ -8,6 +8,7 @@ import asyncio
 import json
 from pathlib import Path
 import threading
+from typing import Any
 
 import pytest
 
@@ -70,14 +71,14 @@ async def live(case_factory, phase="selling", **kwargs):
     return case
 
 
-def turn(case, **changes):
-    fields = dict(
-        action="introduce_product",
+def turn(case, action="introduce_product", prompt="sell raw facts", **changes: Any) -> Decision:
+    return Decision(
+        action=action,
         product_id="product-1",
-        prompt="sell raw facts",
+        prompt=prompt,
         revision_token=case.d.director.current_generation_token(case.sid),
+        **changes,
     )
-    return Decision(**(fields | changes))
 
 
 async def queued(case, decision):
