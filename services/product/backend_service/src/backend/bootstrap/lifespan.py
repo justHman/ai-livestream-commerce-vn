@@ -165,6 +165,14 @@ async def _start_terminal_outcomes(container: BootstrapContainer) -> None:
     set_terminal_advertised(True)
 
 
+async def _persist_terminal_on_shutdown(container: BootstrapContainer) -> None:
+    """P0-FB-019: before any component stops, give every unterminated P0 execution a
+    durable record (or an explicit audited deferral). No-op while disabled."""
+    terminal = getattr(container, "terminal_outcomes", None)
+    if terminal is not None:
+        await terminal.persist_active_on_shutdown(container.store)
+
+
 async def _stop_terminal_outcomes(container: BootstrapContainer) -> None:
     from backend.application.execution_contract import set_terminal_advertised
 
@@ -403,6 +411,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
     # close stages so no owned task races the pool close (HIGH-1).
     await drain_authoring()
     stages = (
+        ("terminal.shutdown", lambda: _persist_terminal_on_shutdown(container)),
         ("orchestrators", stop_session_pipeline),
         ("coordinator", stop_coordinator),
         ("reducer", lambda: _stop_reducer_loop(container)),

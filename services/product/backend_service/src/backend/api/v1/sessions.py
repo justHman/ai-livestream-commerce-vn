@@ -22,7 +22,11 @@ from backend.application.db.session_store import SessionLockTimeout
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
 from . import router
-from .terminal_guard import persist_terminal_before_delete, terminal_retry_pending
+from .terminal_guard import (
+    register_terminal_execution,
+    teardown_then_persist,
+    terminal_retry_pending,
+)
 from .router import logger
 from .router import router as _router  # noqa: F401
 
@@ -76,6 +80,7 @@ async def sessions_start(
         }
         meta["execution_command_outcomes"] = {}
     await d.store.set(result.session_id, meta)
+    await register_terminal_execution(d, result.session_id, meta)
     if d.livekit_publishers is not None:
         d.livekit_publishers.activate(result.session_id)
     if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
@@ -355,11 +360,7 @@ async def _stop_cancelled_session(d: Any, session_id: str) -> dict[str, Any]:
     except KeyError:
         if not await terminal_retry_pending(d, session_id):
             raise HTTPException(status_code=404, detail="unknown session_id")
-    if d.livekit_publishers is not None:
-        await d.livekit_publishers.stop(session_id)
-    if d.director is not None:
-        d.director.detach(session_id)
-    await persist_terminal_before_delete(d, session_id)
+    await teardown_then_persist(d, session_id)
     await d.store.delete(session_id)
     if d.hub is not None:
         await d.hub.emit(session_id, {"type": "session.stopped"})

@@ -82,13 +82,19 @@ async def test_persist_once_and_a_duplicate_returns_the_first_record_unchanged()
     store = await open_store()
     try:
         first = record()
-        stored, created = await store.persist_terminal(first)
-        assert created and stored.record_hash == first.record_hash
+        stored, created, conflict = await store.persist_terminal(first)
+        assert created and not conflict and stored.record_hash == first.record_hash
         later = first.model_copy(update={"recorded_at": NOW.replace(second=59)}).sealed()
-        again, created = await store.persist_terminal(later)
+        # A different core under the same id (here only the timestamp differs) is a conflict.
+        again, created, conflict = await store.persist_terminal(later)
         assert not created and again.record_hash == first.record_hash
+        assert conflict == "conflicting_terminal"
+        same, created, conflict = await store.persist_terminal(first)
+        assert (created, conflict, same.record_hash) == (False, "", first.record_hash)
         assert await row_count(store, "terminal_records", first.terminal_record_id) == 1
-        assert await row_count(store, "terminal_outbox", first.terminal_record_id) == 1
+        assert (
+            await row_count(store, "terminal_outbox", first.terminal_record_id) == 2
+        )  # primary + late evidence
     finally:
         await store.close()
 
@@ -105,11 +111,25 @@ async def test_a_failure_after_ended_never_rewrites_the_stored_terminal():
             business_outcome="FAILED",
         )
         await store.persist_terminal(ended)
-        stored, created = await store.persist_terminal(failed)
+        stored, created, conflict = await store.persist_terminal(failed)
         assert not created and (stored.terminal_phase, stored.business_outcome) == (
             "ended",
             "ENDED",
         )
+        assert conflict == "late_failure"
+        async with store._require_pool().acquire() as conn:
+            kept = await conn.fetchrow(
+                "SELECT audit FROM terminal_conflicts WHERE terminal_record_id = $1 AND incoming_hash = $2",
+                failed.terminal_record_id,
+                failed.record_hash,
+            )
+            queued = await conn.fetchrow(
+                "SELECT kind, status FROM terminal_outbox WHERE terminal_record_id = $1 AND record_hash = $2",
+                failed.terminal_record_id,
+                failed.record_hash,
+            )
+        assert kept["audit"] == "late_failure"
+        assert (queued["kind"], queued["status"]) == ("late_evidence", "pending")
     finally:
         await store.close()
 
@@ -119,7 +139,7 @@ async def test_concurrent_persists_create_exactly_one_record():
     try:
         first = record()
         results = await asyncio.gather(*(store.persist_terminal(first) for _ in range(8)))
-        assert sum(1 for _, created in results if created) == 1
+        assert sum(1 for r in results if r.created) == 1
         assert await row_count(store, "terminal_outbox", first.terminal_record_id) == 1
     finally:
         await store.close()
@@ -252,5 +272,145 @@ async def test_backlog_reports_pending_count_and_age():
         await store.persist_terminal(record())
         count, age = await store.terminal_outbox_backlog()
         assert count >= 1 and age >= 0.0
+    finally:
+        await store.close()
+
+
+async def outbox_row(store, rec):
+    async with store._require_pool().acquire() as conn:
+        return await conn.fetchrow(
+            "SELECT status, attempts, last_error, lease_token FROM terminal_outbox "
+            "WHERE terminal_record_id = $1 AND record_hash = $2",
+            rec.terminal_record_id,
+            rec.record_hash,
+        )
+
+
+async def claim_one(store, rec, lease):
+    claimed = [
+        r
+        for r in await store.claim_terminal_outbox(1000, lease)
+        if r["terminal_record_id"] == rec.terminal_record_id
+    ]
+    assert len(claimed) == 1
+    return claimed[0]
+
+
+async def test_a_sender_whose_lease_expired_cannot_overwrite_a_newer_outcome():
+    store = await open_store()
+    try:
+        rec = record()
+        await store.persist_terminal(rec)
+        old = await claim_one(store, rec, 0.0)  # the lease is already over
+        new = await claim_one(store, rec, 60.0)  # a second sender takes it
+        assert old["lease_token"] != new["lease_token"]
+        assert await store.finish_terminal_outbox(
+            rec.terminal_record_id, rec.record_hash, new["lease_token"], "delivered"
+        )
+        # The stale sender now reports a failure: it must change nothing.
+        assert not await store.finish_terminal_outbox(
+            rec.terminal_record_id,
+            rec.record_hash,
+            old["lease_token"],
+            "pending",
+            error="late",
+            retry_in=0.0,
+        )
+        row = await outbox_row(store, rec)
+        assert (row["status"], row["last_error"], row["lease_token"]) == ("delivered", None, None)
+    finally:
+        await store.close()
+
+
+async def test_delivered_and_rejected_rows_are_never_resurrected_even_with_the_right_token():
+    store = await open_store()
+    try:
+        rec = record()
+        await store.persist_terminal(rec)
+        claimed = await claim_one(store, rec, 60.0)
+        assert await store.finish_terminal_outbox(
+            rec.terminal_record_id,
+            rec.record_hash,
+            claimed["lease_token"],
+            "rejected",
+            error="http_422",
+        )
+        assert not await store.finish_terminal_outbox(
+            rec.terminal_record_id,
+            rec.record_hash,
+            claimed["lease_token"],
+            "pending",
+            error="again",
+        )
+        assert (await outbox_row(store, rec))["status"] == "rejected"
+        assert all(
+            r["terminal_record_id"] != rec.terminal_record_id
+            for r in await store.claim_terminal_outbox(1000, 0.0)
+        )
+    finally:
+        await store.close()
+
+
+async def test_a_late_evidence_row_is_delivered_separately_from_the_primary():
+    store = await open_store()
+    try:
+        ended = record()
+        failed = record(
+            identity=ended.identity,
+            terminal_phase="failed",
+            reason_code="execution_failed",
+            failure_class="media_failed",
+            business_outcome="FAILED",
+        )
+        await store.persist_terminal(ended)
+        await store.persist_terminal(failed)
+        sent = []
+
+        async def post(url, body, headers):
+            if ended.terminal_record_id.encode() in body:
+                sent.append(TerminalRecord.model_validate_json(body).terminal_phase)
+                return (
+                    (409, {"data": {"code": "already_terminal"}})
+                    if b"execution_failed" in body
+                    else (201, None)
+                )
+            return 201, None
+
+        outbox = TerminalOutbox(
+            store, TerminalSettings(True, "https://api.example/r", "s"), post=post
+        )
+        for _ in range(3):
+            await outbox.deliver_due()
+        assert sorted(sent) == ["ended", "failed"]
+        assert (await outbox_row(store, ended))["status"] == "delivered"
+        assert (await outbox_row(store, failed))["status"] == "delivered"
+    finally:
+        await store.close()
+
+
+async def test_registered_executions_without_a_record_are_listed_and_a_deferral_is_audited():
+    store = await open_store()
+    try:
+        rec = record()
+        await store.register_terminal_execution(rec.identity)
+        await store.register_terminal_execution(rec.identity)  # idempotent
+        assert await store.get_terminal_execution(rec.identity.runtime_session_id) == rec.identity
+        assert await store.get_terminal_execution("rt-unknown") is None
+        listed = await store.list_unterminated_executions()
+        assert rec.identity in listed
+        await store.persist_terminal(rec)
+        assert rec.identity not in await store.list_unterminated_executions()
+        await store.defer_terminal(
+            rec.identity.runtime_session_id, "hot_state_missing_unregistered"
+        )
+        await store.defer_terminal(
+            rec.identity.runtime_session_id, "hot_state_missing_unregistered"
+        )
+        async with store._require_pool().acquire() as conn:
+            n = await conn.fetchval(
+                "SELECT count(*) FROM terminal_deferrals WHERE runtime_session_id = $1",
+                rec.identity.runtime_session_id,
+            )
+        assert n == 1
     finally:
         await store.close()

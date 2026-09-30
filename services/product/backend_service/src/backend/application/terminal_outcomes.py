@@ -17,7 +17,8 @@ import os
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping, NamedTuple
+from urllib.parse import urlsplit
 
 from backend.application.execution_contract import (
     Cleanup,
@@ -35,8 +36,11 @@ ENV_ENABLED = "TERMINAL_OUTCOMES_ENABLED"
 ENV_URL = "TERMINAL_CALLBACK_URL"
 ENV_SECRET = "TERMINAL_CALLBACK_SECRET"
 PENDING_FLAG = "terminal_persist_pending"
+ATTEMPTS_KEY = "terminal_cleanup_attempts"
+CLEANUP_MAX_ATTEMPTS = 3
 
 _TRUE = ("1", "true", "yes", "on")
+_LOOPBACK = ("localhost", "127.0.0.1", "::1")
 _END_REASON_BY_COMMAND = {"end": "normal_end", "emergency_end": "merchant_emergency_end"}
 _FAILURE_CLASSES = (
     "runtime_lost",
@@ -66,16 +70,39 @@ class TerminalSettings:
 
     @property
     def configured(self) -> bool:
-        """True only when the producer may run: flag, https-or-loopback URL and secret."""
-        return (
-            self.enabled
-            and bool(self.secret)
-            and self.callback_url.startswith(("https://", "http://127.0.0.1", "http://localhost"))
-        )
+        """True only when the producer may run: flag, secret and a safe callback URL.
+
+        The URL is parsed, not prefix-matched: https anywhere, or http only to an
+        exact loopback host, and never with embedded credentials.
+        """
+        if not (self.enabled and self.secret):
+            return False
+        try:
+            url = urlsplit(self.callback_url)
+            host = url.hostname
+            url.port  # noqa: B018 - raises ValueError for a malformed port
+        except ValueError:
+            return False
+        if not host or url.username is not None or url.password is not None:
+            return False
+        return url.scheme == "https" or (url.scheme == "http" and host in _LOOPBACK)
 
 
 class TerminalPersistError(Exception):
     """The durable terminal record could not be stored; hot state must be kept."""
+
+
+class TerminalCleanupRetry(Exception):
+    """Teardown failed; hot state is kept and the stop reports ending/retry."""
+
+
+class PersistResult(NamedTuple):
+    record: TerminalRecord
+    created: bool
+    # "" when the stored record was returned unchanged, else the audit kind of the
+    # different terminal that was kept as evidence (late_success / late_failure /
+    # conflicting_terminal).
+    conflict: str
 
 
 def _utc_now() -> datetime:
@@ -97,15 +124,20 @@ def _applied_terminal_command(meta: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def build_terminal_record(
-    meta: Mapping[str, Any] | None, *, now: datetime
+    meta: Mapping[str, Any] | None,
+    *,
+    now: datetime,
+    cleanup: Cleanup,
+    default_failure: str = "control_lost",
 ) -> TerminalRecord | None:
     """Derive the terminal record from hot state, or None for a legacy session.
 
     Only what the state proves is claimed. A terminal phase is used as recorded;
     an applied End / Emergency End gives the matching ENDED reason; anything
-    else cannot be proven to be a clean end and is recorded as the conservative
-    ``failed(control_lost)`` rather than claiming ``ended``. Phase timestamps
-    the hot state does not keep stay null, never guessed.
+    else cannot be proven to be a clean end and is recorded as
+    ``failed(<default_failure>)`` rather than claiming ``ended``. Phase
+    timestamps the hot state does not keep stay null, never guessed. The cleanup
+    is the caller's observed teardown result, never assumed.
     """
     raw = (meta or {}).get("execution_contract")
     if not raw:
@@ -135,8 +167,7 @@ def build_terminal_record(
         stop_requested_at=stop_requested_at,
         terminal_at=now,
         recorded_at=now,
-        # Teardown (backend, LiveKit, detach) completed before the record is written.
-        cleanup=Cleanup(status="succeeded", attempts=1),
+        cleanup=cleanup,
         evidence_refs=EvidenceRefs(last_execution_sequence=state.sequence),
     )
     if reason is not None:
@@ -156,12 +187,32 @@ def build_terminal_record(
             reason_code="execution_failed",
             failure_class=hinted
             if hinted in _FAILURE_CLASSES
-            else ("runtime_error" if state.phase == "failed" else "control_lost"),
+            else ("runtime_error" if state.phase == "failed" else default_failure),
             business_outcome="FAILED",
             source="runtime",
             command_ref=command_ref,
         )
     record = record.sealed()
+    validate_terminal_record(record)
+    return record
+
+
+def build_lost_record(
+    identity: ExecutionIdentity, *, now: datetime, cleanup: Cleanup
+) -> TerminalRecord:
+    """failed(runtime_lost) for a registered execution whose hot state is gone."""
+    record = TerminalRecord(
+        identity=identity,
+        terminal_phase="failed",
+        reason_code="execution_failed",
+        failure_class="runtime_lost",
+        business_outcome="FAILED",
+        source="runtime",
+        terminal_at=now,
+        recorded_at=now,
+        cleanup=cleanup,
+        evidence_refs=EvidenceRefs(diagnostic_ref="hot_state_missing"),
+    ).sealed()
     validate_terminal_record(record)
     return record
 
@@ -185,21 +236,78 @@ class TerminalOutcomes:
         self._pg = pg_store
         self._clock = clock
 
+    async def register(self, session_id: str, meta: Mapping[str, Any]) -> None:
+        """Durably remember a P0 execution at start (best effort; a miss degrades to a deferral)."""
+        raw = meta.get("execution_contract")
+        if not raw:
+            return
+        try:
+            identity = ExecutionIdentity(
+                **ExecutionState.model_validate(raw).model_dump(
+                    include=set(ExecutionIdentity.model_fields)
+                )
+            )
+            await self._pg.register_terminal_execution(identity)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "terminal execution not registered session=%s error_type=%s",
+                session_id,
+                type(exc).__name__,
+            )
+
+    async def settle_cleanup(
+        self, session_store: Any, session_id: str, error: str | None
+    ) -> Cleanup:
+        """Turn the observed teardown result into the cleanup to record.
+
+        A teardown error keeps hot state and raises ``TerminalCleanupRetry`` until
+        ``CLEANUP_MAX_ATTEMPTS``; only then is ``failed`` recorded (never a claimed success).
+        """
+        meta = await session_store.get(session_id)
+        attempts = int((meta or {}).get(ATTEMPTS_KEY, 0)) + 1
+        if error is None:
+            return Cleanup(status="succeeded", attempts=attempts)
+        if meta is not None and attempts < CLEANUP_MAX_ATTEMPTS:
+            try:
+                await session_store.set(
+                    session_id, {**meta, ATTEMPTS_KEY: attempts, PENDING_FLAG: True}
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("terminal cleanup marker not stored session=%s", session_id)
+            raise TerminalCleanupRetry(error)
+        return Cleanup(status="failed", attempts=attempts, last_error_class=error[:64])
+
     async def persist_before_delete(
-        self, session_store: Any, session_id: str
+        self, session_store: Any, session_id: str, cleanup: Cleanup
     ) -> TerminalRecord | None:
         """Durably store the terminal record + outbox row. None for a legacy session.
 
-        Raises ``TerminalPersistError`` when the record cannot be stored; the
-        caller must then keep hot state and report ``ending`` with retry. A
-        duplicate stop returns the already stored record unchanged.
+        With no hot state the registered identity yields ``failed(runtime_lost)``;
+        an unregistered execution gets an explicit audited deferral row. Raises
+        ``TerminalPersistError`` when the record cannot be stored; the caller must
+        then keep hot state and report ``ending`` with retry. A duplicate stop
+        returns the already stored record unchanged.
         """
         meta = await session_store.get(session_id)
         try:
-            record = build_terminal_record(meta, now=self._clock())
-            if record is None:
-                return None
-            stored, _created = await self._pg.persist_terminal(record)
+            if meta is None:
+                identity = await self._pg.get_terminal_execution(session_id)
+                if identity is None:
+                    await self._pg.defer_terminal(session_id, "hot_state_missing_unregistered")
+                    logger.error(
+                        "terminal deferred: no hot state and no registration session=%s", session_id
+                    )
+                    return None
+                record = build_lost_record(identity, now=self._clock(), cleanup=cleanup)
+            else:
+                record = build_terminal_record(meta, now=self._clock(), cleanup=cleanup)
+                if record is None:
+                    return None
+            result = await self._pg.persist_terminal(record)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -208,10 +316,55 @@ class TerminalOutcomes:
                 "terminal persist failed session=%s error_type=%s", session_id, type(exc).__name__
             )
             raise TerminalPersistError(type(exc).__name__) from exc
+        if result.conflict:
+            logger.error(
+                "terminal conflict kept as evidence session=%s audit=%s",
+                session_id,
+                result.conflict,
+            )
+        return result.record
+
+    async def persist_active_on_shutdown(self, session_store: Any) -> int:
+        """Before components stop: give every unterminated execution a durable record.
+
+        Teardown has not happened yet, so cleanup is recorded as pending. A record
+        that cannot be stored is left as an explicit audited deferral for the API
+        supervisor (P0-FB-020); it is never silently dropped.
+        """
+        stored = 0
+        for identity in await self._pg.list_unterminated_executions():
+            try:
+                cleanup = Cleanup(status="pending")
+                meta = await session_store.get(identity.runtime_session_id)
+                record = None
+                if meta:
+                    record = build_terminal_record(
+                        meta, now=self._clock(), cleanup=cleanup, default_failure="runtime_lost"
+                    )
+                if record is None:
+                    record = build_lost_record(identity, now=self._clock(), cleanup=cleanup)
+                await self._pg.persist_terminal(record)
+                stored += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "shutdown terminal not persisted session=%s error_type=%s",
+                    identity.runtime_session_id,
+                    type(exc).__name__,
+                )
+                try:
+                    await self._pg.defer_terminal(
+                        identity.runtime_session_id, "shutdown_persist_failed"
+                    )
+                except Exception:  # the log line above is then the only trace
+                    logger.error(
+                        "shutdown deferral not stored session=%s", identity.runtime_session_id
+                    )
         return stored
 
     async def retry_pending(self, session_store: Any, session_id: str) -> bool:
-        """True when an earlier stop already tore the session down but could not persist."""
+        """True when an earlier stop already tore the session down but could not finish."""
         meta = await session_store.get(session_id)
         return bool(meta and meta.get(PENDING_FLAG))
 
@@ -247,7 +400,8 @@ class TerminalOutbox:
     """Retryable, restart-safe delivery of stored terminal records to the API.
 
     No connection or transaction is held while the HTTP call runs: rows are
-    claimed with a lease in one statement, delivered, then finished in another.
+    claimed with a lease token in one statement, delivered, then finished in
+    another that must present the token.
     """
 
     def __init__(
@@ -288,48 +442,58 @@ class TerminalOutbox:
                 await asyncio.sleep(self._poll)
 
     async def _deliver(self, row: Mapping[str, Any]) -> None:
-        record_id, attempts = row["terminal_record_id"], int(row["attempts"])
+        record_id, record_hash = row["terminal_record_id"], row["record_hash"]
+        token, kind, attempts = row["lease_token"], row["kind"], int(row["attempts"])
         body: bytes = row["body"].encode()
         headers = {
             "Content-Type": "application/json",
             "X-Livento-Internal-Secret": self._settings.secret,
         }
+
+        async def finish(status: str, *, error: str | None = None, retry_in: float = 0.0) -> None:
+            ok = await self._pg.finish_terminal_outbox(
+                record_id, record_hash, token, status, error=error, retry_in=retry_in
+            )
+            if not ok:
+                logger.warning("terminal outbox lease lost id=%s; outcome discarded", record_id)
+
         try:
             status, payload = await self._post(self._settings.callback_url, body, headers)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await self._retry(record_id, attempts, f"transport_{type(exc).__name__}")
+            await finish(
+                "pending",
+                error=f"transport_{type(exc).__name__}",
+                retry_in=backoff_seconds(attempts, rng=self._rng),
+            )
             return
         if status in (200, 201):
-            await self._pg.finish_terminal_outbox(record_id, "delivered")
+            await finish("delivered")
         elif status == 409:
             code = _error_code(payload)
-            logger.error("terminal record refused by the API id=%s code=%s", record_id, code)
-            await self._pg.finish_terminal_outbox(record_id, "rejected", error=f"http_409_{code}")
+            if kind == "late_evidence" and code == "already_terminal":
+                # The API audited the late evidence: that is the expected answer.
+                await finish("delivered")
+            else:
+                logger.error("terminal record refused by the API id=%s code=%s", record_id, code)
+                await finish("rejected", error=f"http_409_{code}")
         elif status in (400, 413, 422):
             logger.error("terminal record invalid for the API id=%s status=%s", record_id, status)
-            await self._pg.finish_terminal_outbox(record_id, "rejected", error=f"http_{status}")
+            await finish("rejected", error=f"http_{status}")
         else:  # 401/403/404/429/5xx: possibly clock, secret rotation or an outage; never dropped
-            await self._retry(record_id, attempts, f"http_{status}")
-
-    async def _retry(self, record_id: str, attempts: int, error: str) -> None:
-        await self._pg.finish_terminal_outbox(
-            record_id,
-            "pending",
-            error=error,
-            retry_in=backoff_seconds(attempts, rng=self._rng),
-        )
+            await finish(
+                "pending",
+                error=f"http_{status}",
+                retry_in=backoff_seconds(attempts, rng=self._rng),
+            )
 
 
 def _error_code(payload: Any) -> str:
     data = payload.get("data") if isinstance(payload, dict) else None
     code = (data or {}).get("code") if isinstance(data, dict) else None
-    return (
-        code
-        if isinstance(code, str) and code.replace("_", "").isalnum() and len(code) <= 40
-        else "unknown"
-    )
+    ok = isinstance(code, str) and code.replace("_", "").isalnum() and len(code) <= 40
+    return code if ok else "unknown"  # type: ignore[return-value]
 
 
 def body_sha256(body: str) -> str:

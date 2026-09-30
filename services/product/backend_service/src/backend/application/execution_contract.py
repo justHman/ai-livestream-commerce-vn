@@ -481,4 +481,6 @@ def reduce_cleanup(existing: Cleanup, incoming: Cleanup) -> tuple[Cleanup, bool]
         egress=_fill(existing.refs.egress, incoming.refs.egress),
         platform_live=_fill(existing.refs.platform_live, incoming.refs.platform_live),
     )
-    return incoming.model_copy(update={"refs": refs}), True
+    # The error class is append-only: a later report without one keeps the earlier class.
+    last_error = incoming.last_error_class or existing.last_error_class
+    return incoming.model_copy(update={"refs": refs, "last_error_class": last_error}), True

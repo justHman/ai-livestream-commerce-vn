@@ -400,11 +400,15 @@ class LiveKitPublisherRegistry:
     async def stop(self, session_id: str) -> None:
         async with self._lock:
             self._active_sessions.discard(session_id)
-            entry = self._entries.pop(session_id, None)
+            entry = self._entries.get(session_id)
         if entry is None:
             return
         async with entry.lock:
             await entry.publisher.stop()
+        # Forget the entry only after the stop succeeded, so a retry still reaches it.
+        async with self._lock:
+            if self._entries.get(session_id) is entry:
+                del self._entries[session_id]
 
     async def stop_all(self) -> None:
         async with self._lock:

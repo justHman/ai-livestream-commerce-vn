@@ -2,15 +2,25 @@
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
 
 from backend.api.v1.sessions import _stop_cancelled_session
 from backend.application.db.memory_session_store import InMemorySessionStore
-from backend.application.execution_contract import TerminalRecord, validate_terminal_record
+from backend.application.execution_contract import (
+    Cleanup,
+    ExecutionIdentity,
+    TerminalRecord,
+    validate_terminal_record,
+)
+from backend.application.publishing.legacy import LiveKitPublisherRegistry
 from backend.application.terminal_outcomes import (
+    ATTEMPTS_KEY,
+    CLEANUP_MAX_ATTEMPTS,
     PENDING_FLAG,
+    PersistResult,
     TerminalOutbox,
     TerminalOutcomes,
     TerminalSettings,
@@ -25,10 +35,11 @@ IDENTITY = dict(
     runtime_session_id="rt-1",
     generation="g1",
 )
+OK = Cleanup(status="succeeded", attempts=1)
 
 
-def build(meta):
-    record = build_terminal_record(meta, now=NOW)
+def build(meta, cleanup=OK):
+    record = build_terminal_record(meta, now=NOW, cleanup=cleanup)
     assert record is not None
     return record
 
@@ -63,14 +74,12 @@ def applied(command, command_id):
 
 
 def test_legacy_session_has_no_terminal_record():
-    assert build_terminal_record({"status": "active"}, now=NOW) is None
-    assert build_terminal_record(None, now=NOW) is None
+    assert build_terminal_record({"status": "active"}, now=NOW, cleanup=OK) is None
+    assert build_terminal_record(None, now=NOW, cleanup=OK) is None
 
 
 def test_applied_end_is_ended_normal_end_with_command_ref_and_honest_nulls():
-    meta = hot("ending", execution_command_outcomes={"c1": applied("end", "c1")})
-    record = build(meta)
-    assert record is not None
+    record = build(hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
     validate_terminal_record(record)
     assert (record.terminal_phase, record.reason_code, record.business_outcome) == (
         "ended",
@@ -85,15 +94,16 @@ def test_applied_end_is_ended_normal_end_with_command_ref_and_honest_nulls():
 
 
 def test_applied_emergency_end_wins_over_end_and_is_never_failed():
-    meta = hot(
-        "ending",
-        execution_command_outcomes={
-            "c1": applied("end", "c1"),
-            "c2": applied("emergency_end", "c2"),
-        },
+    record = build(
+        hot(
+            "ending",
+            execution_command_outcomes={
+                "c1": applied("end", "c1"),
+                "c2": applied("emergency_end", "c2"),
+            },
+        )
     )
-    record = build(meta)
-    assert record is not None and record.command_ref is not None
+    assert record.command_ref is not None
     assert (record.terminal_phase, record.reason_code, record.command_ref.command_id) == (
         "ended",
         "merchant_emergency_end",
@@ -102,12 +112,13 @@ def test_applied_emergency_end_wins_over_end_and_is_never_failed():
 
 
 def test_recorded_failed_phase_stays_failed_even_if_an_end_was_applied():
-    meta = hot(
-        "failed",
-        execution_command_outcomes={"c1": applied("end", "c1")},
-        execution_failure_class="media_failed",
+    record = build(
+        hot(
+            "failed",
+            execution_command_outcomes={"c1": applied("end", "c1")},
+            execution_failure_class="media_failed",
+        )
     )
-    record = build(meta)
     assert (record.terminal_phase, record.failure_class, record.business_outcome) == (
         "failed",
         "media_failed",
@@ -125,16 +136,43 @@ def test_unproven_stop_is_conservatively_failed_not_ended():
 
 
 def test_unknown_failure_hint_is_not_trusted():
-    record = build(hot("failed", execution_failure_class="'; drop table"))
-    assert record.failure_class == "runtime_error"
+    assert (
+        build(hot("failed", execution_failure_class="'; drop table")).failure_class
+        == "runtime_error"
+    )
+
+
+def test_the_record_carries_the_observed_cleanup_not_an_assumed_success():
+    failed = Cleanup(status="failed", attempts=3, last_error_class="RuntimeError")
+    record = build(hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}), failed)
+    assert (record.terminal_phase, record.cleanup.status, record.cleanup.attempts) == (
+        "ended",
+        "failed",
+        3,
+    )
 
 
 class FakePg:
-    def __init__(self, fail_with=None):
+    def __init__(self, fail_with=None, registered=None):
         self.enabled = True
         self.fail_with = fail_with
+        self.registered = registered or {}
         self.stored = {}
         self.calls = []
+        self.deferred = []
+
+    async def get_terminal_execution(self, session_id):
+        return self.registered.get(session_id)
+
+    async def defer_terminal(self, session_id, reason):
+        self.deferred.append((session_id, reason))
+
+    async def list_unterminated_executions(self):
+        return [
+            i
+            for i in self.registered.values()
+            if (i.tenant_id, i.business_session_id, i.generation) not in self.stored
+        ]
 
     async def persist_terminal(self, record):
         self.calls.append("persist")
@@ -146,9 +184,9 @@ class FakePg:
             record.identity.generation,
         )
         if key in self.stored:
-            return self.stored[key], False
+            return PersistResult(self.stored[key], False, "")
         self.stored[key] = record
-        return record, True
+        return PersistResult(record, True, "")
 
 
 async def test_duplicate_stop_returns_the_same_record():
@@ -156,13 +194,13 @@ async def test_duplicate_stop_returns_the_same_record():
     await store.set("s", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
     clock = iter([NOW, NOW.replace(second=59)])
     terminal = TerminalOutcomes(pg, clock=lambda: next(clock))
-    first = await terminal.persist_before_delete(store, "s")
-    second = await terminal.persist_before_delete(store, "s")
+    first = await terminal.persist_before_delete(store, "s", OK)
+    second = await terminal.persist_before_delete(store, "s", OK)
     assert first is not None and second is not None
     assert second.record_hash == first.record_hash and len(pg.stored) == 1
 
 
-def stop_container(pg_store, *, calls, terminal=None):
+def stop_container(calls, terminal=None, publishers=None):
     class Backend:
         def stop(self, session_id):
             calls.append("backend.stop")
@@ -175,22 +213,21 @@ def stop_container(pg_store, *, calls, terminal=None):
             return await super().delete(session_id)
 
     store = Store()
-    d = SimpleNamespace(
+    return SimpleNamespace(
         orchestrators={},
         backend=Backend(),
-        livekit_publishers=None,
+        livekit_publishers=publishers,
         director=None,
         store=store,
         hub=None,
         locks=SimpleNamespace(drop=lambda _sid: None),
         terminal_outcomes=terminal,
     )
-    return d
 
 
 async def test_disabled_stop_is_the_legacy_path_with_no_persist():
     calls = []
-    d = stop_container(None, calls=calls)
+    d = stop_container(calls)
     await d.store.set("s", hot("ending"))
     d.backend.stop = lambda sid: calls.append("backend.stop")
     del d.terminal_outcomes  # an old container without the attribute
@@ -199,9 +236,21 @@ async def test_disabled_stop_is_the_legacy_path_with_no_persist():
     assert await d.store.get("s") is None
 
 
+async def test_disabled_stop_still_propagates_a_livekit_failure_unchanged():
+    class Boom:
+        async def stop(self, session_id):
+            raise RuntimeError("livekit down")
+
+    d = stop_container([], publishers=Boom())
+    await d.store.set("s", hot("ending"))
+    d.backend.stop = lambda sid: None
+    with pytest.raises(RuntimeError, match="livekit down"):
+        await _stop_cancelled_session(d, "s")
+
+
 async def test_enabled_stop_persists_before_hot_state_is_deleted():
     calls, pg = [], FakePg()
-    d = stop_container(pg, calls=calls)
+    d = stop_container(calls)
     await d.store.set("s", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
     d.backend.stop = lambda sid: calls.append("backend.stop")
     original = pg.persist_terminal
@@ -215,11 +264,13 @@ async def test_enabled_stop_persists_before_hot_state_is_deleted():
     await _stop_cancelled_session(d, "s")
     assert calls == ["backend.stop", "terminal.persist", "store.delete"]
     assert await d.store.get("s") is None and len(pg.stored) == 1
+    (record,) = pg.stored.values()
+    assert record.cleanup.status == "succeeded"
 
 
 async def test_db_unavailable_keeps_hot_state_reports_ending_retry_and_never_claims_ended():
     calls, pg = [], FakePg(fail_with=ConnectionError("db down"))
-    d = stop_container(pg, calls=calls)
+    d = stop_container(calls)
     await d.store.set("s", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
     d.backend.stop = lambda sid: calls.append("backend.stop")
     d.terminal_outcomes = TerminalOutcomes(pg, clock=lambda: NOW)
@@ -250,14 +301,175 @@ async def test_db_unavailable_keeps_hot_state_reports_ending_retry_and_never_cla
 
 async def test_unknown_session_is_still_404_without_a_pending_marker():
     calls, pg = [], FakePg()
-    d = stop_container(pg, calls=calls)
+    d = stop_container(calls)
     d.terminal_outcomes = TerminalOutcomes(pg, clock=lambda: NOW)
     with pytest.raises(HTTPException) as caught:
         await _stop_cancelled_session(d, "missing")
     assert caught.value.status_code == 404 and pg.calls == []
 
 
-def test_settings_require_flag_secret_and_safe_url():
+class FailingPublishers:
+    def __init__(self, failures):
+        self.failures, self.calls = failures, 0
+
+    async def stop(self, session_id):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("livekit disconnect failed")
+
+
+async def test_a_livekit_cleanup_failure_takes_the_503_ending_retry_path_and_is_then_recorded_failed():
+    calls, pg = [], FakePg()
+    publishers = FailingPublishers(failures=CLEANUP_MAX_ATTEMPTS)
+    d = stop_container(calls, publishers=publishers)
+    await d.store.set("s", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
+    d.backend.stop = lambda sid: calls.append("backend.stop")
+    d.terminal_outcomes = TerminalOutcomes(pg, clock=lambda: NOW)
+
+    for attempt in range(1, CLEANUP_MAX_ATTEMPTS):
+        with pytest.raises(HTTPException) as caught:
+            await _stop_cancelled_session(d, "s")
+        assert caught.value.detail == {
+            "code": "terminal_cleanup_retry",
+            "phase": "ending",
+            "retry": True,
+        }
+        kept = await d.store.get("s")
+        assert kept is not None and kept[ATTEMPTS_KEY] == attempt and kept[PENDING_FLAG] is True
+        assert pg.stored == {}  # nothing is claimed while the retry can still succeed
+        d.backend.stop = lambda sid: (_ for _ in ()).throw(KeyError(sid))  # already stopped
+
+    # Retries exhausted: ENDED is preserved and the failed cleanup is what is recorded.
+    assert await _stop_cancelled_session(d, "s") == {"ok": True, "stopped": "s"}
+    (record,) = pg.stored.values()
+    assert (record.terminal_phase, record.cleanup.status, record.cleanup.attempts) == (
+        "ended",
+        "failed",
+        3,
+    )
+    assert record.cleanup.last_error_class == "RuntimeError"
+
+
+async def test_a_cleanup_failure_that_recovers_records_success_with_the_attempt_count():
+    calls, pg = [], FakePg()
+    d = stop_container(calls, publishers=FailingPublishers(failures=1))
+    await d.store.set("s", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
+    d.backend.stop = lambda sid: calls.append("backend.stop")
+    d.terminal_outcomes = TerminalOutcomes(pg, clock=lambda: NOW)
+    with pytest.raises(HTTPException):
+        await _stop_cancelled_session(d, "s")
+    d.backend.stop = lambda sid: (_ for _ in ()).throw(KeyError(sid))
+    await _stop_cancelled_session(d, "s")
+    (record,) = pg.stored.values()
+    assert (record.cleanup.status, record.cleanup.attempts) == ("succeeded", 2)
+
+
+async def test_the_publisher_registry_keeps_its_entry_until_the_stop_succeeded():
+    class Publisher:
+        def __init__(self):
+            self.fail = True
+
+        async def stop(self):
+            if self.fail:
+                raise RuntimeError("disconnect failed")
+
+    publisher = Publisher()
+    registry = LiveKitPublisherRegistry(lambda sid: publisher)
+    registry.activate("s")
+    from backend.application.publishing.legacy import _RegistryEntry
+
+    registry._entries["s"] = _RegistryEntry(publisher)
+    with pytest.raises(RuntimeError):
+        await registry.stop("s")
+    assert registry.session_ids == ("s",)  # a retry can still reach the publisher
+    publisher.fail = False
+    await registry.stop("s")
+    assert registry.session_ids == ()
+
+
+def lost_identity():
+    return ExecutionIdentity(**IDENTITY)
+
+
+async def test_missing_hot_state_for_a_registered_execution_is_recorded_failed_runtime_lost():
+    calls, pg = [], FakePg(registered={"s": lost_identity()})
+    d = stop_container(calls)
+    d.backend.stop = lambda sid: calls.append("backend.stop")  # the backend still knows it
+    d.terminal_outcomes = TerminalOutcomes(pg, clock=lambda: NOW)
+    assert await _stop_cancelled_session(d, "s") == {"ok": True, "stopped": "s"}
+    (record,) = pg.stored.values()
+    assert (record.terminal_phase, record.failure_class, record.business_outcome) == (
+        "failed",
+        "runtime_lost",
+        "FAILED",
+    )
+    assert record.evidence_refs.diagnostic_ref == "hot_state_missing"
+    assert calls == ["backend.stop", "store.delete"]
+
+
+async def test_missing_hot_state_with_no_registration_is_an_audited_deferral_never_silent():
+    calls, pg = [], FakePg()
+    d = stop_container(calls)
+    d.backend.stop = lambda sid: calls.append("backend.stop")
+    d.terminal_outcomes = TerminalOutcomes(pg, clock=lambda: NOW)
+    await _stop_cancelled_session(d, "s")
+    assert pg.deferred == [("s", "hot_state_missing_unregistered")] and pg.stored == {}
+
+
+async def test_shutdown_persists_a_record_for_every_unterminated_execution_before_components_stop():
+    store = InMemorySessionStore()
+    live = ExecutionIdentity(**IDENTITY)
+    gone = ExecutionIdentity(
+        **(IDENTITY | {"runtime_session_id": "rt-2", "business_session_id": "business-2"})
+    )
+    await store.set("rt-1", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
+    pg = FakePg(registered={"rt-1": live, "rt-2": gone})
+    assert await TerminalOutcomes(pg, clock=lambda: NOW).persist_active_on_shutdown(store) == 2
+    by_session = {k[1]: v for k, v in pg.stored.items()}
+    assert by_session["business-1"].terminal_phase == "ended"
+    assert by_session["business-1"].cleanup.status == "pending"  # teardown has not happened yet
+    assert by_session["business-2"].failure_class == "runtime_lost"
+
+
+async def test_a_shutdown_record_that_cannot_be_stored_leaves_an_audited_deferral():
+    pg = FakePg(fail_with=ConnectionError("db down"), registered={"rt-1": lost_identity()})
+    assert (
+        await TerminalOutcomes(pg, clock=lambda: NOW).persist_active_on_shutdown(
+            InMemorySessionStore()
+        )
+        == 0
+    )
+    assert pg.deferred == [("rt-1", "shutdown_persist_failed")]
+
+
+@pytest.mark.parametrize(
+    "url,configured",
+    [
+        ("https://api.example/x", True),
+        ("http://127.0.0.1:8006/x", True),
+        ("http://localhost/x", True),
+        ("http://[::1]:8006/x", True),
+        ("http://localhost.attacker.example/x", False),
+        ("http://127.0.0.1.evil.example/x", False),
+        ("http://127.0.0.1@evil.example/x", False),
+        ("http://evil.example/x", False),
+        ("https://user:pw@api.example/x", False),
+        ("ftp://127.0.0.1/x", False),
+        ("https:///no-host", False),
+        ("http://127.0.0.1:notaport/x", False),
+        ("", False),
+    ],
+)
+def test_callback_url_is_parsed_not_prefix_matched(url, configured):
+    env = {
+        "TERMINAL_OUTCOMES_ENABLED": "1",
+        "TERMINAL_CALLBACK_URL": url,
+        "TERMINAL_CALLBACK_SECRET": "s",
+    }
+    assert TerminalSettings.from_env(env).configured is configured
+
+
+def test_settings_require_flag_and_secret():
     env = {
         "TERMINAL_OUTCOMES_ENABLED": "1",
         "TERMINAL_CALLBACK_URL": "https://api.example/x",
@@ -267,56 +479,88 @@ def test_settings_require_flag_secret_and_safe_url():
     assert not TerminalSettings.from_env({}).configured
     assert not TerminalSettings.from_env({**env, "TERMINAL_OUTCOMES_ENABLED": "0"}).configured
     assert not TerminalSettings.from_env({**env, "TERMINAL_CALLBACK_SECRET": ""}).configured
-    assert not TerminalSettings.from_env(
-        {**env, "TERMINAL_CALLBACK_URL": "http://evil.example/x"}
-    ).configured
 
 
 class OutboxPg:
-    def __init__(self, rows):
-        self.rows, self.finished = rows, []
+    def __init__(self, rows, accept=True):
+        self.rows, self.finished, self.accept = rows, [], accept
 
     async def claim_terminal_outbox(self, limit, lease):
         rows, self.rows = self.rows, []
         return rows
 
-    async def finish_terminal_outbox(self, record_id, status, *, error=None, retry_in=0.0):
-        self.finished.append((record_id, status, error, retry_in))
+    async def finish_terminal_outbox(
+        self, record_id, record_hash, token, status, *, error=None, retry_in=0.0
+    ):
+        self.finished.append((record_id, record_hash, token, status, error, retry_in))
+        return self.accept
 
 
-def outbox_with(post, status_rows=1):
+def outbox_with(post, kind="primary", accept=True):
     rows = [
-        {"terminal_record_id": f"tr:{i}", "body": '{"a":1}', "attempts": 2}
-        for i in range(status_rows)
+        {
+            "terminal_record_id": "tr:0",
+            "record_hash": "h0",
+            "kind": kind,
+            "body": '{"a":1}',
+            "attempts": 2,
+            "lease_token": "tok-1",
+        }
     ]
-    pg = OutboxPg(rows)
+    pg = OutboxPg(rows, accept)
     settings = TerminalSettings(True, "https://api.example/records", "sekret")
     return TerminalOutbox(pg, settings, post=post, rng=lambda: 0.0), pg
 
 
 @pytest.mark.parametrize(
-    "status,payload,expected",
+    "kind,status,payload,expected",
     [
-        (201, None, ("delivered", None)),
-        (200, None, ("delivered", None)),
-        (409, {"data": {"code": "already_terminal"}}, ("rejected", "http_409_already_terminal")),
-        (409, {"data": {"code": "stale_generation"}}, ("rejected", "http_409_stale_generation")),
-        (409, {"data": {"code": "x y; drop"}}, ("rejected", "http_409_unknown")),
-        (422, None, ("rejected", "http_422")),
-        (401, None, ("pending", "http_401")),
-        (404, None, ("pending", "http_404")),
-        (503, None, ("pending", "http_503")),
+        ("primary", 201, None, ("delivered", None)),
+        ("primary", 200, None, ("delivered", None)),
+        (
+            "primary",
+            409,
+            {"data": {"code": "already_terminal"}},
+            ("rejected", "http_409_already_terminal"),
+        ),
+        (
+            "primary",
+            409,
+            {"data": {"code": "stale_generation"}},
+            ("rejected", "http_409_stale_generation"),
+        ),
+        ("primary", 409, {"data": {"code": "x y; drop"}}, ("rejected", "http_409_unknown")),
+        ("late_evidence", 409, {"data": {"code": "already_terminal"}}, ("delivered", None)),
+        (
+            "late_evidence",
+            409,
+            {"data": {"code": "stale_generation"}},
+            ("rejected", "http_409_stale_generation"),
+        ),
+        ("primary", 422, None, ("rejected", "http_422")),
+        ("primary", 401, None, ("pending", "http_401")),
+        ("primary", 404, None, ("pending", "http_404")),
+        ("primary", 503, None, ("pending", "http_503")),
     ],
 )
-async def test_outbox_classifies_api_answers(status, payload, expected):
+async def test_outbox_classifies_api_answers(kind, status, payload, expected):
     async def post(url, body, headers):
         return status, payload
 
-    outbox, pg = outbox_with(post)
+    outbox, pg = outbox_with(post, kind)
     assert await outbox.deliver_due() == 1
-    (_, got_status, got_error, retry_in) = pg.finished[0]
+    (_, _, _, got_status, got_error, retry_in) = pg.finished[0]
     assert (got_status, got_error) == expected
     assert (retry_in > 0) == (got_status == "pending")
+
+
+async def test_outbox_finishes_with_the_lease_token_it_claimed_and_survives_losing_the_lease():
+    async def post(url, body, headers):
+        return 201, None
+
+    outbox, pg = outbox_with(post, accept=False)  # the store refuses: the lease expired
+    assert await outbox.deliver_due() == 1
+    assert pg.finished[0][:4] == ("tr:0", "h0", "tok-1", "delivered")
 
 
 async def test_outbox_resends_identical_bytes_with_the_secret_header_and_retries_transport_errors():
@@ -329,7 +573,7 @@ async def test_outbox_resends_identical_bytes_with_the_secret_header_and_retries
     outbox, pg = outbox_with(post)
     await outbox.deliver_due()
     assert seen == [("https://api.example/records", b'{"a":1}', "sekret")]
-    assert pg.finished[0][1:3] == ("pending", "transport_TimeoutError")
+    assert pg.finished[0][3:5] == ("pending", "transport_TimeoutError")
 
 
 def test_backoff_is_capped_and_jittered():
@@ -372,7 +616,7 @@ async def start_lifespan_stage(monkeypatch, env, pg):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    container = SimpleNamespace(pg_store=pg, terminal_outcomes=None, terminal_outbox_task=None)
+    container: Any = SimpleNamespace(pg_store=pg, terminal_outcomes=None, terminal_outbox_task=None)
     await lifespan._start_terminal_outcomes(container)
     advertised = Capabilities().supports(TERMINAL_CAPABILITY)
     await lifespan._stop_terminal_outcomes(container)
@@ -395,11 +639,15 @@ async def test_default_environment_wires_nothing_and_never_advertises(monkeypatc
     [
         ({**ENABLED_ENV, "TERMINAL_CALLBACK_SECRET": ""}, LifespanPg()),
         ({**ENABLED_ENV, "TERMINAL_CALLBACK_URL": ""}, LifespanPg()),
+        (
+            {**ENABLED_ENV, "TERMINAL_CALLBACK_URL": "http://localhost.attacker.example/x"},
+            LifespanPg(),
+        ),
         (ENABLED_ENV, None),
         (ENABLED_ENV, SimpleNamespace(enabled=False)),
         (ENABLED_ENV, LifespanPg(fail_schema=True)),
     ],
-    ids=["no-secret", "no-url", "no-store", "store-disabled", "schema-failed"],
+    ids=["no-secret", "no-url", "attacker-host", "no-store", "store-disabled", "schema-failed"],
 )
 async def test_enabled_but_unusable_keeps_the_capability_absent(monkeypatch, env, pg):
     container, advertised, _ = await start_lifespan_stage(monkeypatch, env, pg)

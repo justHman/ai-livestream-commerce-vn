@@ -23,7 +23,7 @@ from backend.application.execution_contract import (
 )
 
 # The Go twin pins the same digest: editing one copy without the other fails both suites.
-FIXTURE_SHA256 = "2c89244e9a5b570e28582ff17816bf9f4eda783ebaa0e85215483c6744d14ed3"
+FIXTURE_SHA256 = "773140a62b075458fe4e840c4c67166e200a65c25bd14a4e5a0fbaa0670247cb"
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "terminal_record_v1.json"
 FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 RECORDS = {name: TerminalRecord.model_validate(raw) for name, raw in FIXTURE["records"].items()}
