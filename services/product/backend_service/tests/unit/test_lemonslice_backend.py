@@ -159,9 +159,11 @@ def test_resampled_duration_matches_source_within_one_frame(started):
 
 def test_final_window_returns_only_after_playback_finished(started):
     backend, room, _, res = started
-    t0 = time.monotonic()
     backend.stream_audio(res.session_id, win("u1", 0, final=True))
-    assert time.monotonic() - t0 >= room.play_delay
+    returned = time.monotonic()
+    assert (
+        room.times("lk.playback_finished")[0] <= returned
+    )  # not a wall-clock guess (Windows timer skew)
     assert backend.playback_info(res.session_id, "u1")["playback_unconfirmed"] is False
     first_write = room.times("first_write")[0]
     assert (
@@ -248,7 +250,7 @@ def test_video_only_fallback_publishes_one_delayed_track():
     backend.stream_audio(res.session_id, win("u1", 0, final=True))
     time.sleep(0.4)
     assert len(room.captured) == 1 and room.captured[0][1] == room.streams[0].pcm
-    assert room.captured[0][0] - t0 >= 0.15
+    assert room.captured[0][0] - t0 >= 0.13  # 150 ms offset minus timer resolution
     backend.stop_all()
 
 
