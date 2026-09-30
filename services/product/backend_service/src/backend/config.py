@@ -138,6 +138,8 @@ def _resolve_adapter_defaults(env: dict[str, str]) -> dict[str, str | None]:
         key = avatar_adapter.lower()
         if key in ("liveavatar", "baidu_xiling"):
             render_backend = "cloud_liveavatar"
+        elif key == "lemonslice":
+            render_backend = "cloud_lemonslice"
         elif key == "self_hosted":
             render_backend = None  # self-host rendering is avatar_service's domain
         else:
@@ -316,7 +318,8 @@ class TTSConfig:
                 # ElevenLabs remote TTS (Stage 2 ship-fast): api_key + voice_id + model_id.
                 "api_key": os.environ.get("TTS_API_KEY")
                 or os.environ.get("ELEVENLABS_API_KEY", ""),
-                "voice_id": os.environ.get("TTS_VOICE_ID", ""),
+                "voice_id": os.environ.get("TTS_VOICE_ID")
+                or os.environ.get("ELEVENLABS_VOICE_ID", ""),
                 "model_id": os.environ.get("TTS_MODEL_ID", ""),
             },
         )
@@ -517,6 +520,18 @@ class AppConfig:
     database_url: str = ""
     # Backend audio publish to LiveKit SFU (stub until SDK wired).
     livekit_publish: bool = False
+    # cloud_lemonslice (P0-FB-010). Empty/off by default; see clients/avatar/lemonslice.py.
+    lemonslice_api_key: str = ""
+    lemonslice_api_base: str = "https://lemonslice.com/api/liveai"
+    lemonslice_agent_id: str = ""
+    lemonslice_avatar_allowlist: str = ""
+    lemonslice_audio_sample_rate: int = 16000
+    lemonslice_idle_timeout_s: int = 60
+    lemonslice_ready_timeout_s: float = 30.0
+    lemonslice_avatar_identity: str = "lemonslice-avatar-agent"
+    lemonslice_terminate_path: str = ""
+    avatar_audio_fallback_publish: bool = False
+    avatar_render_offset_ms: int = 0
 
     # Engine configs
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -601,6 +616,24 @@ class AppConfig:
             database_url=os.environ.get("DATABASE_URL", ""),
             livekit_publish=os.environ.get("LIVEKIT_PUBLISH", "0").lower()
             in ("1", "true", "on", "yes"),
+            lemonslice_api_key=os.environ.get("LEMONSLICE_API_KEY", ""),
+            lemonslice_api_base=os.environ.get("LEMONSLICE_API_BASE")
+            or "https://lemonslice.com/api/liveai",
+            lemonslice_agent_id=os.environ.get("LEMONSLICE_AGENT_ID", ""),
+            lemonslice_avatar_allowlist=os.environ.get("LEMONSLICE_AVATAR_ALLOWLIST", ""),
+            lemonslice_audio_sample_rate=int(
+                os.environ.get("LEMONSLICE_AUDIO_SAMPLE_RATE", "16000")
+            ),
+            lemonslice_idle_timeout_s=int(os.environ.get("LEMONSLICE_IDLE_TIMEOUT_S", "60")),
+            lemonslice_ready_timeout_s=float(os.environ.get("LEMONSLICE_READY_TIMEOUT_S", "30")),
+            lemonslice_avatar_identity=os.environ.get("LEMONSLICE_AVATAR_IDENTITY")
+            or "lemonslice-avatar-agent",
+            lemonslice_terminate_path=os.environ.get("LEMONSLICE_TERMINATE_PATH", ""),
+            avatar_audio_fallback_publish=os.environ.get(
+                "AVATAR_AUDIO_FALLBACK_PUBLISH", "0"
+            ).lower()
+            in ("1", "true", "on", "yes"),
+            avatar_render_offset_ms=int(os.environ.get("AVATAR_RENDER_OFFSET_MS", "0")),
             llm=llm_cfg,
             tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),
@@ -677,6 +710,8 @@ class AppConfig:
                 width=self.mock_avatar_width,
                 height=self.mock_avatar_height,
             )
+        if self.render_backend == "cloud_lemonslice":
+            return self._build_lemonslice_backend()
         if self.render_backend in (
             "cloud_liveavatar",
             "self_host_avatarforcing_half",
@@ -718,8 +753,55 @@ class AppConfig:
             return _RemoteBackend()
         raise ValueError(
             "unknown RENDER_BACKEND "
-            f"{self.render_backend!r}; expected cloud_liveavatar, "
+            f"{self.render_backend!r}; expected cloud_liveavatar, cloud_lemonslice, "
             "self_host_avatarforcing_half, self_host_echoavatar_full, or mock"
+        )
+
+    def _build_lemonslice_backend(self):
+        """Fail loud on missing credentials or a second audio publisher (double audio)."""
+        missing = [
+            name
+            for name, value in (
+                ("LIVEKIT_URL", self.livekit_url),
+                ("LIVEKIT_API_KEY", self.livekit_api_key),
+                ("LIVEKIT_API_SECRET", self.livekit_api_secret),
+                ("LEMONSLICE_API_KEY", self.lemonslice_api_key),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError("cloud_lemonslice requires " + ", ".join(missing))
+        if self.livekit_publish:
+            # The legacy publisher would publish raw TTS beside the avatar (double
+            # audio, lip desync). The flagged fallback owns its own delayed track.
+            raise ValueError(
+                "cloud_lemonslice refuses LIVEKIT_PUBLISH=true: the avatar is the "
+                "only audio source (use AVATAR_AUDIO_FALLBACK_PUBLISH for video-only avatars)"
+            )
+        from backend.application.clients.avatar.lemonslice import (
+            LemonSliceRenderBackend,
+            LemonSliceSettings,
+        )
+
+        return LemonSliceRenderBackend(
+            LemonSliceSettings(
+                livekit_url=self.livekit_url,
+                livekit_api_key=self.livekit_api_key,
+                livekit_api_secret=self.livekit_api_secret,
+                lemonslice_api_key=self.lemonslice_api_key,
+                api_base=self.lemonslice_api_base,
+                agent_id=self.lemonslice_agent_id,
+                avatar_allowlist=tuple(
+                    a.strip() for a in self.lemonslice_avatar_allowlist.split(",") if a.strip()
+                ),
+                audio_sample_rate=self.lemonslice_audio_sample_rate,
+                idle_timeout_s=self.lemonslice_idle_timeout_s,
+                ready_timeout_s=self.lemonslice_ready_timeout_s,
+                avatar_identity=self.lemonslice_avatar_identity,
+                fallback_publish=self.avatar_audio_fallback_publish,
+                render_offset_ms=self.avatar_render_offset_ms,
+                terminate_path=self.lemonslice_terminate_path,
+            )
         )
 
     def build_llm_engine(self):
