@@ -186,7 +186,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     # ---- RenderBackend ---------------------------------------------
     def start(self, opts: StartOptions) -> StartResult:
         agent_id = self._resolve_agent(opts.avatar_id)
-        return self._run(self._start(agent_id), self._s.ready_timeout_s + self._s.request_timeout_s + 10)
+        return self._run(
+            self._start(agent_id), self._s.ready_timeout_s + self._s.request_timeout_s + 10
+        )
 
     def _resolve_agent(self, avatar_id: str | None) -> str:
         # DR-AVATAR-001: preset avatars only. A caller-supplied id must be allowlisted.
@@ -229,7 +231,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         sess: _Sess | None = None
         try:
             await room.connect(s.livekit_url, runtime_token)
-            sess = _Sess(room, AvatarAudioChannel(room, s.avatar_identity, sample_rate=s.audio_sample_rate, clock=self._clock))
+            sess = _Sess(
+                room,
+                AvatarAudioChannel(
+                    room, s.avatar_identity, sample_rate=s.audio_sample_rate, clock=self._clock
+                ),
+            )
             if s.fallback_publish:
                 publish, capture = self._track_factory(room, s.audio_sample_rate)
                 await publish()

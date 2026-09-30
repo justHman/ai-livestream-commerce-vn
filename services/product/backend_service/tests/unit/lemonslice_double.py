@@ -65,9 +65,13 @@ class _Local:
     def register_rpc_method(self, name, handler):
         self.rpc[name] = handler
 
-    async def stream_bytes(self, name, *, topic="", attributes=None, destination_identities=None, **kw):
+    async def stream_bytes(
+        self, name, *, topic="", attributes=None, destination_identities=None, **kw
+    ):
         assert topic == "lk.audio_stream"
-        s = Stream(dict(attributes or {}), list(destination_identities or []), opened_at=time.monotonic())
+        s = Stream(
+            dict(attributes or {}), list(destination_identities or []), opened_at=time.monotonic()
+        )
         self.room.streams.append(s)
         return _Writer(s, self.room)
 

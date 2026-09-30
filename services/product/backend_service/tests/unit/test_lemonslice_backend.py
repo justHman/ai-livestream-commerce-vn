@@ -164,7 +164,9 @@ def test_final_window_returns_only_after_playback_finished(started):
     assert time.monotonic() - t0 >= room.play_delay
     assert backend.playback_info(res.session_id, "u1")["playback_unconfirmed"] is False
     first_write = room.times("first_write")[0]
-    assert first_write <= room.times("lk.playback_started")[0] <= room.times("lk.playback_finished")[0]
+    assert (
+        first_write <= room.times("lk.playback_started")[0] <= room.times("lk.playback_finished")[0]
+    )
 
 
 def test_unconfirmed_playback_is_bounded_and_recorded():
