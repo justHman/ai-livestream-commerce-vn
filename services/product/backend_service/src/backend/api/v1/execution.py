@@ -78,7 +78,17 @@ async def get_execution(
 ) -> dict[str, Any]:
     d = container_from_request(request)
     _, state = await _load(d.store, session_id)
-    return {"state": state.model_dump(mode="json"), "capabilities": Capabilities().model_dump()}
+    opening = d.coordinator.opening_media(session_id) if d.coordinator else None
+    if opening is not None:
+        # Backend-observed avatar playback (cloud_lemonslice only); null elsewhere.
+        info_fn = getattr(d.backend, "playback_info", None)
+        info = info_fn(session_id, opening["media_utterance_id"]) if info_fn else None
+        opening = {**opening, "playback_started_at": (info or {}).get("playback_started_at")}
+    return {
+        "state": state.model_dump(mode="json"),
+        "capabilities": Capabilities().model_dump(),
+        "opening_media": opening,
+    }
 
 
 @router.post("/sessions/{session_id}/execution/evidence")
