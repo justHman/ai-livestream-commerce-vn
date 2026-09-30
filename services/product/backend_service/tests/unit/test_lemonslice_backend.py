@@ -7,8 +7,10 @@ No LemonSlice, a TTS provider or LiveKit network is touched; keys are fake strin
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import jwt
@@ -108,6 +110,7 @@ def test_runtime_participant_is_data_only_and_preview_token_is_subscribe_only(st
     assert (grants["canPublish"], grants["canPublishData"]) == (False, True)
     preview = jwt.decode(res.livekit_client_token, options={"verify_signature": False})
     assert (preview["video"]["canPublish"], preview["video"]["canSubscribe"]) == (False, True)
+    assert preview["video"]["canPublishData"] is False
 
 
 @pytest.mark.parametrize("status", [401, 500])
@@ -361,9 +364,9 @@ async def test_execution_get_returns_additive_opening_media_with_playback_starte
     receipt = case.d.coordinator.opening_media(case.sid)
     body = (await case.client.get(url)).json()
     assert body["opening_media"] == {**receipt, "playback_started_at": None}
-    case.d.backend.playback_info = lambda sid, uid: {"playback_started_at": 1234.5}
+    case.d.backend.playback_info = lambda sid, uid: {"playback_started_at": 1759226400.25}
     body = (await case.client.get(url)).json()
-    assert body["opening_media"]["playback_started_at"] == 1234.5
+    assert body["opening_media"]["playback_started_at"] == "2025-09-30T10:00:00.250000Z"
     assert set(body) == {"state", "capabilities", "opening_media"}
 
 
@@ -374,3 +377,18 @@ def test_whole_utterance_from_any_engine_rate_is_chunked_and_resampled(started, 
     chunks = room.streams[0].chunks
     assert len(chunks) >= 5 and max(len(c) for _, c in chunks) <= 16000 // 5 * 2
     assert abs(len(room.streams[0].pcm) / 2 / 16000 - 1.0) <= 0.02
+
+
+FIXTURE = Path(__file__).parent.parent / "fixtures" / "opening_media_playback_started.json"
+
+
+@pytest.mark.asyncio
+async def test_opening_media_bytes_match_shared_api_fixture(case_factory):
+    """Same fixture file lives in the API repo (ai-connector usecase testdata); both sides decode/emit it."""
+    fixture = json.loads(FIXTURE.read_text())
+    case = await start_tests.prepared(case_factory)
+    receipt = {k: v for k, v in fixture.items() if k != "playback_started_at"}
+    case.d.coordinator.opening_media = lambda sid: dict(receipt)
+    case.d.backend.playback_info = lambda sid, uid: {"playback_started_at": 1759226400.25}
+    body = (await case.client.get(f"/api/v1/sessions/{case.sid}/execution")).json()
+    assert body["opening_media"] == fixture

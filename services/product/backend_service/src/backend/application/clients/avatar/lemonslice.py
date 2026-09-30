@@ -278,6 +278,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             ttl_sec=s.client_token_ttl_s,
             can_publish=False,
             can_subscribe=True,
+            can_publish_data=False,  # a browser holder must never reach lk.audio_stream / RPC
         )
         return StartResult(
             session_id=room_name,
