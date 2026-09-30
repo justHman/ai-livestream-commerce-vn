@@ -132,9 +132,26 @@ class ApprovedSpeech:
         self.source = source
         self._pinned: dict[str, ExecutionEnvelope] = {}
         self._epochs: dict[str, int] = {}
+        # P0-FB-016 start fence: "held", "closing" or "ending". Unlike the
+        # epoch it never cancels the current utterance; it refuses new turns.
+        self._blocked: dict[str, str] = {}
 
     def cancel(self, session_id: str) -> None:
         self._epochs[session_id] = self._epochs.get(session_id, 0) + 1
+
+    def block(self, session_id: str, reason: str | None) -> None:
+        if reason is None:
+            self._blocked.pop(session_id, None)
+        else:
+            self._blocked[session_id] = reason
+
+    def blocked(self, session_id: str) -> str | None:
+        return self._blocked.get(session_id)
+
+    def check_start(self, session_id: str) -> None:
+        reason = self._blocked.get(session_id)
+        if reason is not None:
+            raise SpeechRejected(reason)
 
     def rebind(self, session_id: str) -> None:
         self.cancel(session_id)
@@ -270,6 +287,10 @@ class ApprovedSpeech:
         live: Callable[[], bool] = lambda: True,
     ) -> ValidatedSpeech:
         epoch = self._epochs.get(session_id, 0)
+        if route != "director":
+            # Director turns may be prepared while held; they wait at the
+            # coordinator start boundary. Any other route would start now.
+            self.check_start(session_id)
         envelope = await self.resolve(session_id)
         candidates = (envelope.product(product_id),) if product_id else envelope.products
         if select_locked:
@@ -311,6 +332,8 @@ class ApprovedSpeech:
             raise SpeechRejected("unsupported_content")
         speech = ValidatedSpeech(envelope, product, text, epoch, route)
         await self.revalidate(speech, live=live)
+        if route != "director":
+            self.check_start(session_id)
         return speech
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:

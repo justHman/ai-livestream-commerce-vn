@@ -265,6 +265,7 @@ class DirectorCoordinator:
         """
         if self.approved_speech is not None:
             self.approved_speech.cancel(session_id)
+            self.approved_speech.block(session_id, None)
         current = self._current_speech.get(session_id)
         if current is not None:
             current.is_cancelled = True
@@ -370,6 +371,42 @@ class DirectorCoordinator:
             await entry["orchestrator"].cancel(session_id)
         await asyncio.to_thread(self._backend.interrupt, session_id)
         return token
+
+    # -- P0-FB-016 Hold / closing start fence ---------------------------------
+    def _frozen(self, session_id: str) -> bool:
+        """Held, closing or ending: ingest continues, no new turn starts."""
+        return self.approved_speech is not None and bool(self.approved_speech.blocked(session_id))
+
+    def resume(self, session_id: str) -> list[str]:
+        """Re-check queued Q&A age before anything plays; called after unblock.
+
+        Hard expiry is measured from each member comment's original time
+        (BR-QA-002: delay does not reset age). Envelope/content revalidation
+        runs again at ``_maybe_speak`` before any queued turn starts.
+        """
+        expired = []
+        ds = self._runtime._sessions.get(session_id)
+        if ds is not None:
+            # ponytail: the Director selection window is the hard-expiry horizon
+            # (exact windows REQUIRES_VALIDATION); swap in the validated value.
+            horizon = ds.director.cfg.selection_window_sec
+            seen = {c.id: c.t for c in ds.director.state.rolling_comments}
+            now = ds.now()
+            for queue in (self._decision_queue.get(session_id), self._speech_queue.get(session_id)):
+                for decision in list(queue or ()):
+                    if decision.action not in ("answer_cluster", "answer_fact"):
+                        continue
+                    times = [seen[i] for i in decision.cluster_member_ids if i in seen]
+                    # Unknown (pruned) members are older than the window: fail closed.
+                    if not times or now - max(times) > horizon:
+                        queue.remove(decision)
+                        self._record_cancelled(session_id, decision, "hard_expired")
+                        expired.append(decision.turn_id)
+            self._last_tick[session_id] = now
+        event = self._playback_events.get(session_id)
+        if event is not None:
+            event.set()
+        return expired
 
     def ingest(
         self,
@@ -710,6 +747,10 @@ class DirectorCoordinator:
         # Director's selection window.
         state.prune_history(director_now, director.cfg.selection_window_sec)
         now = ds.now()
+        if self._frozen(session_id):
+            # Hold freezes Director timers and scheduling, not ingestion.
+            self._last_tick[session_id] = now
+            return
         self._advance_timers(session_id, now, state)
         await self._fill_prepared(session_id)
 
@@ -730,7 +771,7 @@ class DirectorCoordinator:
 
     async def _fill_prepared(self, session_id: str) -> None:
         ds = self._runtime._sessions.get(session_id)
-        if ds is None:
+        if ds is None or self._frozen(session_id):
             return
         # Finish the sole approved opening before projecting selling turns.
         if (
@@ -883,7 +924,7 @@ class DirectorCoordinator:
                 await event.wait()
                 event.clear()
                 queue = self._speech_queue.get(session_id)
-                while queue:
+                while queue and not self._frozen(session_id):
                     decision = queue.popleft()
                     if decision.revision_token != self._runtime.current_generation_token(
                         session_id
@@ -966,6 +1007,11 @@ class DirectorCoordinator:
                     },
                 )
                 return True
+
+        # Safe speech boundary (P0-FB-016): a held turn stays queued. No await
+        # separates this check from lock acquisition below.
+        if self._frozen(session_id):
+            return False
 
         # Playback is serialized. A lock may belong to manual speech or an
         # active backend turn, so never release it from a queued decision.
