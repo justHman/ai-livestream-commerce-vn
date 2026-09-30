@@ -306,13 +306,23 @@ async def sessions_interrupt(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
-    from .execution import hard_cancel, use_execution_command
+    from .execution import use_execution_command
 
     # P0-FB-016: a P0 session is interrupted only by an audited command.
     if await use_execution_command(d, session_id):
         raise HTTPException(status_code=409, detail={"code": "use_execution_command"})
+    d.approved_speech.cancel(session_id)
+    # Task 8: if there is an active streaming orchestrator for this session,
+    # cancel it first (stops emission + drains the bounded queue).
     try:
-        await hard_cancel(d, session_id)
+        if d.coordinator is not None and d.coordinator.has(session_id):
+            await d.coordinator.interrupt(session_id)
+        else:
+            entry = d.orchestrators.get(session_id)
+            if entry is not None:
+                orch = entry["orchestrator"]
+                await orch.cancel(session_id)
+            await asyncio.to_thread(d.backend.interrupt, session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     if d.hub is not None:
