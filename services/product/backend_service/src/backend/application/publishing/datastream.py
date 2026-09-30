@@ -115,9 +115,11 @@ class AvatarAudioChannel:
             )
         assert self._resampler is not None
         out = self._resampler.push(pcm) + (self._resampler.flush() if final else b"")
-        if out:
-            await self._writer.write(out)
-            self.sent_ms += len(out) / 2 / self.sample_rate * 1000
+        # Engines may return whole utterances: write in <= 200 ms slices (even sample count).
+        step = self.sample_rate // 5 * 2
+        for i in range(0, len(out), step):
+            await self._writer.write(out[i : i + step])
+        self.sent_ms += len(out) / 2 / self.sample_rate * 1000
         if final:
             await self._close(reason=None)
         return out

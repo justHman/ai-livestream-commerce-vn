@@ -1,7 +1,7 @@
 """P0-FB-010 Runtime slice: cloud_lemonslice backend against a protocol double.
 
 Every test uses ``lemonslice_double`` (fake LiveKit room, fake avatar, fake REST).
-No LemonSlice, ElevenLabs or LiveKit network is touched; keys are fake strings.
+No LemonSlice, a TTS provider or LiveKit network is touched; keys are fake strings.
 """
 
 from __future__ import annotations
@@ -320,12 +320,6 @@ def test_config_requires_credentials(monkeypatch, missing):
         _cfg(monkeypatch, **{missing: ""}).build_render_backend()
 
 
-def test_elevenlabs_voice_id_aliases_tts_voice_id(monkeypatch):
-    monkeypatch.delenv("TTS_VOICE_ID", raising=False)
-    monkeypatch.setenv("ELEVENLABS_VOICE_ID", "voice-1")
-    assert AppConfig.from_env().tts.to_engine_cfg()["voice_id"] == "voice-1"
-
-
 @pytest.mark.asyncio
 async def test_orchestrator_completes_an_utterance_with_zero_video_windows():
     from backend.application.render.orchestrator import (
@@ -371,3 +365,12 @@ async def test_execution_get_returns_additive_opening_media_with_playback_starte
     body = (await case.client.get(url)).json()
     assert body["opening_media"]["playback_started_at"] == 1234.5
     assert set(body) == {"state", "capabilities", "opening_media"}
+
+
+@pytest.mark.parametrize("rate", [22050, 44100])
+def test_whole_utterance_from_any_engine_rate_is_chunked_and_resampled(started, rate):
+    backend, room, _, res = started
+    backend.stream_audio(res.session_id, win("u1", 0, ms=1000, rate=rate, final=True))
+    chunks = room.streams[0].chunks
+    assert len(chunks) >= 5 and max(len(c) for _, c in chunks) <= 16000 // 5 * 2
+    assert abs(len(room.streams[0].pcm) / 2 / 16000 - 1.0) <= 0.02

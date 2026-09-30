@@ -318,8 +318,7 @@ class TTSConfig:
                 # ElevenLabs remote TTS (Stage 2 ship-fast): api_key + voice_id + model_id.
                 "api_key": os.environ.get("TTS_API_KEY")
                 or os.environ.get("ELEVENLABS_API_KEY", ""),
-                "voice_id": os.environ.get("TTS_VOICE_ID")
-                or os.environ.get("ELEVENLABS_VOICE_ID", ""),
+                "voice_id": os.environ.get("TTS_VOICE_ID", ""),
                 "model_id": os.environ.get("TTS_MODEL_ID", ""),
             },
         )
