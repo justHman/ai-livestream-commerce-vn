@@ -40,6 +40,17 @@ async def ws_control(ws: WebSocket, session_id: str) -> None:
                 return
             mtype = msg.get("type")
             if mtype == "interrupt":
+                from .execution import use_execution_command
+
+                if await use_execution_command(d, session_id):
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "code": "use_execution_command",
+                            "detail": "P0 sessions use the execution command endpoint",
+                        }
+                    )
+                    continue
                 try:
                     # Task 8: cancel any active streaming orchestrator first.
                     entry = d.orchestrators.get(session_id)

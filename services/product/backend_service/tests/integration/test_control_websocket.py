@@ -118,3 +118,37 @@ def test_ws_connect_emits_control_connected(mock_env: None) -> None:
             msg = ws.receive_json()
     assert msg["type"] == "control.connected"
     assert msg["session_id"] == "sid-conn"
+
+
+# ---------- P0-FB-016: legacy WS interrupt on a P0 session ----------
+
+
+@pytest.mark.parametrize("p0", [True, False])
+def test_ws_interrupt_on_p0_uses_execution_command(
+    mock_env: None, monkeypatch: pytest.MonkeyPatch, p0: bool
+) -> None:
+    monkeypatch.setenv("LIVENTO_P0_RESCUE_COMMANDS", "1")
+    cfg = AppConfig(render_backend="mock", app_env="dev", backend_api_token="", debug_enabled=True)
+    body = (
+        {
+            "execution_contract": "p0.execution.v1",
+            "tenant_id": "tenant-1",
+            "business_session_id": "business-1",
+            "generation": "generation-1",
+        }
+        if p0
+        else {}
+    )
+    with _client(cfg) as client:
+        started = client.post("/api/v1/sessions", json=body)
+        assert started.status_code == 200, started.text
+        sid = started.json()["session_id"]
+        with client.websocket_connect(f"/api/v1/ws/control/{sid}") as ws:
+            assert ws.receive_json()["type"] == "control.connected"
+            ws.send_json({"type": "interrupt"})
+            ws.send_json({"type": "ping"})
+            first = ws.receive_json()
+    if p0:
+        assert first["type"] == "error" and first["code"] == "use_execution_command"
+    else:
+        assert first["type"] != "error"
