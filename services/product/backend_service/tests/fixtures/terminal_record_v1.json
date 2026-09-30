@@ -1,0 +1,2176 @@
+{
+  "contract": "C-TERMINAL-001",
+  "schema": "p0.terminal.v1",
+  "ids": [
+    {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0"
+    },
+    {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-2"
+      },
+      "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519"
+    },
+    {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-2",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:e999a33453a29df87c23c55b059265f97429c0bda93d2eb5f78e21badb42c4ac"
+    },
+    {
+      "identity": {
+        "tenant_id": "a:b",
+        "business_session_id": "1:c",
+        "runtime_session_id": "::",
+        "generation": "ég"
+      },
+      "terminal_record_id": "tr:f1934a71a6c2e6d485d2130b515e651946e4c9055b47a8284f712c461d65e6b0"
+    }
+  ],
+  "canonical": [
+    {
+      "record": "ended_normal",
+      "input": "14:p0.terminal.v18:tenant-110:business-19:runtime-112:generation-15:ended10:normal_end0:5:ENDED16:merchant_command9:cmd-end-17:owner-12:124:true16:media-evidence-127:2026-09-30T00:00:00.000000Z27:2026-09-30T00:00:01.000000Z27:2026-09-30T00:00:05.000000Z27:2026-09-30T00:00:06.000000Z27:2026-09-30T00:00:06.123456Z"
+    },
+    {
+      "record": "failed_runtime_error",
+      "input": "14:p0.terminal.v18:tenant-110:business-19:runtime-112:generation-16:failed16:execution_failed13:runtime_error6:FAILED7:runtime0:0:1:94:true16:media-evidence-127:2026-09-30T00:00:00.000000Z0:0:27:2026-09-30T00:00:06.000000Z27:2026-09-30T00:00:06.123456Z"
+    },
+    {
+      "record": "ended_pre_live_cancel",
+      "input": "14:p0.terminal.v18:tenant-110:business-19:runtime-112:generation-25:ended15:pre_live_cancel0:8:CANCELED16:merchant_command12:cmd-cancel-17:owner-11:35:false0:27:2026-09-30T00:00:00.000000Z0:0:27:2026-09-30T00:00:06.000000Z27:2026-09-30T00:00:06.123456Z"
+    }
+  ],
+  "records": {
+    "ended_normal": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+      "terminal_phase": "ended",
+      "reason_code": "normal_end",
+      "failure_class": null,
+      "business_outcome": "ENDED",
+      "source": "merchant_command",
+      "command_ref": {
+        "command_id": "cmd-end-1",
+        "actor_id": "owner-1"
+      },
+      "terminal_sequence": 12,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": "2026-09-30T00:00:01Z",
+      "ending_started_at": "2026-09-30T00:00:05Z",
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+    },
+    "ended_normal_offset_tz": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+      "terminal_phase": "ended",
+      "reason_code": "normal_end",
+      "failure_class": null,
+      "business_outcome": "ENDED",
+      "source": "merchant_command",
+      "command_ref": {
+        "command_id": "cmd-end-1",
+        "actor_id": "owner-1"
+      },
+      "terminal_sequence": 12,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T07:00:00+07:00",
+      "closing_started_at": "2026-09-30T07:00:01.000000+07:00",
+      "ending_started_at": "2026-09-30T00:00:05.000000Z",
+      "terminal_at": "2026-09-30T07:00:06+07:00",
+      "recorded_at": "2026-09-30T07:00:06.123456+07:00",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+    },
+    "ended_normal_later_cleanup": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+      "terminal_phase": "ended",
+      "reason_code": "normal_end",
+      "failure_class": null,
+      "business_outcome": "ENDED",
+      "source": "merchant_command",
+      "command_ref": {
+        "command_id": "cmd-end-1",
+        "actor_id": "owner-1"
+      },
+      "terminal_sequence": 12,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": "2026-09-30T00:00:01Z",
+      "ending_started_at": "2026-09-30T00:00:05Z",
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "retrying",
+        "attempts": 2,
+        "last_error_class": "egress_timeout",
+        "refs": {
+          "media": "media:1",
+          "livekit_room": "room-1",
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+    },
+    "ended_emergency": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+      "terminal_phase": "ended",
+      "reason_code": "merchant_emergency_end",
+      "failure_class": null,
+      "business_outcome": "ENDED",
+      "source": "merchant_command",
+      "command_ref": {
+        "command_id": "cmd-emergency-1",
+        "actor_id": "owner-1"
+      },
+      "terminal_sequence": 12,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": null,
+      "ending_started_at": "2026-09-30T00:00:05Z",
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "ced8f16dd26106b5a38dba2708c53ddcf2745d3ace922fe5ee12209f5bf8a1f4"
+    },
+    "ended_other_runtime": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-2",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:e999a33453a29df87c23c55b059265f97429c0bda93d2eb5f78e21badb42c4ac",
+      "terminal_phase": "ended",
+      "reason_code": "normal_end",
+      "failure_class": null,
+      "business_outcome": "ENDED",
+      "source": "merchant_command",
+      "command_ref": {
+        "command_id": "cmd-end-1",
+        "actor_id": "owner-1"
+      },
+      "terminal_sequence": 12,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": "2026-09-30T00:00:01Z",
+      "ending_started_at": "2026-09-30T00:00:05Z",
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "62e6bc6ebca63ee22b6b626effd71f757e1b09db6b1765568037cb772a304204"
+    },
+    "failed_runtime_error": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+      "terminal_phase": "failed",
+      "reason_code": "execution_failed",
+      "failure_class": "runtime_error",
+      "business_outcome": "FAILED",
+      "source": "runtime",
+      "command_ref": null,
+      "terminal_sequence": 9,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": null,
+      "ending_started_at": null,
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "ea264a278962471ebd88d83bf7d79c18efd259a22ccd094ad12a7ed08b6b0010"
+    },
+    "failed_cleanup_failed": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-1"
+      },
+      "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+      "terminal_phase": "failed",
+      "reason_code": "execution_failed",
+      "failure_class": "cleanup_failed",
+      "business_outcome": "FAILED",
+      "source": "runtime",
+      "command_ref": null,
+      "terminal_sequence": 10,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": null,
+      "ending_started_at": null,
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "93ba0bd4587011b1809448197ff4a728c6986d046a4a833144938bb865dcb72b"
+    },
+    "failed_runtime_lost_supervisor": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-2"
+      },
+      "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+      "terminal_phase": "failed",
+      "reason_code": "execution_failed",
+      "failure_class": "runtime_lost",
+      "business_outcome": "FAILED",
+      "source": "api_supervisor",
+      "command_ref": null,
+      "terminal_sequence": 0,
+      "first_ai_broadcast": false,
+      "first_playable_evidence_id": null,
+      "stop_requested_at": null,
+      "closing_started_at": null,
+      "ending_started_at": null,
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "3ea9d1031b6f6a0d5f8c3935e7fe4789d64078f7417fd520bdd30ba87e066bca"
+    },
+    "ended_pre_live_cancel": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-2"
+      },
+      "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+      "terminal_phase": "ended",
+      "reason_code": "pre_live_cancel",
+      "failure_class": null,
+      "business_outcome": "CANCELED",
+      "source": "merchant_command",
+      "command_ref": {
+        "command_id": "cmd-cancel-1",
+        "actor_id": "owner-1"
+      },
+      "terminal_sequence": 3,
+      "first_ai_broadcast": false,
+      "first_playable_evidence_id": null,
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": null,
+      "ending_started_at": null,
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "b358645438b779f8f31aa3522bf4c399d2084159968807fb0da7ff735dd7b229"
+    },
+    "ended_entitlement_exhausted": {
+      "identity": {
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "runtime_session_id": "runtime-1",
+        "generation": "generation-2"
+      },
+      "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+      "terminal_phase": "ended",
+      "reason_code": "entitlement_exhausted",
+      "failure_class": null,
+      "business_outcome": "ENDED",
+      "source": "runtime",
+      "command_ref": {
+        "command_id": "ent:boundary-1",
+        "actor_id": "system:entitlement"
+      },
+      "terminal_sequence": 12,
+      "first_ai_broadcast": true,
+      "first_playable_evidence_id": "media-evidence-1",
+      "stop_requested_at": "2026-09-30T00:00:00Z",
+      "closing_started_at": "2026-09-30T00:00:01Z",
+      "ending_started_at": "2026-09-30T00:00:05Z",
+      "terminal_at": "2026-09-30T00:00:06Z",
+      "recorded_at": "2026-09-30T00:00:06.123456Z",
+      "cleanup": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "evidence_refs": {
+        "last_execution_sequence": null,
+        "usage_final_ref": null,
+        "ledger_ref": null,
+        "diagnostic_ref": null
+      },
+      "record_hash": "b5ad1097a4615f80711701bbefa67537c799e51c2058170ee0b0d4591cf55077"
+    }
+  },
+  "validation": [
+    {
+      "name": "ended_normal",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+      },
+      "valid": true
+    },
+    {
+      "name": "ended_normal_offset_tz",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T07:00:00+07:00",
+        "closing_started_at": "2026-09-30T07:00:01.000000+07:00",
+        "ending_started_at": "2026-09-30T00:00:05.000000Z",
+        "terminal_at": "2026-09-30T07:00:06+07:00",
+        "recorded_at": "2026-09-30T07:00:06.123456+07:00",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+      },
+      "valid": true
+    },
+    {
+      "name": "ended_normal_later_cleanup",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "retrying",
+          "attempts": 2,
+          "last_error_class": "egress_timeout",
+          "refs": {
+            "media": "media:1",
+            "livekit_room": "room-1",
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+      },
+      "valid": true
+    },
+    {
+      "name": "ended_emergency",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "merchant_emergency_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-emergency-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "ced8f16dd26106b5a38dba2708c53ddcf2745d3ace922fe5ee12209f5bf8a1f4"
+      },
+      "valid": true
+    },
+    {
+      "name": "ended_other_runtime",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-2",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:e999a33453a29df87c23c55b059265f97429c0bda93d2eb5f78e21badb42c4ac",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "62e6bc6ebca63ee22b6b626effd71f757e1b09db6b1765568037cb772a304204"
+      },
+      "valid": true
+    },
+    {
+      "name": "failed_runtime_error",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "failed",
+        "reason_code": "execution_failed",
+        "failure_class": "runtime_error",
+        "business_outcome": "FAILED",
+        "source": "runtime",
+        "command_ref": null,
+        "terminal_sequence": 9,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "ea264a278962471ebd88d83bf7d79c18efd259a22ccd094ad12a7ed08b6b0010"
+      },
+      "valid": true
+    },
+    {
+      "name": "failed_cleanup_failed",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "failed",
+        "reason_code": "execution_failed",
+        "failure_class": "cleanup_failed",
+        "business_outcome": "FAILED",
+        "source": "runtime",
+        "command_ref": null,
+        "terminal_sequence": 10,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "93ba0bd4587011b1809448197ff4a728c6986d046a4a833144938bb865dcb72b"
+      },
+      "valid": true
+    },
+    {
+      "name": "failed_runtime_lost_supervisor",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-2"
+        },
+        "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+        "terminal_phase": "failed",
+        "reason_code": "execution_failed",
+        "failure_class": "runtime_lost",
+        "business_outcome": "FAILED",
+        "source": "api_supervisor",
+        "command_ref": null,
+        "terminal_sequence": 0,
+        "first_ai_broadcast": false,
+        "first_playable_evidence_id": null,
+        "stop_requested_at": null,
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "3ea9d1031b6f6a0d5f8c3935e7fe4789d64078f7417fd520bdd30ba87e066bca"
+      },
+      "valid": true
+    },
+    {
+      "name": "ended_pre_live_cancel",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-2"
+        },
+        "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+        "terminal_phase": "ended",
+        "reason_code": "pre_live_cancel",
+        "failure_class": null,
+        "business_outcome": "CANCELED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-cancel-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 3,
+        "first_ai_broadcast": false,
+        "first_playable_evidence_id": null,
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "b358645438b779f8f31aa3522bf4c399d2084159968807fb0da7ff735dd7b229"
+      },
+      "valid": true
+    },
+    {
+      "name": "ended_entitlement_exhausted",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-2"
+        },
+        "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+        "terminal_phase": "ended",
+        "reason_code": "entitlement_exhausted",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "runtime",
+        "command_ref": {
+          "command_id": "ent:boundary-1",
+          "actor_id": "system:entitlement"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "b5ad1097a4615f80711701bbefa67537c799e51c2058170ee0b0d4591cf55077"
+      },
+      "valid": true
+    },
+    {
+      "name": "failed_rewritten_to_ended_reason",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "failed",
+        "reason_code": "normal_end",
+        "failure_class": "runtime_error",
+        "business_outcome": "FAILED",
+        "source": "runtime",
+        "command_ref": null,
+        "terminal_sequence": 9,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "0ffdbd8d5827bb1fd61cc49872d76d4a846a7c2933e4bbe3d7254b40019f93ed"
+      },
+      "valid": false
+    },
+    {
+      "name": "ended_with_failure_class",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": "runtime_error",
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "79bb9768c673a8ce3f69a64cba46401278e5fd56fcf79ca1ef6848ba59054125"
+      },
+      "valid": false
+    },
+    {
+      "name": "failed_without_failure_class",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "failed",
+        "reason_code": "execution_failed",
+        "failure_class": null,
+        "business_outcome": "FAILED",
+        "source": "runtime",
+        "command_ref": null,
+        "terminal_sequence": 9,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "ba3cfabb4c3deaef3ef78ce0278f330c4feae150cce6fbe2ca8b698d813a35ba"
+      },
+      "valid": false
+    },
+    {
+      "name": "failed_unknown_failure_class",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "failed",
+        "reason_code": "execution_failed",
+        "failure_class": "made_up",
+        "business_outcome": "FAILED",
+        "source": "runtime",
+        "command_ref": null,
+        "terminal_sequence": 9,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "df4c2618b51e2d365afab6db8b9a4a58cf087f3e951ed88a15cda139dd638a74"
+      },
+      "valid": false
+    },
+    {
+      "name": "ended_but_business_failed",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "FAILED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "291b0ef43e4da2670e5b964f5ebcd1ef8228dffbcb299f857cc275e18406fb63"
+      },
+      "valid": false
+    },
+    {
+      "name": "pre_live_cancel_after_first_broadcast",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-2"
+        },
+        "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+        "terminal_phase": "ended",
+        "reason_code": "pre_live_cancel",
+        "failure_class": null,
+        "business_outcome": "CANCELED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-cancel-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 3,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": null,
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "dea89fc7a247ab291b28c7b17698254793805c9997a3ea87c67db7c090298905"
+      },
+      "valid": false
+    },
+    {
+      "name": "pre_live_cancel_not_canceled",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-2"
+        },
+        "terminal_record_id": "tr:eb84ed843b94b4b3e091c797fe3282ffd0d90c12b50971da6f417dd66adee519",
+        "terminal_phase": "ended",
+        "reason_code": "pre_live_cancel",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-cancel-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 3,
+        "first_ai_broadcast": false,
+        "first_playable_evidence_id": null,
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": null,
+        "ending_started_at": null,
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "b1cdd1a990affb6c5d77c6ff3738a0d3feb2086c4bf836d15c6e916aa4f7d234"
+      },
+      "valid": false
+    },
+    {
+      "name": "merchant_command_without_ref",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": null,
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "6d4987f85871530fc8d9278e64e7788a30344b1d198ebc6a1cad98f5a45824ae"
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown_source",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "browser",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "f4ae5607fe6f35ae7152018a9fc15582ca226c9ba225dcbf5bf5cca1bb51bb7f"
+      },
+      "valid": false
+    },
+    {
+      "name": "non_terminal_phase",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ending",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "9ddecff9714bd2ff8e45f25dc8fc24789232e36d06a863d955dc85ca5eace01f"
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown_end_reason",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "stopped",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "2f1ecbd91b3f020bc43fe19c0fa8c92e2fb2aa72bac35300b9a3813acfd71c63"
+      },
+      "valid": false
+    },
+    {
+      "name": "overlong_generation",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+        },
+        "terminal_record_id": "tr:71f9e41ced56a4d541a46ebb1aa35866731b7c9f17164320986c1fc6f5050f2f",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "a5858bb7c4d8ae2fa3c2b83a2bc786a6d904b8840fec6aebb210fbd9089fc0d7"
+      },
+      "valid": false
+    },
+    {
+      "name": "overlong_command_id",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "cd915127a3161b651718c54bfbc1d03acc64db101dcb1c9cee074b563848bc5d"
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown_cleanup_status",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "done",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+      },
+      "valid": false
+    },
+    {
+      "name": "negative_cleanup_attempts",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": -1,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+      },
+      "valid": false
+    },
+    {
+      "name": "tampered_hash",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "valid": false
+    },
+    {
+      "name": "tampered_id",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:0000000000000000000000000000000000000000000000000000000000000000",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 12,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+      },
+      "valid": false
+    },
+    {
+      "name": "tampered_core_after_seal",
+      "record": {
+        "identity": {
+          "tenant_id": "tenant-1",
+          "business_session_id": "business-1",
+          "runtime_session_id": "runtime-1",
+          "generation": "generation-1"
+        },
+        "terminal_record_id": "tr:4911635de45af005d3f795f94df06b849bc0181a761fae7a16fa443d12c952b0",
+        "terminal_phase": "ended",
+        "reason_code": "normal_end",
+        "failure_class": null,
+        "business_outcome": "ENDED",
+        "source": "merchant_command",
+        "command_ref": {
+          "command_id": "cmd-end-1",
+          "actor_id": "owner-1"
+        },
+        "terminal_sequence": 13,
+        "first_ai_broadcast": true,
+        "first_playable_evidence_id": "media-evidence-1",
+        "stop_requested_at": "2026-09-30T00:00:00Z",
+        "closing_started_at": "2026-09-30T00:00:01Z",
+        "ending_started_at": "2026-09-30T00:00:05Z",
+        "terminal_at": "2026-09-30T00:00:06Z",
+        "recorded_at": "2026-09-30T00:00:06.123456Z",
+        "cleanup": {
+          "status": "pending",
+          "attempts": 0,
+          "last_error_class": null,
+          "refs": {
+            "media": null,
+            "livekit_room": null,
+            "egress": null,
+            "platform_live": null
+          }
+        },
+        "evidence_refs": {
+          "last_execution_sequence": null,
+          "usage_final_ref": null,
+          "ledger_ref": null,
+          "diagnostic_ref": null
+        },
+        "record_hash": "8581a7b4254cf8e2efa4b59e2d39b6e0b5efacf5fbeaeb9978fab6535a99d4b0"
+      },
+      "valid": false
+    }
+  ],
+  "precedence": [
+    {
+      "name": "first_terminal_creates",
+      "existing": null,
+      "incoming": "ended_normal",
+      "action": "create",
+      "reason": "",
+      "audit": "",
+      "cleanup_failure": false
+    },
+    {
+      "name": "duplicate_returns_same_record",
+      "existing": "ended_normal",
+      "incoming": "ended_normal",
+      "action": "replay",
+      "reason": "",
+      "audit": "",
+      "cleanup_failure": false
+    },
+    {
+      "name": "redelivery_with_newer_cleanup_is_replay",
+      "existing": "ended_normal",
+      "incoming": "ended_normal_later_cleanup",
+      "action": "replay",
+      "reason": "",
+      "audit": "",
+      "cleanup_failure": false
+    },
+    {
+      "name": "timestamp_spelling_does_not_change_the_record",
+      "existing": "ended_normal",
+      "incoming": "ended_normal_offset_tz",
+      "action": "replay",
+      "reason": "",
+      "audit": "",
+      "cleanup_failure": false
+    },
+    {
+      "name": "late_success_after_failed",
+      "existing": "failed_runtime_error",
+      "incoming": "ended_normal",
+      "action": "reject",
+      "reason": "already_terminal",
+      "audit": "late_success",
+      "cleanup_failure": false
+    },
+    {
+      "name": "late_failure_after_ended_is_cleanup_evidence",
+      "existing": "ended_normal",
+      "incoming": "failed_runtime_error",
+      "action": "reject",
+      "reason": "already_terminal",
+      "audit": "late_failure",
+      "cleanup_failure": true
+    },
+    {
+      "name": "emergency_does_not_rewrite_normal_end",
+      "existing": "ended_normal",
+      "incoming": "ended_emergency",
+      "action": "reject",
+      "reason": "already_terminal",
+      "audit": "conflicting_terminal",
+      "cleanup_failure": false
+    },
+    {
+      "name": "second_failure_does_not_rewrite_first",
+      "existing": "failed_runtime_error",
+      "incoming": "failed_cleanup_failed",
+      "action": "reject",
+      "reason": "already_terminal",
+      "audit": "conflicting_terminal",
+      "cleanup_failure": false
+    },
+    {
+      "name": "different_runtime_session_same_generation",
+      "existing": "ended_normal",
+      "incoming": "ended_other_runtime",
+      "action": "reject",
+      "reason": "already_terminal",
+      "audit": "conflicting_terminal",
+      "cleanup_failure": false
+    },
+    {
+      "name": "supervisor_failure_when_empty",
+      "existing": null,
+      "incoming": "failed_runtime_lost_supervisor",
+      "action": "create",
+      "reason": "",
+      "audit": "",
+      "cleanup_failure": false
+    },
+    {
+      "name": "supervisor_failure_after_pre_live_cancel_is_late_failure",
+      "existing": "ended_pre_live_cancel",
+      "incoming": "failed_runtime_lost_supervisor",
+      "action": "reject",
+      "reason": "already_terminal",
+      "audit": "late_failure",
+      "cleanup_failure": true
+    }
+  ],
+  "cleanup": [
+    {
+      "name": "newer_attempt_wins",
+      "existing": {
+        "status": "pending",
+        "attempts": 0,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "incoming": {
+        "status": "retrying",
+        "attempts": 1,
+        "last_error_class": "egress_timeout",
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "merged": {
+        "status": "retrying",
+        "attempts": 1,
+        "last_error_class": "egress_timeout",
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "changed": true
+    },
+    {
+      "name": "older_attempt_ignored",
+      "existing": {
+        "status": "retrying",
+        "attempts": 3,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "incoming": {
+        "status": "retrying",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "merged": {
+        "status": "retrying",
+        "attempts": 3,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "changed": false
+    },
+    {
+      "name": "succeeded_is_final",
+      "existing": {
+        "status": "succeeded",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "incoming": {
+        "status": "retrying",
+        "attempts": 5,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "merged": {
+        "status": "succeeded",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "changed": false
+    },
+    {
+      "name": "failed_is_final_ended_preserved",
+      "existing": {
+        "status": "failed",
+        "attempts": 5,
+        "last_error_class": "exhausted",
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "incoming": {
+        "status": "succeeded",
+        "attempts": 6,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "merged": {
+        "status": "failed",
+        "attempts": 5,
+        "last_error_class": "exhausted",
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "changed": false
+    },
+    {
+      "name": "same_attempt_advances_status",
+      "existing": {
+        "status": "retrying",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "incoming": {
+        "status": "succeeded",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "merged": {
+        "status": "succeeded",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "changed": true
+    },
+    {
+      "name": "same_attempt_cannot_regress",
+      "existing": {
+        "status": "retrying",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "incoming": {
+        "status": "pending",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "merged": {
+        "status": "retrying",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": null,
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "changed": false
+    },
+    {
+      "name": "refs_are_filled_not_replaced",
+      "existing": {
+        "status": "retrying",
+        "attempts": 1,
+        "last_error_class": null,
+        "refs": {
+          "media": "media:1",
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "incoming": {
+        "status": "retrying",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": "media:2",
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "merged": {
+        "status": "retrying",
+        "attempts": 2,
+        "last_error_class": null,
+        "refs": {
+          "media": "media:1",
+          "livekit_room": null,
+          "egress": null,
+          "platform_live": null
+        }
+      },
+      "changed": true
+    }
+  ]
+}

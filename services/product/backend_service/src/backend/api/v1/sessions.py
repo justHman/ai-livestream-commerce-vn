@@ -22,6 +22,7 @@ from backend.application.db.session_store import SessionLockTimeout
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
 from . import router
+from .terminal_guard import persist_terminal_before_delete, terminal_retry_pending
 from .router import logger
 from .router import router as _router  # noqa: F401
 
@@ -352,11 +353,13 @@ async def _stop_cancelled_session(d: Any, session_id: str) -> dict[str, Any]:
     try:
         await asyncio.to_thread(d.backend.stop, session_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail="unknown session_id")
+        if not await terminal_retry_pending(d, session_id):
+            raise HTTPException(status_code=404, detail="unknown session_id")
     if d.livekit_publishers is not None:
         await d.livekit_publishers.stop(session_id)
     if d.director is not None:
         d.director.detach(session_id)
+    await persist_terminal_before_delete(d, session_id)
     await d.store.delete(session_id)
     if d.hub is not None:
         await d.hub.emit(session_id, {"type": "session.stopped"})

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 _SCHEMA = Path(__file__).resolve().parents[2] / "db" / "sql" / "runtime_schema.sql"
+_TERMINAL_SCHEMA = Path(__file__).resolve().parents[2] / "db" / "sql" / "terminal_schema.sql"
 _CONNECT_TIMEOUT_SECONDS = 5.0
 _COMMAND_TIMEOUT_SECONDS = 5.0
 
@@ -127,6 +128,187 @@ class PostgresRuntimeStore:
                 await conn.execute(sql)
 
         await self._command(apply)
+
+    async def apply_terminal_schema(self) -> None:
+        """Apply terminal_schema.sql (P0-FB-019). Called only when the feature is enabled."""
+        sql = _TERMINAL_SCHEMA.read_text(encoding="utf-8")
+
+        async def apply() -> None:
+            async with self._require_pool().acquire() as conn:
+                await conn.execute(sql)
+
+        await self._command(apply)
+
+    async def persist_terminal(self, record: Any) -> tuple[Any, bool]:
+        """Store the terminal record and its outbox row in ONE transaction.
+
+        At most one record exists per (tenant, business session, generation):
+        the first durable record wins, and a duplicate stop returns it
+        unchanged (``created=False``). Returns ``(stored_record, created)``.
+        """
+        from backend.application.execution_contract import TerminalRecord
+        from backend.application.terminal_outcomes import body_sha256, record_to_body
+
+        ident = record.identity
+        body = record_to_body(record)
+
+        async def persist() -> tuple[Any, bool]:
+            async with self._require_pool().acquire() as conn:
+                async with conn.transaction():
+                    inserted = await conn.fetchval(
+                        """
+                        INSERT INTO terminal_records (
+                            terminal_record_id, tenant_id, business_session_id,
+                            runtime_session_id, generation, record_hash, record
+                        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+                        ON CONFLICT DO NOTHING
+                        RETURNING terminal_record_id
+                        """,
+                        record.terminal_record_id,
+                        ident.tenant_id,
+                        ident.business_session_id,
+                        ident.runtime_session_id,
+                        ident.generation,
+                        record.record_hash,
+                        body,
+                    )
+                    if inserted is None:
+                        row = await conn.fetchrow(
+                            """
+                            SELECT record FROM terminal_records
+                            WHERE tenant_id = $1 AND business_session_id = $2 AND generation = $3
+                            """,
+                            ident.tenant_id,
+                            ident.business_session_id,
+                            ident.generation,
+                        )
+                        return TerminalRecord.model_validate(json.loads(row["record"])), False
+                    await conn.execute(
+                        """
+                        INSERT INTO terminal_outbox (terminal_record_id, body, body_sha256)
+                        VALUES ($1,$2,$3)
+                        """,
+                        record.terminal_record_id,
+                        body,
+                        body_sha256(body),
+                    )
+                    return record, True
+
+        return await self._command(persist)
+
+    async def claim_terminal_outbox(self, limit: int, lease_seconds: float) -> list[dict[str, Any]]:
+        """Lease due rows in one statement; no connection is held during delivery."""
+
+        async def claim() -> list[Any]:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetch(
+                    """
+                    WITH due AS (
+                        SELECT terminal_record_id FROM terminal_outbox
+                        WHERE status = 'pending' AND next_attempt_at <= NOW()
+                        ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE terminal_outbox o
+                       SET attempts = o.attempts + 1,
+                           next_attempt_at = NOW() + make_interval(secs => $2),
+                           updated_at = NOW()
+                      FROM due
+                     WHERE o.terminal_record_id = due.terminal_record_id
+                 RETURNING o.terminal_record_id, o.body, o.attempts
+                    """,
+                    limit,
+                    float(lease_seconds),
+                )
+
+        return [dict(r) for r in await self._command(claim)]
+
+    async def finish_terminal_outbox(
+        self,
+        terminal_record_id: str,
+        status: str,
+        *,
+        error: Optional[str] = None,
+        retry_in: float = 0.0,
+    ) -> None:
+        async def finish() -> None:
+            async with self._require_pool().acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE terminal_outbox
+                       SET status = $2,
+                           last_error = $3,
+                           next_attempt_at = NOW() + make_interval(secs => $4),
+                           delivered_at = CASE WHEN $2 = 'delivered' THEN NOW() ELSE delivered_at END,
+                           updated_at = NOW()
+                     WHERE terminal_record_id = $1
+                    """,
+                    terminal_record_id,
+                    status,
+                    error,
+                    float(retry_in),
+                )
+
+        await self._command(finish)
+
+    async def update_terminal_cleanup(self, terminal_record_id: str, cleanup: Any) -> bool:
+        """Record a cleanup retry: only ``cleanup`` changes, monotonically, and is redelivered.
+
+        The terminal phase, reason and hash are never touched (cleanup retries
+        are recorded separately). Returns True when the stored record changed.
+        """
+        from backend.application.execution_contract import TerminalRecord, reduce_cleanup
+        from backend.application.terminal_outcomes import body_sha256, record_to_body
+
+        async def update() -> bool:
+            async with self._require_pool().acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "SELECT record FROM terminal_records WHERE terminal_record_id = $1 FOR UPDATE",
+                        terminal_record_id,
+                    )
+                    if row is None:
+                        raise KeyError(terminal_record_id)
+                    stored = TerminalRecord.model_validate(json.loads(row["record"]))
+                    merged, changed = reduce_cleanup(stored.cleanup, cleanup)
+                    if not changed:
+                        return False
+                    body = record_to_body(stored.model_copy(update={"cleanup": merged}))
+                    await conn.execute(
+                        "UPDATE terminal_records SET record = $2::jsonb, updated_at = NOW() "
+                        "WHERE terminal_record_id = $1",
+                        terminal_record_id,
+                        body,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE terminal_outbox
+                           SET body = $2, body_sha256 = $3, status = 'pending', attempts = 0,
+                               next_attempt_at = NOW(), last_error = NULL, updated_at = NOW()
+                         WHERE terminal_record_id = $1
+                        """,
+                        terminal_record_id,
+                        body,
+                        body_sha256(body),
+                    )
+                    return True
+
+        return bool(await self._command(update))
+
+    async def terminal_outbox_backlog(self) -> tuple[int, float]:
+        """(pending rows, age in seconds of the oldest) for Runtime health / P0-FB-020."""
+
+        async def backlog() -> Any:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetchrow(
+                    """
+                    SELECT count(*) AS n,
+                           COALESCE(EXTRACT(EPOCH FROM NOW() - MIN(created_at)), 0) AS age
+                      FROM terminal_outbox WHERE status = 'pending'
+                    """
+                )
+
+        row = await self._command(backlog)
+        return int(row["n"]), float(row["age"])
 
     async def _command(self, operation: Callable[[], Awaitable[Any]]) -> Any:
         try:
