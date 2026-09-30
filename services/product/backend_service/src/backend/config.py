@@ -632,6 +632,12 @@ class AppConfig:
             and not self.redis_url.startswith("rediss://")
         ):
             raise ValueError("production redis requires rediss:// (TLS)")
+        from backend.application.execution_contract import rescue_switch_on
+
+        if rescue_switch_on() and not self.admin_api_token:
+            raise ValueError(
+                "LIVENTO_P0_RESCUE_COMMANDS requires ADMIN_API_TOKEN (internal cleanup)"
+            )
         if (
             self.is_production
             and self.database_url

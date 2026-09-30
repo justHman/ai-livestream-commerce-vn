@@ -97,7 +97,11 @@ async def sessions_start(
                 "Postgres persistence failed session=%s operation=upsert_session",
                 result.session_id,
             )
-    return result.public_dict()  # frontend-safe only
+    out = result.public_dict()  # frontend-safe only
+    if req.rescue_commands:
+        # R4-R2: report whether the marker was accepted; the API follows this.
+        out["rescue_commands"] = bool(meta.get("p0_rescue"))
+    return out
 
 
 @_router.post("/sessions/{session_id}/say")
@@ -335,12 +339,11 @@ async def sessions_interrupt(
 
 
 def _internal_cleanup(request: Request) -> bool:
-    from backend.api.security.authentication import auth_disabled_dev, tokens_match
+    from backend.api.security.authentication import tokens_match
 
-    cfg = request.app.state.container.config
-    token = cfg.admin_api_token
-    if auth_disabled_dev(cfg, token):
-        return True
+    # Fail closed in every env: an empty admin token never accepts the header
+    # (config refuses to boot with the rescue switch on and no admin token).
+    token = request.app.state.container.config.admin_api_token
     presented = request.headers.get("x-livento-internal-cleanup", "")
     return bool(token and presented and tokens_match(presented, token))
 

@@ -533,3 +533,19 @@ def test_shared_rescue_fixture_matches_python_contract():
             assert outcome.reason_code in fixture["rejection_reasons"]
     state = ExecutionState.model_validate(fixture["held_state"])
     assert state.hold.held and state.hold.hold_command_id == "cmd-hold-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("env", ["dev", "prod"])
+async def test_empty_admin_token_never_accepts_cleanup_header(case_factory, env):
+    """R4-R3: viewer-token holders cannot stop a marked live session, dev or prod."""
+    case = await live(case_factory)
+    cfg = case.d.config
+    cfg.app_env, cfg.backend_api_token, cfg.admin_api_token = env, "viewer-secret", ""
+    for hdr in ({}, {"X-Livento-Internal-Cleanup": ""}, {"X-Livento-Internal-Cleanup": "x"}):
+        r = await case.client.post(
+            f"/api/v1/sessions/{case.sid}/stop",
+            headers={"Authorization": "Bearer viewer-secret", **hdr},
+        )
+        assert r.status_code == 409, r.text
+    assert await case.d.store.get(case.sid) is not None

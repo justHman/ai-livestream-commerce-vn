@@ -128,7 +128,13 @@ def test_ws_interrupt_on_p0_uses_execution_command(
     mock_env: None, monkeypatch: pytest.MonkeyPatch, p0: str
 ) -> None:
     monkeypatch.setenv("LIVENTO_P0_RESCUE_COMMANDS", "1")
-    cfg = AppConfig(render_backend="mock", app_env="dev", backend_api_token="", debug_enabled=True)
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        backend_api_token="",
+        debug_enabled=True,
+        admin_api_token="a",
+    )
     body = (
         {
             "execution_contract": "p0.execution.v1",
@@ -153,3 +159,44 @@ def test_ws_interrupt_on_p0_uses_execution_command(
         assert first["type"] == "error" and first["code"] == "use_execution_command"
     else:
         assert first["type"] != "error"
+
+
+@pytest.mark.parametrize(
+    ("switch", "requested", "accepted"),
+    [("1", True, True), ("", True, False), ("1", False, False), ("", False, False)],
+)
+def test_start_reports_whether_rescue_marker_was_accepted(
+    mock_env: None, monkeypatch: pytest.MonkeyPatch, switch: str, requested: bool, accepted: bool
+) -> None:
+    """R4-R2: the API follows this echo, so API-on/Runtime-off stays fully legacy."""
+    monkeypatch.setenv("LIVENTO_P0_RESCUE_COMMANDS", switch)
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        backend_api_token="",
+        debug_enabled=True,
+        admin_api_token="a" if switch else "",
+    )
+    body = {
+        "execution_contract": "p0.execution.v1",
+        "tenant_id": "tenant-1",
+        "business_session_id": "business-1",
+        "generation": "generation-1",
+        "rescue_commands": requested,
+    }
+    with _client(cfg) as client:
+        started = client.post("/api/v1/sessions", json=body)
+        assert started.status_code == 200, started.text
+        sid = started.json()["session_id"]
+        assert started.json().get("rescue_commands", False) is accepted
+        caps = client.get(f"/api/v1/sessions/{sid}/execution").json()["capabilities"]["available"]
+        assert ("command.hold" in caps) is accepted
+
+
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_rescue_switch_without_admin_token_refuses_to_boot(
+    monkeypatch: pytest.MonkeyPatch, env: str
+) -> None:
+    monkeypatch.setenv("LIVENTO_P0_RESCUE_COMMANDS", "1")
+    with pytest.raises(ValueError, match="ADMIN_API_TOKEN"):
+        AppConfig(render_backend="mock", app_env=env, backend_api_token="v", admin_api_token="")
