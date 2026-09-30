@@ -123,9 +123,9 @@ def test_ws_connect_emits_control_connected(mock_env: None) -> None:
 # ---------- P0-FB-016: legacy WS interrupt on a P0 session ----------
 
 
-@pytest.mark.parametrize("p0", [True, False])
+@pytest.mark.parametrize("p0", ["rescue", "p0_unmarked", "legacy"])
 def test_ws_interrupt_on_p0_uses_execution_command(
-    mock_env: None, monkeypatch: pytest.MonkeyPatch, p0: bool
+    mock_env: None, monkeypatch: pytest.MonkeyPatch, p0: str
 ) -> None:
     monkeypatch.setenv("LIVENTO_P0_RESCUE_COMMANDS", "1")
     cfg = AppConfig(render_backend="mock", app_env="dev", backend_api_token="", debug_enabled=True)
@@ -135,8 +135,9 @@ def test_ws_interrupt_on_p0_uses_execution_command(
             "tenant_id": "tenant-1",
             "business_session_id": "business-1",
             "generation": "generation-1",
+            "rescue_commands": p0 == "rescue",
         }
-        if p0
+        if p0 != "legacy"
         else {}
     )
     with _client(cfg) as client:
@@ -148,7 +149,7 @@ def test_ws_interrupt_on_p0_uses_execution_command(
             ws.send_json({"type": "interrupt"})
             ws.send_json({"type": "ping"})
             first = ws.receive_json()
-    if p0:
+    if p0 == "rescue":
         assert first["type"] == "error" and first["code"] == "use_execution_command"
     else:
         assert first["type"] != "error"

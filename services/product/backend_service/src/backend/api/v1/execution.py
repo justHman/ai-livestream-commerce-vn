@@ -41,7 +41,7 @@ from .auth import admin_auth
 
 logger = logging.getLogger(__name__)
 _locks: dict[str, asyncio.Lock] = {}
-_closing_tasks: set[asyncio.Task] = set()
+_closing_tasks: dict[str, asyncio.Task] = {}
 
 
 @asynccontextmanager
@@ -84,8 +84,16 @@ async def get_execution(
     session_id: str, request: Request, _: None = Depends(viewer_auth)
 ) -> dict[str, Any]:
     d = container_from_request(request)
-    _, state = await _load(d.store, session_id)
-    return {"state": state.model_dump(mode="json"), "capabilities": Capabilities().model_dump()}
+    meta, state = await _load(d.store, session_id)
+    if state.phase == "closing" and session_id not in _closing_tasks:
+        # Recovery: the in-process closing task was lost (restart). Closing has
+        # no spoken content at P0, so completing it here is the same transition.
+        await _finish_closing(d, session_id)
+        meta, state = await _load(d.store, session_id)
+    return {
+        "state": state.model_dump(mode="json"),
+        "capabilities": Capabilities.for_session(meta).model_dump(),
+    }
 
 
 @router.post("/sessions/{session_id}/execution/evidence")
@@ -142,7 +150,7 @@ async def request_execution_command(
             ):
                 raise HTTPException(status_code=409, detail={"code": "duplicate_command_conflict"})
             return {"outcome": original.model_dump(mode="json"), "replayed": True}
-        reason = command_rejection(state, command, Capabilities())
+        reason = command_rejection(state, command, Capabilities.for_session(meta))
         if reason is None:
             reason = rescue_rejection(state, command.command)
         if reason is None and command.command in ("hold", "resume"):
@@ -190,21 +198,32 @@ async def request_execution_command(
                 {"type": "execution.command_result", "outcome": outcome.model_dump(mode="json")},
             )
         if command.command == "end":
-            task = asyncio.create_task(_finish_closing(d, session_id))
-            _closing_tasks.add(task)
-            task.add_done_callback(_closing_tasks.discard)
+            _start_closing(d, session_id)
     return {"outcome": outcome.model_dump(mode="json"), "replayed": False}
 
 
-async def use_execution_command(d: Any, session_id: str) -> bool:
-    """Legacy interrupt on a P0 session is refused once rescue is advertised.
+def _start_closing(d: Any, session_id: str) -> None:
+    task = asyncio.create_task(_finish_closing(d, session_id))
+    _closing_tasks[session_id] = task
+    task.add_done_callback(
+        lambda t: (
+            _closing_tasks.pop(session_id, None) if _closing_tasks.get(session_id) is t else None
+        )
+    )
 
-    Before that (disabled-until-compatible) the legacy control stays as-is.
+
+async def use_execution_command(d: Any, session_id: str) -> bool:
+    """Legacy interrupt is refused only on a rescue-enabled (Facebook P0) session.
+
+    TikTok/legacy sessions and sessions without the API marker keep the
+    unchanged legacy control even when the Runtime switch is on.
     """
-    if not Capabilities().supports("command.interrupt"):
-        return False
     meta = await d.store.get(session_id)
-    return bool(meta and meta.get("execution_contract"))
+    return bool(
+        meta
+        and meta.get("execution_contract")
+        and Capabilities.for_session(meta).supports("command.interrupt")
+    )
 
 
 async def hard_cancel(d: Any, session_id: str) -> None:

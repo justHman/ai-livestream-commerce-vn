@@ -64,10 +64,12 @@ async def state(case):
     return response.json()
 
 
-async def live(case_factory, phase="selling", **kwargs):
+async def live(case_factory, phase="selling", marker=True, **kwargs):
     case = await case_factory(**kwargs)
     meta = await case.d.store.get(case.sid)
     meta["execution_contract"].update(phase=phase, runtime_ready=True, sequence=3)
+    if marker:  # the API marks a Facebook P0 session at start
+        meta["p0_rescue"] = True
     await case.d.store.set(case.sid, meta)
     return case
 
@@ -142,7 +144,7 @@ async def test_rescue_capabilities_are_disabled_until_compatible(case_factory):
 async def test_hold_at_safe_boundary_lets_current_utterance_finish(case_factory, rescue):
     case = await live(case_factory)
     coordinator = case.d.coordinator
-    assert Capabilities().supports(*(f"command.{c}" for c in RESCUE))
+    assert Capabilities.for_session({"p0_rescue": True}).supports(*(f"command.{c}" for c in RESCUE))
     audio = []
 
     async def publish(window):
@@ -237,6 +239,40 @@ async def test_resume_expires_queued_qa_by_original_time(case_factory, rescue):
 
 
 @pytest.mark.asyncio
+async def test_popped_qa_hard_expires_across_hold_resume_during_revalidation(case_factory, rescue):
+    """A turn popped into _maybe_speak is in neither queue; Resume cannot expire it."""
+    case = await live(case_factory)
+    coordinator = case.d.coordinator
+    ds = case.d.director.get_session(case.sid)
+    comment = Comment(text="q", embedding=[0.0], t=ds.now())
+    ds.director.state.rolling_comments.append(comment)
+    popped = await queued(case, turn(case))
+    coordinator._speech_queue[case.sid].clear()
+    popped.action, popped.cluster_member_ids = "answer_cluster", (comment.id,)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = case.d.approved_speech.revalidate
+
+    async def slow(speech, **kwargs):
+        entered.set()
+        await release.wait()
+        return await original(speech, **kwargs)
+
+    case.d.approved_speech.revalidate = slow
+    speaking = asyncio.create_task(coordinator._maybe_speak(case.sid, popped))
+    await asyncio.wait_for(entered.wait(), 2)
+    applied(await send(case, "hold"), "hold")
+    comment.t = ds.now() - ds.director.cfg.selection_window_sec - 5  # aged while held
+    applied(await send(case, "resume"), "resume")
+    release.set()
+    assert await asyncio.wait_for(speaking, 5)
+    assert popped.is_cancelled and not case.tts.calls
+    reasons = {
+        i["turn_id"]: i.get("cancellation_reason") for i in coordinator._completed_history[case.sid]
+    }
+    assert reasons[popped.turn_id] == "hard_expired"
+
+
+@pytest.mark.asyncio
 async def test_stale_envelope_across_hold_is_not_spoken(case_factory, rescue):
     case = await live(case_factory)
     waiting = await queued(case, turn(case))
@@ -318,6 +354,15 @@ async def test_end_has_no_spoken_closing_and_ends_immediately(case_factory, resc
 
 
 @pytest.mark.asyncio
+async def test_lost_closing_task_is_recovered_on_execution_read(case_factory, rescue):
+    """A restart loses the in-process closing task; the next read completes it."""
+    case = await live(case_factory, phase="closing")
+    assert execution_module._closing_tasks.get(case.sid) is None
+    assert (await state(case))["state"]["phase"] == "ending"
+    assert (await state(case))["state"]["phase"] == "ending"
+
+
+@pytest.mark.asyncio
 async def test_end_runs_closing_then_reports_ending(case_factory, rescue):
     case = await live(case_factory)
     coordinator = case.d.coordinator
@@ -396,6 +441,30 @@ async def test_legacy_interrupt_on_p0_uses_execution_command(case_factory, rescu
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "use_execution_command"
     assert case.d.approved_speech._epochs.get(case.sid, 0) == before
+
+
+@pytest.mark.asyncio
+async def test_unmarked_p0_session_never_sees_rescue_with_switch_on(case_factory, rescue):
+    """F1: a TikTok/legacy-marked session is unchanged even with the Runtime switch on."""
+    case = await live(case_factory, marker=False)
+    caps = (await state(case))["capabilities"]["available"]
+    assert not {f"command.{c}" for c in RESCUE} & set(caps)
+    before = (await state(case))["state"]
+    for command in RESCUE:
+        rejected(await send(case, command), "unsupported_capability")
+    assert (await state(case))["state"] == before
+    assert case.d.approved_speech.blocked(case.sid) is None
+    response = await case.client.post(f"/api/v1/sessions/{case.sid}/interrupt")
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_marked_session_fails_closed_when_runtime_switch_is_off(case_factory):
+    """Partial deployment: API marker without the Runtime switch advertises nothing."""
+    case = await live(case_factory)
+    caps = (await state(case))["capabilities"]["available"]
+    assert not {f"command.{c}" for c in RESCUE} & set(caps)
+    rejected(await send(case, "hold"), "unsupported_capability")
 
 
 @pytest.mark.asyncio

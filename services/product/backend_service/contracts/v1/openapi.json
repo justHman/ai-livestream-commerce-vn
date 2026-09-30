@@ -2227,6 +2227,11 @@
             "title": "Is Sandbox",
             "type": "boolean"
           },
+          "rescue_commands": {
+            "default": false,
+            "title": "Rescue Commands",
+            "type": "boolean"
+          },
           "tenant_id": {
             "anyOf": [
               {

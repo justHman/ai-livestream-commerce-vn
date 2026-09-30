@@ -151,6 +151,7 @@ class DirectorCoordinator:
         self._stats: dict[str, _SessionStats] = {}
         self._active_score: dict[str, float] = {}
         self._last_tick: dict[str, float] = {}
+        self._resume_count: dict[str, int] = {}
         self._decision_queue: dict[str, deque[Decision]] = {}
         self._speech_queue: dict[str, deque[Decision]] = {}
         self._current_speech: dict[str, Decision] = {}
@@ -296,6 +297,7 @@ class DirectorCoordinator:
         self._stats.pop(session_id, None)
         self._active_score.pop(session_id, None)
         self._last_tick.pop(session_id, None)
+        self._resume_count.pop(session_id, None)
         self._activated.discard(session_id)
         self._autonomous_openings.pop(session_id, None)
         self._opening_media.pop(session_id, None)
@@ -377,6 +379,18 @@ class DirectorCoordinator:
         """Held, closing or ending: ingest continues, no new turn starts."""
         return self.approved_speech is not None and bool(self.approved_speech.blocked(session_id))
 
+    def _hard_expired(self, session_id: str, decision: Decision) -> bool:
+        """Q&A older than the hard-expiry horizon by its original comment time."""
+        ds = self._runtime._sessions.get(session_id)
+        if ds is None or decision.action not in ("answer_cluster", "answer_fact"):
+            return False
+        # ponytail: the Director selection window is the hard-expiry horizon
+        # (exact windows REQUIRES_VALIDATION); swap in the validated value.
+        seen = {c.id: c.t for c in ds.director.state.rolling_comments}
+        times = [seen[i] for i in decision.cluster_member_ids if i in seen]
+        # Unknown (pruned) members are older than the window: fail closed.
+        return not times or ds.now() - max(times) > ds.director.cfg.selection_window_sec
+
     def resume(self, session_id: str) -> list[str]:
         """Re-check queued Q&A age before anything plays; called after unblock.
 
@@ -385,26 +399,18 @@ class DirectorCoordinator:
         runs again at ``_maybe_speak`` before any queued turn starts.
         """
         expired = []
+        self._resume_count[session_id] = self._resume_count.get(session_id, 0) + 1
         ds = self._runtime._sessions.get(session_id)
         if ds is not None:
-            # ponytail: the Director selection window is the hard-expiry horizon
-            # (exact windows REQUIRES_VALIDATION); swap in the validated value.
-            horizon = ds.director.cfg.selection_window_sec
-            seen = {c.id: c.t for c in ds.director.state.rolling_comments}
-            now = ds.now()
             for queue in (self._decision_queue.get(session_id), self._speech_queue.get(session_id)):
                 if queue is None:
                     continue
                 for decision in list(queue):
-                    if decision.action not in ("answer_cluster", "answer_fact"):
-                        continue
-                    times = [seen[i] for i in decision.cluster_member_ids if i in seen]
-                    # Unknown (pruned) members are older than the window: fail closed.
-                    if not times or now - max(times) > horizon:
+                    if self._hard_expired(session_id, decision):
                         queue.remove(decision)
                         self._record_cancelled(session_id, decision, "hard_expired")
                         expired.append(decision.turn_id)
-            self._last_tick[session_id] = now
+            self._last_tick[session_id] = ds.now()
         event = self._playback_events.get(session_id)
         if event is not None:
             event.set()
@@ -983,6 +989,7 @@ class DirectorCoordinator:
             return True
 
         speech = None
+        resumed_at_entry = self._resume_count.get(session_id, 0)
 
         def live():
             return self._speech_live(session_id, decision)
@@ -1014,6 +1021,14 @@ class DirectorCoordinator:
         # separates this check from lock acquisition below.
         if self._frozen(session_id):
             return False
+        # A Hold->Resume during the revalidation await left this popped turn in
+        # neither queue, so resume() could not expire it: re-check here.
+        if self._resume_count.get(session_id, 0) != resumed_at_entry and self._hard_expired(
+            session_id, decision
+        ):
+            st.skips += 1
+            self._record_cancelled(session_id, decision, "hard_expired")
+            return True
 
         # Playback is serialized. A lock may belong to manual speech or an
         # active backend turn, so never release it from a queued decision.

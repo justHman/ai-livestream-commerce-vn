@@ -74,6 +74,9 @@ async def sessions_start(
             "first_ai_broadcast": False,
         }
         meta["execution_command_outcomes"] = {}
+        if req.rescue_commands:
+            # Per-session gate; capabilities/commands/legacy guard all read it.
+            meta["p0_rescue"] = True
     await d.store.set(result.session_id, meta)
     if d.livekit_publishers is not None:
         d.livekit_publishers.activate(result.session_id)

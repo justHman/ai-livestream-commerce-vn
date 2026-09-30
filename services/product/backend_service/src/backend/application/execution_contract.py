@@ -51,8 +51,18 @@ _RESCUE_PHASES = {
 }
 
 
-def available_capabilities() -> tuple[str, ...]:
-    if os.environ.get(RESCUE_SWITCH, "").strip().lower() in ("1", "true", "yes"):
+def rescue_switch_on() -> bool:
+    return os.environ.get(RESCUE_SWITCH, "").strip().lower() in ("1", "true", "yes")
+
+
+def available_capabilities(rescue: bool = False) -> tuple[str, ...]:
+    """Rescue commands are advertised per session, never process-wide.
+
+    A session is rescue-enabled only when the API marked it at start
+    (``rescue_commands``, Facebook P0 with the API switch on) AND this
+    Runtime's switch is on. Either side off fails closed.
+    """
+    if rescue and rescue_switch_on():
         return AVAILABLE_CAPABILITIES + tuple(f"command.{c}" for c in RESCUE_COMMANDS)
     return AVAILABLE_CAPABILITIES
 
@@ -77,6 +87,10 @@ class ExecutionIdentity(BaseModel):
 class Capabilities(BaseModel):
     version: str = VERSION
     available: tuple[str, ...] = Field(default_factory=available_capabilities)
+
+    @classmethod
+    def for_session(cls, meta: dict | None) -> "Capabilities":
+        return cls(available=available_capabilities(bool(meta and meta.get("p0_rescue"))))
 
     def supports(self, *required: str) -> bool:
         return self.version == VERSION and set(required).issubset(self.available)
