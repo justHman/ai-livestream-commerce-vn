@@ -586,7 +586,7 @@ class AppConfig:
             director_enabled=os.environ.get("DIRECTOR_ENABLED", "0").lower()
             in ("1", "true", "yes"),
             backend_api_token=os.environ.get("BACKEND_API_TOKEN", ""),
-            admin_api_token=os.environ.get("ADMIN_API_TOKEN", ""),
+            admin_api_token=os.environ.get("ADMIN_API_TOKEN", "").strip(),
             debug_enabled=os.environ.get("DEBUG_ENABLED", "0").lower()
             in ("1", "true", "on", "yes"),
             avatar_base_url=os.environ.get("AVATAR_BASE_URL", ""),
@@ -634,7 +634,7 @@ class AppConfig:
             raise ValueError("production redis requires rediss:// (TLS)")
         from backend.application.execution_contract import rescue_switch_on
 
-        if rescue_switch_on() and not self.admin_api_token:
+        if rescue_switch_on() and not self.admin_api_token.strip():
             raise ValueError(
                 "LIVENTO_P0_RESCUE_COMMANDS requires ADMIN_API_TOKEN (internal cleanup)"
             )

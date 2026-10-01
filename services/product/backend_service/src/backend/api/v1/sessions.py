@@ -343,7 +343,7 @@ def _internal_cleanup(request: Request) -> bool:
 
     # Fail closed in every env: an empty admin token never accepts the header
     # (config refuses to boot with the rescue switch on and no admin token).
-    token = request.app.state.container.config.admin_api_token
+    token = request.app.state.container.config.admin_api_token.strip()
     presented = request.headers.get("x-livento-internal-cleanup", "")
     return bool(token and presented and tokens_match(presented, token))
 

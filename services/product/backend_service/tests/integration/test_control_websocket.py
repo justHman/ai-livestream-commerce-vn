@@ -200,3 +200,14 @@ def test_rescue_switch_without_admin_token_refuses_to_boot(
     monkeypatch.setenv("LIVENTO_P0_RESCUE_COMMANDS", "1")
     with pytest.raises(ValueError, match="ADMIN_API_TOKEN"):
         AppConfig(render_backend="mock", app_env=env, backend_api_token="v", admin_api_token="")
+
+
+def test_admin_token_is_trimmed_and_all_whitespace_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LIVENTO_P0_RESCUE_COMMANDS", "1")
+    monkeypatch.setenv("ADMIN_API_TOKEN", "  secret ")
+    assert AppConfig.from_env().admin_api_token == "secret"
+    monkeypatch.setenv("ADMIN_API_TOKEN", "   ")
+    with pytest.raises(ValueError, match="ADMIN_API_TOKEN"):
+        AppConfig.from_env()
