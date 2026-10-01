@@ -627,20 +627,20 @@ class PlatformEventIngestionService:
                 self._track_routed(
                     session_id, event, delivery, seq=self._next_delivery_seq(session_id)
                 )
-                # The truthful-outcome opt-in is now demonstrably live for this
-                # session, which is what reducer mode requires before it will
-                # decide anything.
-                self._mark_reducer_ready(session_id)
             if delivery.is_retryable:
                 # Identity preserved: no dedup record, so a durable retry can
                 # re-drive this exact event once a coordinator exists.
                 return result
             await self._persist_accepted(session_id, event)
-            if not self._reducer_mode(session_id):
-                # Legacy park path: the reducer is notified at route time, for
-                # both accepted outcomes. A reducer-mode session is notified at
-                # CONSUMPTION instead (mark_consumed), so a comment that dies
-                # with the queue never reaches the reducer.
+            # The reducer is notified at route time, for both accepted outcomes.
+            # A P0 session whose traffic actually opts into truthful outcomes is
+            # the one exception: it is marked ready here (the opt-in is now
+            # demonstrably live) and fed at CONSUMPTION instead, so a comment
+            # that dies with the queue never reaches the reducer. A P0 session
+            # still on the legacy contract keeps today's call verbatim.
+            if self._reducer_deferral_active(session_id, truthful_outcomes):
+                self._mark_reducer_ready(session_id)
+            else:
                 self._notify_reducer(session_id, event, delivery.comment_id)
         else:
             result["status"] = EventStatus.ACCEPTED.value
@@ -714,7 +714,12 @@ class PlatformEventIngestionService:
         reducer_mode = self._reducer_mode(session_id)
         for entry_id, entry in list(self._in_flight.get(session_id, {}).items()):
             if entry.delivery.comment_id in comment_ids:
-                if reducer_mode:
+                # Only an entry that was ROUTED is in the ledger, and only a
+                # routed entry can have deferred its notification (the deferral
+                # is armed by the same opt-in that produced ``routed``). A
+                # legacy ``accepted`` entry was already notified at route time,
+                # so notifying again here would double-count it.
+                if reducer_mode and entry.delivery.outcome is EventStatus.ROUTED:
                     self._notify_reducer(session_id, entry.event, entry.delivery.comment_id)
                 outcomes[entry_id] = dataclasses.replace(
                     entry,
@@ -739,12 +744,24 @@ class PlatformEventIngestionService:
         except Exception:
             logger.warning("coordinator.mark_reducer_ready failed", exc_info=True)
 
+    def _reducer_deferral_active(self, session_id: str, truthful_outcomes: bool) -> bool:
+        """Whether THIS delivery defers the reducer notification to consumption.
+
+        Both conditions are required: the session's Director must be in reducer
+        mode, AND this request must actually be on the truthful-outcome opt-in.
+        A P0 session whose caller has not opted in is still on the legacy
+        contract, and it keeps the route-time notification.
+        """
+        return truthful_outcomes and self._reducer_mode(session_id)
+
     def _reducer_mode(self, session_id: str) -> bool:
         """Whether this session's Director is fed by the bounded reducer.
 
-        Asked of the coordinator, which owns the decision-input mode. A
-        coordinator that does not know the mode (a test double, an older
-        composition) means the legacy route-time notification, unchanged.
+        Asked of the coordinator, which owns the decision-input mode. The check
+        is identity-True, not truthy: a test double or a stub that returns a
+        Mock for ANY attribute must not be able to silently move a legacy
+        session onto the reducer path. Anything that is not literally ``True``
+        means the legacy route-time notification, unchanged.
         """
         if self._coordinator is None:
             return False
@@ -752,7 +769,7 @@ class PlatformEventIngestionService:
         if mode_fn is None:
             return False
         try:
-            return bool(mode_fn(session_id))
+            return mode_fn(session_id) is True
         except Exception:
             logger.warning("coordinator.reducer_mode failed", exc_info=True)
             return False

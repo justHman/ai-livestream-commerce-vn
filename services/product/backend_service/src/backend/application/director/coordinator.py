@@ -803,9 +803,6 @@ class DirectorCoordinator:
         director: Director = ds.director
         state: StreamState = director.state
         fresh = queue.drain_window(self._cfg.window_sec)
-        new_only = [
-            comment for comment in fresh if comment.id not in self._consumed_ids(session_id)
-        ]
         if session_id in self._reducer_mode:
             # Reducer mode (P0-FB-014): the bounded reducer is the only
             # viewer-demand input. The queue is still drained and the
@@ -813,6 +810,12 @@ class DirectorCoordinator:
             # does NOT embed, route, or add to rolling_comments, so the raw
             # decision feed is off for this session. The reducer, fed at
             # consumption by the ingress service, owns the clustering.
+            #
+            # Nothing is added to embeddings_cache here, so the per-session
+            # consumed set is what makes a comment consumed exactly once.
+            new_only = [
+                comment for comment in fresh if comment.id not in self._consumed_ids(session_id)
+            ]
             if self.comment_consumed is not None and new_only:
                 try:
                     self.comment_consumed(session_id, {c.id for c in new_only})
@@ -826,7 +829,8 @@ class DirectorCoordinator:
             await self._fill_prepared(session_id)
             return
         embedder = self._get_embedder()
-        new_comments = [comment for comment in new_only if comment.id not in state.embeddings_cache]
+        new_only = [comment for comment in fresh if comment.id not in state.embeddings_cache]
+        new_comments = new_only
         if new_comments:
             vecs = await asyncio.to_thread(
                 embedder.encode, [comment.text for comment in new_comments]
@@ -852,7 +856,6 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
-        self._remember_consumed(session_id, new_only)
         # This is the consumption boundary: the comments left ChatQueue and
         # are now Director state, so a teardown must not reconcile them as
         # non_deliverable (P0-FB-013). Only ``new_only`` counts — a comment

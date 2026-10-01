@@ -763,6 +763,32 @@ async def test_r13_not_ready_never_notifies_the_reducer_or_decides() -> None:
     assert service.terminal_outcomes("s1") == {}
 
 
+async def test_r13_p0_session_without_the_opt_in_keeps_the_route_time_notification() -> None:
+    """R13: reducer mode alone must not defer — the opt-in has to actually fire.
+
+    A P0 session whose caller never sets ``delivery_outcomes_v1`` is still on
+    the legacy contract, so it keeps today's route-time reducer notification.
+    Deferring on mode alone would silently starve the reducer of that traffic.
+    """
+    reducer = _reducer()
+    coord, _runtime, _backend = _coordinator("s1", reducer=reducer)
+    store = InMemorySessionStore()
+    await store.set("s1", _p0_meta())
+    service = PlatformEventIngestionService(store=store, coordinator=coord, reducer=reducer)
+    coord.comment_consumed = service.mark_consumed
+    coord.start("s1", _products(), activated=True)
+    coord.set_reducer_mode("s1", True)
+
+    legacy = await service.ingest("s1", [_p0_event("leg-1", "giá bao nhiêu")])
+    assert legacy["events"][0]["status"] == "accepted"
+    assert legacy["events"][0]["reason"] == "coordinator_queued"
+    # Not deferred: the reducer already holds it, route-time, as before.
+    assert reducer.pending_count("s1") == 1
+    # And reducer mode still refuses to decide, because readiness never fired.
+    assert coord._reducer_store("s1") is None
+    coord.stop("s1")
+
+
 # ══════════════════════════════════════════════════════════════════════
 # R14 — provenance through decision
 # ══════════════════════════════════════════════════════════════════════

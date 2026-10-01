@@ -217,7 +217,32 @@ class Director:
 
     def decide(self, comments: list[Comment], now: float) -> Decision:
         """Produce the next Decision given recent comments and the clock."""
-        return self._decide(comments, now)
+        pivot_queue_before = set(self.state.cursor.pivot_queue)
+        return self._stamp(self._decide(comments, now), now, pivot_queue_before)
+
+    def _stamp(
+        self,
+        decision: Decision,
+        now: float,
+        pivot_queue_before: set,
+    ) -> Decision:
+        """Stamp the decision with the clock and the post-decision snapshots.
+
+        Shared by both feeds. ``mark_spoken`` replays the Q&A window state and
+        the pivot queue from these fields, and the topic cooldown is computed
+        from ``decided_at`` — so every decision must carry them.
+        """
+        decision.decided_at = now
+        decision.queued_pivot_products = tuple(
+            product_id
+            for product_id in self.state.cursor.pivot_queue
+            if product_id not in pivot_queue_before
+        )
+        decision.qa_window_open_after_decision = self.state.qa_window_open
+        decision.qa_window_started_at_after_decision = self.state.qa_window_started_at
+        decision.qa_window_stage_index_after_decision = self.state.qa_window_stage_index
+        decision.qa_clusters_answered_after_decision = self.state.qa_clusters_answered
+        return decision
 
     def decide_from_reducer(
         self,
@@ -250,19 +275,9 @@ class Director:
             by_members=by_members,
             is_high_value=high_value_ids,
         )
-        decision.decided_at = now
-        decision.queued_pivot_products = tuple(
-            product_id
-            for product_id in self.state.cursor.pivot_queue
-            if product_id not in pivot_queue_before
-        )
-        decision.qa_window_open_after_decision = self.state.qa_window_open
-        decision.qa_window_started_at_after_decision = self.state.qa_window_started_at
-        decision.qa_window_stage_index_after_decision = self.state.qa_window_stage_index
-        decision.qa_clusters_answered_after_decision = self.state.qa_clusters_answered
         if decision.source_cluster_id is not None:
             attach_provenance(decision, by_cluster)
-        return decision
+        return self._stamp(decision, now, pivot_queue_before)
 
     def _decide(
         self,
