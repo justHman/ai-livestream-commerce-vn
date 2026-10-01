@@ -781,7 +781,11 @@ async def test_r13_p0_session_without_the_opt_in_keeps_the_route_time_notificati
 
     legacy = await service.ingest("s1", [_p0_event("leg-1", "giá bao nhiêu")])
     assert legacy["events"][0]["status"] == "accepted"
-    assert legacy["events"][0]["reason"] == "coordinator_queued"
+    # No ``reason`` on purpose. ``reason``/``action_identity`` ride the truthful
+    # opt-in only (ingestion.py:619-623, 013 I-2), precisely so the deployed
+    # API's response shape is byte-for-byte unchanged while the flag is off.
+    # R13 ingests without the opt-in, so their absence IS the contract.
+    assert "reason" not in legacy["events"][0]
     # Not deferred: the reducer already holds it, route-time, as before.
     assert reducer.pending_count("s1") == 1
     # And reducer mode still refuses to decide, because readiness never fired.
