@@ -235,27 +235,71 @@ class TerminalOutcomes:
     def __init__(self, pg_store: Any, *, clock: Callable[[], datetime] = _utc_now) -> None:
         self._pg = pg_store
         self._clock = clock
+        # Every P0 execution started by this process, registered durably or not, until its
+        # terminal record is stored. It is what the shutdown sweep and a registry-less stop
+        # fall back to when the durable registration failed.
+        self._active: dict[str, ExecutionIdentity] = {}
+        self.pending_registration: set[str] = set()
 
-    async def register(self, session_id: str, meta: Mapping[str, Any]) -> None:
-        """Durably remember a P0 execution at start (best effort; a miss degrades to a deferral)."""
+    @staticmethod
+    def _identity_of(meta: Mapping[str, Any]) -> ExecutionIdentity | None:
         raw = meta.get("execution_contract")
         if not raw:
-            return
+            return None
+        state = ExecutionState.model_validate(raw)
+        return ExecutionIdentity(**state.model_dump(include=set(ExecutionIdentity.model_fields)))
+
+    async def register(
+        self,
+        session_id: str,
+        meta: Mapping[str, Any],
+        *,
+        retry_delays: tuple[float, ...] = (0.05, 0.2),
+    ) -> None:
+        """Durably remember a P0 execution at start.
+
+        The identity is held in memory first. A failing registration is retried
+        (bounded); if it still fails the session stays in ``pending_registration`` and an
+        audited deferral is attempted, so the stop and shutdown paths can still name it.
+        """
         try:
-            identity = ExecutionIdentity(
-                **ExecutionState.model_validate(raw).model_dump(
-                    include=set(ExecutionIdentity.model_fields)
-                )
-            )
-            await self._pg.register_terminal_execution(identity)
-        except asyncio.CancelledError:
-            raise
+            identity = self._identity_of(meta)
         except Exception as exc:
             logger.warning(
-                "terminal execution not registered session=%s error_type=%s",
+                "terminal identity unreadable session=%s error_type=%s",
                 session_id,
                 type(exc).__name__,
             )
+            return
+        if identity is None:
+            return
+        self._active[session_id] = identity
+        error = ""
+        for delay in (*retry_delays, None):
+            try:
+                await self._pg.register_terminal_execution(identity)
+                self.pending_registration.discard(session_id)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = type(exc).__name__
+                if delay is not None:
+                    await asyncio.sleep(delay)
+        self.pending_registration.add(session_id)
+        logger.error(
+            "terminal execution not registered session=%s error_type=%s", session_id, error
+        )
+        try:
+            await self._pg.defer_terminal(session_id, "registration_failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # still tracked in memory for stop and shutdown
+            logger.error("registration deferral not stored session=%s", session_id)
+
+    def _forget(self, session_id: str) -> None:
+        self._active.pop(session_id, None)
+        self.pending_registration.discard(session_id)
 
     async def settle_cleanup(
         self, session_store: Any, session_id: str, error: str | None
@@ -295,7 +339,9 @@ class TerminalOutcomes:
         meta = await session_store.get(session_id)
         try:
             if meta is None:
-                identity = await self._pg.get_terminal_execution(session_id)
+                identity = await self._pg.get_terminal_execution(session_id) or self._active.get(
+                    session_id
+                )
                 if identity is None:
                     await self._pg.defer_terminal(session_id, "hot_state_missing_unregistered")
                     logger.error(
@@ -322,18 +368,44 @@ class TerminalOutcomes:
                 session_id,
                 result.conflict,
             )
+        self._forget(session_id)
         return result.record
 
-    async def persist_active_on_shutdown(self, session_store: Any) -> int:
+    async def persist_active_on_shutdown(
+        self, session_store: Any, extra_session_ids: tuple[str, ...] = ()
+    ) -> int:
         """Before components stop: give every unterminated execution a durable record.
 
-        Teardown has not happened yet, so cleanup is recorded as pending. A record
-        that cannot be stored is left as an explicit audited deferral for the API
-        supervisor (P0-FB-020); it is never silently dropped.
+        Covers the durable registry, every execution this process started (even if its
+        registration failed) and every extra session the Runtime still holds (for example
+        orchestrators or publishers) whose hot state is a P0 execution. Teardown has not
+        happened yet, so cleanup is recorded as pending. A record that cannot be stored is
+        left as an explicit audited deferral for the API supervisor (P0-FB-020); it is
+        never silently dropped.
         """
-        stored = 0
-        for identity in await self._pg.list_unterminated_executions():
+        known: dict[str, ExecutionIdentity] = {}
+        try:
+            for identity in await self._pg.list_unterminated_executions():
+                known[identity.runtime_session_id] = identity
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("shutdown registry unreadable error_type=%s", type(exc).__name__)
+        known.update(self._active)
+        for session_id in extra_session_ids:
+            if session_id in known:
+                continue
             try:
+                identity = self._identity_of((await session_store.get(session_id)) or {})
+            except Exception:
+                identity = None
+            if identity is not None:
+                known[session_id] = identity
+        stored = 0
+        for session_id, identity in known.items():
+            try:
+                if await self._pg.terminal_exists(identity):
+                    continue
                 cleanup = Cleanup(status="pending")
                 meta = await session_store.get(identity.runtime_session_id)
                 record = None
@@ -344,6 +416,7 @@ class TerminalOutcomes:
                 if record is None:
                     record = build_lost_record(identity, now=self._clock(), cleanup=cleanup)
                 await self._pg.persist_terminal(record)
+                self._forget(session_id)
                 stored += 1
             except asyncio.CancelledError:
                 raise

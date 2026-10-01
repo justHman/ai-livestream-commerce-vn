@@ -400,12 +400,23 @@ class LiveKitPublisherRegistry:
     async def stop(self, session_id: str) -> None:
         async with self._lock:
             self._active_sessions.discard(session_id)
+            entry = self._entries.pop(session_id, None)
+        if entry is None:
+            return
+        async with entry.lock:
+            await entry.publisher.stop()
+
+    async def stop_retryable(self, session_id: str) -> None:
+        """Enabled terminal path only: keep the entry until the stop succeeded, so a
+        retry after a failed disconnect still reaches the publisher. ``stop`` keeps
+        the original pop-first, single-stop semantics for every other caller."""
+        async with self._lock:
+            self._active_sessions.discard(session_id)
             entry = self._entries.get(session_id)
         if entry is None:
             return
         async with entry.lock:
             await entry.publisher.stop()
-        # Forget the entry only after the stop succeeded, so a retry still reaches it.
         async with self._lock:
             if self._entries.get(session_id) is entry:
                 del self._entries[session_id]

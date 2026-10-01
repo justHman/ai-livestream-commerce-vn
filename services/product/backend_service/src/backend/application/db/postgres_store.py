@@ -385,6 +385,23 @@ class PostgresRuntimeStore:
         row = await self._command(get)
         return None if row is None else ExecutionIdentity(**dict(row))
 
+    async def terminal_exists(self, identity: Any) -> bool:
+        """True when a terminal record is already stored for this identity generation."""
+
+        async def exists() -> Any:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetchval(
+                    """
+                    SELECT 1 FROM terminal_records
+                     WHERE tenant_id = $1 AND business_session_id = $2 AND generation = $3
+                    """,
+                    identity.tenant_id,
+                    identity.business_session_id,
+                    identity.generation,
+                )
+
+        return await self._command(exists) is not None
+
     async def list_unterminated_executions(self) -> list[Any]:
         """Registered executions with no terminal record yet (active at shutdown)."""
         from backend.application.execution_contract import ExecutionIdentity

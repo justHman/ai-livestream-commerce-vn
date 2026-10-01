@@ -160,6 +160,20 @@ class FakePg:
         self.stored = {}
         self.calls = []
         self.deferred = []
+        self.register_failures = 0
+
+    async def register_terminal_execution(self, identity):
+        if self.register_failures > 0:
+            self.register_failures -= 1
+            raise ConnectionError("db down")
+        self.registered[identity.runtime_session_id] = identity
+
+    async def terminal_exists(self, identity):
+        return (
+            identity.tenant_id,
+            identity.business_session_id,
+            identity.generation,
+        ) in self.stored
 
     async def get_terminal_execution(self, session_id):
         return self.registered.get(session_id)
@@ -364,7 +378,7 @@ async def test_a_cleanup_failure_that_recovers_records_success_with_the_attempt_
     assert (record.cleanup.status, record.cleanup.attempts) == ("succeeded", 2)
 
 
-async def test_the_publisher_registry_keeps_its_entry_until_the_stop_succeeded():
+async def test_the_retryable_publisher_stop_keeps_its_entry_until_the_stop_succeeded():
     class Publisher:
         def __init__(self):
             self.fail = True
@@ -380,10 +394,10 @@ async def test_the_publisher_registry_keeps_its_entry_until_the_stop_succeeded()
 
     registry._entries["s"] = _RegistryEntry(publisher)
     with pytest.raises(RuntimeError):
-        await registry.stop("s")
+        await registry.stop_retryable("s")
     assert registry.session_ids == ("s",)  # a retry can still reach the publisher
     publisher.fail = False
-    await registry.stop("s")
+    await registry.stop_retryable("s")
     assert registry.session_ids == ()
 
 
@@ -665,3 +679,114 @@ def test_schema_applied_at_every_startup_has_no_terminal_tables():
     from backend.application.db.postgres_store import schema_sql
 
     assert "terminal_" not in schema_sql()
+
+
+async def test_the_original_publisher_stop_is_unchanged_pop_first_and_single_stop():
+    import asyncio
+
+    from backend.application.publishing.legacy import _RegistryEntry
+
+    class Publisher:
+        def __init__(self, fail=False):
+            self.calls, self.fail = 0, fail
+
+        async def stop(self):
+            self.calls += 1
+            await asyncio.sleep(0.05)
+            if self.fail:
+                raise RuntimeError("disconnect failed")
+
+    publisher = Publisher()
+    registry = LiveKitPublisherRegistry(lambda sid: publisher)
+    registry._entries["s"] = _RegistryEntry(publisher)
+    await asyncio.gather(registry.stop("s"), registry.stop("s"))
+    assert publisher.calls == 1 and registry.session_ids == ()
+
+    failing = Publisher(fail=True)
+    registry._entries["f"] = _RegistryEntry(failing)
+    with pytest.raises(RuntimeError):
+        await registry.stop("f")
+    assert registry.session_ids == ()  # disabled route: the entry is gone, as before
+
+
+async def test_the_enabled_guard_uses_the_retryable_stop_and_the_disabled_guard_the_original():
+    used = []
+
+    class Publishers:
+        async def stop(self, sid):
+            used.append("stop")
+
+        async def stop_retryable(self, sid):
+            used.append("stop_retryable")
+
+    for terminal, expected in (
+        (None, "stop"),
+        (TerminalOutcomes(FakePg(), clock=lambda: NOW), "stop_retryable"),
+    ):
+        d = stop_container([], terminal=terminal, publishers=Publishers())
+        await d.store.set(
+            "s", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")})
+        )
+        d.backend.stop = lambda sid: None
+        await _stop_cancelled_session(d, "s")
+        assert used[-1] == expected
+
+
+async def test_registration_is_retried_and_succeeds_after_a_transient_failure():
+    pg = FakePg()
+    pg.register_failures = 2
+    terminal = TerminalOutcomes(pg, clock=lambda: NOW)
+    await terminal.register("rt-1", hot("selling"), retry_delays=(0, 0))
+    assert "rt-1" in pg.registered and terminal.pending_registration == set()
+
+
+async def test_a_persistently_failed_registration_is_tracked_deferred_and_never_silent_at_shutdown():
+    pg = FakePg()
+    pg.register_failures = 99
+    terminal = TerminalOutcomes(pg, clock=lambda: NOW)
+    store = InMemorySessionStore()
+    await store.set("rt-1", hot("selling"))
+    await terminal.register("rt-1", hot("selling"), retry_delays=(0, 0))
+    assert terminal.pending_registration == {"rt-1"}
+    assert pg.deferred == [("rt-1", "registration_failed")] and pg.registered == {}
+    # The durable registry knows nothing, yet shutdown still produces a record.
+    assert await terminal.persist_active_on_shutdown(store) == 1
+    (record,) = pg.stored.values()
+    assert record.terminal_phase == "failed" and record.cleanup.status == "pending"
+    assert terminal.pending_registration == set()
+
+
+async def test_a_stop_with_a_failed_registration_and_no_hot_state_is_not_silent():
+    pg = FakePg()
+    pg.register_failures = 99
+    terminal = TerminalOutcomes(pg, clock=lambda: NOW)
+    await terminal.register("rt-1", hot("selling"), retry_delays=(0, 0))
+    d = stop_container([], terminal=terminal)
+    d.backend.stop = lambda sid: None  # the backend still knows the session; hot state is gone
+    await _stop_cancelled_session(d, "rt-1")
+    (record,) = pg.stored.values()
+    assert record.failure_class == "runtime_lost"
+
+
+async def test_shutdown_also_covers_runtime_sessions_that_were_never_registered():
+    pg = FakePg()
+    store = InMemorySessionStore()
+    await store.set("rt-1", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
+    await store.set("legacy", {"status": "active"})
+    terminal = TerminalOutcomes(
+        pg, clock=lambda: NOW
+    )  # restarted: nothing in memory, nothing registered
+    assert await terminal.persist_active_on_shutdown(store, ("rt-1", "legacy", "gone")) == 1
+    (record,) = pg.stored.values()
+    assert (record.terminal_phase, record.reason_code) == ("ended", "normal_end")
+
+
+async def test_shutdown_skips_executions_that_already_have_a_record():
+    pg = FakePg()
+    store = InMemorySessionStore()
+    await store.set("rt-1", hot("ending", execution_command_outcomes={"c1": applied("end", "c1")}))
+    terminal = TerminalOutcomes(pg, clock=lambda: NOW)
+    await terminal.register("rt-1", hot("ending"), retry_delays=(0, 0))
+    await terminal.persist_before_delete(store, "rt-1", OK)
+    assert await terminal.persist_active_on_shutdown(store, ("rt-1",)) == 0
+    assert len(pg.stored) == 1

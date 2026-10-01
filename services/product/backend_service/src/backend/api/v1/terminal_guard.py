@@ -36,7 +36,9 @@ async def teardown_then_persist(d: Any, session_id: str) -> None:
     error: str | None = None
     try:
         if d.livekit_publishers is not None:
-            await d.livekit_publishers.stop(session_id)
+            # Enabled only: the retry-preserving stop. Disabled keeps the original stop.
+            retryable = getattr(d.livekit_publishers, "stop_retryable", None) if terminal else None
+            await (retryable or d.livekit_publishers.stop)(session_id)
         if d.director is not None:
             d.director.detach(session_id)
     except asyncio.CancelledError:

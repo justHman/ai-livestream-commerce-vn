@@ -170,7 +170,10 @@ async def _persist_terminal_on_shutdown(container: BootstrapContainer) -> None:
     durable record (or an explicit audited deferral). No-op while disabled."""
     terminal = getattr(container, "terminal_outcomes", None)
     if terminal is not None:
-        await terminal.persist_active_on_shutdown(container.store)
+        extra = set(getattr(container, "orchestrators", {}) or {})
+        publishers = getattr(container, "livekit_publishers", None)
+        extra.update(getattr(publishers, "session_ids", ()) or ())
+        await terminal.persist_active_on_shutdown(container.store, tuple(extra))
 
 
 async def _stop_terminal_outcomes(container: BootstrapContainer) -> None:
