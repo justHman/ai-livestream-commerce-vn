@@ -12,6 +12,7 @@ import time
 import pytest
 
 from backend.application.db.memory_session_store import InMemorySessionStore
+from backend.application.director.coordinator import DirectorCoordinator
 from backend.application.platform_events import PlatformEvent
 from backend.application.platform_events.ingestion import PlatformEventIngestionService
 from backend.application.reducer import AcceptedComment, FastReducer, FastReducerConfig
@@ -593,29 +594,37 @@ async def test_default_opt_in_off_keeps_existing_accepted_parking_behaviour() ->
 # ---------------------------------------------------------------------------
 
 
+# F3 shipped green because the double below counted with one global int while
+# production counts per session. Binding the real method (not re-writing it) is
+# what stops the double from holding different semantics than the thing it
+# stands in for, whatever the production counter becomes next.
+_production_next_delivery_tick = DirectorCoordinator.next_delivery_tick
+
+
 class _RoutedTeardownCoordinator:
     """Coordinator that routes, then can tear down before consuming."""
 
     def __init__(self) -> None:
         self.attached = True
-        self._monotonic = 0
         self.ingested: list[str] = []
         # The ts the ingress actually handed over, per routed comment. A
         # delivery-path reset would be visible here and nowhere else.
         self.queued_ts: list[float] = []
+        # Same shape as DirectorCoordinator._delivery_seq: PER SESSION.
+        self._delivery_seq: dict[str, int] = {}
 
     def has(self, session_id: str) -> bool:
         return self.attached
 
     def ingest(self, session_id, text, author, ts: float = 0.0):
-        self._monotonic += 1
+        self._delivery_seq[session_id] = self._delivery_seq.get(session_id, 0) + 1
         self.ingested.append(text)
         self.queued_ts.append(ts)
-        return type("C", (), {"id": f"comment-{self._monotonic}"})()
+        return type("C", (), {"id": f"comment-{self._delivery_seq[session_id]}"})()
 
-    def next_delivery_tick(self) -> int:
-        """Monotonic counter the reconciliation compares outcomes against."""
-        return self._monotonic
+    def next_delivery_tick(self, session_id: str | None = None) -> int:
+        """PRODUCTION's counter, bound — not a re-implementation of it."""
+        return _production_next_delivery_tick(self, session_id)
 
 
 class _AuditSink:
@@ -690,6 +699,133 @@ async def test_consumed_comment_is_never_reconciled_as_non_deliverable() -> None
     service.mark_consumed("s1", {"comment-1"})
 
     assert await service.reconcile_session("s1", attach_seq=0) == []
+
+
+# ---------------------------------------------------------------------------
+# F3 — the teardown fence is PER SESSION. A cross-session stamp against a
+# per-session fence means routed work in any second session is skipped forever:
+# the entry stays ``routed`` in the ledger and NO audit row is ever written.
+# The single-session double above could not see it, so the double now binds
+# production's real counter and this test drives the real coordinator.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_second_session_routed_work_is_reconciled_on_its_own_teardown() -> None:
+    """s2's routed comment must be audited non_deliverable on s2 teardown.
+
+    Two sessions route into the SAME coordinator. s1 goes first, so by the
+    time s2 is torn down the coordinator's total routed count is 2 while s2's
+    own fence is 1. Stamping s2's entry with the cross-session total made
+    ``attach_seq > fence`` and it was skipped forever — silent loss.
+    """
+    from backend.api.v1 import ProductEntityIn
+    from backend.application.director.embeddings import HashingEmbedder
+    from backend.application.director.session_context import DirectorRuntime
+    from avatar.engines.mock import MockRenderBackend
+
+    coordinator = DirectorCoordinator(
+        runtime=DirectorRuntime(backend=MockRenderBackend(), embedder=HashingEmbedder()),
+        llm=None,
+        tts=None,
+        backend=None,
+    )
+    products = [ProductEntityIn(id="P001", name="Kem").to_entity()]
+    coordinator.start("s1", products)
+    coordinator.start("s2", products)
+    try:
+        audit = _AuditSink()
+        store = InMemorySessionStore()
+        await store.set("s1", {"status": "active"})
+        await store.set("s2", {"status": "active"})
+        service = PlatformEventIngestionService(
+            store=store, coordinator=coordinator, pg_store=audit
+        )
+
+        assert (
+            await service.ingest(
+                "s1", [PlatformEvent(**_event("ms-1", text="a"))], delivery_outcomes_v1=True
+            )
+        )["events"][0]["status"] == "routed"
+        assert (
+            await service.ingest(
+                "s2", [PlatformEvent(**_event("ms-2", text="b"))], delivery_outcomes_v1=True
+            )
+        )["events"][0]["status"] == "routed"
+
+        # The cross-session total is strictly larger than s2's own fence.
+        assert coordinator.next_delivery_tick() == 2
+        assert coordinator.next_delivery_tick("s2") == 1
+
+        # s1 tears down first, so the coordinator has really been multi-session.
+        s2_fence = coordinator.stop("s2")
+
+        assert s2_fence == 1
+        assert await service.reconcile_session("s2", attach_seq=s2_fence) == ["ms-2"]
+
+        reconciled = service.terminal_outcomes("s2")["ms-2"]
+        assert reconciled.outcome == "non_deliverable"
+        assert reconciled.reason == "coordinator_torn_down_before_consumption"
+        kind, row = audit.audits[-1]
+        assert kind == "event_ingress.non_deliverable"
+        assert row["resource"] == "viewer.comment:ms-2"
+    finally:
+        coordinator.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_bulk_teardown_reconciles_every_session_its_own_fence() -> None:
+    """``stop_all`` shares the same fence contract, so it shares the bug.
+
+    A process shutdown stops every session at once. Each session's routed work
+    must be reconciled against ITS OWN fence, or the later-stopped session's
+    entries are skipped and die without an audit.
+    """
+    from backend.api.v1 import ProductEntityIn
+    from backend.application.director.embeddings import HashingEmbedder
+    from backend.application.director.session_context import DirectorRuntime
+    from avatar.engines.mock import MockRenderBackend
+
+    coordinator = DirectorCoordinator(
+        runtime=DirectorRuntime(backend=MockRenderBackend(), embedder=HashingEmbedder()),
+        llm=None,
+        tts=None,
+        backend=None,
+    )
+    products = [ProductEntityIn(id="P001", name="Kem").to_entity()]
+    for sid in ("s1", "s2", "s3"):
+        coordinator.start(sid, products)
+    try:
+        audit = _AuditSink()
+        store = InMemorySessionStore()
+        service = PlatformEventIngestionService(
+            store=store, coordinator=coordinator, pg_store=audit
+        )
+        for index, sid in enumerate(("s1", "s2", "s3"), start=1):
+            await store.set(sid, {"status": "active"})
+            assert (
+                await service.ingest(
+                    sid,
+                    [PlatformEvent(**_event(f"bulk-ms-{index}", text="x"))],
+                    delivery_outcomes_v1=True,
+                )
+            )["events"][0]["status"] == "routed"
+
+        fences = coordinator.stop_all()
+
+        assert fences == {"s1": 1, "s2": 1, "s3": 1}
+        for index, sid in enumerate(("s1", "s2", "s3"), start=1):
+            assert await service.reconcile_session(sid, attach_seq=fences[sid]) == [
+                f"bulk-ms-{index}"
+            ]
+            assert service.terminal_outcomes(sid)[f"bulk-ms-{index}"].outcome == "non_deliverable"
+        # One audit per session — no session's work was dropped unrecorded.
+        non_deliverable = [
+            row for kind, row in audit.audits if kind == "event_ingress.non_deliverable"
+        ]
+        assert len(non_deliverable) == 3
+    finally:
+        coordinator.stop_all()
 
 
 @pytest.mark.asyncio

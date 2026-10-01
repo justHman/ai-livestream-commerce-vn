@@ -655,12 +655,18 @@ class PlatformEventIngestionService:
     # ------------------------------------------------------------------
 
     def _next_delivery_seq(self, session_id: str) -> int:
-        """Monotonic delivery sequence; 0 means the coordinator has none."""
+        """Monotonic delivery sequence; 0 means the coordinator has none.
+
+        The session id is REQUIRED here: the teardown fence this stamp is
+        compared against is the per-session counter ``stop`` returns, so a
+        cross-session total would stamp the entry above its own session's
+        fence and it would be skipped forever (P0-FB-013 F3).
+        """
         seq_fn = getattr(self._coordinator, "next_delivery_tick", None)
         if seq_fn is None:
             return 0
         try:
-            return int(seq_fn())
+            return int(seq_fn(session_id))
         except Exception:
             logger.warning("coordinator.next_delivery_tick failed", exc_info=True)
             return 0
