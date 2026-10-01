@@ -912,16 +912,10 @@ class DirectorCoordinator:
         )
         if not selections:
             return Decision(action="idle", reason="reducer mode: no active demand", score=0.0)
-        high_value_ids = {
-            s.envelope.cluster_id for s in selections if projection.is_high_value(s.envelope)
-        }
+        high_value_ids = projection.high_value_cluster_ids(selections)
         return projection.decide_from_reducer(
             selections, now, high_value_ids=high_value_ids.__contains__
         )
-
-    def _reducer_now(self) -> float:
-        """The reducer's own clock. Same source as the Director's epoch here."""
-        return time.time()
 
     def _projected_director(self, session_id: str) -> Director:
         ds = self._runtime.get_session(session_id)

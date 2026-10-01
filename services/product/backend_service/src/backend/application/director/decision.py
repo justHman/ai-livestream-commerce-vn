@@ -264,7 +264,6 @@ class Director:
 
         pivot_queue_before = set(self.state.cursor.pivot_queue)
         by_cluster = {s.envelope.cluster_id: s for s in selections}
-        by_members = {s.member_comment_ids: cid for cid, s in by_cluster.items()}
         ranked = select_scored(self, selections, now=now)
         high_value_ids = high_value_ids or (lambda _cid: False)
         decision = self._decide(
@@ -272,7 +271,6 @@ class Director:
             now,
             ranked=ranked,
             by_cluster=by_cluster,
-            by_members=by_members,
             is_high_value=high_value_ids,
         )
         if decision.source_cluster_id is not None:
@@ -286,7 +284,6 @@ class Director:
         *,
         ranked: Optional[list[ScoredCluster]] = None,
         by_cluster: Optional[dict[str, Any]] = None,
-        by_members: Optional[dict[tuple[str, ...], str]] = None,
         is_high_value: Optional[Callable[[str], bool]] = None,
     ) -> Decision:
         """The one decision function; ``ranked`` is the reducer-mode injection.
@@ -299,7 +296,7 @@ class Director:
         reducer_mode = ranked is not None
         high_value = is_high_value or (lambda _cid: False)
         by_cluster = by_cluster or {}
-        by_members = by_members or {}
+        by_members: dict[tuple[str, ...], str] = {}
 
         # OPENING: three protected grounded turns; comments cannot interrupt.
         # No reducer selection preempts the 007 approved opening (the human
@@ -331,9 +328,10 @@ class Director:
         else:
             window = []
             clusters = []
-            # Identity index, built once: reducer cluster id by member-id tuple.
-            # Legacy clusters are absent from it, which is exactly what keeps the
-            # high-value relaxation shut for the legacy feed.
+            # Identity index: reducer cluster id by member-id tuple. Built here
+            # from the adapter output, so legacy clusters are absent from it —
+            # which is exactly what keeps the high-value relaxation shut for the
+            # legacy feed.
             by_members = {
                 selection.member_comment_ids: cluster_id
                 for cluster_id, selection in by_cluster.items()
