@@ -470,8 +470,13 @@
         "type": "object"
       },
       "EventsIn": {
-        "description": "Bounded batch of canonical events (one-or-many share this schema).",
+        "description": "Bounded batch of canonical events (one-or-many share this schema).\n\n``delivery_outcomes_v1`` is the P0-FB-013 activation opt-in. It defaults\nto OFF, so the deployed API \u2014 which only understands accepted/duplicate/\nrejected \u2014 keeps today's response contract verbatim. When a caller sets\nit, the service reports the truthful delivery outcome instead of\n``accepted``: a comment with no attached coordinator comes back\n``not_ready`` and is not parked, so the caller's durable retry can\nre-drive the same event id.",
         "properties": {
+          "delivery_outcomes_v1": {
+            "default": false,
+            "title": "Delivery Outcomes V1",
+            "type": "boolean"
+          },
           "events": {
             "items": {
               "$ref": "#/components/schemas/PlatformEvent"
