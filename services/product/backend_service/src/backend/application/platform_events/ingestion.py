@@ -627,12 +627,21 @@ class PlatformEventIngestionService:
                 self._track_routed(
                     session_id, event, delivery, seq=self._next_delivery_seq(session_id)
                 )
+                # The truthful-outcome opt-in is now demonstrably live for this
+                # session, which is what reducer mode requires before it will
+                # decide anything.
+                self._mark_reducer_ready(session_id)
             if delivery.is_retryable:
                 # Identity preserved: no dedup record, so a durable retry can
                 # re-drive this exact event once a coordinator exists.
                 return result
             await self._persist_accepted(session_id, event)
-            self._notify_reducer(session_id, event, delivery.comment_id)
+            if not self._reducer_mode(session_id):
+                # Legacy park path: the reducer is notified at route time, for
+                # both accepted outcomes. A reducer-mode session is notified at
+                # CONSUMPTION instead (mark_consumed), so a comment that dies
+                # with the queue never reaches the reducer.
+                self._notify_reducer(session_id, event, delivery.comment_id)
         else:
             result["status"] = EventStatus.ACCEPTED.value
             self._apply_signal(meta, event)
@@ -693,12 +702,20 @@ class PlatformEventIngestionService:
         the outcome log so the audit surface still answers for it. A comment
         that never reaches here stays in flight and a teardown reconciles it
         as audited ``non_deliverable`` (P0-FB-013).
+
+        P0-FB-014: for a reducer-mode session this is ALSO where the reducer is
+        notified, not at route time. Only a comment the Director actually
+        consumed reaches the reducer, and the ledger entry holds the original
+        ``PlatformEvent``, so full task-002 provenance survives the trip.
         """
         if not comment_ids:
             return
         outcomes = self._outcomes(session_id)
+        reducer_mode = self._reducer_mode(session_id)
         for entry_id, entry in list(self._in_flight.get(session_id, {}).items()):
             if entry.delivery.comment_id in comment_ids:
+                if reducer_mode:
+                    self._notify_reducer(session_id, entry.event, entry.delivery.comment_id)
                 outcomes[entry_id] = dataclasses.replace(
                     entry,
                     delivery=DeliveryResult(
@@ -709,6 +726,36 @@ class PlatformEventIngestionService:
                     ),
                 )
                 del self._in_flight[session_id][entry_id]
+
+    def _mark_reducer_ready(self, session_id: str) -> None:
+        """Tell the coordinator the 013 truthful-outcome opt-in is live here."""
+        if self._coordinator is None:
+            return
+        mark = getattr(self._coordinator, "mark_reducer_ready", None)
+        if mark is None:
+            return
+        try:
+            mark(session_id)
+        except Exception:
+            logger.warning("coordinator.mark_reducer_ready failed", exc_info=True)
+
+    def _reducer_mode(self, session_id: str) -> bool:
+        """Whether this session's Director is fed by the bounded reducer.
+
+        Asked of the coordinator, which owns the decision-input mode. A
+        coordinator that does not know the mode (a test double, an older
+        composition) means the legacy route-time notification, unchanged.
+        """
+        if self._coordinator is None:
+            return False
+        mode_fn = getattr(self._coordinator, "reducer_mode", None)
+        if mode_fn is None:
+            return False
+        try:
+            return bool(mode_fn(session_id))
+        except Exception:
+            logger.warning("coordinator.reducer_mode failed", exc_info=True)
+            return False
 
     def terminal_outcomes(self, session_id: str) -> dict[str, DeliveryResult]:
         """Every delivery outcome reached for this session, by event id.

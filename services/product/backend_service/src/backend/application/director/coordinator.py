@@ -120,6 +120,7 @@ class DirectorCoordinator:
         pg_store: Any = None,
         audio_window_callback: Any = None,
         completed_history_size: int = 10,
+        reducer: Any = None,
     ) -> None:
         self._runtime = runtime
         # Factory inputs for building a FRESH StreamOrchestrator + queue +
@@ -175,6 +176,64 @@ class DirectorCoordinator:
         self.comment_consumed = None
         # The app composition root installs the same boundary used by /say.
         self.approved_speech = None
+        # The bounded FastReducer (P0-FB-014). One instance serves all sessions;
+        # it is consulted ONLY for sessions in reducer mode, so a legacy session
+        # is byte-for-byte unchanged.
+        self._reducer = reducer
+        # Per-session decision-input mode. True = the reducer is the only
+        # viewer-demand input; False/absent = the legacy raw-comment feed.
+        # Runtime engineering selector, NOT a Product Rule.
+        self._reducer_mode: set[str] = set()
+        # Sessions whose 013 truthful-outcome opt-in actually fired. Reducer
+        # mode refuses to decide for a session that is not in here.
+        self._reducer_ready: set[str] = set()
+        # Bounded per-session consumed-id marker, used ONLY in reducer mode
+        # (the legacy path marks consumption via state.embeddings_cache).
+        self._reducer_consumed: dict[str, set[str]] = {}
+
+    # ------------------------------------------------------------------
+    # Decision-input mode (P0-FB-014)
+    # ------------------------------------------------------------------
+
+    @property
+    def reducer(self):
+        return self._reducer
+
+    @reducer.setter
+    def reducer(self, value) -> None:
+        self._reducer = value
+
+    def set_reducer_mode(self, session_id: str, enabled: bool = True) -> None:
+        """Select the decision input for one session.
+
+        Reducer mode requires the 013 truthful-outcome opt-in to be ACTIVE for
+        that session. ``mark_reducer_ready`` records that opt-in at consumption
+        time; until then ``_reducer_store`` returns None and the session
+        decides nothing — a refusal, never a silent fallback to the legacy feed.
+        """
+        if enabled:
+            self._reducer_mode.add(session_id)
+        else:
+            self._reducer_mode.discard(session_id)
+
+    def reducer_mode(self, session_id: str) -> bool:
+        return session_id in self._reducer_mode
+
+    def mark_reducer_ready(self, session_id: str) -> None:
+        """Record that the 013 truthful-outcome opt-in is live for this session.
+
+        Called from the consumption boundary, which is the only place that can
+        observe the opt-in actually firing. Reducer mode refuses until this.
+        """
+        self._reducer_ready.add(session_id)
+
+    def _reducer_store(self, session_id: str):
+        """The session's ClusterStore, or None when reducer mode may not decide."""
+        if session_id not in self._reducer_mode or self._reducer is None:
+            return None
+        if session_id not in self._reducer_ready:
+            return None
+        return self._reducer.session_store(session_id)
 
     async def _emit(self, session_id: str, event: dict) -> None:
         """Send a WS event via the ControlHub if one is wired. No-op otherwise."""
@@ -250,6 +309,14 @@ class DirectorCoordinator:
         self._playback_events[session_id] = asyncio.Event()
         self._completed_history[session_id] = deque(maxlen=self._completed_history_size)
         self._stats[session_id] = _SessionStats()
+        # A NEW generation starts from an empty reducer session (P0-FB-014).
+        # ``stop`` already drops it, but a start on a never-stopped id (or a
+        # reattach after a crash) must not inherit the previous generation's
+        # clusters, answered state or provenance either.
+        if self._reducer is not None:
+            self._reducer.drop_session(session_id)
+        self._reducer_consumed.pop(session_id, None)
+        self._reducer_ready.discard(session_id)
         if activated:
             self._activated.add(session_id)
         try:
@@ -317,6 +384,14 @@ class DirectorCoordinator:
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
+        # Drop the reducer's per-session state too (P0-FB-014): clusters,
+        # answered state and provenance must not survive into a new generation
+        # of the same session id.
+        if self._reducer is not None:
+            self._reducer.drop_session(session_id)
+        self._reducer_mode.discard(session_id)
+        self._reducer_ready.discard(session_id)
+        self._reducer_consumed.pop(session_id, None)
         return attach_seq
 
     def stop_all(self) -> dict[str, int]:
@@ -727,18 +802,42 @@ class DirectorCoordinator:
             return
         director: Director = ds.director
         state: StreamState = director.state
-        embedder = self._get_embedder()
         fresh = queue.drain_window(self._cfg.window_sec)
-        new_only = [comment for comment in fresh if comment.id not in state.embeddings_cache]
-        if new_only:
-            vecs = await asyncio.to_thread(embedder.encode, [comment.text for comment in new_only])
-            for comment, vector in zip(new_only, vecs):
+        new_only = [
+            comment for comment in fresh if comment.id not in self._consumed_ids(session_id)
+        ]
+        if session_id in self._reducer_mode:
+            # Reducer mode (P0-FB-014): the bounded reducer is the only
+            # viewer-demand input. The queue is still drained and the
+            # consumption boundary still fires (I-4) — but this coordinator
+            # does NOT embed, route, or add to rolling_comments, so the raw
+            # decision feed is off for this session. The reducer, fed at
+            # consumption by the ingress service, owns the clustering.
+            if self.comment_consumed is not None and new_only:
+                try:
+                    self.comment_consumed(session_id, {c.id for c in new_only})
+                except Exception:
+                    logger.warning(
+                        "consumed-comment sink failed session=%s", session_id, exc_info=True
+                    )
+            self._remember_consumed(session_id, new_only)
+            now = ds.now()
+            self._advance_timers(session_id, now, state)
+            await self._fill_prepared(session_id)
+            return
+        embedder = self._get_embedder()
+        new_comments = [comment for comment in new_only if comment.id not in state.embeddings_cache]
+        if new_comments:
+            vecs = await asyncio.to_thread(
+                embedder.encode, [comment.text for comment in new_comments]
+            )
+            for comment, vector in zip(new_comments, vecs):
                 state.embeddings_cache[comment.id] = list(vector)
         director_now = ds.now()
         wall_now = time.time()
         routed = []
         current = state.current_product()
-        for incoming in new_only:
+        for incoming in new_comments:
             vector = state.embeddings_cache[incoming.id]
             routed.append(
                 route_comment(
@@ -753,6 +852,7 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
+        self._remember_consumed(session_id, new_only)
         # This is the consumption boundary: the comments left ChatQueue and
         # are now Director state, so a teardown must not reconcile them as
         # non_deliverable (P0-FB-013). Only ``new_only`` counts — a comment
@@ -769,6 +869,56 @@ class DirectorCoordinator:
         now = ds.now()
         self._advance_timers(session_id, now, state)
         await self._fill_prepared(session_id)
+
+    def _consumed_ids(self, session_id: str) -> set[str]:
+        """Comment ids already consumed in reducer mode.
+
+        In reducer mode nothing is added to ``state.embeddings_cache``, so that
+        cache cannot double as the consumed marker. A bounded per-session set
+        does: a comment is consumed exactly once (I-4), and a re-read from the
+        window on a later tick is not consumed again.
+        """
+        return self._reducer_consumed.get(session_id, frozenset())
+
+    def _remember_consumed(self, session_id: str, comments) -> None:
+        if not comments:
+            return
+        seen = self._reducer_consumed.setdefault(session_id, set())
+        seen.update(comment.id for comment in comments)
+
+    def _decide_from_reducer(self, projection: Director, session_id: str, store, now: float):
+        """Decide from the bounded reducer, refusing when it has nothing.
+
+        ``store is None`` (or an empty projection) means the reducer is not
+        actually active for this session, so the decision is ``idle`` — never a
+        fall back to the legacy raw-comment feed for a P0 session.
+        """
+        from .reducer_input import build_selections
+
+        selections = build_selections(
+            projection,
+            store=store,
+            reducer_now=time.time(),
+            director_now=now,
+            wall_now=time.time(),
+            provenance=(
+                None
+                if self._reducer is None
+                else lambda cid: self._reducer.provenance_for(session_id, cid)
+            ),
+        )
+        if not selections:
+            return Decision(action="idle", reason="reducer mode: no active demand", score=0.0)
+        high_value_ids = {
+            s.envelope.cluster_id for s in selections if projection.is_high_value(s.envelope)
+        }
+        return projection.decide_from_reducer(
+            selections, now, high_value_ids=high_value_ids.__contains__
+        )
+
+    def _reducer_now(self) -> float:
+        """The reducer's own clock. Same source as the Director's epoch here."""
+        return time.time()
 
     def _projected_director(self, session_id: str) -> Director:
         ds = self._runtime.get_session(session_id)
@@ -803,9 +953,13 @@ class DirectorCoordinator:
             if missing == 0:
                 return
             projection = self._projected_director(session_id)
+            store = self._reducer_store(session_id)
             for _ in range(missing):
                 now = ds.now()
-                decision = projection.decide(projection.state.rolling_comments, now=now)
+                if store is not None:
+                    decision = self._decide_from_reducer(projection, session_id, store, now)
+                else:
+                    decision = projection.decide(projection.state.rolling_comments, now=now)
                 self._stats[session_id].director_cycles += 1
                 if decision.action in ("idle", "skip"):
                     self._stats[session_id].skips += 1
@@ -1273,6 +1427,24 @@ class DirectorCoordinator:
             phase=phase,
         )
 
+    def _mark_reducer_lifecycle(self, session_id: str, decision: Decision, now: float) -> None:
+        """Reuse the store's own lifecycle state after a reducer-driven speech.
+
+        ``mark_answered`` is what makes the cooldown/novelty state durable
+        across ticks, and ``increment_skip`` mirrors the eviction budget the
+        legacy path applies to clusters it passed over. Both are no-ops for a
+        cluster the bound already evicted.
+        """
+        if self._reducer is None or decision.source_cluster_id is None:
+            return
+        store = self._reducer.session_store(session_id)
+        if store is None:
+            return
+        if decision.action in ("answer_fact", "answer_cluster"):
+            store.mark_answered(decision.source_cluster_id, now)
+        else:
+            store.mark_selected(decision.source_cluster_id, now)
+
     def _after_speak(self, session_id: str, decision: Decision, speech: str) -> None:
         """Update covered_points + advance talking_point_idx on proactive speak."""
         ds = self._runtime._sessions.get(session_id)
@@ -1312,6 +1484,7 @@ class DirectorCoordinator:
                 state.mark_product_covered(product_id, covered)
             except Exception:
                 logger.debug("coverage update failed", exc_info=True)
+        self._mark_reducer_lifecycle(session_id, decision, ds.now())
         # Advance cursor only for proactive (non-reactive) actions.
         if decision.action in (
             "speak_hook",

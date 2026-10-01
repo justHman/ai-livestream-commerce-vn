@@ -123,6 +123,15 @@ class _SessionState:
     embed_calls: int = 0
     cache_hits: int = 0
     wake_notifications: int = 0
+    # P0-FB-014: per-session catalog + current product, used by run_once
+    # routing in place of the process-global config. Without it two sessions
+    # would resolve product candidates against each other's catalog.
+    products: list[Any] = field(default_factory=list)
+    current_product_id: Optional[str] = None
+    # comment_id -> (event_id, provenance, occurred_at), kept BESIDE the store
+    # because the envelope's trust boundary excludes member/viewer ids. Bounded
+    # by the same horizon as the demand list and pruned with it.
+    provenance: dict[str, tuple[str, dict, float]] = field(default_factory=dict)
 
 
 class FastReducer:
@@ -206,9 +215,91 @@ class FastReducer:
             state.pending.append(comment)
             if state.first_pending_ts is None:
                 state.first_pending_ts = comment.ts
+            # Provenance travels beside the store (P0-FB-014): a retried
+            # comment_id keeps the ORIGINAL event_id and occurred_at, so age is
+            # never reset by a redelivery.
+            state.provenance[comment.comment_id] = (
+                comment.event_id,
+                dict(comment.provenance or {}),
+                comment.ts,
+            )
         state.wake_notifications += 1
         state.wake_event.set()
         self._any_wake.set()
+
+    # ------------------------------------------------------------------
+    # Per-session catalog + lifetime (P0-FB-014)
+    # ------------------------------------------------------------------
+
+    def set_session_catalog(
+        self,
+        session_id: str,
+        products: list[Any],
+        current_product_id: Optional[str] = None,
+    ) -> None:
+        """Bind THIS session's approved catalog for product routing.
+
+        ``FastReducerConfig.products`` is process-global and empty in
+        production, which makes product resolution inert. Per-session binding
+        is what makes a candidate resolve against the session's own approved
+        products instead of nothing (or someone else's).
+        """
+        state = self._sessions.setdefault(session_id, _SessionState())
+        state.products = list(products)
+        state.current_product_id = current_product_id
+
+    def session_catalog(self, session_id: str) -> tuple[list[Any], Optional[str]]:
+        state = self._sessions.get(session_id)
+        if state is None:
+            return [], None
+        return list(state.products), state.current_product_id
+
+    def drop_session(self, session_id: str) -> None:
+        """Drop ALL per-session state so a reattached id inherits nothing.
+
+        The store, pending batch, embedding cache, demand list, provenance and
+        the per-session counters all go. Without this a reattached session id
+        would find the previous generation's clusters, answered state and
+        provenance still live (P0-FB-014).
+        """
+        self._sessions.pop(session_id, None)
+        self._stores.pop(session_id, None)
+        self._reconciles_run.pop(session_id, None)
+        self._reconcile_merged_total.pop(session_id, None)
+        self._reconcile_split_total.pop(session_id, None)
+        self._last_reconcile.pop(session_id, None)
+        self._reconciliation_failures.pop(session_id, None)
+        self._last_reconciliation_failure.pop(session_id, None)
+
+    def session_active(self, session_id: str) -> bool:
+        return session_id in self._sessions or session_id in self._stores
+
+    def pending_count(self, session_id: str) -> int:
+        state = self._sessions.get(session_id)
+        return len(state.pending) if state is not None else 0
+
+    def session_store(self, session_id: str) -> Optional[ClusterStore]:
+        """The session's ClusterStore, or None when it has no state.
+
+        None is the REFUSE signal for reducer mode: a caller must not fall back
+        to a legacy feed when the reducer has nothing for this session.
+        """
+        return self._stores.get(session_id)
+
+    def provenance_for(self, session_id: str, comment_id: str) -> Optional[dict]:
+        """The stored provenance for one comment id, or None once pruned."""
+        state = self._sessions.get(session_id)
+        if state is None:
+            return None
+        record = state.provenance.get(comment_id)
+        return None if record is None else record[1]
+
+    def comment_provenance(self, session_id: str, comment_id: str) -> Optional[tuple]:
+        """``(event_id, provenance, occurred_at)`` for one comment id."""
+        state = self._sessions.get(session_id)
+        if state is None:
+            return None
+        return state.provenance.get(comment_id)
 
     # ------------------------------------------------------------------
     # Coalescing deadline (pure function of the injected clock)
@@ -293,17 +384,26 @@ class FastReducer:
         state.embedded_total += len(embedded)
         cutoff = now - self._config.rolling_horizon_sec
         state.demand = [d for d in state.demand if d["ts"] >= cutoff]
+        # Provenance is bounded by the SAME horizon as the demand list, so it can
+        # never outlive the member it describes.
+        state.provenance = {
+            cid: record for cid, record in state.provenance.items() if record[2] >= cutoff
+        }
         store = self._get_store(session_id)
         # Lazy import: routing imports director.clustering, which never imports
         # the reducer package (reducer only used this seam to avoid a cycle).
         from ..director.routing import route_hints
 
+        # Per-session catalog when one is bound (P0-FB-014); the process-global
+        # config stays the fallback for a session nobody bound.
+        products = state.products or self._config.products
+        current_product_id = (
+            state.current_product_id if state.products else self._config.current_product_id
+        )
         for comment in batch:
             entry = state.cache.get(comment.comment_id)
             if entry is not None and entry[0] == comment.text:
-                hints = route_hints(
-                    comment.text, self._config.products, self._config.current_product_id
-                )
+                hints = route_hints(comment.text, products, current_product_id)
                 candidates = [
                     ProductCandidate(pid, score, evidence)
                     for pid, score, evidence in hints.product_candidates

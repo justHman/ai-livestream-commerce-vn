@@ -24,7 +24,7 @@ scoring above cfg.interrupt_score_threshold may cut off the avatar.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field
-from typing import Optional
+from typing import Any, Callable, Optional, Sequence
 from uuid import uuid4
 
 from backend.application.entity.models import EntityDocument
@@ -81,6 +81,21 @@ class Decision:
     qa_clusters_answered_after_decision: Optional[int] = None
     latency_spans: dict[str, dict[str, float]] = dataclass_field(default_factory=dict)
     turn_id: str = dataclass_field(default_factory=lambda: uuid4().hex)
+    # Reducer provenance (P0-FB-014). It travels BESIDE the envelope, never
+    # inside it: the envelope's trust boundary excludes member/viewer ids, so
+    # these three fields are the audit/freshness/idempotency record.
+    source_cluster_id: Optional[str] = None
+    source_event_ids: tuple[str, ...] = ()
+    occurred_at_bounds: tuple[float, float] = (0.0, 0.0)
+
+    def provenance_payload(self) -> dict:
+        """The provenance block carried by events and the persisted decision row."""
+        return {
+            "cluster_id": self.source_cluster_id,
+            "source_event_ids": list(self.source_event_ids),
+            "oldest_occurred_at": self.occurred_at_bounds[0],
+            "newest_occurred_at": self.occurred_at_bounds[1],
+        }
 
 
 class Director:
@@ -98,6 +113,32 @@ class Director:
         self.hooks = hook_pool or HookPool()
         # product_id -> EntityDocument, for O(1) factual answers (TIER 2).
         self.catalog = catalog or {}
+        # P0-FB-014 high-value predicate. REQUIRES_VALIDATION implementation
+        # default (brief §human decision 2), NOT a Product Rule: a cluster whose
+        # reducer intent clears ``high_value_threshold`` in the existing
+        # ``_INTENT_ACTIONABILITY`` table, plus SafetyGate-flagged safety intent.
+        # The 0.8 default is exactly the brief's proposed set — price/stock/
+        # buy_intent (1.0), comparison (0.9), complaint (0.8).
+        self.high_value_threshold: float = 0.8
+        self.safety_intents: frozenset[str] = frozenset()
+
+    def is_high_value(self, envelope: Any) -> bool:
+        """Whether one reducer envelope clears the high-value predicate.
+
+        REQUIRES_VALIDATION default: actionability at or above the configured
+        threshold in ``reducer.demand._INTENT_ACTIONABILITY``, or a
+        SafetyGate-flagged safety intent that reached the reducer. A runtime
+        default, never promoted to a Product Rule.
+        """
+        from ..reducer.demand import _INTENT_ACTIONABILITY
+
+        if envelope.intent in self.safety_intents:
+            return True
+        weight = _INTENT_ACTIONABILITY.get(envelope.intent, 0.3)
+        return weight >= self.high_value_threshold
+
+    def high_value_cluster_ids(self, selections: Sequence[Any]) -> set[str]:
+        return {s.envelope.cluster_id for s in selections if self.is_high_value(s.envelope)}
 
     # ── phase transitions ────────────────────────────────────────────
 
@@ -176,8 +217,37 @@ class Director:
 
     def decide(self, comments: list[Comment], now: float) -> Decision:
         """Produce the next Decision given recent comments and the clock."""
+        return self._decide(comments, now)
+
+    def decide_from_reducer(
+        self,
+        selections: Sequence[Any],
+        now: float,
+        *,
+        high_value_ids: Optional[Callable[[str], bool]] = None,
+    ) -> Decision:
+        """Produce the next Decision from bounded reducer output (P0-FB-014).
+
+        The reducer is the only viewer-demand input for a P0 session, so no raw
+        comment is clustered or ranked here: ``build_selections`` already
+        projected the live clusters, and ``select_scored`` reused the legacy
+        ranking. Everything else — pivot checkpoint, no nested pivot, cooldown
+        and signature suppression, ``mark_answered``, the protected opening —
+        is the same code the legacy feed runs.
+        """
+        from .reducer_input import attach_provenance, select_scored
+
         pivot_queue_before = set(self.state.cursor.pivot_queue)
-        decision = self._decide(comments, now)
+        by_cluster = {s.envelope.cluster_id: s for s in selections}
+        ranked = select_scored(self, selections, now=now)
+        high_value_ids = high_value_ids or (lambda _cid: False)
+        decision = self._decide(
+            [],
+            now,
+            ranked=ranked,
+            by_cluster=by_cluster,
+            is_high_value=high_value_ids,
+        )
         decision.decided_at = now
         decision.queued_pivot_products = tuple(
             product_id
@@ -188,12 +258,33 @@ class Director:
         decision.qa_window_started_at_after_decision = self.state.qa_window_started_at
         decision.qa_window_stage_index_after_decision = self.state.qa_window_stage_index
         decision.qa_clusters_answered_after_decision = self.state.qa_clusters_answered
+        if decision.source_cluster_id is not None:
+            attach_provenance(decision, by_cluster)
         return decision
 
-    def _decide(self, comments: list[Comment], now: float) -> Decision:
+    def _decide(
+        self,
+        comments: list[Comment],
+        now: float,
+        *,
+        ranked: Optional[list[ScoredCluster]] = None,
+        by_cluster: Optional[dict[str, Any]] = None,
+        is_high_value: Optional[Callable[[str], bool]] = None,
+    ) -> Decision:
+        """The one decision function; ``ranked`` is the reducer-mode injection.
+
+        Passing ``ranked`` short-circuits clustering and ranking entirely: the
+        bounded reducer already produced the clusters, so the raw-comment feed
+        is never read for that session. ``None`` is the legacy path, unchanged.
+        """
         s, c = self.state, self.cfg
+        reducer_mode = ranked is not None
+        high_value = is_high_value or (lambda _cid: False)
+        by_cluster = by_cluster or {}
 
         # OPENING: three protected grounded turns; comments cannot interrupt.
+        # No reducer selection preempts the 007 approved opening (the human
+        # product decision on that remains open; the opening stays protected).
         self._maybe_leave_opening()
         if s.phase == Phase.OPENING:
             return self._opening_turn()
@@ -207,14 +298,20 @@ class Director:
             )
 
         # SELLING
-        window = [cm for cm in comments if now - cm.t <= c.selection_window_sec]
-        clusters = cluster_comments(window, merge_threshold=c.cluster_merge_threshold)
-        ranked = [
-            item
-            for item in rank_clusters(clusters, s, c, now)
-            if not item.cluster.member_ids
-            or not all(member_id in s.answered_comments for member_id in item.cluster.member_ids)
-        ]
+        if not reducer_mode:
+            window = [cm for cm in comments if now - cm.t <= c.selection_window_sec]
+            clusters = cluster_comments(window, merge_threshold=c.cluster_merge_threshold)
+            ranked = [
+                item
+                for item in rank_clusters(clusters, s, c, now)
+                if not item.cluster.member_ids
+                or not all(
+                    member_id in s.answered_comments for member_id in item.cluster.member_ids
+                )
+            ]
+        else:
+            window = []
+            clusters = []
         relevant_ages = [
             max(0.0, now - item.cluster.newest_t)
             for item in ranked
@@ -233,24 +330,47 @@ class Director:
                     reason="all products done",
                     score=0.0,
                 )
-            ranked = [
-                item
-                for item in rank_clusters(clusters, s, c, now)
-                if not any(
-                    member_id in s.answered_comments for member_id in item.cluster.member_ids
-                )
-            ]
+            if reducer_mode:
+                # Same re-filter as the legacy re-rank, minus a re-cluster: the
+                # reducer clusters are the only ones and they already exist.
+                ranked = [
+                    item
+                    for item in ranked
+                    if not any(
+                        member_id in s.answered_comments for member_id in item.cluster.member_ids
+                    )
+                ]
+            else:
+                ranked = [
+                    item
+                    for item in rank_clusters(clusters, s, c, now)
+                    if not any(
+                        member_id in s.answered_comments for member_id in item.cluster.member_ids
+                    )
+                ]
 
         cur = s.current_product()
-        actionable_product_ids = [
-            comment.product_id
-            for comment in window
-            if comment.actionable and comment.product_id is not None
-        ]
+        actionable_product_ids = (
+            [
+                item.cluster.product_id
+                for item in ranked
+                if item.cluster.actionable and item.cluster.product_id is not None
+            ]
+            if reducer_mode
+            else [
+                comment.product_id
+                for comment in window
+                if comment.actionable and comment.product_id is not None
+            ]
+        )
         eligible = []
         if cur is not None:
             for item in ranked:
-                if item.cluster.size < 2:
+                cluster_id = _cluster_id_of(by_cluster, item)
+                high = reducer_mode and high_value(cluster_id)
+                # A lone high-value or safety cluster is never eligible under
+                # the legacy size gate (BR-QA-001); a lone low-value one still is not.
+                if item.cluster.size < 2 and not high:
                     continue
                 product_id = item.cluster.product_id or cur.product_id
                 topic_key = f"{product_id}:{item.cluster.intent}"
@@ -314,12 +434,16 @@ class Director:
                     top_score=target_share,
                     current_score=current_share,
                 )
-                return self._qa_decision(
+                cross_selection = by_cluster.get(_cluster_id_of(by_cluster, cross_product))
+                cross_decision = self._qa_decision(
                     cross_product,
                     cur,
                     pivot=pivot,
                     excursion=not pivot,
                 )
+                if cross_selection is not None:
+                    cross_decision.source_cluster_id = cross_selection.envelope.cluster_id
+                return cross_decision
 
         if cur is not None and (
             not s.qa_window_open
@@ -338,8 +462,16 @@ class Director:
             s.qa_window_open = False
             ranked = []
         elif not s.qa_window_open:
-            ranked = []
-        if cur is not None and not cur.is_introduced:
+            # A closed Q&A window drops everything EXCEPT a high-value cluster
+            # (BR-QA-001/002): safety and purchase intent must not be blocked
+            # solely by a legacy stage. It becomes eligible at this safe
+            # boundary, with every other safeguard unchanged.
+            ranked = [item for item in ranked if high_value(_cluster_id_of(by_cluster, item))]
+        if (
+            cur is not None
+            and not cur.is_introduced
+            and not _any_high(ranked, by_cluster, high_value)
+        ):
             return Decision(
                 action="introduce_product",
                 prompt=self._introduce_prompt(cur),
@@ -379,8 +511,13 @@ class Director:
             return Decision(action="idle", reason="no product available", score=0.0)
 
         # Alternate Q&A with proactive selling so a busy comment stream cannot
-        # reduce a product to one intro followed by endless answers.
-        if cur is not None and cur.reactive_streak >= 1:
+        # reduce a product to one intro followed by endless answers. Relaxed for
+        # high-value clusters so a busy stream cannot starve a safety question.
+        if (
+            cur is not None
+            and cur.reactive_streak >= 1
+            and not _any_high(ranked, by_cluster, high_value)
+        ):
             proactive = self._next_sales_turn(cur)
             if proactive is not None:
                 return proactive
@@ -388,7 +525,11 @@ class Director:
         top = ranked[0]
         for skipped in ranked[1:]:
             skipped.cluster.skips += 1
-        return self._qa_decision(top, cur)
+        selection = by_cluster.get(_cluster_id_of(by_cluster, top))
+        decision = self._qa_decision(top, cur)
+        if selection is not None:
+            decision.source_cluster_id = selection.envelope.cluster_id
+        return decision
 
     def _qa_decision(
         self,
@@ -653,6 +794,11 @@ class Director:
                 ("cta", f"{product.product_id}:cta:fallback", "Kêu gọi chốt đơn tự nhiên."),
             ]
             tasks = fallback
+        # Coverage read (P0-FB-014): ``_after_speak`` already writes the covered
+        # key points per product; until now nothing read them. Skip a stage
+        # whose key points are fully covered instead of repeating must-cover
+        # content, and advance so progression still reaches later products.
+        index = self._first_uncovered_stage(product, tasks, index)
         if index >= len(tasks):
             return None
         stage, task_id, instruction = tasks[index]
@@ -664,6 +810,47 @@ class Director:
             task_id=task_id,
             reason=f"continue product sales stage {stage}",
         )
+
+    def _covered_key_points(self, product_id: str) -> list[str]:
+        """The run plan's key selling points for one product (empty if none)."""
+        plan = self.state.run_plan
+        if plan is None:
+            return []
+        selling = getattr(plan, "selling", None)
+        if selling is None and isinstance(plan, dict):
+            selling = plan.get("selling") or []
+        for phase in selling or []:
+            pid = phase.product_id if hasattr(phase, "product_id") else phase.get("product_id")
+            if pid == product_id:
+                points = (
+                    phase.key_selling_points
+                    if hasattr(phase, "key_selling_points")
+                    else phase.get("key_selling_points") or []
+                )
+                return list(points)
+        return []
+
+    def _first_uncovered_stage(self, product, tasks, index: int) -> int:
+        """First stage at or after ``index`` whose key points are not all covered.
+
+        A stage with no key points is always eligible — coverage is only
+        evidence for the stages that actually declare what they must say.
+        """
+        covered = self.state.covered_points.get(product.product_id) or set()
+        if not covered:
+            return index
+        points = self._covered_key_points(product.product_id)
+        if not points:
+            return index
+        from .scoring import coverage_ratio
+
+        if coverage_ratio(covered, points) >= 1.0:
+            # The whole product is covered; the caller advances to the next one.
+            return len(tasks)
+        # Only skip forward while a stage is a strict repeat of covered ground.
+        while index < len(tasks) and _stage_is_covered(tasks[index], covered):
+            index += 1
+        return index
 
     def _stage_prompt(self, product, stage: str, instruction: str) -> str:
         catalog_product = self.catalog.get(product.product_id)
@@ -730,3 +917,42 @@ class Director:
             "Dựa ĐÚNG vào thông tin này, trả lời tự nhiên, nhiệt tình, kiểu MC bán hàng "
             "livestream — không bịa thêm số liệu, có thể thêm lời mời chốt đơn."
         )
+
+
+def _cluster_id_of(by_cluster: dict[str, Any], item: ScoredCluster) -> str:
+    """Map a scored cluster back to its reducer cluster id, if it has one.
+
+    Legacy clusters have no reducer identity: they simply have no entry in the
+    map, and the high-value predicate (which is reducer-only) never matches
+    them, so the relaxed stage gates stay shut for the legacy feed.
+    """
+    members = tuple(item.cluster.member_ids)
+    for cluster_id, selection in by_cluster.items():
+        if selection.member_comment_ids == members:
+            return cluster_id
+    return ""
+
+
+def _any_high(
+    ranked: list[ScoredCluster],
+    by_cluster: dict[str, Any],
+    high_value: Callable[[str], bool],
+) -> bool:
+    return any(high_value(_cluster_id_of(by_cluster, item)) for item in ranked)
+
+
+def _stage_is_covered(task, covered: set) -> bool:
+    """Whether every key point a stage must say is already covered.
+
+    Conservative by design: a task that declares no key points returns False,
+    so an uncovered stage is never skipped on missing evidence. The legacy
+    fallback tuples carry no key points and are therefore never skipped.
+    """
+    if isinstance(task, tuple):
+        return False
+    points = getattr(task, "key_selling_points", None)
+    if points is None and isinstance(task, dict):
+        points = task.get("key_selling_points")
+    if not points:
+        return False
+    return all(str(point) in covered for point in points)

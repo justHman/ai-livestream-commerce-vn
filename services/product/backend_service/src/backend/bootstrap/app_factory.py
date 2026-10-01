@@ -43,14 +43,17 @@ def _build_director_pipeline(config, backend, engine_manager):
 
     embedder = HashingEmbedder()  # offline/CI-safe; reducer REQUIRES an embedder
     runtime = DirectorRuntime(backend, embedder=embedder)
+    reducer = FastReducer(embedder=embedder)
     coordinator = DirectorCoordinator(
         runtime=runtime,
         llm=engine_manager.llm if engine_manager is not None else None,
         tts=engine_manager.tts if engine_manager is not None else None,
         backend=backend,
         cfg=CoordinatorConfig(),
+        # The coordinator consults the reducer ONLY for sessions in reducer
+        # mode (P0-FB-014); a legacy session never sees it.
+        reducer=reducer,
     )
-    reducer = FastReducer(embedder=embedder)
     return runtime, coordinator, reducer
 
 
