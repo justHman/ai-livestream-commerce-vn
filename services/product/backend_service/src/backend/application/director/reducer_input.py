@@ -35,8 +35,8 @@ from .scoring import ScoredCluster, score_cluster
 
 __all__ = [
     "ReducerSelection",
+    "attach_provenance",
     "build_selections",
-    "decide_from_reducer",
     "select_scored",
 ]
 
@@ -205,34 +205,6 @@ def select_scored(
         scored.append(score_cluster(cluster, state, cfg, now, max_size))
     scored.sort(key=lambda s: s.score, reverse=True)
     return scored
-
-
-def decide_from_reducer(
-    director: Any,
-    selections: Sequence[ReducerSelection],
-    *,
-    now: float,
-    high_value_ids: Optional[Callable[[str], bool]] = None,
-) -> Decision:
-    """Produce the next Decision from reducer output alone.
-
-    Delegates to the SAME ``_decide`` the legacy feed uses, with the ranked
-    clusters injected so ``cluster_comments`` / ``rank_clusters`` never run.
-    The four stage-only exclusions are relaxed ONLY for clusters the
-    configured high-value predicate matches; everything else the legacy path
-    enforces — pivot checkpoint, no nested pivot, cooldown + signature
-    suppression, ``mark_answered``, the protected opening — is reused as is.
-    """
-    by_cluster: dict[str, ReducerSelection] = {s.envelope.cluster_id: s for s in selections}
-    ranked = select_scored(director, selections, now=now)
-    high = high_value_ids or (lambda _cid: False)
-    return director._decide(
-        [],
-        now,
-        ranked=ranked,
-        by_cluster=by_cluster,
-        is_high_value=high,
-    )
 
 
 def attach_provenance(decision: Decision, by_cluster: dict[str, ReducerSelection]) -> None:

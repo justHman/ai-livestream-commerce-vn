@@ -365,8 +365,30 @@ async def test_r03_no_raw_member_transcript_reaches_the_prompt() -> None:
     assert selections
     for selection in selections:
         assert len(selection.cluster_members) <= store.config.max_representatives
-        # Every prompt-visible text is a representative question, capped.
-        assert len(" | ".join(selection.cluster_members)) <= 2 * 60
+
+    # Prove it on the REAL prompt builders, not just on the adapter output: one
+    # member carries a marker text and the prompts must not contain it unless
+    # that member happens to be a representative. Both prompts are exercised.
+    from backend.application.director.reducer_input import select_scored
+
+    scored = select_scored(director, selections, now=now)
+    assert scored
+    top = scored[0]
+    representative = set(top.cluster.members)
+    non_representative = [
+        text
+        for cid, text in store.get_cluster(selections[0].envelope.cluster_id)._member_texts.items()
+        if text not in representative
+    ]
+    assert non_representative, "the cluster must have members outside the representative cap"
+    forbidden = non_representative[0]
+    for prompt in (
+        director._answer_prompt(top),
+        director._grounded_prompt(top, "P001", "commerce.price.current", "350000"),
+    ):
+        assert forbidden not in prompt
+        # And the cap holds inside the prompt itself.
+        assert prompt.count(" | ") <= store.config.max_representatives - 1
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -239,6 +239,7 @@ class Director:
 
         pivot_queue_before = set(self.state.cursor.pivot_queue)
         by_cluster = {s.envelope.cluster_id: s for s in selections}
+        by_members = {s.member_comment_ids: cid for cid, s in by_cluster.items()}
         ranked = select_scored(self, selections, now=now)
         high_value_ids = high_value_ids or (lambda _cid: False)
         decision = self._decide(
@@ -246,6 +247,7 @@ class Director:
             now,
             ranked=ranked,
             by_cluster=by_cluster,
+            by_members=by_members,
             is_high_value=high_value_ids,
         )
         decision.decided_at = now
@@ -269,6 +271,7 @@ class Director:
         *,
         ranked: Optional[list[ScoredCluster]] = None,
         by_cluster: Optional[dict[str, Any]] = None,
+        by_members: Optional[dict[tuple[str, ...], str]] = None,
         is_high_value: Optional[Callable[[str], bool]] = None,
     ) -> Decision:
         """The one decision function; ``ranked`` is the reducer-mode injection.
@@ -281,6 +284,7 @@ class Director:
         reducer_mode = ranked is not None
         high_value = is_high_value or (lambda _cid: False)
         by_cluster = by_cluster or {}
+        by_members = by_members or {}
 
         # OPENING: three protected grounded turns; comments cannot interrupt.
         # No reducer selection preempts the 007 approved opening (the human
@@ -312,6 +316,13 @@ class Director:
         else:
             window = []
             clusters = []
+            # Identity index, built once: reducer cluster id by member-id tuple.
+            # Legacy clusters are absent from it, which is exactly what keeps the
+            # high-value relaxation shut for the legacy feed.
+            by_members = {
+                selection.member_comment_ids: cluster_id
+                for cluster_id, selection in by_cluster.items()
+            }
         relevant_ages = [
             max(0.0, now - item.cluster.newest_t)
             for item in ranked
@@ -366,10 +377,10 @@ class Director:
         eligible = []
         if cur is not None:
             for item in ranked:
-                cluster_id = _cluster_id_of(by_cluster, item)
-                high = reducer_mode and high_value(cluster_id)
-                # A lone high-value or safety cluster is never eligible under
-                # the legacy size gate (BR-QA-001); a lone low-value one still is not.
+                high = reducer_mode and high_value(_cluster_id_of(by_members, item))
+                # The legacy size gate drops every singleton, which is how a
+                # lone high-value or safety question used to be lost (BR-QA-001).
+                # It is relaxed for high-value clusters only.
                 if item.cluster.size < 2 and not high:
                     continue
                 product_id = item.cluster.product_id or cur.product_id
@@ -434,7 +445,7 @@ class Director:
                     top_score=target_share,
                     current_score=current_share,
                 )
-                cross_selection = by_cluster.get(_cluster_id_of(by_cluster, cross_product))
+                cross_selection = by_cluster.get(_cluster_id_of(by_members, cross_product))
                 cross_decision = self._qa_decision(
                     cross_product,
                     cur,
@@ -466,11 +477,11 @@ class Director:
             # (BR-QA-001/002): safety and purchase intent must not be blocked
             # solely by a legacy stage. It becomes eligible at this safe
             # boundary, with every other safeguard unchanged.
-            ranked = [item for item in ranked if high_value(_cluster_id_of(by_cluster, item))]
+            ranked = [item for item in ranked if high_value(_cluster_id_of(by_members, item))]
         if (
             cur is not None
             and not cur.is_introduced
-            and not _any_high(ranked, by_cluster, high_value)
+            and not _any_high(ranked, by_members, high_value)
         ):
             return Decision(
                 action="introduce_product",
@@ -516,7 +527,7 @@ class Director:
         if (
             cur is not None
             and cur.reactive_streak >= 1
-            and not _any_high(ranked, by_cluster, high_value)
+            and not _any_high(ranked, by_members, high_value)
         ):
             proactive = self._next_sales_turn(cur)
             if proactive is not None:
@@ -525,7 +536,7 @@ class Director:
         top = ranked[0]
         for skipped in ranked[1:]:
             skipped.cluster.skips += 1
-        selection = by_cluster.get(_cluster_id_of(by_cluster, top))
+        selection = by_cluster.get(_cluster_id_of(by_members, top))
         decision = self._qa_decision(top, cur)
         if selection is not None:
             decision.source_cluster_id = selection.envelope.cluster_id
@@ -919,26 +930,22 @@ class Director:
         )
 
 
-def _cluster_id_of(by_cluster: dict[str, Any], item: ScoredCluster) -> str:
+def _cluster_id_of(by_members: dict[tuple[str, ...], str], item: ScoredCluster) -> str:
     """Map a scored cluster back to its reducer cluster id, if it has one.
 
-    Legacy clusters have no reducer identity: they simply have no entry in the
-    map, and the high-value predicate (which is reducer-only) never matches
-    them, so the relaxed stage gates stay shut for the legacy feed.
+    Legacy clusters have no reducer identity: they are absent from the index,
+    so the high-value predicate (which is reducer-only) never matches them and
+    the relaxed stage gates stay shut for the legacy feed.
     """
-    members = tuple(item.cluster.member_ids)
-    for cluster_id, selection in by_cluster.items():
-        if selection.member_comment_ids == members:
-            return cluster_id
-    return ""
+    return by_members.get(tuple(item.cluster.member_ids), "")
 
 
 def _any_high(
     ranked: list[ScoredCluster],
-    by_cluster: dict[str, Any],
+    by_members: dict[tuple[str, ...], str],
     high_value: Callable[[str], bool],
 ) -> bool:
-    return any(high_value(_cluster_id_of(by_cluster, item)) for item in ranked)
+    return any(high_value(_cluster_id_of(by_members, item)) for item in ranked)
 
 
 def _stage_is_covered(task, covered: set) -> bool:
