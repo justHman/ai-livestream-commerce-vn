@@ -167,6 +167,17 @@ def build_body(
     return eid, body
 
 
+def finalize_body(staged_body: bytes, usage_sequence: int) -> bytes:
+    """Stamp the final ``usage_sequence`` into a staged body (ready-time numbering).
+
+    ``canonical`` is deterministic, so this equals ``build_body(..., usage_sequence=n)``.
+    The result is stored once and then resent byte-for-byte.
+    """
+    document = json.loads(staged_body)
+    document["payload"]["usage_sequence"] = usage_sequence
+    return canonical(document)
+
+
 def build_cogs_body(
     identity: ExecutionIdentity,
     *,

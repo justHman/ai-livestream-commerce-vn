@@ -20,16 +20,26 @@ from backend.application.execution_contract import (
 
 from . import envelope
 from .outbox import Staged, UsageOutbox
-from .sender import UsageSender
+from .sender import COMMITTED_KEY, COMMITTED_MAX, UsageSender
 from .settings import CogsBuffer, CogsSample, UsageEvidenceSettings
 
-__all__ = ["UsageEvidence", "UsageEvidenceUnavailable", "UsageEvidenceSettings", "UsageSender"]
+__all__ = [
+    "UsageEvidence",
+    "UsageEvidenceRejected",
+    "UsageEvidenceUnavailable",
+    "UsageEvidenceSettings",
+    "UsageSender",
+]
 
 logger = logging.getLogger(__name__)
 
 
 class UsageEvidenceUnavailable(Exception):
     """The durable row could not be staged; the fact must not be applied unreported."""
+
+
+class UsageEvidenceRejected(Exception):
+    """The fact can never be reported (undeliverable identity): refuse it, never apply it."""
 
 
 class UsageEvidence:
@@ -39,7 +49,7 @@ class UsageEvidence:
         self._outbox = outbox
         self.settings = settings
         self.cogs = CogsBuffer(settings.cogs_buffer)
-        self.skipped_invalid_identity = 0
+        self.rejected_invalid_identity = 0
 
     async def _stage(self, updated: ExecutionState, drafts: list[envelope.Draft]) -> list[Staged]:
         if not drafts:
@@ -47,10 +57,10 @@ class UsageEvidence:
         try:
             return await self._outbox.stage(envelope.identity_of(updated), drafts)
         except envelope.InvalidIdentity as exc:
-            # Can never be delivered: no poison row, no endless retry.
-            self.skipped_invalid_identity += 1
-            logger.error("usage evidence skipped for undeliverable identity: %s", exc)
-            return []
+            # Can never be delivered. Fail closed: state must not advance without a row.
+            self.rejected_invalid_identity += 1
+            logger.error("usage evidence refused undeliverable identity: %s", exc)
+            raise UsageEvidenceRejected(str(exc)) from exc
         except Exception as exc:
             logger.error("usage evidence stage failed error_type=%s", type(exc).__name__)
             raise UsageEvidenceUnavailable(type(exc).__name__) from exc
@@ -80,8 +90,23 @@ class UsageEvidence:
                 "usage evidence ready flip deferred to sweeper error_type=%s", type(exc).__name__
             )
 
+    @staticmethod
+    def stamp(meta: dict[str, Any], staged: Sequence[Staged]) -> None:
+        """Record the facts this save commits, in the SAME atomic save as the state.
+
+        The sweeper marks a staged row ready only if its event_id is listed here.
+        """
+        if not staged:
+            return
+        prior = list(meta.get(COMMITTED_KEY) or [])
+        ids = [s.event_id for s in staged]
+        meta[COMMITTED_KEY] = ([i for i in prior if i not in ids] + ids)[-COMMITTED_MAX:]
+
     async def abort(self, staged: Sequence[Staged]) -> None:
-        """The save failed: remove the staged rows. Best effort; the sweeper converges."""
+        """The save DEFINITELY did not land: remove the staged rows. Best effort.
+
+        Never call this for an ambiguous outcome; leave the rows for the sweeper.
+        """
         if not staged:
             return
         try:

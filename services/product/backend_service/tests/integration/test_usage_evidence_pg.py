@@ -133,21 +133,57 @@ async def test_semantic_identity_is_unique_per_identity_kind_and_interval(pg):
 
 async def test_usage_sequence_is_gap_free_and_increasing_with_concurrent_writers(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
-    await asyncio.gather(
+    staged = await asyncio.gather(
         *(
             outbox.stage(ident, [draft("unusable_started", "unusable", opening=str(i), seq=i)])
             for i in range(1, 21)
         )
     )
+    assert all(s[0].usage_sequence is None for s in staged)  # numbered only when ready
+    await asyncio.gather(*(outbox.mark_ready([s[0].event_id]) for s in staged))
     sequences = [r["usage_sequence"] for r in await rows(pg, ident)]
     assert sequences == list(range(1, 21)) and await counter(pg, ident) == 20
 
 
 async def test_two_identities_have_independent_sequences(pg):
     outbox, a, b = UsageOutbox(pg), new_identity(), new_identity()
-    await outbox.stage(a, [draft()])
-    await outbox.stage(b, [draft()])
+    await ready(outbox, await outbox.stage(a, [draft()]))
+    await ready(outbox, await outbox.stage(b, [draft()]))
     assert await counter(pg, a) == await counter(pg, b) == 1
+
+
+async def test_the_number_and_final_bytes_are_fixed_at_ready_and_equal_a_direct_build(pg):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    staged = await outbox.stage(ident, [draft()])
+    before = (await rows(pg, ident))[0]
+    assert json.loads(bytes(before["body"]))["payload"]["usage_sequence"] == 0
+    await ready(outbox, staged)
+    after = (await rows(pg, ident))[0]
+    _, direct = envelope.build_body(
+        ident,
+        draft(),
+        interval=envelope.interval_id(ident, "phase:selling", ""),
+        usage_sequence=1,
+        producer_id="runtime",
+    )
+    assert bytes(after["body"]) == direct and after["usage_sequence"] == 1
+    assert hashlib.sha256(direct).hexdigest() == after["body_sha256"]
+    assert after["event_id"] == before["event_id"]  # event_id never depended on the number
+    await ready(outbox, staged)  # a second flip is a no-op: bytes are frozen
+    assert bytes((await rows(pg, ident))[0]["body"]) == direct
+
+
+async def test_a_discarded_earlier_row_leaves_no_gap_for_a_later_row(pg):
+    """stage exec 100 (crash before save), later exec 5: the discard must not break the prefix."""
+    outbox, ident = UsageOutbox(pg), new_identity()
+    lost = await outbox.stage(ident, [draft("terminal", "terminal", seq=100)])
+    later = await outbox.stage(ident, [draft(seq=5)])
+    await outbox.release([lost[0].event_id], delete=False)
+    await ready(outbox, later)
+    stored = {r["kind"]: r for r in await rows(pg, ident)}
+    assert stored["phase_changed"]["usage_sequence"] == 1  # not 2
+    assert stored["terminal"]["status"] == "discarded"
+    assert [r["usage_sequence"] for r in await outbox.claim(50, 60)] == [1]  # deliverable
 
 
 async def test_an_undeliverable_identity_is_rejected_at_insert_and_by_the_database(pg):
@@ -183,16 +219,15 @@ async def test_the_unusable_end_closes_the_stored_start_interval_and_never_inven
 # -- the commit gap ---------------------------------------------------------------------------
 
 
-async def test_abort_removes_staged_rows_and_returns_their_numbers(pg):
+async def test_abort_removes_staged_rows_and_never_consumes_a_number(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     kept = await outbox.stage(ident, [draft()])
     gone = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)])
     await outbox.mark_ready([kept[0].event_id])
     await outbox.release([gone[0].event_id], delete=True)
     again = await outbox.stage(ident, [draft("unusable_started", "unusable", opening="1")])
-    assert again[0].usage_sequence == 2 and [
-        r["usage_sequence"] for r in await rows(pg, ident)
-    ] == [1, 2]
+    await ready(outbox, again)
+    assert [r["usage_sequence"] for r in await rows(pg, ident)] == [1, 2]
 
 
 async def sweeper(pg, store, **env):
@@ -200,48 +235,128 @@ async def sweeper(pg, store, **env):
     return UsageSender(UsageOutbox(pg), settings, session_store=store)
 
 
+def meta_at(ident, sequence, committed=()):
+    return {
+        "execution_contract": ExecutionState(**ident.model_dump(), sequence=sequence).model_dump(
+            mode="json"
+        ),
+        "usage_evidence_committed": list(committed),
+    }
+
+
 async def test_sweeper_converges_a_crash_before_save_to_discarded(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     store = InMemorySessionStore()
-    await store.set(  # the save never happened: the meta is still at sequence 4
-        ident.runtime_session_id,
-        {
-            "execution_contract": ExecutionState(**ident.model_dump(), sequence=4).model_dump(
-                mode="json"
-            )
-        },
-    )
+    await store.set(ident.runtime_session_id, meta_at(ident, 4))  # the save never happened
     await outbox.stage(ident, [draft(seq=5)])
     await asyncio.sleep(0.05)
     await (await sweeper(pg, store)).sweep()
     stored = await rows(pg, ident)
     assert [r["status"] for r in stored] == ["discarded"] and stored[0]["usage_sequence"] is None
-    assert await counter(pg, ident) == 0  # the number was released: no fake gap
+    assert await counter(pg, ident) is None  # never numbered: no fake gap
 
 
 async def test_sweeper_converges_a_crash_after_save_to_ready(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     store = InMemorySessionStore()
-    await store.set(  # the save happened, the ready flip did not
-        ident.runtime_session_id,
-        {
-            "execution_contract": ExecutionState(**ident.model_dump(), sequence=5).model_dump(
-                mode="json"
-            )
-        },
-    )
-    await outbox.stage(ident, [draft(seq=5)])
+    staged = await outbox.stage(ident, [draft(seq=5)])
+    # the save happened (state AND the committed-fact proof), the ready flip did not
+    await store.set(ident.runtime_session_id, meta_at(ident, 5, [staged[0].event_id]))
     await asyncio.sleep(0.05)
     await (await sweeper(pg, store)).sweep()
-    assert [r["status"] for r in await rows(pg, ident)] == ["ready"]
+    stored = await rows(pg, ident)
+    assert [r["status"] for r in stored] == ["ready"] and stored[0]["usage_sequence"] == 1
 
 
-async def test_sweeper_never_sends_or_drops_what_it_cannot_prove(pg):
+async def test_a_sequence_that_advanced_with_a_different_fact_does_not_publish_the_staged_one(pg):
+    """Codex P1: unhealthy staged at exec seq 5 (crash before save); DIFFERENT healthy evidence
+    then commits at seq 5. Sequence advancement does not prove which fact landed."""
+    outbox, ident = UsageOutbox(pg), new_identity()
+    store = InMemorySessionStore()
+    unhealthy = await outbox.stage(
+        ident, [draft("unusable_started", "unusable", opening="5", seq=5)]
+    )
+    healthy = await outbox.stage(ident, [draft("phase_changed", "phase:selling", seq=5)])
+    # only the healthy fact was saved
+    await store.set(ident.runtime_session_id, meta_at(ident, 5, [healthy[0].event_id]))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store)).sweep()
+    by_kind = {r["kind"]: r["status"] for r in await rows(pg, ident)}
+    assert by_kind == {"unusable_started": "discarded", "phase_changed": "ready"}
+    assert unhealthy[0].event_id != healthy[0].event_id
+
+
+async def test_sweeper_never_sends_or_drops_what_it_cannot_prove_but_parks_it(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     await outbox.stage(ident, [draft(seq=5)])
     await asyncio.sleep(0.05)
-    await (await sweeper(pg, InMemorySessionStore())).sweep()  # session meta unreadable/gone
-    assert [r["status"] for r in await rows(pg, ident)] == ["staged"]
+    await (await sweeper(pg, InMemorySessionStore())).sweep()  # session meta gone
+    stored = (await rows(pg, ident))[0]
+    assert stored["status"] == "staged" and stored["last_error"] == "session_missing"
+    assert stored["attempts"] == 1
+
+
+async def test_a_generation_change_parks_the_row_with_its_reason(pg):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    await outbox.stage(ident, [draft(seq=5)])
+    store = InMemorySessionStore()
+    other = ExecutionIdentity(**(ident.model_dump() | {"generation": "g2"}))
+    await store.set(ident.runtime_session_id, meta_at(other, 9))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store)).sweep()
+    stored = (await rows(pg, ident))[0]
+    assert stored["status"] == "staged" and stored["last_error"] == "generation_changed"
+
+
+async def test_unresolvable_rows_cannot_starve_a_recoverable_one(pg):
+    """Codex P2: 150 unresolvable rows + 1 recoverable; the oldest-100 window must move on."""
+    outbox, store = UsageOutbox(pg), InMemorySessionStore()
+    for _ in range(150):
+        await outbox.stage(new_identity(), [draft(seq=5)])  # no session meta: unresolvable
+    good = new_identity()
+    staged = await outbox.stage(good, [draft(seq=5)])
+    await store.set(good.runtime_session_id, meta_at(good, 5, [staged[0].event_id]))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store)).sweep()
+    assert [r["status"] for r in await rows(pg, good)] == ["ready"]
+    async with pg._require_pool().acquire() as conn:
+        parked = await conn.fetchval(
+            "SELECT count(*) FROM usage_evidence_outbox WHERE status = 'staged' AND attempts = 1"
+        )
+    assert parked == 150
+
+
+async def test_an_unresolvable_row_is_dropped_with_an_audit_log_after_the_ttl(pg, caplog):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    await outbox.stage(ident, [draft(seq=5)])
+    await asyncio.sleep(0.05)
+    with caplog.at_level("ERROR"):
+        await (
+            await sweeper(pg, InMemorySessionStore(), USAGE_EVIDENCE_UNRESOLVED_TTL_SECONDS="0.01")
+        ).sweep()
+    assert [r["status"] for r in await rows(pg, ident)] == ["discarded"]
+    assert "AUDIT dropped unresolvable" in caplog.text
+
+
+async def test_retention_deletes_only_old_finished_rows_in_bounded_batches(pg):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    staged = await outbox.stage(
+        ident,
+        [
+            draft(),
+            draft("terminal", "terminal", seq=9),
+            draft("unusable_started", "unusable", opening="1"),
+        ],
+    )
+    await ready(outbox, staged)
+    async with pg._require_pool().acquire() as conn:
+        await conn.execute(
+            "UPDATE usage_evidence_outbox SET status = 'delivered', "
+            "updated_at = NOW() - interval '30 days' WHERE kind IN ('phase_changed', 'terminal')"
+        )
+    assert await outbox.purge(14, 1) == 1  # batch limit honoured
+    assert await outbox.purge(14, 10) == 1
+    assert [r["status"] for r in await rows(pg, ident)] == ["ready"]  # undelivered is never purged
 
 
 async def test_a_young_staged_row_is_left_alone_by_the_sweeper(pg):
@@ -253,13 +368,15 @@ async def test_a_young_staged_row_is_left_alone_by_the_sweeper(pg):
     assert [r["status"] for r in await rows(pg, ident)] == ["staged"]
 
 
-async def test_a_discarded_row_is_revived_under_a_fresh_number_when_the_fact_is_retried(pg):
+async def test_a_discarded_row_is_revived_as_staged_and_numbered_only_when_ready(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     first = await outbox.stage(ident, [draft(seq=5)])
     await outbox.release([first[0].event_id], delete=False)
     again = await outbox.stage(ident, [draft(seq=5)])
-    assert again[0].event_id == first[0].event_id and again[0].usage_sequence == 1
+    assert again[0].event_id == first[0].event_id and again[0].usage_sequence is None
     assert [r["status"] for r in await rows(pg, ident)] == ["staged"]
+    await ready(outbox, again)
+    assert [r["usage_sequence"] for r in await rows(pg, ident)] == [1]
 
 
 # -- delivery ------------------------------------------------------------------------------------
@@ -293,12 +410,12 @@ async def test_a_permanently_rejected_row_does_not_block_a_later_row(pg):
     assert [r for r in await outbox.claim(50, 60) if r["usage_sequence"] == 2]
 
 
-async def test_a_staged_earlier_row_holds_back_later_ready_rows(pg):
+async def test_a_staged_row_has_no_number_so_it_never_blocks_a_ready_row(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
-    await outbox.stage(ident, [draft()])  # stays staged
+    await outbox.stage(ident, [draft()])  # stays staged, unnumbered
     second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)])
     await ready(outbox, second)
-    assert [r for r in await outbox.claim(50, 60) if r["usage_sequence"] == 2] == []
+    assert [r["usage_sequence"] for r in await outbox.claim(50, 60)] == [1]
 
 
 async def test_a_stale_lease_cannot_overwrite_a_newer_outcome(pg):

@@ -625,6 +625,10 @@ class FakeUsage:
     async def stage_command(self, prior, updated, outcome):
         return []
 
+    @staticmethod
+    def stamp(meta, staged):
+        UsageEvidence.stamp(meta, staged)
+
     async def commit(self, staged):
         self.committed.extend(s.event_id for s in staged)
 
@@ -658,17 +662,36 @@ async def test_rejected_evidence_emits_nothing():
     assert usage.staged == [] and usage.committed == []
 
 
-async def test_a_failed_save_aborts_the_staged_rows():
+async def test_an_ambiguous_save_failure_keeps_the_staged_rows_for_the_sweeper():
+    """Redis may have committed although the reply was lost: never delete the row."""
     usage = FakeUsage()
 
-    class Failing(InMemorySessionStore):
+    class LostReply(InMemorySessionStore):
         async def set(self, key, value):
+            await super().set(key, value)  # the write LANDED ...
             if key == "rt" and value.get("execution_contract", {}).get("sequence") == 1:
-                raise RuntimeError("redis down")
+                raise RuntimeError("reply lost")  # ... but the caller sees an error
+
+    request, store = await make_request(usage, LostReply())
+    with pytest.raises(RuntimeError):
+        await record_execution_evidence("rt", ev(1, "runtime_ready", "ready"), request, None)
+    assert usage.aborted == [] and usage.committed == []
+    meta = await store.get("rt")
+    assert meta["execution_contract"]["sequence"] == 1
+    assert meta["usage_evidence_committed"] == ["e1"]  # the proof the sweeper reads
+
+
+async def test_a_definite_fence_refusal_aborts_the_staged_rows():
+    usage = FakeUsage()
+
+    class Refusing(InMemorySessionStore):
+        async def set(self, key, value):
+            if value.get("execution_contract", {}).get("sequence") == 1:
+                raise HTTPException(status_code=503, detail={"code": "session_busy"})
             await super().set(key, value)
 
-    request, _ = await make_request(usage, Failing())
-    with pytest.raises(RuntimeError):
+    request, store = await make_request(usage, Refusing())
+    with pytest.raises(HTTPException):
         await record_execution_evidence("rt", ev(1, "runtime_ready", "ready"), request, None)
     assert usage.aborted == ["e1"] and usage.committed == []
 
@@ -696,3 +719,74 @@ async def test_a_rejected_command_emits_nothing_through_the_endpoint():
     req = CommandRequest(**IDENT, command_id="c1", command="end", actor_id="a", requested_at=NOW)
     out = await request_execution_command("rt", req, request, None)
     assert out["outcome"]["status"] == "rejected" and usage.committed == []
+
+
+# -- Codex review fixes -----------------------------------------------------------------------
+
+
+def test_the_url_path_must_equal_the_exact_receiver_path_not_merely_end_with_it():
+    base = "https://api.example.test"
+    assert not settings(ENABLED="1", SECRET="s", URL=base + "/wrong/webhooks/ai/events").configured
+    assert not settings(ENABLED="1", SECRET="s", URL=base + "/x/webhooks/ai/events/").configured
+    assert not settings(ENABLED="1", SECRET="s", URL=base + "/webhooks/ai/events?a=1").configured
+    assert not settings(ENABLED="1", SECRET="s", URL=base + "/webhooks/ai/events#f").configured
+    assert settings(ENABLED="1", SECRET="s", URL=base + "/webhooks/ai/events").configured
+
+
+def test_no_credential_appears_in_repr_or_str_of_settings_sender_or_outbox():
+    secret = "super-secret-signing-key-0123456789"
+    cfg = settings(ENABLED="1", SECRET=secret, URL=URL)
+    assert cfg.secret == secret  # still usable ...
+    outbox = SimpleNamespace(dsn="postgresql://u:pw-hunter2@h/db")
+    sender = UsageSender(outbox, cfg, post=lambda *a: None)  # type: ignore[arg-type]
+    facade = UsageEvidence(outbox, cfg)  # type: ignore[arg-type]
+    for obj in (cfg, sender, facade):
+        assert secret not in repr(obj) and secret not in str(obj)
+    for dc in (UsageEvidenceSettings, CogsSample):
+        import dataclasses
+
+        for f in dataclasses.fields(dc):
+            assert not (f.name in ("secret", "token", "password") and f.repr)
+
+
+class InvalidOutbox:
+    async def stage(self, identity, drafts):
+        envelope.validate_identity(identity)
+        raise AssertionError("unreachable")
+
+
+async def test_an_undeliverable_identity_fails_closed_422_and_state_does_not_advance():
+    cfg = settings(ENABLED="1", SECRET="s", URL=URL)
+    usage = UsageEvidence(InvalidOutbox(), cfg)  # type: ignore[arg-type]
+    store = InMemorySessionStore()
+    bad = IDENT | {"tenant_id": "not-a-uuid"}
+    await store.set("rt", {"execution_contract": ExecutionState(**bad).model_dump(mode="json")})
+    request = Request(
+        {
+            "type": "http",
+            "app": SimpleNamespace(
+                state=SimpleNamespace(container=SimpleNamespace(store=store, usage_evidence=usage))
+            ),
+        }
+    )
+    first = ev(1, "runtime_ready", "ready").model_copy(update=bad)
+    await record_execution_evidence("rt", first, request, None)  # derives no row: allowed
+    evidence = ev(2, "health", "ready", healthy=False, reason_code="runtime_down").model_copy(
+        update=bad
+    )
+    with pytest.raises(HTTPException) as caught:
+        await record_execution_evidence("rt", evidence, request, None)
+    assert caught.value.status_code == 422
+    assert caught.value.detail == {"code": "usage_evidence_invalid_identity"}
+    assert (await store.get("rt"))["execution_contract"]["sequence"] == 1  # never advanced
+
+
+def test_the_committed_fact_stamp_is_bounded_most_recent_and_deduplicated():
+    meta: dict[str, Any] = {}
+    for i in range(300):
+        UsageEvidence.stamp(meta, [Staged(f"e{i}", "staged", None, True)])
+    UsageEvidence.stamp(meta, [Staged("e299", "staged", None, False)])
+    assert len(meta["usage_evidence_committed"]) == 256
+    assert meta["usage_evidence_committed"][-1] == "e299"
+    assert meta["usage_evidence_committed"].count("e299") == 1
+    assert "e0" not in meta["usage_evidence_committed"]

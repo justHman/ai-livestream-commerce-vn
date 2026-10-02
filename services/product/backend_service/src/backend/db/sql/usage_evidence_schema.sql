@@ -2,7 +2,7 @@
 -- Applied ONLY when USAGE_EVIDENCE_ENABLED is set (PostgresRuntimeStore.apply_usage_evidence_schema);
 -- runtime_schema.sql, and so every disabled deployment, is untouched. Idempotent.
 
--- One counter row per execution identity. Taken FOR UPDATE inside the insert
+-- One counter row per execution identity. Taken FOR UPDATE inside the ready-flip
 -- transaction, so usage_sequence is gap-free across concurrent writers/replicas.
 CREATE TABLE IF NOT EXISTS usage_evidence_sequence (
     tenant_id           TEXT NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS usage_evidence_outbox (
     generation          TEXT NOT NULL CHECK (char_length(generation) <= 255),
     kind                TEXT NOT NULL,
     interval_id         TEXT NOT NULL,
-    -- NULL for vendor COGS rows and for a discarded row (it released its number).
+    -- NULL for vendor COGS, a staged row (numbered only when it becomes ready) and a discarded row.
     usage_sequence      BIGINT CHECK (usage_sequence > 0),
     -- Execution evidence sequence that caused the row; NULL for command-derived rows.
     execution_sequence  BIGINT,

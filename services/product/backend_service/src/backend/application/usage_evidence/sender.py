@@ -26,6 +26,13 @@ from .settings import CogsBuffer, UsageEvidenceSettings
 
 logger = logging.getLogger(__name__)
 
+# Session-meta key listing the usage event_ids committed by the state save (bounded).
+COMMITTED_KEY = "usage_evidence_committed"
+COMMITTED_MAX = 256
+_IDENTITY_KEYS = ("tenant_id", "business_session_id", "runtime_session_id", "generation")
+_SWEEP_LIMIT = 100
+_SWEEP_BATCHES = 10
+
 PostFn = Callable[[str, bytes, Mapping[str, str]], Awaitable[int]]
 
 
@@ -144,19 +151,43 @@ class UsageSender:
     # -- staged-row sweeper (Redis meta <-> Postgres commit gap) -------------
 
     async def sweep(self) -> int:
-        """Resolve staged rows older than the configured age.
+        """Resolve staged rows older than the configured age, with proof of the fact.
 
-        A row becomes ``ready`` only when the session meta proves its fact applied
-        (same identity, state sequence >= the row's ``applied_sequence``). A row whose
-        fact provably never applied is ``discarded``. A row whose session cannot be
-        read, or now belongs to another generation, is left staged: unproven is never
-        sent and never silently dropped.
+        A staged row becomes ``ready`` only if the session meta lists its ``event_id``
+        among the facts committed by the state save (``COMMITTED_KEY``): a sequence
+        number alone never proves which fact landed. A row whose id is absent while
+        the state sequence reached the row's ``applied_sequence`` (a different fact
+        won that slot), or has not reached it at all, provably never applied and is
+        ``discarded``. A row whose session cannot be read or now belongs to another
+        generation is *parked* (backoff, reason recorded) so it cannot starve other
+        rows, and is dropped with an audit log after ``unresolved_ttl``.
+        Finally, finished rows past the retention window are deleted.
         """
         if self._store is None:
             return 0
-        ready: list[str] = []
+        resolved = 0
+        for _ in range(_SWEEP_BATCHES):
+            rows = await self._outbox.stale_staged(self._settings.sweep_age, _SWEEP_LIMIT)
+            if not rows:
+                break
+            resolved += await self._resolve(rows)
+            if len(rows) < _SWEEP_LIMIT:
+                break
+        try:
+            await self._outbox.purge(self._settings.retention_days, self._settings.retention_batch)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("usage evidence retention failed error_type=%s", type(exc).__name__)
+        return resolved
+
+    async def _resolve(self, rows: list[dict[str, Any]]) -> int:
+        ready: list[dict[str, Any]] = []
         discard: list[str] = []
-        for row in await self._outbox.stale_staged(self._settings.sweep_age):
+        parked: dict[str, list[str]] = {}
+        expired: list[str] = []
+        for row in rows:
+            reason = None
             try:
                 meta = await self._store.get(row["runtime_session_id"])
                 raw = (meta or {}).get("execution_contract")
@@ -165,29 +196,39 @@ class UsageSender:
                 raise
             except Exception as exc:
                 logger.warning("usage sweep unreadable error_type=%s", type(exc).__name__)
-                continue
-            if state is None or (
-                envelope.identity_of(state).model_dump()
-                != {
-                    k: row[k]
-                    for k in (
-                        "tenant_id",
-                        "business_session_id",
-                        "runtime_session_id",
-                        "generation",
-                    )
-                }
+                state, meta, reason = None, None, "session_unreadable"
+            if state is None and reason is None:
+                reason = "session_missing"
+            elif state is not None and (
+                envelope.identity_of(state).model_dump() != {k: row[k] for k in _IDENTITY_KEYS}
             ):
+                reason = "generation_changed"
+            if reason is not None:
+                if float(row.get("age_seconds") or 0) >= self._settings.unresolved_ttl:
+                    expired.append(row["event_id"])
+                    logger.error(
+                        "usage evidence AUDIT dropped unresolvable staged row id=%s reason=%s",
+                        row["event_id"],
+                        reason,
+                    )
+                else:
+                    parked.setdefault(reason, []).append(row["event_id"])
                 continue
-            (ready if state.sequence >= int(row["applied_sequence"]) else discard).append(
-                row["event_id"]
-            )
+            committed = (meta or {}).get(COMMITTED_KEY) or []
+            if row["event_id"] in committed:
+                ready.append(row)
+            else:
+                discard.append(row["event_id"])
         if ready:
-            await self._outbox.mark_ready(ready)
+            ready.sort(key=lambda r: int(r["applied_sequence"]))  # apply order within a pass
+            await self._outbox.mark_ready([r["event_id"] for r in ready])
+        if discard or expired:
+            await self._outbox.release(discard + expired, delete=False)
         if discard:
-            await self._outbox.release(discard, delete=False)
             logger.warning("usage evidence discarded %d never-applied staged rows", len(discard))
-        return len(ready) + len(discard)
+        for reason, ids in parked.items():
+            await self._outbox.park(ids, reason=reason, retry_in=self._settings.sweep_age)
+        return len(ready) + len(discard) + len(expired)
 
     async def drain_cogs(self) -> int:
         if self._cogs is None:

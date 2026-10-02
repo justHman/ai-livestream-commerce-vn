@@ -18,6 +18,7 @@ from . import envelope
 from .envelope import Draft
 
 _ID_COLUMNS = "tenant_id, business_session_id, runtime_session_id, generation"
+_ID_NAMES = ("tenant_id", "business_session_id", "runtime_session_id", "generation")
 
 
 def _key(identity: ExecutionIdentity) -> tuple[str, str, str, str]:
@@ -47,12 +48,13 @@ class UsageOutbox:
     # -- lifecycle rows (control plane) ------------------------------------
 
     async def stage(self, identity: ExecutionIdentity, drafts: Sequence[Draft]) -> list[Staged]:
-        """Insert rows as ``staged`` in one transaction, or return the existing ones.
+        """Insert rows as ``staged`` (no usage number yet), or return the existing ones.
 
-        The counter row is taken FOR UPDATE first, so concurrent writers of one
-        identity serialize and ``usage_sequence`` stays gap-free. A re-derivation
-        returns the stored row (same event_id and bytes). A ``discarded`` row is
-        revived under a fresh number because its old one was released unsent.
+        ``usage_sequence`` is assigned only when a row becomes ``ready`` (see
+        ``mark_ready``), so a staged row that is later discarded can never leave a gap.
+        The staged body carries a placeholder number (0). A re-derivation returns the
+        stored row (same event_id; event_id does not depend on usage_sequence). A
+        ``discarded`` row is revived as ``staged``.
         """
         envelope.validate_identity(identity)
         key = _key(identity)
@@ -60,17 +62,6 @@ class UsageOutbox:
         async def run() -> list[Staged]:
             async with self._pg._require_pool().acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute(
-                        f"INSERT INTO usage_evidence_sequence ({_ID_COLUMNS}) "
-                        "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                        *key,
-                    )
-                    last = await conn.fetchval(
-                        "SELECT last_usage_sequence FROM usage_evidence_sequence "
-                        "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
-                        "= ($1, $2, $3, $4) FOR UPDATE",
-                        *key,
-                    )
                     out: list[Staged] = []
                     for draft in drafts:
                         opening = draft.opening_ref
@@ -82,7 +73,7 @@ class UsageOutbox:
                         existing = await conn.fetchrow(
                             "SELECT event_id, status, usage_sequence FROM usage_evidence_outbox "
                             "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
-                            "= ($1, $2, $3, $4) AND kind = $5 AND interval_id = $6",
+                            "= ($1, $2, $3, $4) AND kind = $5 AND interval_id = $6 FOR UPDATE",
                             *key,
                             draft.kind,
                             interval,
@@ -97,12 +88,11 @@ class UsageOutbox:
                                 )
                             )
                             continue
-                        last += 1
                         eid, body = envelope.build_body(
                             identity,
                             draft,
                             interval=interval,
-                            usage_sequence=last,
+                            usage_sequence=0,
                             producer_id=self._producer,
                         )
                         sha = hashlib.sha256(body).hexdigest()
@@ -111,16 +101,15 @@ class UsageOutbox:
                                 f"""
                                 INSERT INTO usage_evidence_outbox
                                     (event_id, event_type, {_ID_COLUMNS}, kind, interval_id,
-                                     usage_sequence, execution_sequence, applied_sequence,
+                                     execution_sequence, applied_sequence,
                                      occurred_at, body, body_sha256)
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                                 """,
                                 eid,
                                 envelope.EVENT_TYPE,
                                 *key,
                                 draft.kind,
                                 interval,
-                                last,
                                 draft.execution_sequence,
                                 draft.applied_sequence,
                                 draft.occurred_at,
@@ -131,29 +120,22 @@ class UsageOutbox:
                             await conn.execute(
                                 """
                                 UPDATE usage_evidence_outbox
-                                   SET status = 'staged', usage_sequence = $2,
-                                       execution_sequence = $3, applied_sequence = $4,
-                                       occurred_at = $5, body = $6, body_sha256 = $7,
+                                   SET status = 'staged', usage_sequence = NULL,
+                                       execution_sequence = $2, applied_sequence = $3,
+                                       occurred_at = $4, body = $5, body_sha256 = $6,
                                        attempts = 0, last_status = NULL, last_error = NULL,
+                                       next_attempt_at = NOW(),
                                        created_at = NOW(), updated_at = NOW()
                                  WHERE event_id = $1
                                 """,
                                 eid,
-                                last,
                                 draft.execution_sequence,
                                 draft.applied_sequence,
                                 draft.occurred_at,
                                 body,
                                 sha,
                             )
-                        out.append(Staged(eid, "staged", last, True))
-                    await conn.execute(
-                        "UPDATE usage_evidence_sequence SET last_usage_sequence = $5 "
-                        "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
-                        "= ($1, $2, $3, $4)",
-                        *key,
-                        last,
-                    )
+                        out.append(Staged(eid, "staged", None, True))
                     return out
 
         return await self._pg._command(run)
@@ -170,79 +152,154 @@ class UsageOutbox:
         return None if seq is None else str(seq)
 
     async def mark_ready(self, event_ids: Sequence[str]) -> int:
+        """``staged`` -> ``ready``, numbering each row now, in the order given.
+
+        The usage number and the final body bytes are fixed here, atomically, under
+        the per-identity counter lock; the bytes never change afterwards. Rows of one
+        identity get consecutive numbers, so delivery stays gap-free.
+        """
+        ids = list(event_ids)
+
         async def run() -> int:
             async with self._pg._require_pool().acquire() as conn:
-                result = await conn.execute(
-                    "UPDATE usage_evidence_outbox SET status = 'ready', next_attempt_at = NOW(), "
-                    "updated_at = NOW() WHERE event_id = ANY($1::text[]) AND status = 'staged'",
-                    list(event_ids),
-                )
-                return int(result.rsplit(" ", 1)[-1])
+                async with conn.transaction():
+                    rows = {
+                        r["event_id"]: r
+                        for r in await conn.fetch(
+                            f"SELECT event_id, {_ID_COLUMNS}, body FROM usage_evidence_outbox "
+                            "WHERE event_id = ANY($1::text[]) AND status = 'staged' "
+                            "ORDER BY event_id FOR UPDATE",
+                            ids,
+                        )
+                    }
+                    if not rows:
+                        return 0
+                    keys = sorted({tuple(r[c] for c in _ID_NAMES) for r in rows.values()})
+                    last: dict[tuple[str, ...], int] = {}
+                    for k in keys:  # sorted: a stable lock order
+                        await conn.execute(
+                            f"INSERT INTO usage_evidence_sequence ({_ID_COLUMNS}) "
+                            "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                            *k,
+                        )
+                        last[k] = await conn.fetchval(
+                            "SELECT last_usage_sequence FROM usage_evidence_sequence "
+                            "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
+                            "= ($1, $2, $3, $4) FOR UPDATE",
+                            *k,
+                        )
+                    n = 0
+                    for eid in ids:
+                        row = rows.pop(eid, None)
+                        if row is None:
+                            continue
+                        k = tuple(row[c] for c in _ID_NAMES)
+                        last[k] += 1
+                        body = envelope.finalize_body(bytes(row["body"]), last[k])
+                        await conn.execute(
+                            "UPDATE usage_evidence_outbox SET status = 'ready', usage_sequence = $2, "
+                            "body = $3, body_sha256 = $4, next_attempt_at = NOW(), "
+                            "updated_at = NOW() WHERE event_id = $1",
+                            eid,
+                            last[k],
+                            body,
+                            hashlib.sha256(body).hexdigest(),
+                        )
+                        n += 1
+                    for k, value in last.items():
+                        await conn.execute(
+                            "UPDATE usage_evidence_sequence SET last_usage_sequence = $5 "
+                            "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
+                            "= ($1, $2, $3, $4)",
+                            *k,
+                            value,
+                        )
+                    return n
 
         return await self._pg._command(run)
 
     async def release(self, event_ids: Sequence[str], *, delete: bool) -> int:
         """Release staged rows that never became a fact (delete, or tombstone as discarded).
 
-        Their numbers are freed and the counter is recomputed from what remains,
-        so an unsent row can only leave a gap when later rows already exist.
+        Staged rows hold no usage number, so releasing one cannot leave a gap.
         """
 
         async def run() -> int:
             async with self._pg._require_pool().acquire() as conn:
-                async with conn.transaction():
-                    keys = await conn.fetch(
-                        f"SELECT DISTINCT {_ID_COLUMNS} FROM usage_evidence_outbox "
-                        "WHERE event_id = ANY($1::text[]) AND status = 'staged' ORDER BY 1, 2, 3, 4",
-                        list(event_ids),
+                if delete:
+                    sql = (
+                        "DELETE FROM usage_evidence_outbox "
+                        "WHERE event_id = ANY($1::text[]) AND status = 'staged'"
                     )
-                    for k in keys:  # sorted: a stable lock order
-                        await conn.fetchval(
-                            "SELECT 1 FROM usage_evidence_sequence WHERE "
-                            "(tenant_id, business_session_id, runtime_session_id, generation) "
-                            "= ($1, $2, $3, $4) FOR UPDATE",
-                            *k,
-                        )
-                    if delete:
-                        sql = (
-                            "DELETE FROM usage_evidence_outbox "
-                            "WHERE event_id = ANY($1::text[]) AND status = 'staged'"
-                        )
-                    else:
-                        sql = (
-                            "UPDATE usage_evidence_outbox SET status = 'discarded', "
-                            "usage_sequence = NULL, updated_at = NOW() "
-                            "WHERE event_id = ANY($1::text[]) AND status = 'staged'"
-                        )
-                    result = await conn.execute(sql, list(event_ids))
-                    for k in keys:
-                        await conn.execute(
-                            "UPDATE usage_evidence_sequence SET last_usage_sequence = COALESCE("
-                            "(SELECT max(usage_sequence) FROM usage_evidence_outbox o WHERE "
-                            "(o.tenant_id, o.business_session_id, o.runtime_session_id, o.generation) "
-                            "= ($1, $2, $3, $4)), 0) WHERE "
-                            "(tenant_id, business_session_id, runtime_session_id, generation) "
-                            "= ($1, $2, $3, $4)",
-                            *k,
-                        )
-                    return int(result.rsplit(" ", 1)[-1])
+                else:
+                    sql = (
+                        "UPDATE usage_evidence_outbox SET status = 'discarded', "
+                        "usage_sequence = NULL, updated_at = NOW() "
+                        "WHERE event_id = ANY($1::text[]) AND status = 'staged'"
+                    )
+                result = await conn.execute(sql, list(event_ids))
+                return int(result.rsplit(" ", 1)[-1])
 
         return await self._pg._command(run)
 
     async def stale_staged(
         self, older_than_seconds: float, limit: int = 100
     ) -> list[dict[str, Any]]:
+        """Staged rows due for resolution, least-recently-tried first (fairness).
+
+        Parked rows carry a future ``next_attempt_at`` so they cannot starve the rest.
+        """
+
         async def run() -> list[Any]:
             async with self._pg._require_pool().acquire() as conn:
                 return await conn.fetch(
-                    f"SELECT event_id, {_ID_COLUMNS}, applied_sequence FROM usage_evidence_outbox "
+                    f"SELECT event_id, {_ID_COLUMNS}, applied_sequence, attempts, "
+                    "EXTRACT(EPOCH FROM (NOW() - created_at))::float8 AS age_seconds "
+                    "FROM usage_evidence_outbox "
                     "WHERE status = 'staged' AND created_at <= NOW() - make_interval(secs => $1) "
-                    "ORDER BY created_at LIMIT $2",
+                    "AND next_attempt_at <= NOW() "
+                    "ORDER BY next_attempt_at, created_at LIMIT $2",
                     float(older_than_seconds),
                     int(limit),
                 )
 
         return [dict(r) for r in await self._pg._command(run)]
+
+    async def park(self, event_ids: Sequence[str], *, reason: str, retry_in: float) -> int:
+        """Leave staged rows unresolved: back off, count the attempt, record why."""
+
+        async def run() -> int:
+            async with self._pg._require_pool().acquire() as conn:
+                result = await conn.execute(
+                    "UPDATE usage_evidence_outbox SET attempts = attempts + 1, last_error = $2, "
+                    "next_attempt_at = NOW() + make_interval(secs => LEAST($3::float8 * "
+                    "power(2, LEAST(attempts, 16)), 3600)), updated_at = NOW() "
+                    "WHERE event_id = ANY($1::text[]) AND status = 'staged'",
+                    list(event_ids),
+                    reason,
+                    float(retry_in),
+                )
+                return int(result.rsplit(" ", 1)[-1])
+
+        return await self._pg._command(run)
+
+    async def purge(self, older_than_days: float, limit: int) -> int:
+        """Retention: delete finished rows (delivered, permanently failed, discarded)."""
+
+        async def run() -> int:
+            async with self._pg._require_pool().acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM usage_evidence_outbox WHERE event_id IN ("
+                    "SELECT event_id FROM usage_evidence_outbox "
+                    "WHERE status IN ('delivered', 'conflict', 'rejected', 'discarded') "
+                    "AND updated_at < NOW() - make_interval(secs => $1) "
+                    "ORDER BY updated_at LIMIT $2)",
+                    float(older_than_days) * 86400.0,
+                    int(limit),
+                )
+                return int(result.rsplit(" ", 1)[-1])
+
+        return await self._pg._command(run)
 
     # -- vendor COGS (drained from the in-memory buffer by the sender task) --
 

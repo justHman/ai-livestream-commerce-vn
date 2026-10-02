@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping
 from urllib.parse import urlsplit
@@ -35,7 +35,7 @@ def _num(env: Mapping[str, str], name: str, default: float) -> float:
 class UsageEvidenceSettings:
     enabled: bool = False
     url: str = ""
-    secret: str = ""  # same value as the API AI_WEBHOOK_SECRET
+    secret: str = field(default="", repr=False)  # = the API AI_WEBHOOK_SECRET; never printed
     producer_id: str = "runtime"
     # Gates for kinds whose dependency is not frozen. Off by default.
     gate_first_broadcast: bool = False
@@ -51,6 +51,11 @@ class UsageEvidenceSettings:
     http_timeout: float = 10.0
     flush_timeout: float = 5.0
     cogs_buffer: int = 1000
+    # Staged rows whose session cannot be resolved are parked, then dropped after this long.
+    unresolved_ttl: float = 7 * 86400.0
+    # Delivered / permanently-failed / discarded rows are deleted after this many days.
+    retention_days: float = 14.0
+    retention_batch: int = 500
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "UsageEvidenceSettings":
@@ -67,6 +72,8 @@ class UsageEvidenceSettings:
             backoff_cap=_num(env, "BACKOFF_CAP_SECONDS", 300.0),
             sweep_age=_num(env, "SWEEP_AGE_SECONDS", 60.0),
             cogs_buffer=int(_num(env, "COGS_BUFFER", 1000)),
+            unresolved_ttl=_num(env, "UNRESOLVED_TTL_SECONDS", 7 * 86400.0),
+            retention_days=_num(env, "RETENTION_DAYS", 14.0),
         )
 
     @property
@@ -82,7 +89,7 @@ class UsageEvidenceSettings:
             return False
         if not host or url.username is not None or url.password is not None:
             return False
-        if url.query or url.fragment or not url.path.endswith(EXACT_PATH):
+        if url.query or url.fragment or url.path != EXACT_PATH:
             return False
         return url.scheme == "https" or (url.scheme == "http" and host in _LOOPBACK)
 
