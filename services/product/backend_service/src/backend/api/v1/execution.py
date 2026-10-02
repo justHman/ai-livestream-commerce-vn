@@ -104,6 +104,17 @@ async def _load(store: Any, session_id: str) -> tuple[dict[str, Any], ExecutionS
     return copy.deepcopy(meta), ExecutionState.model_validate(raw)
 
 
+def _rfc3339(epoch: float | None) -> str | None:
+    """C-MEDIA-001 wire type: one RFC3339 UTC string (or null); the backend keeps epoch floats."""
+    if epoch is None:
+        return None
+    return (
+        datetime.fromtimestamp(epoch, timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
 @router.get("/sessions/{session_id}/execution")
 async def get_execution(
     session_id: str, request: Request, _: None = Depends(viewer_auth)
@@ -115,9 +126,19 @@ async def get_execution(
         # no spoken content at P0, so completing it here is the same transition.
         await _finish_closing(d, session_id)
         meta, state = await _load(d.store, session_id)
+    opening = d.coordinator.opening_media(session_id) if d.coordinator else None
+    if opening is not None:
+        # Backend-observed avatar playback (cloud_lemonslice only); null elsewhere.
+        info_fn = getattr(d.backend, "playback_info", None)
+        info = info_fn(session_id, opening["media_utterance_id"]) if info_fn else None
+        opening = {
+            **opening,
+            "playback_started_at": _rfc3339((info or {}).get("playback_started_at")),
+        }
     return {
         "state": state.model_dump(mode="json"),
         "capabilities": Capabilities.for_session(meta).model_dump(),
+        "opening_media": opening,
     }
 
 

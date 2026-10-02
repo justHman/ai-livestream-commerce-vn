@@ -13,7 +13,7 @@ from .test_script_authoring_http_approve_pg import _auth, _config
 
 
 @pytest.mark.asyncio
-async def test_persisted_approval_consumed_by_director_and_direct_say(pg_url):
+async def test_persisted_approval_consumed_by_director_and_direct_say(pg_url, monkeypatch):
     claim = "Kem dưỡng da giúp làn da mịn màng mỗi ngày."
     spoken = " ".join([claim] * 250)
     config = replace(_config(pg_url), director_enabled=True)
@@ -94,6 +94,20 @@ async def test_persisted_approval_consumed_by_director_and_direct_say(pg_url):
             assert turn.approved_speech.product.approved_version_id == version
 
         client.portal.call(prepare_locked)
+        # 015: the route itself is closed for P0 sessions.
+        blocked = client.post(
+            f"/api/v1/sessions/{sid}/say",
+            headers=_auth(),
+            json={"text": claim, "generate": False},
+        )
+        assert blocked.status_code == 409, blocked.text
+        assert "direct_input_disabled" in blocked.text
+
+        # Lift the guard so the 005 approved-speech boundary stays covered.
+        async def allow(d, req):
+            return None
+
+        monkeypatch.setattr("backend.api.v1.sessions._reject_p0_direct_say", allow)
         said = client.post(
             f"/api/v1/sessions/{sid}/say",
             headers=_auth(),

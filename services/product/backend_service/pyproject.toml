@@ -44,6 +44,8 @@ dev = [
     "async_timeout",
     "pytest-cov",
     "asyncpg>=0.31.0",
+    # UtteranceResampler / LemonSlice audio path import livekit-rtc; CI syncs only --group dev.
+    "livekit",
 ]
 
 [build-system]

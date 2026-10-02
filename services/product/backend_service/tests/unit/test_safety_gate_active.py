@@ -16,6 +16,7 @@ from .test_approved_speech_active import decision, prepare
 from .test_p0_comment_contract import BINDING, event
 
 case_factory = speech_tests.case_factory
+direct_say_guard_off = speech_tests.direct_say_guard_off
 
 
 async def canonical(case, **binding_changes):
@@ -164,7 +165,9 @@ async def test_replay_state_isolated_by_tenant_and_session(case_factory, other_t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("direct_first", [False, True])
-async def test_active_direct_generation_shares_replay_window(case_factory, direct_first):
+async def test_active_direct_generation_shares_replay_window(
+    case_factory, direct_say_guard_off, direct_first
+):
     case = await case_factory()
     await canonical(case)
     for i in range(4):
