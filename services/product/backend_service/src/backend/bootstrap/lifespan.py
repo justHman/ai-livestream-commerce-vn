@@ -126,6 +126,71 @@ async def _connect_postgres(container: BootstrapContainer) -> None:
             await asyncio.sleep(delay)
 
 
+async def _start_terminal_outcomes(container: BootstrapContainer) -> None:
+    """P0-FB-019 (DISABLED slice): wire the durable terminal record and outbox.
+
+    Inert unless TERMINAL_OUTCOMES_ENABLED is set AND a connected Postgres store,
+    an https (or loopback) callback URL and a secret exist. Only then is the
+    ``execution.terminal.v1`` capability advertised; any failure leaves it absent
+    so the API keeps the legacy path.
+    """
+    from backend.application.execution_contract import set_terminal_advertised
+    from backend.application.terminal_outcomes import (
+        TerminalOutbox,
+        TerminalOutcomes,
+        TerminalSettings,
+    )
+
+    settings = TerminalSettings.from_env()
+    if not settings.enabled:
+        return
+    pg = container.pg_store
+    if not settings.configured or pg is None or not getattr(pg, "enabled", False):
+        logger.error("Terminal outcomes enabled but not configured; capability stays absent")
+        return
+    try:
+        await pg.apply_terminal_schema()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Terminal outcomes schema failed error_type=%s; capability stays absent",
+            type(exc).__name__,
+        )
+        return
+    container.terminal_outcomes = TerminalOutcomes(pg)
+    container.terminal_outbox_task = asyncio.create_task(
+        TerminalOutbox(pg, settings).run_loop(), name="terminal-outbox"
+    )
+    set_terminal_advertised(True)
+
+
+async def _persist_terminal_on_shutdown(container: BootstrapContainer) -> None:
+    """P0-FB-019: before any component stops, give every unterminated P0 execution a
+    durable record (or an explicit audited deferral). No-op while disabled."""
+    terminal = getattr(container, "terminal_outcomes", None)
+    if terminal is not None:
+        extra = set(getattr(container, "orchestrators", {}) or {})
+        publishers = getattr(container, "livekit_publishers", None)
+        extra.update(getattr(publishers, "session_ids", ()) or ())
+        await terminal.persist_active_on_shutdown(container.store, tuple(extra))
+
+
+async def _stop_terminal_outcomes(container: BootstrapContainer) -> None:
+    from backend.application.execution_contract import set_terminal_advertised
+
+    set_terminal_advertised(False)
+    task = getattr(container, "terminal_outbox_task", None)
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 async def _connect_authoring(container: BootstrapContainer) -> None:
     """Connect the Change B authoring repositories with bounded retries.
 
@@ -383,9 +448,11 @@ async def _shutdown(container: BootstrapContainer) -> None:
     # close stages so no owned task races the pool close (HIGH-1).
     await drain_authoring()
     stages = (
+        ("terminal.shutdown", lambda: _persist_terminal_on_shutdown(container)),
         ("orchestrators", stop_session_pipeline),
         ("coordinator", stop_coordinator),
         ("reducer", lambda: _stop_reducer_loop(container)),
+        ("terminal.outbox", lambda: _stop_terminal_outcomes(container)),
         ("livekit.stop_all", stop_livekit),
         ("render.stop_all", stop_backend),
         ("clients.close", close_clients),
@@ -408,6 +475,7 @@ def build_lifespan(container: BootstrapContainer):
             await _connect_postgres(container)
             await _connect_authoring(container)
             await _recover_authoring(container)
+            await _start_terminal_outcomes(container)
             _start_reducer_loop(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially
