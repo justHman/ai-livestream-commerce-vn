@@ -4,6 +4,8 @@ entrypoint.sh text eol=lf
 # Contract artifacts are machine-generated with LF; force LF in both index
 # and worktree so drift checks (byte-compare) stay stable on Windows.
 **/contracts/** text eol=lf
+# Cross-repo byte-identical fixture (API ai-connector + Runtime); CRLF would break the byte-equality test on Windows.
+services/product/backend_service/tests/fixtures/opening_media_playback_started.json text eol=lf
 
 # Shared Go/Python terminal fixture: byte-identical copy, LF pinned (P0-FB-019).
 services/product/backend_service/tests/fixtures/terminal_record_v1.json text eol=lf

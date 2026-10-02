@@ -29,6 +29,9 @@ def mint_room_token(
     name: Optional[str] = None,
     can_publish: bool = True,
     can_subscribe: bool = True,
+    can_publish_data: Optional[bool] = None,
+    kind: Optional[str] = None,
+    attributes: Optional[dict[str, str]] = None,
     now: Optional[int] = None,
 ) -> str:
     """Return a LiveKit HS256 room-join token (browser-safe)."""
@@ -49,8 +52,15 @@ def mint_room_token(
             "canSubscribe": bool(can_subscribe),
         },
     }
+    if can_publish_data is not None:
+        payload["video"]["canPublishData"] = bool(can_publish_data)
     if name:
         payload["name"] = name
+    # [VERIFY-LK] claim names for agent-kind participants (P0-FB-010 L3).
+    if kind:
+        payload["kind"] = kind
+    if attributes:
+        payload["attributes"] = dict(attributes)
     return jwt.encode(payload, api_secret, algorithm="HS256")
 
 
