@@ -232,8 +232,9 @@ def test_stop_clears_terminates_leaves_and_unknown_session_raises():
     backend.stop(res.session_id)
     assert room.streams[0].closed_reason == "interrupted"
     assert room.disconnected and rest.calls[-1][0].endswith("/sessions/ls-1/terminate")
-    with pytest.raises(KeyError):
-        backend.stop(res.session_id)
+    backend.stop(res.session_id)  # idempotent: repeated stop is a no-op
+    backend.stop("never-existed")
+    assert sum("/terminate" in c[0] for c in rest.calls) == 1
     with pytest.raises(KeyError):
         backend.interrupt("nope")
 

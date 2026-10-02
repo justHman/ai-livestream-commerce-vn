@@ -23,10 +23,12 @@ UNVERIFIED ASSUMPTIONS (gate external proof 023, not local implementation):
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,6 +45,7 @@ from backend.application.render.windows import AudioWindow
 log = logging.getLogger(__name__)
 
 _KIND_VIDEO = 2  # livekit TrackKind.KIND_VIDEO; used when livekit-rtc is not importable
+_KIND_AUDIO = 1
 
 
 @dataclass(frozen=True)
@@ -66,9 +69,46 @@ class LemonSliceSettings:
     playback_margin_s: float = 5.0
     avatar_token_ttl_s: int = 300
     client_token_ttl_s: int = 3600
+    io_timeout_s: float = 5.0  # stream open/write/close and room disconnect deadline
+    audio_probe_s: float = 1.0  # how long to look for an avatar audio track before fallback
+    fallback_max_queue: int = 512  # bounded fallback buffer (chunks)
+    history: int = 256  # bounded playback-history collections
+    terminate_attempts: int = 2
 
     def __repr__(self) -> str:  # never print secrets
         return "LemonSliceSettings(<redacted>)"
+
+
+class LemonSliceError(RuntimeError):
+    """Typed, redacted backend error: ``code`` and a fixed message only (no URL, key or cause)."""
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
+class AvatarAudioFallbackRefused(LemonSliceError):
+    """The avatar publishes its own audio, so a Runtime fallback track would double the audio."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "avatar_audio_fallback_refused",
+            "AVATAR_AUDIO_FALLBACK_PUBLISH refused: the avatar already publishes audio",
+        )
+
+
+class _BoundedSet:
+    def __init__(self, cap: int) -> None:
+        self._d: OrderedDict[str, None] = OrderedDict()
+        self._cap = cap
+
+    def add(self, k: str) -> None:
+        self._d[k] = None
+        while len(self._d) > self._cap:
+            self._d.popitem(last=False)
+
+    def __contains__(self, k: object) -> bool:
+        return k in self._d
 
 
 HttpPost = Callable[[str, dict[str, str], dict[str, Any], float], tuple[int, dict[str, Any]]]
@@ -86,25 +126,48 @@ def _httpx_post(url: str, headers: dict, body: dict, timeout: float) -> tuple[in
 
 
 class _FallbackAudioTrack:
-    """Runtime-owned audio track for the video-only avatar case (delayed)."""
+    """Runtime-owned audio track for the video-only avatar case (delayed, bounded)."""
 
-    def __init__(self, capture: Callable[[bytes], Any], offset_ms: int) -> None:
+    def __init__(
+        self,
+        capture: Callable[[bytes], Any],
+        offset_ms: int,
+        clear: Callable[[], Any] | None = None,
+        max_queue: int = 512,
+    ) -> None:
         self._capture = capture
+        self._clear = clear
         self._offset = offset_ms / 1000
+        self._max = max_queue
         self._q: asyncio.Queue = asyncio.Queue()
+        self._gen = 0
         self._task = asyncio.ensure_future(self._run())
 
     def enqueue(self, pcm: bytes) -> None:
-        self._q.put_nowait((time.monotonic() + self._offset, pcm))
+        if self._q.qsize() >= self._max:
+            self._q.get_nowait()  # bounded: drop the oldest chunk
+        self._q.put_nowait((self._gen, time.monotonic() + self._offset, pcm))
 
     def drain(self) -> None:
+        """Interrupt: drop queued PCM, cancel the sleeping/pushing task, clear the real buffer."""
+        self._gen += 1
         while not self._q.empty():
             self._q.get_nowait()
+        self._task.cancel()
+        if self._clear is not None:
+            try:
+                self._clear()  # e.g. rtc.AudioSource.clear_queue
+            except Exception as exc:
+                log.warning("fallback buffer clear failed error_type=%s", type(exc).__name__)
+        self._task = asyncio.ensure_future(self._run())
 
     async def _run(self) -> None:
+        gen = self._gen
         while True:
-            due, pcm = await self._q.get()
+            g, due, pcm = await self._q.get()
             await asyncio.sleep(max(0.0, due - time.monotonic()))
+            if g != self._gen or gen != self._gen:  # interrupted while it slept
+                continue
             res = self._capture(pcm)
             if asyncio.iscoroutine(res):
                 await res
@@ -118,10 +181,14 @@ class _Sess:
     room: Any
     channel: AvatarAudioChannel
     provider_session_id: str = ""
-    epoch: int = 0
-    cleared: set[str] = field(default_factory=set)
-    unconfirmed: set[str] = field(default_factory=set)
+    cleared: _BoundedSet = field(default_factory=lambda: _BoundedSet(256))
+    unconfirmed: _BoundedSet = field(default_factory=lambda: _BoundedSet(256))
     fallback: _FallbackAudioTrack | None = None
+    late_post: Any = None
+
+    @property
+    def epoch(self) -> int:
+        return self.channel.epoch
 
 
 class LemonSliceRenderBackend(StreamingAvatarBackend):
@@ -143,6 +210,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._clock = clock
         self._sessions: dict[str, _Sess] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
         self._loop_lock = threading.Lock()
 
     # ---- loop thread ------------------------------------------------
@@ -150,14 +218,30 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         with self._loop_lock:
             if self._loop is None:
                 loop = asyncio.new_event_loop()
-                threading.Thread(
+                self._thread = threading.Thread(
                     target=loop.run_forever, name="lemonslice-loop", daemon=True
-                ).start()
+                )
+                self._thread.start()
                 self._loop = loop
             return self._loop
 
     def _run(self, coro: Any, timeout: float | None = None) -> Any:
-        return asyncio.run_coroutine_threadsafe(coro, self._ensure_loop()).result(timeout)
+        fut = asyncio.run_coroutine_threadsafe(coro, self._ensure_loop())
+        try:
+            return fut.result(timeout)
+        except concurrent.futures.TimeoutError:
+            fut.cancel()  # never leave the coroutine running after the caller gave up
+            raise LemonSliceError("timeout", "LemonSlice backend call timed out") from None
+
+    def _shutdown_loop(self) -> None:
+        with self._loop_lock:
+            loop, thread, self._loop, self._thread = self._loop, self._thread, None, None
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+            if thread is not None:
+                thread.join(timeout=5)
+            if not loop.is_running():
+                loop.close()
 
     @staticmethod
     def _default_room() -> Any:
@@ -181,7 +265,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             n = len(pcm) // 2
             await source.capture_frame(rtc.AudioFrame(pcm, sample_rate, 1, n))
 
-        return publish, capture
+        return publish, capture, source.clear_queue
 
     # ---- RenderBackend ---------------------------------------------
     def start(self, opts: StartOptions) -> StartResult:
@@ -194,10 +278,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         # DR-AVATAR-001: preset avatars only. A caller-supplied id must be allowlisted.
         if avatar_id and avatar_id != self._s.agent_id:
             if avatar_id not in self._s.avatar_allowlist:
-                raise RuntimeError("avatar_id is not in the LEMONSLICE avatar allowlist")
+                raise LemonSliceError(
+                    "avatar_not_allowed", "avatar_id is not in the LEMONSLICE avatar allowlist"
+                )
             return avatar_id
         if not self._s.agent_id:
-            raise RuntimeError("LEMONSLICE_AGENT_ID is not configured")
+            raise LemonSliceError("agent_not_configured", "LEMONSLICE_AGENT_ID is not configured")
         return self._s.agent_id
 
     async def _start(self, agent_id: str) -> StartResult:
@@ -229,18 +315,22 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             attributes={"lk.publish_on_behalf": s.runtime_identity},
         )
         sess: _Sess | None = None
+        post_task: asyncio.Future | None = None
         try:
-            await room.connect(s.livekit_url, runtime_token)
+            await asyncio.wait_for(room.connect(s.livekit_url, runtime_token), s.ready_timeout_s)
             sess = _Sess(
                 room,
                 AvatarAudioChannel(
-                    room, s.avatar_identity, sample_rate=s.audio_sample_rate, clock=self._clock
+                    room,
+                    s.avatar_identity,
+                    sample_rate=s.audio_sample_rate,
+                    clock=self._clock,
+                    io_timeout_s=s.io_timeout_s,
+                    history=s.history,
                 ),
             )
-            if s.fallback_publish:
-                publish, capture = self._track_factory(room, s.audio_sample_rate)
-                await publish()
-                sess.fallback = _FallbackAudioTrack(capture, s.render_offset_ms)
+            sess.cleared = _BoundedSet(s.history)
+            sess.unconfirmed = _BoundedSet(s.history)
             # Single-speaker: no agent_prompt / LLM / TTS fields are ever sent.
             body = {
                 "transport_type": "livekit",
@@ -252,23 +342,48 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     "livekit_session_id": room_name,
                 },
             }
-            status, data = await asyncio.to_thread(
-                self._post,
-                f"{s.api_base.rstrip('/')}/sessions",
-                {"X-API-Key": s.lemonslice_api_key},
-                body,
-                s.request_timeout_s,
+            post_task = asyncio.ensure_future(
+                asyncio.to_thread(
+                    self._post,
+                    f"{s.api_base.rstrip('/')}/sessions",
+                    {"X-API-Key": s.lemonslice_api_key},
+                    body,
+                    s.request_timeout_s,
+                )
             )
+            status, data = await asyncio.shield(post_task)
+            post_task = None
             if status >= 300:
-                raise RuntimeError(f"LemonSlice session request failed status={status}")
+                raise LemonSliceError(
+                    "session_request_failed", f"LemonSlice session request failed status={status}"
+                )
             sess.provider_session_id = str(data.get("session_id") or "")
             await self._wait_avatar_video(room)
+            if s.fallback_publish:
+                # Look BEFORE publishing: an avatar with its own audio plus ours = two speakers.
+                if await self._avatar_has_audio(room, s.audio_probe_s):
+                    raise AvatarAudioFallbackRefused()
+                publish, capture, *clear = self._track_factory(room, s.audio_sample_rate)
+                await asyncio.wait_for(publish(), s.io_timeout_s)
+                sess.fallback = _FallbackAudioTrack(
+                    capture, s.render_offset_ms, clear[0] if clear else None, s.fallback_max_queue
+                )
         except BaseException as exc:
+            if post_task is not None and sess is not None and not sess.provider_session_id:
+                # Caller gave up while the REST call was in flight: if it lands, end that session.
+                try:
+                    status, data = await asyncio.wait_for(post_task, s.request_timeout_s + 1)
+                    if status < 300:
+                        sess.provider_session_id = str(data.get("session_id") or "")
+                except BaseException:
+                    log.warning("lemonslice late session creation could not be confirmed")
             await self._teardown(room_name, sess, room)
-            if isinstance(exc, RuntimeError):
+            if isinstance(exc, asyncio.CancelledError | LemonSliceError):
                 raise
             # never chain the original: it may carry request URLs/headers
-            raise RuntimeError(f"LemonSlice start failed error_type={type(exc).__name__}") from None
+            raise LemonSliceError(
+                "start_failed", f"LemonSlice start failed error_type={type(exc).__name__}"
+            ) from None
         self._sessions[room_name] = sess
         client_token = mint_room_token(
             api_key=s.livekit_api_key,
@@ -302,7 +417,31 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             ):
                 return
             await asyncio.sleep(0.05)
-        raise RuntimeError("LemonSlice avatar did not publish video before the ready timeout")
+        raise LemonSliceError(
+            "avatar_video_timeout",
+            "LemonSlice avatar did not publish video before the ready timeout",
+        )
+
+    def _avatar_audio_now(self, room: Any) -> bool:
+        try:
+            from livekit import rtc  # type: ignore
+
+            kind_audio = rtc.TrackKind.KIND_AUDIO
+        except ImportError:
+            kind_audio = _KIND_AUDIO
+        p = room.remote_participants.get(self._s.avatar_identity)
+        return p is not None and any(
+            getattr(pub, "kind", None) == kind_audio for pub in p.track_publications.values()
+        )
+
+    async def _avatar_has_audio(self, room: Any, grace_s: float) -> bool:
+        deadline = time.monotonic() + grace_s
+        while True:
+            if self._avatar_audio_now(room):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
 
     def stream_audio(self, session_id: str, audio_window: AudioWindow):
         sess = self._sessions.get(session_id)
@@ -317,19 +456,26 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         if w.utterance_id in sess.cleared:  # late window of an interrupted utterance
             return
         assert w.pcm is not None  # checked in stream_audio
+        epoch = sess.epoch
+        if sess.fallback is not None and self._avatar_audio_now(sess.room):
+            # Avatar audio appeared after start: a second publisher would double the audio.
+            sess.fallback.drain()
+            raise AvatarAudioFallbackRefused()
         out = await sess.channel.send(
             w.pcm,
             src_rate=w.sample_rate,
             utterance_id=w.utterance_id,
-            epoch=sess.epoch,
+            epoch=epoch,
             final=w.is_final,
         )
-        if sess.fallback is not None and out:
+        if out is None:  # fenced by an interrupt while suspended: stale audio was dropped
+            return
+        if sess.fallback is not None and out and epoch == sess.epoch:
             sess.fallback.enqueue(out)
         if w.is_final:
             timeout = sess.channel.sent_ms / 1000 + self._s.playback_margin_s
             ok = await sess.channel.wait_finished(w.utterance_id, timeout)
-            if w.utterance_id in sess.cleared:
+            if w.utterance_id in sess.cleared or epoch != sess.epoch:
                 return
             if not ok:
                 sess.unconfirmed.add(w.utterance_id)
@@ -345,15 +491,14 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         open_id = sess.channel.open_utterance
         if open_id:
             sess.cleared.add(open_id)
-        sess.epoch += 1
         if sess.fallback is not None:
             sess.fallback.drain()
-        await sess.channel.clear_buffer()
+        await sess.channel.clear_buffer()  # bumps the epoch fence first
 
     def stop(self, session_id: str) -> None:
         sess = self._sessions.pop(session_id, None)
-        if sess is None:
-            raise KeyError(session_id)
+        if sess is None:  # idempotent: a repeated stop is a no-op
+            return
         self._run(self._teardown(session_id, sess, sess.room))
 
     def stop_all(self) -> None:
@@ -362,6 +507,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 self.stop(sid)
             except Exception as exc:
                 log.warning("lemonslice stop_all error_type=%s", type(exc).__name__)
+        self._shutdown_loop()
 
     async def _teardown(self, room_name: str, sess: _Sess | None, room: Any) -> None:
         if sess is not None:
@@ -371,22 +517,39 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 pass
             if sess.fallback is not None:
                 sess.fallback.close()
-            if self._s.terminate_path and sess.provider_session_id:
-                path = self._s.terminate_path.format(session_id=sess.provider_session_id)
-                try:
-                    await asyncio.to_thread(
-                        self._post,
-                        f"{self._s.api_base.rstrip('/')}/{path.lstrip('/')}",
-                        {"X-API-Key": self._s.lemonslice_api_key},
-                        {},
-                        self._s.request_timeout_s,
-                    )
-                except Exception as exc:
-                    log.warning("lemonslice terminate failed error_type=%s", type(exc).__name__)
+            await self._terminate_provider(sess)
         try:
-            await room.disconnect()
+            await asyncio.wait_for(room.disconnect(), self._s.io_timeout_s)
         except Exception as exc:
             log.warning("lemonslice room leave failed error_type=%s", type(exc).__name__)
+
+    async def _terminate_provider(self, sess: _Sess) -> None:
+        s = self._s
+        if not sess.provider_session_id:
+            return
+        if not s.terminate_path:
+            log.warning(
+                "lemonslice session not terminated (no terminate path); idle_timeout applies"
+            )
+            return
+        path = s.terminate_path.format(session_id=sess.provider_session_id)
+        for attempt in range(max(1, s.terminate_attempts)):
+            try:
+                status, _ = await asyncio.to_thread(
+                    self._post,
+                    f"{s.api_base.rstrip('/')}/{path.lstrip('/')}",
+                    {"X-API-Key": s.lemonslice_api_key},
+                    {},
+                    s.request_timeout_s,
+                )
+                if status < 300:
+                    return
+                err = f"status={status}"
+            except Exception as exc:
+                err = f"error_type={type(exc).__name__}"
+            log.warning("lemonslice terminate failed attempt=%d %s", attempt + 1, err)
+            await asyncio.sleep(0.2)
+        log.error("lemonslice session NOT terminated after retries; idle_timeout applies")
 
     def session_status(self, session_id: str) -> str:
         sess = self._sessions.get(session_id)
