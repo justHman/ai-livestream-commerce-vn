@@ -817,6 +817,8 @@ class DirectorCoordinator:
             new_only = [
                 comment for comment in fresh if comment.id not in self._consumed_ids(session_id)
             ]
+            # Release ChatQueue capacity exactly as the legacy path does (013).
+            queue.mark_consumed(c.id for c in new_only)
             if self.comment_consumed is not None and new_only:
                 try:
                     self.comment_consumed(session_id, {c.id for c in new_only})

@@ -1031,3 +1031,25 @@ async def test_reducer_consumed_markers_are_pruned_past_the_drain_window() -> No
     coord._remember_consumed("s1", [_C(f"old{i}", now - 10_000) for i in range(50)])
     coord._remember_consumed("s1", [_C("fresh", now)])
     assert set(coord._consumed_ids("s1")) == {"fresh"}
+
+
+async def test_reducer_mode_tick_releases_real_chat_queue_capacity() -> None:
+    """013 lifetime-capacity defect must not survive on the reducer path.
+
+    Real coordinator + real ChatQueue in reducer mode: fill to ``max_size``,
+    tick, capacity recovers, and a second full lap is accepted (no lifetime cap).
+    """
+    coord, _runtime, _ = _coordinator("s1", reducer=_reducer())
+    coord.start("s1", _products(), activated=True)
+    coord.set_reducer_mode("s1", True)
+    queue = coord._queues["s1"]
+    size = queue.max_size
+
+    for lap in range(2):
+        for i in range(size):
+            queue.put(f"q{lap}-{i}", f"v{i}", ts=time.time())
+        assert queue.free_slots() == 0
+        await coord._tick_once("s1")
+        assert queue.free_slots() == size
+        assert coord.queue_capacity("s1") == size
+    coord.stop("s1")
