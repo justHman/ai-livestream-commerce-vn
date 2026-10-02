@@ -69,6 +69,12 @@ class BootstrapContainer:
     script_authoring_service: Any = None
     approved_speech: Any = None
 
+    # -- P0-FB-019 durable terminal record + outbox (DISABLED slice) --
+    # TerminalOutcomes or None. Set by the lifespan only when
+    # TERMINAL_OUTCOMES_ENABLED and a durable store, URL and secret exist.
+    terminal_outcomes: Any = None
+    terminal_outbox_task: Any = None  # asyncio.Task or None (set by the lifespan)
+
     # -- Canonical multi-platform event ingress (multi-platform change) --
     # PlatformEventIngestionService or None. When None, the /events endpoint
     # returns 501 (legacy test containers that do not wire it).

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 _SCHEMA = Path(__file__).resolve().parents[2] / "db" / "sql" / "runtime_schema.sql"
+_TERMINAL_SCHEMA = Path(__file__).resolve().parents[2] / "db" / "sql" / "terminal_schema.sql"
 _CONNECT_TIMEOUT_SECONDS = 5.0
 _COMMAND_TIMEOUT_SECONDS = 5.0
 
@@ -127,6 +128,331 @@ class PostgresRuntimeStore:
                 await conn.execute(sql)
 
         await self._command(apply)
+
+    async def apply_terminal_schema(self) -> None:
+        """Apply terminal_schema.sql (P0-FB-019). Called only when the feature is enabled."""
+        sql = _TERMINAL_SCHEMA.read_text(encoding="utf-8")
+
+        async def apply() -> None:
+            async with self._require_pool().acquire() as conn:
+                await conn.execute(sql)
+
+        await self._command(apply)
+
+    async def persist_terminal(self, record: Any) -> Any:
+        """Store the terminal record and its outbox row in ONE transaction.
+
+        At most one record exists per (tenant, business session, generation) and
+        the first durable record wins. A different terminal for the same
+        generation is never dropped: it is appended to ``terminal_conflicts``
+        and queued as ``late_evidence`` so the API audits it under the same
+        precedence (FAILED is never rewritten to ENDED; a late failure after
+        ENDED becomes cleanup evidence there). Returns a ``PersistResult``.
+        """
+        from backend.application.execution_contract import TerminalRecord, reduce_terminal
+        from backend.application.terminal_outcomes import PersistResult, body_sha256, record_to_body
+
+        ident = record.identity
+        body = record_to_body(record)
+
+        async def persist() -> Any:
+            async with self._require_pool().acquire() as conn:
+                async with conn.transaction():
+                    inserted = await conn.fetchval(
+                        """
+                        INSERT INTO terminal_records (
+                            terminal_record_id, tenant_id, business_session_id,
+                            runtime_session_id, generation, record_hash, record
+                        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+                        ON CONFLICT DO NOTHING
+                        RETURNING terminal_record_id
+                        """,
+                        record.terminal_record_id,
+                        ident.tenant_id,
+                        ident.business_session_id,
+                        ident.runtime_session_id,
+                        ident.generation,
+                        record.record_hash,
+                        body,
+                    )
+                    if inserted is not None:
+                        await conn.execute(
+                            """
+                            INSERT INTO terminal_outbox
+                                (terminal_record_id, record_hash, kind, body, body_sha256)
+                            VALUES ($1,$2,'primary',$3,$4)
+                            """,
+                            record.terminal_record_id,
+                            record.record_hash,
+                            body,
+                            body_sha256(body),
+                        )
+                        return PersistResult(record, True, "")
+                    row = await conn.fetchrow(
+                        """
+                        SELECT record FROM terminal_records
+                        WHERE tenant_id = $1 AND business_session_id = $2 AND generation = $3
+                        """,
+                        ident.tenant_id,
+                        ident.business_session_id,
+                        ident.generation,
+                    )
+                    existing = TerminalRecord.model_validate(json.loads(row["record"]))
+                    decision = reduce_terminal(existing, record)
+                    if decision.action == "replay":
+                        return PersistResult(existing, False, "")
+                    await conn.execute(
+                        """
+                        INSERT INTO terminal_conflicts (terminal_record_id, incoming_hash, audit, record)
+                        VALUES ($1,$2,$3,$4::jsonb)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        existing.terminal_record_id,
+                        record.record_hash,
+                        decision.audit,
+                        body,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO terminal_outbox
+                            (terminal_record_id, record_hash, kind, body, body_sha256)
+                        VALUES ($1,$2,'late_evidence',$3,$4)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        record.terminal_record_id,
+                        record.record_hash,
+                        body,
+                        body_sha256(body),
+                    )
+                    return PersistResult(existing, False, decision.audit)
+
+        return await self._command(persist)
+
+    async def claim_terminal_outbox(self, limit: int, lease_seconds: float) -> list[dict[str, Any]]:
+        """Lease due rows in one statement; no connection is held during delivery.
+
+        Every claim mints a new ``lease_token``; finishing a row requires the
+        token, so a sender whose lease expired cannot overwrite a newer outcome.
+        """
+
+        async def claim() -> list[Any]:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetch(
+                    """
+                    WITH due AS (
+                        SELECT terminal_record_id, record_hash FROM terminal_outbox
+                        WHERE status = 'pending' AND next_attempt_at <= NOW()
+                        ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE terminal_outbox o
+                       SET attempts = o.attempts + 1,
+                           lease_token = gen_random_uuid(),
+                           next_attempt_at = NOW() + make_interval(secs => $2),
+                           updated_at = NOW()
+                      FROM due
+                     WHERE o.terminal_record_id = due.terminal_record_id
+                       AND o.record_hash = due.record_hash
+                 RETURNING o.terminal_record_id, o.record_hash, o.kind, o.body, o.attempts,
+                           o.lease_token::text AS lease_token
+                    """,
+                    limit,
+                    float(lease_seconds),
+                )
+
+        return [dict(r) for r in await self._command(claim)]
+
+    async def finish_terminal_outbox(
+        self,
+        terminal_record_id: str,
+        record_hash: str,
+        lease_token: str,
+        status: str,
+        *,
+        error: Optional[str] = None,
+        retry_in: float = 0.0,
+    ) -> bool:
+        """Finish a claimed row. Only the current lease holder of a still-pending row may.
+
+        Returns False (and changes nothing) for a stale token or a row that is
+        already delivered/rejected, so delivered and poison rows are never resurrected.
+        """
+
+        async def finish() -> bool:
+            async with self._require_pool().acquire() as conn:
+                row = await conn.fetchval(
+                    """
+                    UPDATE terminal_outbox
+                       SET status = $4,
+                           last_error = $5,
+                           lease_token = NULL,
+                           next_attempt_at = NOW() + make_interval(secs => $6),
+                           delivered_at = CASE WHEN $4 = 'delivered' THEN NOW() ELSE delivered_at END,
+                           updated_at = NOW()
+                     WHERE terminal_record_id = $1 AND record_hash = $2
+                       AND lease_token = $3::uuid AND status = 'pending'
+                 RETURNING 1
+                    """,
+                    terminal_record_id,
+                    record_hash,
+                    lease_token,
+                    status,
+                    error,
+                    float(retry_in),
+                )
+                return row is not None
+
+        return bool(await self._command(finish))
+
+    async def update_terminal_cleanup(self, terminal_record_id: str, cleanup: Any) -> bool:
+        """Record a cleanup retry: only ``cleanup`` changes, monotonically, and is redelivered.
+
+        The terminal phase, reason and hash are never touched (cleanup retries
+        are recorded separately). Returns True when the stored record changed.
+        """
+        from backend.application.execution_contract import TerminalRecord, reduce_cleanup
+        from backend.application.terminal_outcomes import body_sha256, record_to_body
+
+        async def update() -> bool:
+            async with self._require_pool().acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "SELECT record FROM terminal_records WHERE terminal_record_id = $1 FOR UPDATE",
+                        terminal_record_id,
+                    )
+                    if row is None:
+                        raise KeyError(terminal_record_id)
+                    stored = TerminalRecord.model_validate(json.loads(row["record"]))
+                    merged, changed = reduce_cleanup(stored.cleanup, cleanup)
+                    if not changed:
+                        return False
+                    body = record_to_body(stored.model_copy(update={"cleanup": merged}))
+                    await conn.execute(
+                        "UPDATE terminal_records SET record = $2::jsonb, updated_at = NOW() "
+                        "WHERE terminal_record_id = $1",
+                        terminal_record_id,
+                        body,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE terminal_outbox
+                           SET body = $2, body_sha256 = $3, status = 'pending', attempts = 0,
+                               lease_token = NULL, next_attempt_at = NOW(), last_error = NULL,
+                               updated_at = NOW()
+                         WHERE terminal_record_id = $1 AND kind = 'primary'
+                        """,
+                        terminal_record_id,
+                        body,
+                        body_sha256(body),
+                    )
+                    return True
+
+        return bool(await self._command(update))
+
+    async def register_terminal_execution(self, identity: Any) -> None:
+        """Remember a P0 execution durably at start, so a stop or shutdown that finds
+        no hot state can still name it (failed/runtime_lost) instead of staying silent."""
+
+        async def register() -> None:
+            async with self._require_pool().acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO terminal_executions
+                        (runtime_session_id, tenant_id, business_session_id, generation)
+                    VALUES ($1,$2,$3,$4)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    identity.runtime_session_id,
+                    identity.tenant_id,
+                    identity.business_session_id,
+                    identity.generation,
+                )
+
+        await self._command(register)
+
+    async def get_terminal_execution(self, runtime_session_id: str) -> Any:
+        from backend.application.execution_contract import ExecutionIdentity
+
+        async def get() -> Any:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetchrow(
+                    """
+                    SELECT tenant_id, business_session_id, runtime_session_id, generation
+                      FROM terminal_executions WHERE runtime_session_id = $1
+                    """,
+                    runtime_session_id,
+                )
+
+        row = await self._command(get)
+        return None if row is None else ExecutionIdentity(**dict(row))
+
+    async def terminal_exists(self, identity: Any) -> bool:
+        """True when a terminal record is already stored for this identity generation."""
+
+        async def exists() -> Any:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetchval(
+                    """
+                    SELECT 1 FROM terminal_records
+                     WHERE tenant_id = $1 AND business_session_id = $2 AND generation = $3
+                    """,
+                    identity.tenant_id,
+                    identity.business_session_id,
+                    identity.generation,
+                )
+
+        return await self._command(exists) is not None
+
+    async def list_unterminated_executions(self) -> list[Any]:
+        """Registered executions with no terminal record yet (active at shutdown)."""
+        from backend.application.execution_contract import ExecutionIdentity
+
+        async def listing() -> Any:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetch(
+                    """
+                    SELECT e.tenant_id, e.business_session_id, e.runtime_session_id, e.generation
+                      FROM terminal_executions e
+                     WHERE NOT EXISTS (
+                        SELECT 1 FROM terminal_records r
+                         WHERE r.tenant_id = e.tenant_id
+                           AND r.business_session_id = e.business_session_id
+                           AND r.generation = e.generation)
+                    """
+                )
+
+        return [ExecutionIdentity(**dict(r)) for r in await self._command(listing)]
+
+    async def defer_terminal(self, runtime_session_id: str, reason: str) -> None:
+        """Explicit, audited deferral when a terminal cannot be named (never silent)."""
+
+        async def defer() -> None:
+            async with self._require_pool().acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO terminal_deferrals (runtime_session_id, reason)
+                    VALUES ($1,$2) ON CONFLICT DO NOTHING
+                    """,
+                    runtime_session_id,
+                    reason[:120],
+                )
+
+        await self._command(defer)
+
+    async def terminal_outbox_backlog(self) -> tuple[int, float]:
+        """(pending rows, age in seconds of the oldest) for Runtime health / P0-FB-020."""
+
+        async def backlog() -> Any:
+            async with self._require_pool().acquire() as conn:
+                return await conn.fetchrow(
+                    """
+                    SELECT count(*) AS n,
+                           COALESCE(EXTRACT(EPOCH FROM NOW() - MIN(created_at)), 0) AS age
+                      FROM terminal_outbox WHERE status = 'pending'
+                    """
+                )
+
+        row = await self._command(backlog)
+        return int(row["n"]), float(row["age"])
 
     async def _command(self, operation: Callable[[], Awaitable[Any]]) -> Any:
         try:
