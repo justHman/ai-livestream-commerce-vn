@@ -43,14 +43,17 @@ def _build_director_pipeline(config, backend, engine_manager):
 
     embedder = HashingEmbedder()  # offline/CI-safe; reducer REQUIRES an embedder
     runtime = DirectorRuntime(backend, embedder=embedder)
+    reducer = FastReducer(embedder=embedder)
     coordinator = DirectorCoordinator(
         runtime=runtime,
         llm=engine_manager.llm if engine_manager is not None else None,
         tts=engine_manager.tts if engine_manager is not None else None,
         backend=backend,
         cfg=CoordinatorConfig(),
+        # The coordinator consults the reducer ONLY for sessions in reducer
+        # mode (P0-FB-014); a legacy session never sees it.
+        reducer=reducer,
     )
-    reducer = FastReducer(embedder=embedder)
     return runtime, coordinator, reducer
 
 
@@ -434,6 +437,12 @@ def create_app(
     )
     if resolved_container.coordinator is not None:
         resolved_container.coordinator.approved_speech = resolved_container.approved_speech
+        # The tick reports the comments it really consumed so teardown does
+        # not reconcile them as non_deliverable (P0-FB-013). The sink runs
+        # here, after ingress is resolved, so injected containers get it too.
+        resolved_container.coordinator.comment_consumed = (
+            resolved_container.event_ingestion.mark_consumed
+        )
 
     app_lifespan = lifespan if lifespan is not None else build_lifespan(resolved_container)
     app = FastAPI(title="VN Live-Commerce Host — core API", lifespan=app_lifespan)

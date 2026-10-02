@@ -279,16 +279,21 @@ async def _recover_authoring(container: BootstrapContainer) -> None:
 # -- Shutdown --------------------------------------------------------
 
 
-async def _call_cleanup(operation, *, async_method: bool = False) -> None:
-    """Run one cleanup callable, tolerating sync/async boundaries."""
+async def _call_cleanup(operation, *, async_method: bool = False):
+    """Run one cleanup callable, tolerating sync/async boundaries.
+
+    Returns the callable's result: a teardown that hands back work to audit
+    (coordinator ``stop_all`` -> delivery fences) must not lose it here.
+    """
     if async_method:
         result = operation()
         if inspect.isawaitable(result):
-            await result
-        return
+            return await result
+        return result
     result = await asyncio.to_thread(operation)
     if inspect.isawaitable(result):
-        await result
+        return await result
+    return result
 
 
 async def _call_orchestrators(container: BootstrapContainer) -> None:
@@ -335,11 +340,40 @@ async def _shutdown(container: BootstrapContainer) -> None:
             )
 
     async def stop_coordinator() -> None:
+        """Stop every session, then audit the routed work they were holding.
+
+        A process shutdown has no per-session ``/stop`` route to reconcile on,
+        so it takes the fences ``stop_all`` returns and reconciles them here —
+        the same "caller passes the fence to reconcile_session" contract the
+        route uses. Without this, routed comments die with the queues and no
+        audit row is ever written (P0-FB-013 silent loss).
+        """
         coordinator = getattr(container, "coordinator", None)
-        if coordinator is not None:
-            stop_all = getattr(coordinator, "stop_all", None)
-            if stop_all is not None:
-                await _call_cleanup(stop_all, async_method=inspect.iscoroutinefunction(stop_all))
+        if coordinator is None:
+            return
+        stop_all = getattr(coordinator, "stop_all", None)
+        if stop_all is None:
+            return
+        fences = await _call_cleanup(stop_all, async_method=inspect.iscoroutinefunction(stop_all))
+        ingestion = getattr(container, "event_ingestion", None)
+        if ingestion is None:
+            return
+        for session_id, attach_seq in (fences or {}).items():
+            try:
+                reconciled = await ingestion.reconcile_session(session_id, attach_seq=attach_seq)
+            except Exception as exc:
+                logger.error(
+                    "Shutdown reconciliation failed session=%s error_type=%s",
+                    session_id,
+                    type(exc).__name__,
+                )
+                continue
+            if reconciled:
+                logger.info(
+                    "shutdown reconciled non-deliverable events session=%s count=%d",
+                    session_id,
+                    len(reconciled),
+                )
 
     async def stop_session_pipeline() -> None:
         """Cancel any active orchestrator tasks so no producer outlives."""

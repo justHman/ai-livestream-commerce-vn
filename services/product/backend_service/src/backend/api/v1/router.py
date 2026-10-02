@@ -113,6 +113,7 @@ class StartReq(BaseModel):
     tenant_id: Optional[str] = None
     business_session_id: Optional[str] = None
     generation: Optional[str] = None
+    rescue_commands: bool = False
 
 
 class SayReq(BaseModel):

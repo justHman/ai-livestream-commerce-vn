@@ -144,6 +144,16 @@ class PlatformEvent(BaseModel):
 
 
 class EventsIn(BaseModel):
-    """Bounded batch of canonical events (one-or-many share this schema)."""
+    """Bounded batch of canonical events (one-or-many share this schema).
+
+    ``delivery_outcomes_v1`` is the P0-FB-013 activation opt-in. It defaults
+    to OFF, so the deployed API — which only understands accepted/duplicate/
+    rejected — keeps today's response contract verbatim. When a caller sets
+    it, the service reports the truthful delivery outcome instead of
+    ``accepted``: a comment with no attached coordinator comes back
+    ``not_ready`` and is not parked, so the caller's durable retry can
+    re-drive the same event id.
+    """
 
     events: list[PlatformEvent] = Field(min_length=1, max_length=MAX_EVENTS_PER_REQUEST)
+    delivery_outcomes_v1: bool = False

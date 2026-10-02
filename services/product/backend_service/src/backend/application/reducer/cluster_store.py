@@ -744,6 +744,12 @@ class ClusterStore:
     # Reads
     # ------------------------------------------------------------------
 
+    @property
+    def config(self) -> ClusterStoreConfig:
+        """The store's typed knobs. Public read so a consumer can honour
+        ``max_representatives`` when it projects a cluster (P0-FB-014)."""
+        return self._config
+
     def active_clusters(self, now: float) -> list[LiveCluster]:
         """Clusters with any member inside the rolling horizon, demand-sorted.
 

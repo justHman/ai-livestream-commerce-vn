@@ -7,6 +7,7 @@ DirectorRuntime, Coordinator, speech boundary and chunker are real.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import replace
 from types import SimpleNamespace
 import threading
@@ -110,6 +111,9 @@ async def case_factory(monkeypatch):
             config=AppConfig(
                 render_backend="mock",
                 app_env="dev",
+                admin_api_token="admin-secret"
+                if os.environ.get("LIVENTO_P0_RESCUE_COMMANDS")
+                else "",
                 director_enabled=True,
             )
         )
