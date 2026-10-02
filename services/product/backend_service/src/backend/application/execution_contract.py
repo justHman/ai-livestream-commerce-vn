@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import hashlib
+import os
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -14,8 +15,8 @@ Kind = Literal["runtime_ready", "first_ai_broadcast", "health", "phase_changed",
 Command = Literal["start", "hold", "resume", "interrupt", "end", "emergency_end"]
 
 # Contract processing, the accepted comment envelope and approved speech are implemented.
-# Real rescue, terminal reconciliation and signed usage
-# remain unavailable until their owning tasks implement them.
+# Terminal reconciliation and signed usage remain unavailable until their
+# owning tasks implement them.
 AVAILABLE_CAPABILITIES = (
     "comment.p0.v1",
     "execution.evidence.v1",
@@ -23,6 +24,48 @@ AVAILABLE_CAPABILITIES = (
     "content.approved_speech.v1",
     "command.start",
 )
+# P0-FB-016 rescue commands (C-RESCUE-CMD-001). Disabled until compatible: the
+# API business hook for End/Emergency End ships behind the same deploy switch,
+# so neither side is advertised without the other.
+# Extensible by contract amendment only (e.g. C-RESCUE-CMD-001 FLAG-018-1
+# `entitlement_exhausted` for system-originated end, owned by P0-FB-018).
+ENDED_REASONS = ("normal_end", "merchant_emergency_end")
+RESCUE_COMMANDS = ("hold", "resume", "interrupt", "end", "emergency_end")
+# TRUTH (open product decision F4): at P0 `end` performs NO spoken closing. The
+# approved envelope has no closing artifact, so End hard-cancels the utterance in
+# flight, moves closing -> ending at once, and viewers hear no farewell.
+RESCUE_SWITCH = "LIVENTO_P0_RESCUE_COMMANDS"
+RESCUE_EFFECTS = {
+    "hold": "held_at_safe_boundary",
+    "resume": "resumed",
+    "interrupt": "speech_cancelled",
+    "end": "closing_started",
+    "emergency_end": "ending_started",
+}
+_RESCUE_PHASES = {
+    "hold": ("warming", "selling"),
+    "resume": ("warming", "selling"),
+    "interrupt": ("warming", "selling", "closing"),
+    "end": ("warming", "selling"),
+    "emergency_end": ("warming", "selling", "closing"),
+}
+
+
+def rescue_switch_on() -> bool:
+    return os.environ.get(RESCUE_SWITCH, "").strip().lower() in ("1", "true", "yes")
+
+
+def available_capabilities(rescue: bool = False) -> tuple[str, ...]:
+    """Rescue commands are advertised per session, never process-wide.
+
+    A session is rescue-enabled only when the API marked it at start
+    (``rescue_commands``, Facebook P0 with the API switch on) AND this
+    Runtime's switch was on at start (sessions.py). After start the marker
+    is the only gate; the live switch is never re-read.
+    """
+    if rescue:
+        return AVAILABLE_CAPABILITIES + tuple(f"command.{c}" for c in RESCUE_COMMANDS)
+    return AVAILABLE_CAPABILITIES
 
 
 def legacy_runtime_phase_hint(status: str) -> Phase | None:
@@ -44,7 +87,11 @@ class ExecutionIdentity(BaseModel):
 
 class Capabilities(BaseModel):
     version: str = VERSION
-    available: tuple[str, ...] = AVAILABLE_CAPABILITIES
+    available: tuple[str, ...] = Field(default_factory=available_capabilities)
+
+    @classmethod
+    def for_session(cls, meta: dict | None) -> "Capabilities":
+        return cls(available=available_capabilities(bool(meta and meta.get("p0_rescue"))))
 
     def supports(self, *required: str) -> bool:
         return self.version == VERSION and set(required).issubset(self.available)
@@ -86,6 +133,16 @@ class Evidence(ExecutionIdentity):
     media_evidence_id: str | None = None
 
 
+class HoldState(BaseModel):
+    """Orthogonal execution flag, never a Phase and never business ``paused``."""
+
+    held: bool = False
+    hold_command_id: str | None = None
+    held_at: datetime | None = None
+    resumed_command_id: str | None = None
+    resumed_at: datetime | None = None
+
+
 class ExecutionState(ExecutionIdentity):
     sequence: int = 0
     phase: Phase = "preparing"
@@ -98,6 +155,7 @@ class ExecutionState(ExecutionIdentity):
     start_command_id: str | None = None
     opening_turn_id: str | None = None
     first_playable_evidence_id: str | None = None
+    hold: HoldState = Field(default_factory=HoldState)
 
 
 class ContractRejection(ValueError):
@@ -160,7 +218,7 @@ def apply_evidence(state: ExecutionState, event: Evidence) -> ExecutionState:
         raise ContractRejection("invalid_lifecycle_state")
     if event.phase == "failed" and event.reason_code != "execution_failed":
         raise ContractRejection("invalid_lifecycle_state")
-    if event.phase == "ended" and event.reason_code not in ("normal_end", "merchant_emergency_end"):
+    if event.phase == "ended" and event.reason_code not in ENDED_REASONS:
         raise ContractRejection("invalid_lifecycle_state")
     if event.phase in ("ended", "failed"):
         changes["terminal_reason"] = event.reason_code
@@ -180,6 +238,8 @@ class CommandOutcome(CommandRequest):
     result_at: datetime
     sequence: int | None = None
     opening_turn_id: str | None = None
+    effect: str | None = None
+    held: bool | None = None
 
 
 def command_rejection(
@@ -196,3 +256,28 @@ def command_rejection(
     if not capabilities.supports(f"command.{request.command}"):
         return "unsupported_capability"
     return None
+
+
+def rescue_rejection(state: ExecutionState, command: str) -> str | None:
+    """C-RESCUE-CMD-001 validity table, after ``command_rejection`` passed."""
+    if state.phase not in _RESCUE_PHASES[command]:
+        return "invalid_lifecycle_state"
+    if command == "hold" and state.hold.held:
+        return "invalid_lifecycle_state"
+    if command == "resume" and not state.hold.held:
+        return "invalid_lifecycle_state"
+    return None
+
+
+def apply_rescue(state: ExecutionState, command: str, command_id: str, at: datetime):
+    """An applied rescue command advances the execution sequence."""
+    hold = state.hold
+    if command == "hold":
+        hold = HoldState(held=True, hold_command_id=command_id, held_at=at)
+    elif command in ("resume", "end", "emergency_end") and hold.held:
+        # End and Emergency End clear Hold; the interval closes on that command.
+        hold = hold.model_copy(
+            update={"held": False, "resumed_command_id": command_id, "resumed_at": at}
+        )
+    phase = {"end": "closing", "emergency_end": "ending"}.get(command, state.phase)
+    return state.model_copy(update={"sequence": state.sequence + 1, "phase": phase, "hold": hold})

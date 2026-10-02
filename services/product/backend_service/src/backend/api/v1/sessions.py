@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
 from backend.application.db.session_store import SessionLockTimeout
+from backend.application.execution_contract import rescue_switch_on
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
 from . import router
@@ -74,6 +75,9 @@ async def sessions_start(
             "first_ai_broadcast": False,
         }
         meta["execution_command_outcomes"] = {}
+        if req.rescue_commands and rescue_switch_on():  # start-time only
+            # Per-session gate; capabilities/commands/legacy guard all read it.
+            meta["p0_rescue"] = True
     await d.store.set(result.session_id, meta)
     if d.livekit_publishers is not None:
         d.livekit_publishers.activate(result.session_id)
@@ -93,7 +97,11 @@ async def sessions_start(
                 "Postgres persistence failed session=%s operation=upsert_session",
                 result.session_id,
             )
-    return result.public_dict()  # frontend-safe only
+    out = result.public_dict()  # frontend-safe only
+    if req.rescue_commands:
+        # R4-R2: report whether the marker was accepted; the API follows this.
+        out["rescue_commands"] = bool(meta.get("p0_rescue"))
+    return out
 
 
 @_router.post("/sessions/{session_id}/say")
@@ -306,6 +314,11 @@ async def sessions_interrupt(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
+    from .execution import use_execution_command
+
+    # P0-FB-016: a P0 session is interrupted only by an audited command.
+    if await use_execution_command(d, session_id):
+        raise HTTPException(status_code=409, detail={"code": "use_execution_command"})
     d.approved_speech.cancel(session_id)
     # Task 8: if there is an active streaming orchestrator for this session,
     # cancel it first (stops emission + drains the bounded queue).
@@ -325,6 +338,16 @@ async def sessions_interrupt(
     return {"ok": True}
 
 
+def _internal_cleanup(request: Request) -> bool:
+    from backend.api.security.authentication import tokens_match
+
+    # Fail closed in every env: an empty admin token never accepts the header
+    # (config refuses to boot with the rescue switch on and no admin token).
+    token = request.app.state.container.config.admin_api_token.strip()
+    presented = request.headers.get("x-livento-internal-cleanup", "")
+    return bool(token and presented and tokens_match(presented, token))
+
+
 @_router.post("/sessions/{session_id}/stop")
 async def sessions_stop(
     session_id: str,
@@ -332,6 +355,13 @@ async def sessions_stop(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
+    from .execution import use_execution_command
+
+    # P0-FB-016: on a marked P0 session legacy stop bypasses End/Emergency
+    # truth; only the API's internal cleanup (admin token in a dedicated
+    # header the viewer plane cannot supply) may use it.
+    if await use_execution_command(d, session_id) and not _internal_cleanup(request):
+        raise HTTPException(status_code=409, detail={"code": "use_execution_command"})
     d.approved_speech.cancel(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
