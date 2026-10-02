@@ -189,7 +189,7 @@ class DirectorCoordinator:
         self._reducer_ready: set[str] = set()
         # Bounded per-session consumed-id marker, used ONLY in reducer mode
         # (the legacy path marks consumption via state.embeddings_cache).
-        self._reducer_consumed: dict[str, set[str]] = {}
+        self._reducer_consumed: dict[str, dict[str, float]] = {}
 
     # ------------------------------------------------------------------
     # Decision-input mode (P0-FB-014)
@@ -873,7 +873,7 @@ class DirectorCoordinator:
         self._advance_timers(session_id, now, state)
         await self._fill_prepared(session_id)
 
-    def _consumed_ids(self, session_id: str) -> set[str]:
+    def _consumed_ids(self, session_id: str):
         """Comment ids already consumed in reducer mode.
 
         In reducer mode nothing is added to ``state.embeddings_cache``, so that
@@ -881,20 +881,25 @@ class DirectorCoordinator:
         does: a comment is consumed exactly once (I-4), and a re-read from the
         window on a later tick is not consumed again.
         """
-        return self._reducer_consumed.get(session_id, frozenset())
+        return self._reducer_consumed.get(session_id, {})
 
     def _remember_consumed(self, session_id: str, comments) -> None:
-        if not comments:
-            return
-        seen = self._reducer_consumed.setdefault(session_id, set())
-        seen.update(comment.id for comment in comments)
+        seen = self._reducer_consumed.setdefault(session_id, {})
+        for comment in comments:
+            seen[comment.id] = comment.ts
+        # A comment older than the drain window can never be re-read, so its
+        # marker is dead weight: prune on the same horizon the queue uses.
+        cutoff = time.time() - self._cfg.window_sec
+        for stale in [cid for cid, ts in seen.items() if ts < cutoff]:
+            del seen[stale]
 
     def _decide_from_reducer(self, projection: Director, session_id: str, store, now: float):
-        """Decide from the bounded reducer, refusing when it has nothing.
+        """Decide from the bounded reducer.
 
-        ``store is None`` (or an empty projection) means the reducer is not
-        actually active for this session, so the decision is ``idle`` — never a
-        fall back to the legacy raw-comment feed for a P0 session.
+        An empty projection still goes through ``decide_from_reducer`` so the
+        protected opening, introduction, proactive selling, pivot and
+        checkpoint logic run exactly as in legacy. Without a ready store the caller
+        decides on an empty rolling window, which agrees with this path.
         """
         from .reducer_input import build_selections
 
@@ -910,8 +915,6 @@ class DirectorCoordinator:
                 else lambda cid: self._reducer.provenance_for(session_id, cid)
             ),
         )
-        if not selections:
-            return Decision(action="idle", reason="reducer mode: no active demand", score=0.0)
         high_value_ids = projection.high_value_cluster_ids(selections)
         return projection.decide_from_reducer(
             selections, now, high_value_ids=high_value_ids.__contains__
@@ -956,6 +959,9 @@ class DirectorCoordinator:
                 if store is not None:
                     decision = self._decide_from_reducer(projection, session_id, store, now)
                 else:
+                    # Reducer mode not ready (or legacy): rolling_comments is
+                    # empty in reducer mode, so this is the same empty-demand
+                    # _decide the reducer branch runs - never a raw-comment feed.
                     decision = projection.decide(projection.state.rolling_comments, now=now)
                 self._stats[session_id].director_cycles += 1
                 if decision.action in ("idle", "skip"):
@@ -1481,7 +1487,7 @@ class DirectorCoordinator:
                 state.mark_product_covered(product_id, covered)
             except Exception:
                 logger.debug("coverage update failed", exc_info=True)
-        self._mark_reducer_lifecycle(session_id, decision, ds.now())
+        self._mark_reducer_lifecycle(session_id, decision, time.time())
         # Advance cursor only for proactive (non-reactive) actions.
         if decision.action in (
             "speak_hook",

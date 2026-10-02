@@ -974,3 +974,60 @@ async def test_r16_unsafe_comment_is_rejected_at_intake_before_any_decision() ->
     )
     assert result["rejected"] == 1
     assert reducer.pending_count("s1") == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Review fix — an empty reducer projection still reaches Director._decide
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _ready_coordinator(reducer: FastReducer):
+    coord, runtime, _ = _coordinator("s1", reducer=reducer)
+    coord.start("s1", _products(), activated=True)
+    coord.set_reducer_mode("s1", True)
+    coord.mark_reducer_ready("s1")
+    return coord, runtime.get_session("s1")
+
+
+async def test_empty_store_still_speaks_the_protected_opening_via_the_coordinator() -> None:
+    import copy
+
+    reducer = _reducer()
+    coord, ds = _ready_coordinator(reducer)
+    now = ds.now()
+    store = reducer.session_store("s1")
+    legacy = copy.deepcopy(ds.director).decide([], now)
+    decision = coord._decide_from_reducer(ds.director, "s1", store, now)
+    assert decision.action == legacy.action == "speak_hook"
+    assert decision.stage == legacy.stage
+    coord.stop("s1")
+
+
+async def test_demand_lull_after_expiry_matches_legacy_decide() -> None:
+    import copy
+
+    reducer = _reducer()
+    coord, ds = _ready_coordinator(reducer)
+    wall = time.time()
+    await _seed(reducer, "s1", [_comment("old", "giá bao nhiêu", wall - 400, "v1")], now=wall)
+    store = reducer.session_store("s1")
+    now = ds.now()
+    legacy = copy.deepcopy(ds.director).decide([], now)
+    decision = coord._decide_from_reducer(ds.director, "s1", store, now)
+    assert decision.action == legacy.action
+    assert decision.action != "idle"
+    coord.stop("s1")
+
+
+async def test_reducer_consumed_markers_are_pruned_past_the_drain_window() -> None:
+
+    coord, _runtime, _ = _coordinator("s1", reducer=_reducer())
+
+    class _C:
+        def __init__(self, cid: str, ts: float) -> None:
+            self.id, self.ts = cid, ts
+
+    now = time.time()
+    coord._remember_consumed("s1", [_C(f"old{i}", now - 10_000) for i in range(50)])
+    coord._remember_consumed("s1", [_C("fresh", now)])
+    assert set(coord._consumed_ids("s1")) == {"fresh"}

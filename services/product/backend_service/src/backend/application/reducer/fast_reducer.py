@@ -218,10 +218,9 @@ class FastReducer:
             # Provenance travels beside the store (P0-FB-014): a retried
             # comment_id keeps the ORIGINAL event_id and occurred_at, so age is
             # never reset by a redelivery.
-            state.provenance[comment.comment_id] = (
-                comment.event_id,
-                dict(comment.provenance or {}),
-                comment.ts,
+            state.provenance.setdefault(
+                comment.comment_id,
+                (comment.event_id, dict(comment.provenance or {}), comment.ts),
             )
         state.wake_notifications += 1
         state.wake_event.set()
