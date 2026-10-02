@@ -124,10 +124,45 @@ async def sessions_say(
     )
 
 
+async def _reject_p0_direct_say(d: Any, req: router.SayReq) -> None:
+    """P0-FB-015 D2: direct say is disabled for P0 sessions.
+
+    The selector is server-owned session meta, never request data. Runs before
+    the safety screen, the LLM and the approved-speech boundary.
+    """
+    meta = await d.store.get(req.session_id)
+    if not (meta and meta.get("execution_contract")):
+        return
+    # Structured audit line: no text, no secrets.
+    logger.warning(
+        "audit_event=direct_input_rejected reason=direct_input_disabled "
+        "route=direct_say session=%s generate=%s",
+        req.session_id,
+        bool(req.generate),
+    )
+    pg = d.pg_store
+    if pg is not None and getattr(pg, "enabled", False):
+        try:
+            await pg.insert_audit_event(
+                "direct_input.rejected",
+                session_id=req.session_id,
+                actor="operator",
+                resource="direct_say",
+                detail={"reason": "direct_input_disabled", "generate": bool(req.generate)},
+            )
+        except Exception:
+            logger.warning(
+                "Postgres persistence failed session=%s operation=insert_audit_event",
+                req.session_id,
+            )
+    raise HTTPException(status_code=409, detail={"code": "direct_input_disabled"})
+
+
 async def _say(request: Request, req: router.SayReq) -> dict[str, Any]:
     d = _container(request)
     from backend.application.render.engines_base import FullPipelineBackend, StreamingAvatarBackend
 
+    await _reject_p0_direct_say(d, req)
     boundary = d.approved_speech
     if req.generate:
         # Active direct generation is another input to the LLM. Reuse the

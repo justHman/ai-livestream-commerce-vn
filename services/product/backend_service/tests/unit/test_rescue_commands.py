@@ -26,6 +26,7 @@ from approved_speech_helpers import TEXT
 from . import test_approved_speech_active as speech_tests
 
 case_factory = speech_tests.case_factory
+direct_say_guard_off = speech_tests.direct_say_guard_off
 pytestmark = pytest.mark.timeout(30)
 RESCUE = ["hold", "resume", "interrupt", "end", "emergency_end"]
 
@@ -141,7 +142,9 @@ async def test_rescue_capabilities_are_disabled_until_compatible(case_factory):
 
 
 @pytest.mark.asyncio
-async def test_hold_at_safe_boundary_lets_current_utterance_finish(case_factory, rescue):
+async def test_hold_at_safe_boundary_lets_current_utterance_finish(
+    case_factory, direct_say_guard_off, rescue
+):
     case = await live(case_factory)
     coordinator = case.d.coordinator
     assert Capabilities.for_session({"p0_rescue": True}).supports(*(f"command.{c}" for c in RESCUE))
