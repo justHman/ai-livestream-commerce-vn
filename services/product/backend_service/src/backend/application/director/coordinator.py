@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from backend.application.entity.models import EntityDocument
 
 from .comment_buffer import ChatQueue, IncomingComment
+from .errors import CoordinatorUnavailable
 from .clustering import Comment, cluster_comments
 from .decision import Decision, Director
 from .embeddings import embedder_status
@@ -482,7 +483,7 @@ class DirectorCoordinator:
         """
         queue = self._queues.get(session_id)
         if queue is None:
-            raise KeyError(f"No active coordinator session: {session_id}")
+            raise CoordinatorUnavailable(f"No active coordinator session: {session_id}")
         self._delivery_seq[session_id] = self._delivery_seq.get(session_id, 0) + 1
         comment = queue.put(text, author, ts=ts)
         # Approved P0 sessions require the authorized execution start command.
@@ -747,7 +748,7 @@ class DirectorCoordinator:
         queue = self._queues.get(session_id)
         if queue is None:
             return 0
-        return max(0, queue.max_size - len(queue))
+        return queue.free_slots()
 
     def next_delivery_tick(self, session_id: str | None = None) -> int:
         """Monotonic count of comments routed through the session's queue.
@@ -856,6 +857,7 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
+        queue.mark_consumed(c.id for c in new_only)
         # This is the consumption boundary: the comments left ChatQueue and
         # are now Director state, so a teardown must not reconcile them as
         # non_deliverable (P0-FB-013). Only ``new_only`` counts — a comment

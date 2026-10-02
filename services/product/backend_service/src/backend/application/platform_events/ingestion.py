@@ -54,6 +54,7 @@ from typing import Any, Callable, Optional
 
 from backend.application.db import SessionStore
 from backend.application.db.session_store import SessionLockTimeout, StaleOwnerWriteError
+from backend.application.director.errors import CoordinatorUnavailable
 from backend.application.safety_gate import SafetyGate
 from backend.application.safety_gate.intake import IntakeSafety
 
@@ -158,6 +159,45 @@ def _default_unique_viewer_key(event: PlatformEvent) -> Optional[str]:
     return f"{event.platform}:{event.source_stream_id}:{event.viewer.viewer_id}"
 
 
+def _source_key_for(event: PlatformEvent) -> Optional[str]:
+    """Provenance-derived dedup key for a P0 comment, or None.
+
+    Two deliveries of the same platform comment hash to the same key even when
+    they carry different ``event_id`` values, which is what makes the durable
+    retry a duplicate instead of a second action. It is the stable identity a
+    retry must reuse, so the failure path reports it too.
+    """
+    if event.contract_version != P0_COMMENT_CONTRACT or not event.source_message_id:
+        return None
+    return hashlib.sha256(
+        json.dumps(
+            [
+                event.tenant_id,
+                event.business_session_id,
+                event.platform,
+                event.connected_account_id,
+                event.external_session_id,
+                event.source_message_id,
+            ]
+        ).encode()
+    ).hexdigest()
+
+
+_RETRYABLE_EVENT_ERRORS = (CoordinatorUnavailable,)
+
+
+def _event_failure_reason(exc: Exception) -> str:
+    """Sanitized reason for a per-event ingest failure.
+
+    The exception text is never propagated: it can carry platform payloads and
+    it lands in a response the caller logs. A missing coordinator is called out
+    by name because that is the expected cause and it is retryable.
+    """
+    if isinstance(exc, CoordinatorUnavailable):
+        return "coordinator_torn_down_before_acceptance"
+    return "event_ingest_failed"
+
+
 class PlatformEventIngestionService:
     """Session-scoped canonical event ingestion (one instance per app)."""
 
@@ -211,8 +251,10 @@ class PlatformEventIngestionService:
             try:
                 if self._coordinator.has(session_id):
                     return True
-            except Exception:
-                logger.debug("coordinator.has failed session=%s", session_id, exc_info=True)
+            except Exception as exc:
+                logger.debug(
+                    "coordinator.has failed session=%s error=%s", session_id, type(exc).__name__
+                )
         return False
 
     async def _load_meta(self, session_id: str) -> dict:
@@ -220,8 +262,10 @@ class PlatformEventIngestionService:
             return {}
         try:
             return dict(await self._store.get(session_id) or {})
-        except Exception:
-            logger.warning("session meta read failed session=%s", session_id, exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "session meta read failed session=%s error=%s", session_id, type(exc).__name__
+            )
             raise
 
     async def _save_meta(
@@ -237,10 +281,12 @@ class PlatformEventIngestionService:
             return
         try:
             await self._store.set(session_id, meta)
-        except Exception:
+        except Exception as exc:
             if strict:
                 raise
-            logger.warning("session meta write failed session=%s", session_id, exc_info=True)
+            logger.warning(
+                "session meta write failed session=%s error=%s", session_id, type(exc).__name__
+            )
 
     async def _screen(self, session_id, meta, text, *, fence=None, defer_replay=False, **context):
         previous_recent = (meta.get("runtime_safety") or {}).get("recent", [])
@@ -362,9 +408,11 @@ class PlatformEventIngestionService:
             return True
         try:
             return int(capacity_fn(session_id)) > 0
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "coordinator.queue_capacity failed session=%s", session_id, exc_info=True
+                "coordinator.queue_capacity failed session=%s error=%s",
+                session_id,
+                type(exc).__name__,
             )
             return True
 
@@ -472,7 +520,10 @@ class PlatformEventIngestionService:
         if len(entries) > self._dedup_max_ids:
             entries = entries[-self._dedup_max_ids :]
         meta[_DEDUP_KEY] = entries
-        await self._save_meta(session_id, meta, fence=fence)
+        # Strict: the dedup record is what makes a redelivery safe. A swallowed
+        # write failure would report success for an event whose identity was
+        # never persisted (P0-FB-013 route-before-dedup-persistence).
+        await self._save_meta(session_id, meta, fence=fence, strict=True)
 
     # ------------------------------------------------------------------
     # Per-event processing
@@ -554,20 +605,7 @@ class PlatformEventIngestionService:
         if binding_reason is not None:
             await self._persist_rejected(session_id, event, binding_reason)
             return {**result, "status": EventStatus.REJECTED.value, "reason": binding_reason}
-        source_key = None
-        if event.contract_version == P0_COMMENT_CONTRACT and event.source_message_id:
-            source_key = hashlib.sha256(
-                json.dumps(
-                    [
-                        event.tenant_id,
-                        event.business_session_id,
-                        event.platform,
-                        event.connected_account_id,
-                        event.external_session_id,
-                        event.source_message_id,
-                    ]
-                ).encode()
-            ).hexdigest()
+        source_key = _source_key_for(event)
         seen = self._seen_event_ids(meta, now)
         source_seen = source_key is not None and any(
             entry.get("source_key") == source_key
@@ -676,8 +714,12 @@ class PlatformEventIngestionService:
             return 0
         try:
             return int(seq_fn(session_id))
-        except Exception:
-            logger.warning("coordinator.next_delivery_tick failed", exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "coordinator.next_delivery_tick failed session=%s error=%s",
+                session_id,
+                type(exc).__name__,
+            )
             return 0
 
     def _track_routed(
@@ -686,6 +728,13 @@ class PlatformEventIngestionService:
         """Record a routed comment as still in flight until it is consumed."""
         entries = self._in_flight.setdefault(session_id, {})
         if event.event_id in entries:
+            return
+        prior = self._outcomes(session_id).get(event.event_id)
+        if prior is not None and prior.delivery.outcome is EventStatus.CONSUMED:
+            # A consumed delivery is final for this identity. A redelivered
+            # copy (e.g. after a failed dedup write) may be queued again, but it
+            # must not open a new in-flight entry that a later teardown would
+            # reconcile into non_deliverable, downgrading a completed delivery.
             return
         entries[event.event_id] = _InFlightDelivery(
             event=event, delivery=delivery, event_type=event.type, attach_seq=seq
@@ -878,12 +927,49 @@ class PlatformEventIngestionService:
             raise KeyError(session_id)
         meta = await self._load_meta(session_id)
         now = self._now()
-        results = [
-            await self._process_event(
-                session_id, event, meta, now, fence=fence, truthful_outcomes=truthful_outcomes
-            )
-            for event in events
-        ]
+        # One event's failure must not take the rest of the batch with it: the
+        # caller already holds truthful per-event outcomes for the events
+        # processed so far, and discarding them turns a partial success into a
+        # whole-batch loss. A retryable outcome keeps the identity and is
+        # reported per event; anything else is a real fault and still fails the
+        # batch rather than being reported as if it had been handled.
+        results = []
+        for event in events:
+            try:
+                results.append(
+                    await self._process_event(
+                        session_id,
+                        event,
+                        meta,
+                        now,
+                        fence=fence,
+                        truthful_outcomes=truthful_outcomes,
+                    )
+                )
+            except _RETRYABLE_EVENT_ERRORS as exc:
+                # Allow-list: only a coordinator teardown (CoordinatorUnavailable) is an
+                # expected per-event failure. Lost lock ownership
+                # (StaleOwnerWriteError), cancellation and programming errors
+                # must escape, or uncommitted dedup state would be reported as
+                # a fabricated ``duplicate`` on the next event.
+                if not truthful_outcomes:
+                    raise
+                # Type name + identities only: exception text and tracebacks
+                # can carry payloads or credentials.
+                logger.warning(
+                    "platform_event.ingest_event_failed session=%s event=%s error=%s",
+                    session_id,
+                    event.event_id,
+                    type(exc).__name__,
+                )
+                results.append(
+                    {
+                        "event_id": event.event_id,
+                        "status": EventStatus.NOT_READY.value,
+                        "reason": _event_failure_reason(exc),
+                        "action_identity": _source_key_for(event) or event.event_id,
+                    }
+                )
         # The legacy three keys are always present: existing readers index
         # them directly and expect 0, never a missing key.
         counts = {"accepted": 0, "duplicate": 0, "rejected": 0}
