@@ -54,6 +54,8 @@ class _Writer:
 
     async def write(self, data: bytes) -> None:
         await self.room.gate("write")
+        if self.s.closed_reason != "open":  # like the real SDK: a closed stream rejects writes
+            raise RuntimeError("write on a closed stream")
         if not self.s.chunks:
             self.room.log("first_write", self.s.attributes["livento.utterance_id"])
             self.room.avatar_started()
@@ -109,6 +111,8 @@ class FakeRoom:
         self.audio_track_published = False
         self.captured: list[tuple[float, bytes]] = []
         self.auto = True
+        self.emits_events = True
+        self.handlers: dict[str, list] = {}
         self.blocked: set[str] = set()
         self.resistant: set[str] = set()
         self.fail: dict[str, BaseException] = {}  # raise this at the named gate, once
@@ -138,7 +142,11 @@ class FakeRoom:
                     pass  # a hung operation that ignores cancellation
             else:
                 await asyncio.sleep(0.005)
-        exc = self.fail.pop(name, None)
+        exc = self.fail.get(name)
+        if isinstance(exc, list):  # several consecutive failures
+            exc = exc.pop(0) if exc else None
+        elif exc is not None:
+            del self.fail[name]
         if exc is not None:
             raise exc
 
@@ -150,6 +158,14 @@ class FakeRoom:
 
     def add_avatar_audio(self) -> None:
         self.remote_participants[AVATAR].track_publications["a"] = SimpleNamespace(kind=KIND_AUDIO)
+        if self.emits_events:  # rtc.Room emits track_published on its own thread/loop
+            for handler in self.handlers.get("track_published", []):
+                self.loop.call_soon_threadsafe(
+                    handler, SimpleNamespace(kind=KIND_AUDIO), self.remote_participants[AVATAR]
+                )
+
+    def on(self, event, handler):
+        self.handlers.setdefault(event, []).append(handler)
 
     def log(self, kind, detail=None):
         self.events.append(Event(kind, time.monotonic(), detail))
@@ -158,6 +174,7 @@ class FakeRoom:
         return [e.at for e in self.events if e.kind == kind]
 
     async def connect(self, url, token):
+        self.loop = asyncio.get_running_loop()
         self.connected_token = jwt.decode(token, options={"verify_signature": False})
         self.log("connect")
 

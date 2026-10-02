@@ -24,6 +24,8 @@ from backend.application.clients.avatar.lemonslice import (
     _FallbackAudioTrack,
 )
 from backend.application.publishing.datastream import (
+    DEFAULT_CLEAR_BUDGET_S,
+    AvatarChannelBroken,
     AvatarIOError,
     AvatarProtocolError,
     AvatarStreamError,
@@ -193,7 +195,7 @@ def test_new_send_waits_for_the_whole_clear_rpc_and_opens_exactly_one_stream(be)
     assert channel(backend, sid).open_utterance == "u2"
 
 
-def test_hung_write_that_ignores_cancellation_cannot_block_interrupt_or_corrupt_next_stream():
+def test_hung_write_that_ignores_cancellation_fails_the_channel_closed_and_nothing_lands_later():
     backend, room, _ = make(io_timeout_s=0.2)
     sid = backend.start(StartOptions()).session_id
     try:
@@ -205,13 +207,86 @@ def test_hung_write_that_ignores_cancellation_cannot_block_interrupt_or_corrupt_
         assert "error" not in ib
         join(t_send)
         assert isinstance(box["error"], AvatarIOError)
-        room.blocked.discard("write")
-        backend.stream_audio(sid, win("u2", 0))
-        assert [s.attributes["livento.utterance_id"] for s in room.streams] == ["u1", "u2"]
-        assert room.streams[1].closed_reason == "open" and len(room.streams[1].chunks) == 1
+        assert channel(backend, sid).broken and backend.session_status(sid) == "channel_broken"
+        room.blocked.discard("write")  # the hung write is released AFTER the interrupt returned
+        with pytest.raises(AvatarChannelBroken):
+            backend.stream_audio(sid, win("u2", 0))
+        assert until(lambda: not channel(backend, sid)._detached)
+        assert len(room.streams) == 1 and room.streams[0].chunks == []  # nothing reached the avatar
+        assert room.streams[0].closed_reason == "interrupted"
     finally:
         room.release("write")
         backend.stop_all()
+
+
+def test_open_that_returns_after_its_deadline_gets_its_writer_closed():
+    backend, room, _ = make(io_timeout_s=0.2)
+    sid = backend.start(StartOptions()).session_id
+    try:
+        room.hold("open", resistant=True)
+        with pytest.raises(AvatarIOError):
+            backend.stream_audio(sid, win("u1", 0))
+        assert room.wait_hit("open") and channel(backend, sid).broken
+        room.blocked.discard("open")  # the delayed open finally yields a writer nobody owns
+        assert until(lambda: room.streams and room.streams[0].closed_reason == "interrupted")
+        assert room.streams[0].chunks == []
+    finally:
+        room.release("open")
+        backend.stop_all()
+
+
+def test_overlapping_clears_with_a_stuck_send_fail_closed_within_the_budget():
+    backend, room, _ = make(io_timeout_s=5.0, clear_budget_s=0.4)
+    sid = backend.start(StartOptions()).session_id
+    try:
+        room.hold("write", resistant=True)
+        t_send, box = bg(backend.stream_audio, sid, win("u1", 0, ms=400))
+        assert room.wait_hit("write")
+        t0 = time.monotonic()
+        t1, b1 = bg(backend.interrupt, sid)
+        t2, b2 = bg(backend.interrupt, sid)
+        join(t1, t2)
+        assert time.monotonic() - t0 < 2.0  # budget 0.4 s, never the old ~28 s worst case
+        assert not any("error" in b for b in (b1, b2))
+        ch = channel(backend, sid)
+        assert ch.broken and not ch._acks  # per-clear tokens are all released
+        with pytest.raises(AvatarChannelBroken):  # no audio may follow a clear that lost the lock
+            backend.stream_audio(sid, win("u2", 0))
+        assert len(room.streams) == 1 and room.streams[0].chunks == []
+        room.blocked.discard("write")
+        join(t_send)
+    finally:
+        room.release("write")
+        backend.stop_all()
+
+
+def test_default_clear_budget_is_cut_to_five_seconds_worst_case():
+    from backend.application.clients.avatar.lemonslice import LemonSliceSettings
+
+    assert DEFAULT_CLEAR_BUDGET_S <= 5.0
+    assert settings().clear_budget_s == DEFAULT_CLEAR_BUDGET_S
+    assert LemonSliceSettings.__dataclass_fields__["io_timeout_s"].default <= 2.0
+
+
+def test_close_failure_keeps_the_stream_so_abort_can_close_it(be):
+    backend, room, _, sid = be
+    room.fail["close"] = RuntimeError("close blew up")
+    with pytest.raises(AvatarStreamError):
+        backend.stream_audio(sid, win("u1", 0, final=True))
+    assert room.streams[0].closed_reason == "interrupted"  # the abort closed the SAME writer
+    assert channel(backend, sid).broken is None
+    backend.stream_audio(sid, win("u2", 0))
+    assert room.streams[-1].attributes["livento.utterance_id"] == "u2"
+
+
+def test_close_and_abort_both_failing_breaks_the_channel(be):
+    backend, room, _, sid = be
+    room.fail["close"] = [RuntimeError("one"), RuntimeError("two")]
+    with pytest.raises(AvatarStreamError):
+        backend.stream_audio(sid, win("u1", 0, final=True))
+    assert channel(backend, sid).broken
+    with pytest.raises(AvatarChannelBroken):
+        backend.stream_audio(sid, win("u2", 0))
 
 
 # ---- P1-2: playback events are matched to the utterance they belong to -------------------
@@ -300,15 +375,27 @@ def test_started_before_the_stream_is_opened_stamps_nothing(manual):
     assert backend.playback_info(sid, "u1")["playback_started_at"] is None
 
 
-def test_late_idless_started_of_an_interrupted_utterance_does_not_stamp_the_next(manual):
+def test_idless_events_never_confirm_a_newer_utterance_while_an_older_one_is_unresolved(manual):
     backend, room, sid = manual
     backend.stream_audio(sid, win("u1", 0))  # written, avatar never reported started
     backend.interrupt(sid)
     backend.stream_audio(sid, win("u2", 0))
-    started(room, backend)  # u1's delayed event, no id on the wire
-    assert backend.playback_info(sid, "u2")["playback_started_at"] is None  # absorbed, not credited
-    started(room, backend)  # one event per interrupted utterance; this one is u2's own
+    started(room, backend)  # u1's delayed event, no id on the wire: absorbed by u1
+    started(room, backend)  # u1 is still unresolved (no finish seen): never credited to u2
+    assert backend.playback_info(sid, "u2")["playback_started_at"] is None
+    started(room, backend, utterance_id="u2")  # an explicit id is always trusted
     assert backend.playback_info(sid, "u2")["playback_started_at"] is not None
+
+
+def test_unresolved_records_are_evicted_by_count_not_by_time():
+    backend, room, sid = manual_backend(history=2)
+    try:
+        for i in range(3):
+            backend.stream_audio(sid, win(f"u{i}", 0))  # each abandoned by the next, no finish
+        ids = [r.id for r in channel(backend, sid)._plays]
+        assert ids == ["u1", "u2"]  # u0 left because of the cap only
+    finally:
+        backend.stop_all()
 
 
 def test_late_idless_finish_of_an_interrupted_utterance_is_not_credited_to_the_next(manual):
@@ -334,7 +421,7 @@ def test_unknown_explicit_id_never_confirms_a_clear_buffer(caplog):
     try:
         with caplog.at_level(logging.WARNING):
             fut = asyncio.run_coroutine_threadsafe(ch.clear_buffer(timeout_s=0.4), loop)
-            assert until(lambda: ch._clearing is not None)
+            assert until(lambda: bool(ch._acks))
             finished(room, backend, interrupted=True, utterance_id="somebody-else")
             fut.result(5)
         assert "clear_buffer not confirmed" in caplog.text
@@ -458,6 +545,33 @@ def test_queued_fallback_pcm_is_vetoed_when_avatar_audio_appears_and_track_is_un
         backend.stop_all()
 
 
+def test_avatar_audio_published_while_idle_unpublishes_the_fallback_via_the_room_event():
+    backend, room, _ = fallback_backend()
+    sid = backend.start(StartOptions()).session_id
+    try:
+        sess = backend._sessions[sid]
+        assert not room.unpublished  # nothing is queued and no send is running
+        room.add_avatar_audio()
+        assert until(lambda: room.unpublished and sess.refused)
+        with pytest.raises(AvatarAudioFallbackRefused):
+            backend.stream_audio(sid, win("u1", 0))
+    finally:
+        backend.stop_all()
+
+
+def test_avatar_audio_published_while_idle_is_caught_by_the_periodic_backstop():
+    backend, room, _ = make(
+        mode="video_only", fallback_publish=True, audio_probe_s=0.05, audio_recheck_s=0.05
+    )
+    room.emits_events = False  # a room that never tells us
+    sid = backend.start(StartOptions()).session_id
+    try:
+        room.add_avatar_audio()
+        assert until(lambda: room.unpublished and backend._sessions[sid].refused)
+    finally:
+        backend.stop_all()
+
+
 def test_fallback_buffer_is_bounded():
     async def go():
         track = _FallbackAudioTrack(lambda pcm: None, 10_000, max_queue=3)
@@ -501,6 +615,22 @@ def test_stop_all_during_a_pending_start_terminates_the_late_session_before_clos
     assert "error" in box and backend._sessions == {}
 
 
+def test_stop_all_waits_for_a_stop_parked_in_a_clear_instead_of_cancelling_its_cleanup():
+    backend, room, rest = make(terminate_path="/sessions/{session_id}/terminate")
+    sid = backend.start(StartOptions()).session_id
+    room.hold("rpc")
+    t_stop, sbox = bg(backend.stop, sid)  # popped from the registry, parked in the clear RPC
+    assert room.wait_hit("rpc")
+    assert sid not in backend._sessions and sid in backend._closing  # still owned
+    threading.Timer(0.3, lambda: room.release("rpc")).start()
+    backend.stop_all()
+    join(t_stop)
+    assert "error" not in sbox
+    assert room.disconnected
+    assert sum("/terminate" in c[0] for c in rest.calls) == 1
+    assert backend._closing == {}
+
+
 def test_stop_all_stops_the_loop_thread_and_the_backend_can_restart():
     backend, room, _ = make()
     backend.start(StartOptions())
@@ -511,7 +641,7 @@ def test_stop_all_stops_the_loop_thread_and_the_backend_can_restart():
     backend.stop_all()
 
 
-def test_stream_write_has_an_application_deadline_and_the_channel_recovers():
+def test_stream_write_has_an_application_deadline_and_the_channel_fails_closed():
     backend, room, _ = make(io_timeout_s=0.2)
     sid = backend.start(StartOptions()).session_id
     room.hold("write")
@@ -520,8 +650,8 @@ def test_stream_write_has_an_application_deadline_and_the_channel_recovers():
         backend.stream_audio(sid, win("u1", 0))
     assert time.monotonic() - t0 < 2
     room.release("write")
-    backend.stream_audio(sid, win("u2", 0))
-    assert room.streams[-1].attributes["livento.utterance_id"] == "u2"
+    with pytest.raises(AvatarChannelBroken):
+        backend.stream_audio(sid, win("u2", 0))
     backend.stop_all()
 
 
