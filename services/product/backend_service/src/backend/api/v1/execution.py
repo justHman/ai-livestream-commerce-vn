@@ -1,13 +1,15 @@
 """Execution contract endpoints for the current runtime session.
 
 These endpoints record evidence and truthful command outcomes. Start activates
-one approved opening. Rescue commands and business transitions remain separate.
+one approved opening. Rescue commands (P0-FB-016, C-RESCUE-CMD-001) apply
+synchronously under the session lock; business transitions remain the API's.
 """
 
 from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator, Any
@@ -18,6 +20,7 @@ from backend.api.dependencies import container_from_request
 from backend.api.health import health_ready
 from backend.application.db.session_store import SessionLockTimeout
 from backend.application.execution_contract import (
+    RESCUE_EFFECTS,
     Capabilities,
     CommandOutcome,
     CommandRequest,
@@ -26,7 +29,9 @@ from backend.application.execution_contract import (
     ExecutionIdentity,
     ExecutionState,
     apply_evidence,
+    apply_rescue,
     command_rejection,
+    rescue_rejection,
     start_command_id,
 )
 from backend.application.script_authoring.approved_speech import SpeechRejected
@@ -34,7 +39,9 @@ from backend.application.script_authoring.approved_speech import SpeechRejected
 from .router import router, viewer_auth
 from .auth import admin_auth
 
+logger = logging.getLogger(__name__)
 _locks: dict[str, asyncio.Lock] = {}
+_closing_tasks: dict[str, asyncio.Task] = {}
 
 
 @asynccontextmanager
@@ -88,7 +95,12 @@ async def get_execution(
     session_id: str, request: Request, _: None = Depends(viewer_auth)
 ) -> dict[str, Any]:
     d = container_from_request(request)
-    _, state = await _load(d.store, session_id)
+    meta, state = await _load(d.store, session_id)
+    if state.phase == "closing" and session_id not in _closing_tasks:
+        # Recovery: the in-process closing task was lost (restart). Closing has
+        # no spoken content at P0, so completing it here is the same transition.
+        await _finish_closing(d, session_id)
+        meta, state = await _load(d.store, session_id)
     opening = d.coordinator.opening_media(session_id) if d.coordinator else None
     if opening is not None:
         # Backend-observed avatar playback (cloud_lemonslice only); null elsewhere.
@@ -100,7 +112,7 @@ async def get_execution(
         }
     return {
         "state": state.model_dump(mode="json"),
-        "capabilities": Capabilities().model_dump(),
+        "capabilities": Capabilities.for_session(meta).model_dump(),
         "opening_media": opening,
     }
 
@@ -159,19 +171,158 @@ async def request_execution_command(
             ):
                 raise HTTPException(status_code=409, detail={"code": "duplicate_command_conflict"})
             return {"outcome": original.model_dump(mode="json"), "replayed": True}
-        reason = command_rejection(state, command, Capabilities())
-        # Rescue commands remain unavailable; never report an applied effect.
-        outcome = CommandOutcome(
-            **command.model_dump(),
-            status="rejected",
-            reason_code=reason or "unsupported_capability",
-            result_at=datetime.now(timezone.utc),
-        )
+        reason = command_rejection(state, command, Capabilities.for_session(meta))
+        if reason is None:
+            reason = rescue_rejection(state, command.command)
+        if reason is None and command.command in ("hold", "resume"):
+            if not d.coordinator or not d.coordinator.has(session_id):
+                reason = "runtime_not_ready"
+        now = datetime.now(timezone.utc)
+        if reason is not None:
+            outcome = CommandOutcome(
+                **command.model_dump(), status="rejected", reason_code=reason, result_at=now
+            )
+        else:
+            state = apply_rescue(state, command.command, command.command_id, now)
+            outcome = CommandOutcome(
+                **command.model_dump(),
+                status="applied",
+                reason_code="applied_command",
+                result_at=now,
+                sequence=state.sequence,
+                effect=RESCUE_EFFECTS[command.command],
+                held=state.hold.held,
+            )
+            meta["execution_contract"] = state.model_dump(mode="json")
         meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(
             mode="json"
         )
-        await _save(d.store, session_id, meta, fence)
+        # Persist before the effect: a lost fence answers 503 with no effect.
+        # Hold sets its start fence first so no turn can begin between the
+        # persisted `held` and the block; a failed save restores it.
+        hold_fenced = outcome.status == "applied" and command.command == "hold"
+        if hold_fenced:
+            prior_block = d.approved_speech.blocked(session_id)
+            d.approved_speech.block(session_id, "held")
+        try:
+            await _save(d.store, session_id, meta, fence)
+        except BaseException:
+            if hold_fenced:
+                d.approved_speech.block(session_id, prior_block)
+            raise
+        if outcome.status == "applied":
+            await _apply_rescue_effect(d, session_id, command.command)
+    if outcome.status == "applied":
+        if d.hub is not None:
+            await d.hub.emit(
+                session_id,
+                {"type": "execution.command_result", "outcome": outcome.model_dump(mode="json")},
+            )
+        if command.command == "end":
+            _start_closing(d, session_id)
     return {"outcome": outcome.model_dump(mode="json"), "replayed": False}
+
+
+def _start_closing(d: Any, session_id: str) -> None:
+    task = asyncio.create_task(_finish_closing(d, session_id))
+    _closing_tasks[session_id] = task
+    task.add_done_callback(
+        lambda t: (
+            _closing_tasks.pop(session_id, None) if _closing_tasks.get(session_id) is t else None
+        )
+    )
+
+
+async def use_execution_command(d: Any, session_id: str) -> bool:
+    """Legacy interrupt is refused only on a rescue-enabled (Facebook P0) session.
+
+    TikTok/legacy sessions and sessions without the API marker keep the
+    unchanged legacy control even when the Runtime switch is on.
+    """
+    meta = await d.store.get(session_id)
+    return bool(
+        meta
+        and meta.get("execution_contract")
+        and Capabilities.for_session(meta).supports("command.interrupt")
+    )
+
+
+async def hard_cancel(d: Any, session_id: str) -> None:
+    """Hard-cancel playback and fence all older output (Interrupt/End/Emergency).
+
+    The approved-speech epoch and coordinator generation are bumped before any
+    provider call, so a late TTS/provider completion is refused at dispatch.
+    ``backend.interrupt`` also clears provider-managed avatar buffers.
+    """
+    d.approved_speech.cancel(session_id)
+    if d.coordinator is not None and d.coordinator.has(session_id):
+        await d.coordinator.interrupt(session_id)
+        return
+    entry = d.orchestrators.get(session_id)
+    if entry is not None:
+        await entry["orchestrator"].cancel(session_id)
+    await asyncio.to_thread(d.backend.interrupt, session_id)
+
+
+async def _apply_rescue_effect(d: Any, session_id: str, command: str) -> None:
+    speech = d.approved_speech
+    if command == "hold":
+        # Safe boundary: the current utterance finishes; nothing new starts.
+        speech.block(session_id, "held")
+        return
+    if command == "resume":
+        speech.block(session_id, None)
+        # Same event-loop step as the unblock: expiry runs before any playback.
+        d.coordinator.resume(session_id)
+        return
+    if command == "end":
+        speech.block(session_id, "closing")
+    elif command == "emergency_end":
+        speech.block(session_id, "ending")
+    try:
+        await hard_cancel(d, session_id)
+    except Exception:
+        # The dispatch fence is already bumped; only the provider flush failed.
+        logger.warning(
+            "rescue %s provider flush failed session=%s", command, session_id, exc_info=True
+        )
+
+
+async def _finish_closing(d: Any, session_id: str) -> None:
+    """Report ``closing -> ending`` once approved closing content is done.
+
+    ponytail: the approved envelope has no closing artifact yet, so closing
+    speaks nothing and completes at once. Play approved closing here first
+    when authoring provides one.
+    """
+    try:
+        async with _locked(d.store, session_id) as fence:
+            meta = await d.store.get(session_id)
+            if not meta or not meta.get("execution_contract"):
+                return
+            state = ExecutionState.model_validate(meta["execution_contract"])
+            if state.phase != "closing":
+                return
+            state = apply_evidence(
+                state,
+                Evidence(
+                    **state.model_dump(include=set(ExecutionIdentity.model_fields)),
+                    sequence=state.sequence + 1,
+                    kind="phase_changed",
+                    phase="ending",
+                    occurred_at=datetime.now(timezone.utc),
+                ),
+            )
+            meta["execution_contract"] = state.model_dump(mode="json")
+            await _save(d.store, session_id, meta, fence)
+        d.approved_speech.block(session_id, "ending")
+        if d.hub is not None:
+            await d.hub.emit(
+                session_id,
+                {"type": "execution.phase_changed", "phase": "ending", "sequence": state.sequence},
+            )
+    except Exception:
+        logger.exception("closing completion failed session=%s", session_id)
 
 
 async def _request_start(d, session_id, meta, state, command, fence, request):

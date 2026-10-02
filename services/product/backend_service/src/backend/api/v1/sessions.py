@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
 from backend.application.db.session_store import SessionLockTimeout
+from backend.application.execution_contract import rescue_switch_on
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
 from . import router
@@ -74,6 +75,9 @@ async def sessions_start(
             "first_ai_broadcast": False,
         }
         meta["execution_command_outcomes"] = {}
+        if req.rescue_commands and rescue_switch_on():  # start-time only
+            # Per-session gate; capabilities/commands/legacy guard all read it.
+            meta["p0_rescue"] = True
     await d.store.set(result.session_id, meta)
     if d.livekit_publishers is not None:
         d.livekit_publishers.activate(result.session_id)
@@ -93,7 +97,11 @@ async def sessions_start(
                 "Postgres persistence failed session=%s operation=upsert_session",
                 result.session_id,
             )
-    return result.public_dict()  # frontend-safe only
+    out = result.public_dict()  # frontend-safe only
+    if req.rescue_commands:
+        # R4-R2: report whether the marker was accepted; the API follows this.
+        out["rescue_commands"] = bool(meta.get("p0_rescue"))
+    return out
 
 
 @_router.post("/sessions/{session_id}/say")
@@ -306,6 +314,11 @@ async def sessions_interrupt(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
+    from .execution import use_execution_command
+
+    # P0-FB-016: a P0 session is interrupted only by an audited command.
+    if await use_execution_command(d, session_id):
+        raise HTTPException(status_code=409, detail={"code": "use_execution_command"})
     d.approved_speech.cancel(session_id)
     # Task 8: if there is an active streaming orchestrator for this session,
     # cancel it first (stops emission + drains the bounded queue).
@@ -325,6 +338,16 @@ async def sessions_interrupt(
     return {"ok": True}
 
 
+def _internal_cleanup(request: Request) -> bool:
+    from backend.api.security.authentication import tokens_match
+
+    # Fail closed in every env: an empty admin token never accepts the header
+    # (config refuses to boot with the rescue switch on and no admin token).
+    token = request.app.state.container.config.admin_api_token.strip()
+    presented = request.headers.get("x-livento-internal-cleanup", "")
+    return bool(token and presented and tokens_match(presented, token))
+
+
 @_router.post("/sessions/{session_id}/stop")
 async def sessions_stop(
     session_id: str,
@@ -332,10 +355,29 @@ async def sessions_stop(
     _: None = Depends(router.viewer_auth),
 ) -> dict[str, Any]:
     d = _container(request)
+    from .execution import use_execution_command
+
+    # P0-FB-016: on a marked P0 session legacy stop bypasses End/Emergency
+    # truth; only the API's internal cleanup (admin token in a dedicated
+    # header the viewer plane cannot supply) may use it.
+    if await use_execution_command(d, session_id) and not _internal_cleanup(request):
+        raise HTTPException(status_code=409, detail={"code": "use_execution_command"})
     d.approved_speech.cancel(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
-        d.coordinator.stop(session_id)
+        # stop() returns the delivery counter as of teardown; comments that
+        # were routed but never consumed die with the dropped queue, so
+        # reconcile them as audited non_deliverable (P0-FB-013).
+        attach_seq = d.coordinator.stop(session_id)
+        ingestion = getattr(d, "event_ingestion", None)
+        if ingestion is not None:
+            reconciled = await ingestion.reconcile_session(session_id, attach_seq=attach_seq)
+            if reconciled:
+                logger.info(
+                    "session.stop reconciled non-deliverable events session=%s count=%d",
+                    session_id,
+                    len(reconciled),
+                )
     # Cancellation above is immediate. Serialize teardown with 007's start
     # receipt writes so a late save cannot resurrect deleted session metadata.
     from .execution import _locked
@@ -459,7 +501,25 @@ async def sessions_attach(
             )
         else:
             d.coordinator.update_catalog(session_id, products)
+        _configure_reducer_mode(d, session_id, meta, products)
     return {"ok": True, "will_speak": False, **info}
+
+
+def _configure_reducer_mode(d: Any, session_id: str, meta: dict, products) -> None:
+    """Select the decision input for this session and bind its catalog.
+
+    A P0 session (one carrying an ``execution_contract``) is fed by the bounded
+    reducer; a legacy session keeps the raw-comment feed verbatim. This is a
+    Runtime engineering selector, not a Product Rule, and it is inert for
+    legacy sessions.
+    """
+    if d.reducer is None:
+        return
+    if not meta.get("execution_contract"):
+        return
+    current = products[0].id if products else None
+    d.reducer.set_session_catalog(session_id, list(products), current)
+    d.coordinator.set_reducer_mode(session_id, True)
 
 
 @_router.patch("/sessions/{session_id}/config")
@@ -508,7 +568,9 @@ async def sessions_events(
     if service is None:
         raise HTTPException(status_code=501, detail="event ingestion not enabled")
     try:
-        return await service.ingest(session_id, req.events)
+        return await service.ingest(
+            session_id, req.events, delivery_outcomes_v1=req.delivery_outcomes_v1
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     except SessionLockTimeout:
