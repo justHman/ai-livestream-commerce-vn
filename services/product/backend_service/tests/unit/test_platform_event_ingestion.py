@@ -1221,3 +1221,112 @@ async def test_p0_v1_hard_expired_comment_stays_rejected_over_http() -> None:
     finally:
         await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
         patch.undo()
+
+
+# ---------------------------------------------------------------------------
+# P0-FB-013 negative-test cases 3 and 7 — a coordinator that dies mid-batch.
+# Report #61/#62: one event's failure must not discard the truthful outcomes
+# the caller already holds for the events processed before it.
+# ---------------------------------------------------------------------------
+
+
+class _DyingMidBatchCoordinator:
+    """Routes the first comment, then the coordinator is gone for the second.
+
+    ``ingest`` raising KeyError is what a teardown between the routing check
+    and the put looks like from here. The comment routed before the teardown
+    is real work that must not be re-driven by the retry.
+    """
+
+    def __init__(self) -> None:
+        self.ingested: list[tuple[str, str]] = []
+
+    def has(self, session_id: str) -> bool:
+        return True
+
+    def ingest(self, session_id, text, author, ts=None):
+        if self.ingested:
+            raise KeyError(session_id)
+        self.ingested.append((session_id, text))
+        return type("C", (), {"id": "comment-1"})()
+
+
+@pytest.mark.asyncio
+async def test_teardown_mid_batch_keeps_earlier_outcomes_and_reports_not_ready() -> None:
+    coordinator = _DyingMidBatchCoordinator()
+    service, _ = await _fresh_service(coordinator=coordinator)
+
+    result = await service.ingest(
+        "s1",
+        [
+            PlatformEvent(**_event("b-1", text="first")),
+            PlatformEvent(**_event("b-2", text="second")),
+        ],
+        delivery_outcomes_v1=True,
+    )
+    items = result["events"]
+
+    # The event that was routed before the teardown keeps its true outcome
+    # instead of the whole batch being reported as one failure.
+    assert items[0]["status"] == "routed"
+    assert items[0]["comment_id"] == "comment-1"
+    # The event that hit the teardown is retryable and keeps its identity, so
+    # the durable retry can re-drive it once a coordinator is attached.
+    assert items[1]["status"] == "not_ready"
+    assert items[1]["event_id"] == "b-2"
+    assert items[1]["reason"] == "coordinator_torn_down_before_acceptance"
+    assert items[1]["action_identity"] == "b-2"
+    # not_ready is not a rejection and not a delivery.
+    assert result["accepted"] == 0
+    assert result["rejected"] == 0
+
+
+@pytest.mark.asyncio
+async def test_teardown_mid_batch_does_not_lose_earlier_delivery_on_retry() -> None:
+    coordinator = _DyingMidBatchCoordinator()
+    service, _ = await _fresh_service(coordinator=coordinator)
+
+    await service.ingest(
+        "s1",
+        [
+            PlatformEvent(**_event("b-1", text="first")),
+            PlatformEvent(**_event("b-2", text="second")),
+        ],
+        delivery_outcomes_v1=True,
+    )
+
+    retry = await service.ingest(
+        "s1",
+        [
+            PlatformEvent(**_event("b-1", text="first")),
+            PlatformEvent(**_event("b-2", text="second")),
+        ],
+        delivery_outcomes_v1=True,
+    )
+    items = retry["events"]
+
+    # Case 7: the dedup write lands after routing, so an interruption in that
+    # window can queue the comment a second time. What must never happen is a
+    # second *completion*: the already-routed event is recognised as delivered.
+    assert items[0]["status"] == "duplicate"
+    assert items[0]["status"] != "routed"
+    routed_again = [item for item in items if item["status"] == "routed"]
+    assert routed_again == [], f"a delivered event was completed twice: {items}"
+
+
+@pytest.mark.asyncio
+async def test_legacy_contract_still_fails_the_batch_on_error() -> None:
+    # Without the opt-in there is no retryable vocabulary to report, so the
+    # batch must fail loudly rather than invent a not_ready the caller cannot
+    # interpret.
+    coordinator = _DyingMidBatchCoordinator()
+    service, _ = await _fresh_service(coordinator=coordinator)
+
+    with pytest.raises(KeyError):
+        await service.ingest(
+            "s1",
+            [
+                PlatformEvent(**_event("b-1", text="first")),
+                PlatformEvent(**_event("b-2", text="second")),
+            ],
+        )

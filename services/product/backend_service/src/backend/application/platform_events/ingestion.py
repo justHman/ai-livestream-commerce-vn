@@ -158,6 +158,42 @@ def _default_unique_viewer_key(event: PlatformEvent) -> Optional[str]:
     return f"{event.platform}:{event.source_stream_id}:{event.viewer.viewer_id}"
 
 
+def _source_key_for(event: PlatformEvent) -> Optional[str]:
+    """Provenance-derived dedup key for a P0 comment, or None.
+
+    Two deliveries of the same platform comment hash to the same key even when
+    they carry different ``event_id`` values, which is what makes the durable
+    retry a duplicate instead of a second action. It is the stable identity a
+    retry must reuse, so the failure path reports it too.
+    """
+    if event.contract_version != P0_COMMENT_CONTRACT or not event.source_message_id:
+        return None
+    return hashlib.sha256(
+        json.dumps(
+            [
+                event.tenant_id,
+                event.business_session_id,
+                event.platform,
+                event.connected_account_id,
+                event.external_session_id,
+                event.source_message_id,
+            ]
+        ).encode()
+    ).hexdigest()
+
+
+def _event_failure_reason(exc: Exception) -> str:
+    """Sanitized reason for a per-event ingest failure.
+
+    The exception text is never propagated: it can carry platform payloads and
+    it lands in a response the caller logs. A missing coordinator is called out
+    by name because that is the expected cause and it is retryable.
+    """
+    if isinstance(exc, KeyError):
+        return "coordinator_torn_down_before_acceptance"
+    return "event_ingest_failed"
+
+
 class PlatformEventIngestionService:
     """Session-scoped canonical event ingestion (one instance per app)."""
 
@@ -554,20 +590,7 @@ class PlatformEventIngestionService:
         if binding_reason is not None:
             await self._persist_rejected(session_id, event, binding_reason)
             return {**result, "status": EventStatus.REJECTED.value, "reason": binding_reason}
-        source_key = None
-        if event.contract_version == P0_COMMENT_CONTRACT and event.source_message_id:
-            source_key = hashlib.sha256(
-                json.dumps(
-                    [
-                        event.tenant_id,
-                        event.business_session_id,
-                        event.platform,
-                        event.connected_account_id,
-                        event.external_session_id,
-                        event.source_message_id,
-                    ]
-                ).encode()
-            ).hexdigest()
+        source_key = _source_key_for(event)
         seen = self._seen_event_ids(meta, now)
         source_seen = source_key is not None and any(
             entry.get("source_key") == source_key
@@ -814,12 +837,42 @@ class PlatformEventIngestionService:
             raise KeyError(session_id)
         meta = await self._load_meta(session_id)
         now = self._now()
-        results = [
-            await self._process_event(
-                session_id, event, meta, now, fence=fence, truthful_outcomes=truthful_outcomes
-            )
-            for event in events
-        ]
+        # One event's failure must not take the rest of the batch with it: the
+        # caller already holds truthful per-event outcomes for the events
+        # processed so far, and discarding them turns a partial success into a
+        # whole-batch loss. A retryable outcome keeps the identity and is
+        # reported per event; anything else is a real fault and still fails the
+        # batch rather than being reported as if it had been handled.
+        results = []
+        for event in events:
+            try:
+                results.append(
+                    await self._process_event(
+                        session_id,
+                        event,
+                        meta,
+                        now,
+                        fence=fence,
+                        truthful_outcomes=truthful_outcomes,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised unless retryable
+                if not truthful_outcomes:
+                    raise
+                logger.warning(
+                    "platform_event.ingest_event_failed session=%s event=%s",
+                    session_id,
+                    event.event_id,
+                    exc_info=True,
+                )
+                results.append(
+                    {
+                        "event_id": event.event_id,
+                        "status": EventStatus.NOT_READY.value,
+                        "reason": _event_failure_reason(exc),
+                        "action_identity": _source_key_for(event) or event.event_id,
+                    }
+                )
         # The legacy three keys are always present: existing readers index
         # them directly and expect 0, never a missing key.
         counts = {"accepted": 0, "duplicate": 0, "rejected": 0}
