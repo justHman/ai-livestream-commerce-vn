@@ -1454,7 +1454,9 @@ class _FencedRejectingStore(InMemorySessionStore):
         yield object()
 
     async def commit_if_owner(self, fence, meta) -> bool:
-        return False
+        # Reject only the dedup commit so the named boundary is what fails;
+        # earlier commits (safety) succeed and the event is really routed.
+        return "platform_event_ids" not in meta
 
 
 class _OkCoordinator:
@@ -1683,3 +1685,52 @@ async def test_successful_dedup_write_is_recorded_and_second_submission_is_dupli
     assert [e["event_id"] for e in (await store.get("s1"))["platform_event_ids"]] == ["dw-3"]
     second = await service.ingest("s1", [event], delivery_outcomes_v1=True)
     assert second["events"][0]["status"] == "duplicate"
+
+
+class _SeqCoordinator:
+    def __init__(self) -> None:
+        self.n = 0
+
+    def has(self, session_id: str) -> bool:
+        return True
+
+    def ingest(self, session_id, text, author, ts=None):
+        self.n += 1
+        return type("C", (), {"id": f"c{self.n}"})()
+
+
+@pytest.mark.asyncio
+async def test_consumed_outcome_stays_final_across_dedup_failure_redelivery() -> None:
+    class Store(InMemorySessionStore):
+        fail = True
+
+        async def set(self, session_id, data, ttl_seconds=None):
+            if self.fail and "platform_event_ids" in data:
+                raise ConnectionError("dedup write failed")
+            await super().set(session_id, data, ttl_seconds)
+
+    store = Store()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store, coordinator=_SeqCoordinator())
+    event = PlatformEvent(**_event("fin-1", text="hi"))
+
+    with pytest.raises(ConnectionError):  # routed (c1), dedup write failed
+        await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    service.mark_consumed("s1", {"c1"})  # coordinator consumes the first copy
+    assert service.terminal_outcomes("s1")["fin-1"].outcome.value == "consumed"
+
+    store.fail = False
+    retry = await service.ingest("s1", [event], delivery_outcomes_v1=True)  # c2 queued
+    assert retry["events"][0]["status"] == "routed"
+    await service.reconcile_session("s1", attach_seq=10**9)  # stop before c2 consumed
+
+    assert service.terminal_outcomes("s1")["fin-1"].outcome.value == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_routed_and_never_consumed_still_ends_non_deliverable_at_stop() -> None:
+    service, _ = await _fresh_service(coordinator=_SeqCoordinator())
+    event = PlatformEvent(**_event("lost-9", text="hi"))
+    await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    await service.reconcile_session("s1", attach_seq=10**9)
+    assert service.terminal_outcomes("s1")["lost-9"].outcome.value == "non_deliverable"

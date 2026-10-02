@@ -720,6 +720,13 @@ class PlatformEventIngestionService:
         entries = self._in_flight.setdefault(session_id, {})
         if event.event_id in entries:
             return
+        prior = self._outcomes(session_id).get(event.event_id)
+        if prior is not None and prior.delivery.outcome is EventStatus.CONSUMED:
+            # A consumed delivery is final for this identity. A redelivered
+            # copy (e.g. after a failed dedup write) may be queued again, but it
+            # must not open a new in-flight entry that a later teardown would
+            # reconcile into non_deliverable, downgrading a completed delivery.
+            return
         entries[event.event_id] = _InFlightDelivery(
             event=event, delivery=delivery, event_type=event.type, attach_seq=seq
         )
