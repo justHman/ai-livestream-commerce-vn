@@ -1003,6 +1003,9 @@ class DirectorCoordinator:
         ):
             return
         async with self._decision_locks[session_id]:
+            # A Hold can land while waiting for the lock: prepare nothing.
+            if self._frozen(session_id):
+                return
             depth = ds.director.cfg.prepared_turn_depth
             prepared = self._speech_queue[session_id]
             in_preparation = len(self._prepare_tasks[session_id])
@@ -1012,6 +1015,8 @@ class DirectorCoordinator:
             projection = self._projected_director(session_id)
             store = self._reducer_store(session_id)
             for _ in range(missing):
+                if self._frozen(session_id):  # Hold landed during an earlier emit await
+                    return
                 now = ds.now()
                 if store is not None:
                     decision = self._decide_from_reducer(projection, session_id, store, now)

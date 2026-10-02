@@ -6,6 +6,7 @@ negative-test map", 16 rows). The map is the acceptance checklist.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Optional
 
@@ -1067,9 +1068,38 @@ async def test_held_reducer_session_still_consumes_but_freezes_director_timers()
     queue = coord._queues["s1"]
     coord.approved_speech.block("s1", "held")
     before = state.phase_elapsed_sec
+    last = coord._last_tick["s1"]
     for i in range(3):
         queue.put(f"h{i}", f"v{i}", ts=time.time())
+    await asyncio.sleep(0.06)  # clock must visibly advance on any platform
     await coord._tick_once("s1")
     assert queue.free_slots() == queue.max_size  # consumed, not dropped
+    assert coord._last_tick["s1"] > last  # tick clock advanced
     assert state.phase_elapsed_sec == before  # timers frozen
+    assert state.product_elapsed_sec == 0.0 and state.sec_since_relevant_msg == 0.0
     coord.stop("s1")
+
+
+async def _noop_prepare(*_a, **_k) -> None:
+    await asyncio.sleep(60)
+
+
+async def test_hold_landing_while_waiting_for_decision_lock_prepares_nothing() -> None:
+    from backend.application.script_authoring.approved_speech import ApprovedSpeech
+
+    async def run(hold: bool) -> int:
+        coord, _ds = _ready_coordinator(_reducer())
+        coord.approved_speech = ApprovedSpeech(None, lambda: None)
+        coord._prepare_turn = _noop_prepare  # preparation itself is not under test
+        async with coord._decision_locks["s1"]:
+            filling = asyncio.create_task(coord._fill_prepared("s1"))
+            await asyncio.sleep(0.01)  # past the first _frozen check, parked on the lock
+            if hold:
+                coord.approved_speech.block("s1", "held")
+        await filling
+        n = len(coord._decision_queue["s1"]) + len(coord._prepare_tasks["s1"])
+        coord.stop("s1")
+        return n
+
+    assert await run(hold=False) > 0  # control: the same setup does prepare
+    assert await run(hold=True) == 0
