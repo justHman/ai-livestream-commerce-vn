@@ -365,7 +365,19 @@ async def sessions_stop(
     d.approved_speech.cancel(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
-        d.coordinator.stop(session_id)
+        # stop() returns the delivery counter as of teardown; comments that
+        # were routed but never consumed die with the dropped queue, so
+        # reconcile them as audited non_deliverable (P0-FB-013).
+        attach_seq = d.coordinator.stop(session_id)
+        ingestion = getattr(d, "event_ingestion", None)
+        if ingestion is not None:
+            reconciled = await ingestion.reconcile_session(session_id, attach_seq=attach_seq)
+            if reconciled:
+                logger.info(
+                    "session.stop reconciled non-deliverable events session=%s count=%d",
+                    session_id,
+                    len(reconciled),
+                )
     # Cancellation above is immediate. Serialize teardown with 007's start
     # receipt writes so a late save cannot resurrect deleted session metadata.
     from .execution import _locked
@@ -489,7 +501,25 @@ async def sessions_attach(
             )
         else:
             d.coordinator.update_catalog(session_id, products)
+        _configure_reducer_mode(d, session_id, meta, products)
     return {"ok": True, "will_speak": False, **info}
+
+
+def _configure_reducer_mode(d: Any, session_id: str, meta: dict, products) -> None:
+    """Select the decision input for this session and bind its catalog.
+
+    A P0 session (one carrying an ``execution_contract``) is fed by the bounded
+    reducer; a legacy session keeps the raw-comment feed verbatim. This is a
+    Runtime engineering selector, not a Product Rule, and it is inert for
+    legacy sessions.
+    """
+    if d.reducer is None:
+        return
+    if not meta.get("execution_contract"):
+        return
+    current = products[0].id if products else None
+    d.reducer.set_session_catalog(session_id, list(products), current)
+    d.coordinator.set_reducer_mode(session_id, True)
 
 
 @_router.patch("/sessions/{session_id}/config")
@@ -538,7 +568,9 @@ async def sessions_events(
     if service is None:
         raise HTTPException(status_code=501, detail="event ingestion not enabled")
     try:
-        return await service.ingest(session_id, req.events)
+        return await service.ingest(
+            session_id, req.events, delivery_outcomes_v1=req.delivery_outcomes_v1
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     except SessionLockTimeout:

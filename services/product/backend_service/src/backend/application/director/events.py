@@ -20,9 +20,11 @@ def decision_to_event(decision: Any) -> dict:
     """Project a Director Decision to a frontend-friendly WS event payload.
 
     Drops non-serializable fields and keeps only safe decision metadata —
-    never rendered prompt text, shop/product data, or comment text.
+    never rendered prompt text, shop/product data, or comment text. The
+    reducer provenance block (cluster id, source event ids, occurred_at bounds)
+    rides along: it is ids and timestamps, never viewer text (P0-FB-014).
     """
-    return {
+    event = {
         "turn_id": decision.turn_id,
         "action": decision.action,
         "product": decision.product_id,
@@ -32,6 +34,9 @@ def decision_to_event(decision: Any) -> dict:
         "may_interrupt": decision.may_interrupt,
         "reason": decision.reason,
     }
+    if decision.source_cluster_id is not None:
+        event.update(decision.provenance_payload())
+    return event
 
 
 def speech_item(decision: Any, state: str = "queued") -> dict:
@@ -79,6 +84,11 @@ async def persist_decision(
             phase=phase,
             utterance=speech,
             reason=decision.reason,
+            # Reducer provenance (P0-FB-014): ids + timestamps only, so the
+            # persisted row answers "which cluster answered what, when".
+            payload=(
+                decision.provenance_payload() if decision.source_cluster_id is not None else None
+            ),
         )
     except Exception:
         logger.warning(

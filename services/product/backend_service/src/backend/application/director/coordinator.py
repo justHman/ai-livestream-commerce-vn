@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from backend.application.entity.models import EntityDocument
 
 from .comment_buffer import ChatQueue, IncomingComment
+from .errors import CoordinatorUnavailable
 from .clustering import Comment, cluster_comments
 from .decision import Decision, Director
 from .embeddings import embedder_status
@@ -120,6 +121,7 @@ class DirectorCoordinator:
         pg_store: Any = None,
         audio_window_callback: Any = None,
         completed_history_size: int = 10,
+        reducer: Any = None,
     ) -> None:
         self._runtime = runtime
         # Factory inputs for building a FRESH StreamOrchestrator + queue +
@@ -143,6 +145,9 @@ class DirectorCoordinator:
         # (tests that do not exercise MJPEG).
         self._orchestrator_registry = orchestrator_registry
         self._queues: dict[str, ChatQueue] = {}
+        # Per-session count of comments routed into the queue. Fences teardown
+        # reconciliation against stale reports (P0-FB-013).
+        self._delivery_seq: dict[str, int] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._playback_tasks: dict[str, asyncio.Task] = {}
         self._prepare_tasks: dict[str, set[asyncio.Task]] = {}
@@ -165,8 +170,72 @@ class DirectorCoordinator:
         # persistence. Fire-and-forget: a failure must never break the speak loop.
         self._pg_store = pg_store
         self._audio_window_callback = audio_window_callback
+        # Sink for "these queued comments were really read out of the queue".
+        # The app composition root points it at
+        # PlatformEventIngestionService.mark_consumed so a comment the tick
+        # consumed is not reconciled as lost at teardown (P0-FB-013). One
+        # unbound callable keeps the ingress ledger out of this module.
+        self.comment_consumed = None
         # The app composition root installs the same boundary used by /say.
         self.approved_speech = None
+        # The bounded FastReducer (P0-FB-014). One instance serves all sessions;
+        # it is consulted ONLY for sessions in reducer mode, so a legacy session
+        # is byte-for-byte unchanged.
+        self._reducer = reducer
+        # Per-session decision-input mode. True = the reducer is the only
+        # viewer-demand input; False/absent = the legacy raw-comment feed.
+        # Runtime engineering selector, NOT a Product Rule.
+        self._reducer_mode: set[str] = set()
+        # Sessions whose 013 truthful-outcome opt-in actually fired. Reducer
+        # mode refuses to decide for a session that is not in here.
+        self._reducer_ready: set[str] = set()
+        # Bounded per-session consumed-id marker, used ONLY in reducer mode
+        # (the legacy path marks consumption via state.embeddings_cache).
+        self._reducer_consumed: dict[str, dict[str, float]] = {}
+
+    # ------------------------------------------------------------------
+    # Decision-input mode (P0-FB-014)
+    # ------------------------------------------------------------------
+
+    @property
+    def reducer(self):
+        return self._reducer
+
+    @reducer.setter
+    def reducer(self, value) -> None:
+        self._reducer = value
+
+    def set_reducer_mode(self, session_id: str, enabled: bool = True) -> None:
+        """Select the decision input for one session.
+
+        Reducer mode requires the 013 truthful-outcome opt-in to be ACTIVE for
+        that session. ``mark_reducer_ready`` records that opt-in at consumption
+        time; until then ``_reducer_store`` returns None and the session
+        decides nothing — a refusal, never a silent fallback to the legacy feed.
+        """
+        if enabled:
+            self._reducer_mode.add(session_id)
+        else:
+            self._reducer_mode.discard(session_id)
+
+    def reducer_mode(self, session_id: str) -> bool:
+        return session_id in self._reducer_mode
+
+    def mark_reducer_ready(self, session_id: str) -> None:
+        """Record that the 013 truthful-outcome opt-in is live for this session.
+
+        Called from the consumption boundary, which is the only place that can
+        observe the opt-in actually firing. Reducer mode refuses until this.
+        """
+        self._reducer_ready.add(session_id)
+
+    def _reducer_store(self, session_id: str):
+        """The session's ClusterStore, or None when reducer mode may not decide."""
+        if session_id not in self._reducer_mode or self._reducer is None:
+            return None
+        if session_id not in self._reducer_ready:
+            return None
+        return self._reducer.session_store(session_id)
 
     async def _emit(self, session_id: str, event: dict) -> None:
         """Send a WS event via the ControlHub if one is wired. No-op otherwise."""
@@ -242,6 +311,14 @@ class DirectorCoordinator:
         self._playback_events[session_id] = asyncio.Event()
         self._completed_history[session_id] = deque(maxlen=self._completed_history_size)
         self._stats[session_id] = _SessionStats()
+        # A NEW generation starts from an empty reducer session (P0-FB-014).
+        # ``stop`` already drops it, but a start on a never-stopped id (or a
+        # reattach after a crash) must not inherit the previous generation's
+        # clusters, answered state or provenance either.
+        if self._reducer is not None:
+            self._reducer.drop_session(session_id)
+        self._reducer_consumed.pop(session_id, None)
+        self._reducer_ready.discard(session_id)
         if activated:
             self._activated.add(session_id)
         try:
@@ -258,15 +335,22 @@ class DirectorCoordinator:
             name=f"coordinator-playback-{session_id}",
         )
 
-    def stop(self, session_id: str) -> None:
+    def stop(self, session_id: str) -> int:
         """Cancel the tick task, drop the queue, detach runtime.
 
         If the orchestrator is currently speaking for this session, cancel it.
         Idempotent.
+
+        Returns the delivery counter as of teardown. The caller passes it to
+        ``PlatformEventIngestionService.reconcile_session(session_id,
+        attach_seq=...)`` so comments that were routed but never consumed are
+        reconciled as audited non_deliverable instead of dying with the queue
+        (P0-FB-013). The counter is captured BEFORE the state is dropped.
         """
         if self.approved_speech is not None:
             self.approved_speech.cancel(session_id)
             self.approved_speech.block(session_id, None)
+        attach_seq = self._delivery_seq.get(session_id, 0)
         current = self._current_speech.get(session_id)
         if current is not None:
             current.is_cancelled = True
@@ -287,6 +371,7 @@ class DirectorCoordinator:
             asyncio.create_task(entry["orchestrator"].cancel(session_id))
 
         self._queues.pop(session_id, None)
+        self._delivery_seq.pop(session_id, None)
         self._decision_queue.pop(session_id, None)
         self._speech_queue.pop(session_id, None)
         self._decision_locks.pop(session_id, None)
@@ -303,11 +388,25 @@ class DirectorCoordinator:
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
+        # Drop the reducer's per-session state too (P0-FB-014): clusters,
+        # answered state and provenance must not survive into a new generation
+        # of the same session id.
+        if self._reducer is not None:
+            self._reducer.drop_session(session_id)
+        self._reducer_mode.discard(session_id)
+        self._reducer_ready.discard(session_id)
+        self._reducer_consumed.pop(session_id, None)
+        return attach_seq
 
-    def stop_all(self) -> None:
-        """Cancel every active coordinator session."""
-        for session_id in list(self._tasks):
-            self.stop(session_id)
+    def stop_all(self) -> dict[str, int]:
+        """Cancel every active coordinator session.
+
+        Returns each session's delivery fence as of its teardown, the same
+        value ``stop`` hands back. A caller that bulk-stops (process
+        shutdown) needs it for every session, otherwise routed work dies
+        with the queues and is never audited (P0-FB-013).
+        """
+        return {session_id: self.stop(session_id) for session_id in list(self._tasks)}
 
     def update_catalog(self, session_id: str, products: list[EntityDocument]) -> None:
         """Refresh catalog and invalidate work created before Re-attach."""
@@ -429,7 +528,8 @@ class DirectorCoordinator:
         """
         queue = self._queues.get(session_id)
         if queue is None:
-            raise KeyError(f"No active coordinator session: {session_id}")
+            raise CoordinatorUnavailable(f"No active coordinator session: {session_id}")
+        self._delivery_seq[session_id] = self._delivery_seq.get(session_id, 0) + 1
         comment = queue.put(text, author, ts=ts)
         # Approved P0 sessions require the authorized execution start command.
         if self._runtime.get_session(session_id).approved_envelope is None:
@@ -682,6 +782,30 @@ class DirectorCoordinator:
         """True if a coordinator session is active for this session_id."""
         return session_id in self._tasks
 
+    def queue_capacity(self, session_id: str) -> int:
+        """Free slots left in the session's ChatQueue; 0 when full.
+
+        ``ChatQueue.put`` evicts the oldest comment once it exceeds
+        ``max_size``, so a producer must be able to ask for headroom BEFORE
+        putting or it silently drops someone else's comment (P0-FB-013).
+        An unknown session is 0 — there is nowhere to put the comment.
+        """
+        queue = self._queues.get(session_id)
+        if queue is None:
+            return 0
+        return queue.free_slots()
+
+    def next_delivery_tick(self, session_id: str | None = None) -> int:
+        """Monotonic count of comments routed through the session's queue.
+
+        Read by the ingress service to fence teardown reconciliation: a
+        delivery stamped with a counter above the teardown's was routed
+        after it and must not be reconciled (P0-FB-013).
+        """
+        if session_id is None:
+            return sum(self._delivery_seq.values())
+        return self._delivery_seq.get(session_id, 0)
+
     def _advance_timers(self, session_id: str, now: float, state: StreamState) -> None:
         """Increment all three elapsed counters by delta since last tick."""
         prev = self._last_tick.get(session_id, now)
@@ -724,18 +848,48 @@ class DirectorCoordinator:
             return
         director: Director = ds.director
         state: StreamState = director.state
-        embedder = self._get_embedder()
         fresh = queue.drain_window(self._cfg.window_sec)
+        if session_id in self._reducer_mode:
+            # Reducer mode (P0-FB-014): the bounded reducer is the only
+            # viewer-demand input. The queue is still drained and the
+            # consumption boundary still fires (I-4) — but this coordinator
+            # does NOT embed, route, or add to rolling_comments, so the raw
+            # decision feed is off for this session. The reducer, fed at
+            # consumption by the ingress service, owns the clustering.
+            #
+            # Nothing is added to embeddings_cache here, so the per-session
+            # consumed set is what makes a comment consumed exactly once.
+            new_only = [
+                comment for comment in fresh if comment.id not in self._consumed_ids(session_id)
+            ]
+            # Release ChatQueue capacity exactly as the legacy path does (013).
+            queue.mark_consumed(c.id for c in new_only)
+            if self.comment_consumed is not None and new_only:
+                try:
+                    self.comment_consumed(session_id, {c.id for c in new_only})
+                except Exception:
+                    logger.warning(
+                        "consumed-comment sink failed session=%s", session_id, exc_info=True
+                    )
+            self._remember_consumed(session_id, new_only)
+            now = ds.now()
+            self._advance_timers(session_id, now, state)
+            await self._fill_prepared(session_id)
+            return
+        embedder = self._get_embedder()
         new_only = [comment for comment in fresh if comment.id not in state.embeddings_cache]
-        if new_only:
-            vecs = await asyncio.to_thread(embedder.encode, [comment.text for comment in new_only])
-            for comment, vector in zip(new_only, vecs):
+        new_comments = new_only
+        if new_comments:
+            vecs = await asyncio.to_thread(
+                embedder.encode, [comment.text for comment in new_comments]
+            )
+            for comment, vector in zip(new_comments, vecs):
                 state.embeddings_cache[comment.id] = list(vector)
         director_now = ds.now()
         wall_now = time.time()
         routed = []
         current = state.current_product()
-        for incoming in new_only:
+        for incoming in new_comments:
             vector = state.embeddings_cache[incoming.id]
             routed.append(
                 route_comment(
@@ -750,6 +904,16 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
+        queue.mark_consumed(c.id for c in new_only)
+        # This is the consumption boundary: the comments left ChatQueue and
+        # are now Director state, so a teardown must not reconcile them as
+        # non_deliverable (P0-FB-013). Only ``new_only`` counts — a comment
+        # re-read from the window on a later tick was already consumed.
+        if self.comment_consumed is not None and new_only:
+            try:
+                self.comment_consumed(session_id, {c.id for c in new_only})
+            except Exception:
+                logger.warning("consumed-comment sink failed session=%s", session_id, exc_info=True)
         # Bound the old comment/embedding history at write time (5.10): the
         # ClusterStore owns the long-term demand — this state only feeds the
         # Director's selection window.
@@ -761,6 +925,53 @@ class DirectorCoordinator:
             return
         self._advance_timers(session_id, now, state)
         await self._fill_prepared(session_id)
+
+    def _consumed_ids(self, session_id: str):
+        """Comment ids already consumed in reducer mode.
+
+        In reducer mode nothing is added to ``state.embeddings_cache``, so that
+        cache cannot double as the consumed marker. A bounded per-session set
+        does: a comment is consumed exactly once (I-4), and a re-read from the
+        window on a later tick is not consumed again.
+        """
+        return self._reducer_consumed.get(session_id, {})
+
+    def _remember_consumed(self, session_id: str, comments) -> None:
+        seen = self._reducer_consumed.setdefault(session_id, {})
+        for comment in comments:
+            seen[comment.id] = comment.ts
+        # A comment older than the drain window can never be re-read, so its
+        # marker is dead weight: prune on the same horizon the queue uses.
+        cutoff = time.time() - self._cfg.window_sec
+        for stale in [cid for cid, ts in seen.items() if ts < cutoff]:
+            del seen[stale]
+
+    def _decide_from_reducer(self, projection: Director, session_id: str, store, now: float):
+        """Decide from the bounded reducer.
+
+        An empty projection still goes through ``decide_from_reducer`` so the
+        protected opening, introduction, proactive selling, pivot and
+        checkpoint logic run exactly as in legacy. Without a ready store the caller
+        decides on an empty rolling window, which agrees with this path.
+        """
+        from .reducer_input import build_selections
+
+        selections = build_selections(
+            projection,
+            store=store,
+            reducer_now=time.time(),
+            director_now=now,
+            wall_now=time.time(),
+            provenance=(
+                None
+                if self._reducer is None
+                else lambda cid: self._reducer.provenance_for(session_id, cid)
+            ),
+        )
+        high_value_ids = projection.high_value_cluster_ids(selections)
+        return projection.decide_from_reducer(
+            selections, now, high_value_ids=high_value_ids.__contains__
+        )
 
     def _projected_director(self, session_id: str) -> Director:
         ds = self._runtime.get_session(session_id)
@@ -795,9 +1006,16 @@ class DirectorCoordinator:
             if missing == 0:
                 return
             projection = self._projected_director(session_id)
+            store = self._reducer_store(session_id)
             for _ in range(missing):
                 now = ds.now()
-                decision = projection.decide(projection.state.rolling_comments, now=now)
+                if store is not None:
+                    decision = self._decide_from_reducer(projection, session_id, store, now)
+                else:
+                    # Reducer mode not ready (or legacy): rolling_comments is
+                    # empty in reducer mode, so this is the same empty-demand
+                    # _decide the reducer branch runs - never a raw-comment feed.
+                    decision = projection.decide(projection.state.rolling_comments, now=now)
                 self._stats[session_id].director_cycles += 1
                 if decision.action in ("idle", "skip"):
                     self._stats[session_id].skips += 1
@@ -1279,6 +1497,24 @@ class DirectorCoordinator:
             phase=phase,
         )
 
+    def _mark_reducer_lifecycle(self, session_id: str, decision: Decision, now: float) -> None:
+        """Reuse the store's own lifecycle state after a reducer-driven speech.
+
+        ``mark_answered`` is what makes the cooldown/novelty state durable
+        across ticks, and ``increment_skip`` mirrors the eviction budget the
+        legacy path applies to clusters it passed over. Both are no-ops for a
+        cluster the bound already evicted.
+        """
+        if self._reducer is None or decision.source_cluster_id is None:
+            return
+        store = self._reducer.session_store(session_id)
+        if store is None:
+            return
+        if decision.action in ("answer_fact", "answer_cluster"):
+            store.mark_answered(decision.source_cluster_id, now)
+        else:
+            store.mark_selected(decision.source_cluster_id, now)
+
     def _after_speak(self, session_id: str, decision: Decision, speech: str) -> None:
         """Update covered_points + advance talking_point_idx on proactive speak."""
         ds = self._runtime._sessions.get(session_id)
@@ -1318,6 +1554,7 @@ class DirectorCoordinator:
                 state.mark_product_covered(product_id, covered)
             except Exception:
                 logger.debug("coverage update failed", exc_info=True)
+        self._mark_reducer_lifecycle(session_id, decision, time.time())
         # Advance cursor only for proactive (non-reactive) actions.
         if decision.action in (
             "speak_hook",
