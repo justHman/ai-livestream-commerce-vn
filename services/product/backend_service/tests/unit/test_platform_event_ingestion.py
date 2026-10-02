@@ -1330,3 +1330,106 @@ async def test_legacy_contract_still_fails_the_batch_on_error() -> None:
                 PlatformEvent(**_event("b-2", text="second")),
             ],
         )
+
+
+@pytest.mark.asyncio
+async def test_real_chat_queue_overflow_is_retryable_never_evicting() -> None:
+    """Real coordinator + real ChatQueue pushed past ``max_size`` (P0-FB-013).
+
+    No double: the queue is filled to its real capacity through the real
+    ingestion path, then more events arrive. Later events must be explicit
+    retryable ``not_ready/queue_full``; nothing queued is evicted/reordered,
+    and capacity returns once the tick loop has consumed the queued comments.
+    """
+    from .test_p0_comment_contract import BINDING, event as p0_event
+
+    patch = pytest.MonkeyPatch()
+    create_case = await anext(_case_factory.__wrapped__(patch))
+    try:
+        case = await create_case()
+        meta = dict(await case.d.store.get(case.sid))
+        meta["platform_event_binding"] = BINDING
+        await case.d.store.set(case.sid, meta)
+        coordinator, ingestion = case.d.coordinator, case.d.event_ingestion
+        queue = coordinator._queues[case.sid]
+        size = queue.max_size
+
+        def batch(prefix, n):
+            return [
+                p0_event(
+                    f"{prefix}-{i}",
+                    event_id=f"{prefix}-{i}",
+                    source_message_id=f"msg-{prefix}-{i}",
+                )
+                for i in range(n)
+            ]
+
+        fill = await ingestion.ingest(case.sid, batch("fill", size), delivery_outcomes_v1=True)
+        assert [e["status"] for e in fill["events"]] == ["routed"] * size
+        queued_ids = [c.id for c in queue.snapshot()]
+        assert len(queued_ids) == size
+
+        over = await ingestion.ingest(case.sid, batch("over", 5), delivery_outcomes_v1=True)
+        for item in over["events"]:
+            assert item["status"] == "not_ready"
+            assert item["reason"] == "queue_full"
+            assert "comment_id" not in item
+        # Nothing evicted, reordered, or reported delivered that was not queued.
+        assert [c.id for c in queue.snapshot()] == queued_ids
+        assert [c.text for c in queue.snapshot()][0] == "fill-0"
+        assert len(queue) == size
+        assert {i["comment_id"] for i in fill["events"]} == set(queued_ids)
+        assert queue.stats()["received_total"] == size
+
+        # Drain: the tick loop consumes the queued comments; capacity returns.
+        coordinator._activated.add(case.sid)
+        await coordinator._tick_once(case.sid)
+        assert coordinator.queue_capacity(case.sid) > 0
+        retry = await ingestion.ingest(case.sid, batch("over", 5), delivery_outcomes_v1=True)
+        assert [e["status"] for e in retry["events"]] == ["routed"] * 5
+    finally:
+        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        patch.undo()
+
+
+@pytest.mark.asyncio
+async def test_events_posted_to_a_stopped_session_are_not_consumed_or_delivered() -> None:
+    """Terminal session (P0-FB-013): a real session is created, stopped, then posted to.
+
+    Pins the CURRENT response: 404 ``unknown session_id``. KNOWN ACCEPTED GAP:
+    the label says "unknown" for a stopped session; Main Management decided not
+    to change the HTTP label in 013. The API maps the repeated 404 to an audited
+    ``non_deliverable`` (``ai_runtime_session_not_found``). What must hold here
+    is that nothing is consumed or acknowledged as delivered.
+    """
+    from .test_p0_comment_contract import BINDING, event as p0_event
+
+    patch = pytest.MonkeyPatch()
+    create_case = await anext(_case_factory.__wrapped__(patch))
+    try:
+        case = await create_case()
+        meta = dict(await case.d.store.get(case.sid))
+        meta["platform_event_binding"] = BINDING
+        await case.d.store.set(case.sid, meta)
+        stopped = await case.client.post(f"/api/v1/sessions/{case.sid}/stop")
+        assert stopped.status_code == 200, stopped.text
+
+        posted = await case.client.post(
+            f"/api/v1/sessions/{case.sid}/events",
+            json={
+                "events": [
+                    p0_event("late", event_id="late-1", source_message_id="m-late").model_dump()
+                ],
+                "delivery_outcomes_v1": True,
+            },
+        )
+
+        assert posted.status_code == 404, posted.text
+        assert posted.json() == {"error": {"code": "http_404", "message": "unknown session_id"}}
+        assert "events" not in posted.json()  # no per-event result, hence no delivered/routed ack
+        assert not case.d.coordinator.has(case.sid)
+        assert case.sid not in case.d.coordinator._queues
+        assert "late-1" not in case.d.event_ingestion.terminal_outcomes(case.sid)
+    finally:
+        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        patch.undo()

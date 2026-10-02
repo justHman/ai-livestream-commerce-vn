@@ -51,6 +51,20 @@ class ChatQueue:
         self._deque: deque[IncomingComment] = deque()
         self._lock = threading.Lock()
         self._total_put: int = 0
+        # Ids the coordinator already moved into Director state. They stay
+        # readable in the window but no longer hold back-pressure capacity.
+        self._consumed: set[str] = set()
+
+    def mark_consumed(self, ids) -> None:
+        """Record that these comments left the queue for Director state."""
+        with self._lock:
+            self._consumed.update(ids)
+
+    def free_slots(self) -> int:
+        """Slots a producer may fill without evicting an unconsumed comment."""
+        with self._lock:
+            unconsumed = sum(c.id not in self._consumed for c in self._deque)
+            return max(0, self.max_size - unconsumed)
 
     def put(
         self,
@@ -73,7 +87,12 @@ class ChatQueue:
             self._deque.append(comment)
             self._total_put += 1
             if len(self._deque) > self.max_size:
-                self._deque.popleft()
+                # Prefer a consumed comment over an unconsumed (undelivered) one.
+                victim = next((c for c in self._deque if c.id in self._consumed), None)
+                if victim is None:
+                    victim = self._deque[0]
+                self._deque.remove(victim)
+                self._consumed.discard(victim.id)
         return comment
 
     def snapshot(
@@ -128,6 +147,7 @@ class ChatQueue:
         """Drop all comments (used on session stop)."""
         with self._lock:
             self._deque.clear()
+            self._consumed.clear()
 
     def __len__(self) -> int:
         with self._lock:
