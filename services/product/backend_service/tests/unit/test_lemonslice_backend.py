@@ -99,7 +99,8 @@ def test_start_posts_single_speaker_body_and_scopes_avatar_token(started):
     avatar = jwt.decode(body["properties"]["livekit_token"], options={"verify_signature": False})
     assert avatar["kind"] == "agent" and avatar["sub"] == AVATAR
     assert avatar["attributes"] == {"lk.publish_on_behalf": "livento-runtime"}
-    assert avatar["video"]["room"] == res.session_id == body["properties"]["livekit_session_id"]
+    assert avatar["video"]["room"] == res.session_id
+    assert set(body["properties"]) == {"livekit_url", "livekit_token"}
     assert avatar["exp"] - avatar["nbf"] <= 300
     assert res.mode == "LEMONSLICE"
 

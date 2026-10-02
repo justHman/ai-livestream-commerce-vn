@@ -8,15 +8,29 @@ participant only. LemonSlice's own LLM/TTS is never enabled.
 The seam is sync; ``livekit-rtc`` runs on one backend-owned event-loop thread.
 ``stream_audio`` yields no VideoWindow (the provider renders in the room).
 
-UNVERIFIED ASSUMPTIONS (gate external proof 023, not local implementation):
-  LS1  ``POST {api_base}/sessions`` body/headers and the response ``session_id``;
-       the terminate endpoint is unknown, so it is configuration
-       (``LEMONSLICE_TERMINATE_PATH``, empty = leave the room and rely on
-       ``idle_timeout``).
-  LS2  the avatar publishes video (and audio); ``lk.audio_stream`` accepts 16 kHz.
+UNVERIFIED ASSUMPTIONS (gate external proof 023, not local implementation).
+Items tagged DOC-via-assistant come from LemonSlice's own docs assistant: documented but
+NOT verified by a human or against the real service. Behaviour stays configurable and
+fails safe.
+  LS1  ``POST {api_base}/sessions`` (header ``X-API-Key``), body ``transport_type=livekit``
+       and ``properties{livekit_url, livekit_token}``; response ``session_id``.
+       DOC-via-assistant: the schema has NO ``livekit_session_id``; we send it only when
+       ``LEMONSLICE_SEND_LIVEKIT_SESSION_ID`` is on. RISK: the docs advise against using the
+       raw livekit transport directly (prefer the LiveKit/Pipecat SDK); this backend does.
+  LS1t Terminate. DOC-via-assistant: ``POST {api_base}/sessions/{id}/control`` with
+       ``{"event":"terminate"}``; default of ``LEMONSLICE_TERMINATE_PATH`` (``{session_id}``
+       placeholder, relative to the API base).
+  LS2  the avatar publishes video (and audio); ``lk.audio_stream`` accepts 16 kHz
+       (DOC-via-assistant: 16 kHz is the processing rate, other rates are resampled).
        If it publishes video only, ``AVATAR_AUDIO_FALLBACK_PUBLISH`` makes the
        Runtime publish the same PCM as one delayed audio track.
-  LS3  whether silence counts toward ``idle_timeout``; no keep-alive is sent.
+  LS3  Idle timeout. DOC-via-assistant: default 60 s, resets while the avatar talks;
+       ``{"event":"reset-idle-timeout"}`` on the control endpoint resets it. A keep-alive
+       loop (``LEMONSLICE_KEEPALIVE_S``, 0 = off) sends it while the avatar is silent.
+  LS4  Session cap. DOC-via-assistant: hard cap is the LemonSlice GPU timeout (default 30 min).
+       ``LEMONSLICE_MAX_SESSION_S`` (default 1500, 0 = off) refuses new utterances with
+       ``SessionNearCap`` and ``session_status()`` reports ``near_cap``. There is NO automatic
+       rollover: whether a new session may start right after the cap is unknown (LS4/LS7).
   LK   JWT claim names for ``kind=agent`` / ``lk.publish_on_behalf``.
 """
 
@@ -49,6 +63,10 @@ _KIND_VIDEO = 2  # livekit TrackKind.KIND_VIDEO; used when livekit-rtc is not im
 _KIND_AUDIO = 1
 
 
+_CONTROL_PATH = "sessions/{session_id}/control"  # DOC-via-assistant, relative to api_base
+_CAP_WARN_FRACTION = 0.8
+
+
 @dataclass(frozen=True)
 class LemonSliceSettings:
     livekit_url: str
@@ -66,7 +84,11 @@ class LemonSliceSettings:
     runtime_identity: str = "livento-runtime"
     fallback_publish: bool = False
     render_offset_ms: int = 0
-    terminate_path: str = ""
+    terminate_path: str = _CONTROL_PATH
+    send_livekit_session_id: bool = False  # not in the documented schema: opt-in only
+    keepalive_s: float = 20.0  # reset-idle-timeout period while the avatar is silent; 0 = off
+    max_session_s: float = 1500.0  # age guard below the documented 30 min cap; 0 = off
+    keepalive_fail_log_after: int = 3
     playback_margin_s: float = 5.0
     avatar_token_ttl_s: int = 300
     client_token_ttl_s: int = 3600
@@ -97,6 +119,15 @@ class AvatarAudioFallbackRefused(LemonSliceError):
         super().__init__(
             "avatar_audio_fallback_refused",
             "AVATAR_AUDIO_FALLBACK_PUBLISH refused: the avatar already publishes audio",
+        )
+
+
+class SessionNearCap(LemonSliceError):
+    """The session is older than ``max_session_s``: the provider's hard cap is close."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "session_near_cap", "LemonSlice session reached its age guard; start a new session"
         )
 
 
@@ -216,6 +247,9 @@ class _Sess:
     fallback: _FallbackAudioTrack | None = None
     refused: bool = False  # avatar audio was detected while the fallback ran: fail closed
     watcher: Any = None  # idle backstop task for 'avatar started publishing audio'
+    keepalive: Any = None  # reset-idle-timeout loop task
+    started_at: float = 0.0  # monotonic
+    cap_warned: bool = False
 
     @property
     def epoch(self) -> int:
@@ -233,7 +267,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         http_post: HttpPost | None = None,
         audio_track_factory: Callable[[Any, int], Any] | None = None,
         clock: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
+        self._mono = monotonic
         self._s = settings
         self._room_factory = room_factory or self._default_room
         self._post = http_post or _httpx_post
@@ -407,6 +443,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     clear_budget_s=s.clear_budget_s,
                 ),
             )
+            sess.started_at = self._mono()
             sess.cleared = _BoundedSet(s.history)
             sess.unconfirmed = _BoundedSet(s.history)
             # Single-speaker: no agent_prompt / LLM / TTS fields are ever sent.
@@ -417,9 +454,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 "properties": {
                     "livekit_url": s.livekit_url,
                     "livekit_token": avatar_token,
-                    "livekit_session_id": room_name,
                 },
             }
+            if s.send_livekit_session_id:  # undocumented field: opt-in
+                body["properties"]["livekit_session_id"] = room_name
             post_task = asyncio.ensure_future(
                 asyncio.to_thread(
                     self._post,
@@ -436,6 +474,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     "session_request_failed", f"LemonSlice session request failed status={status}"
                 )
             sess.provider_session_id = str(data.get("session_id") or "")
+            if s.keepalive_s > 0 and sess.provider_session_id:
+                sess.keepalive = asyncio.ensure_future(self._keepalive(sess))
             await self._wait_avatar_video(room)
             if s.fallback_publish:
                 # Look BEFORE publishing: an avatar with its own audio plus ours = two speakers.
@@ -604,6 +644,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         if w.utterance_id in sess.cleared:  # late window of an interrupted utterance
             return
         assert w.pcm is not None  # checked in stream_audio
+        if self._age_state(sess) == "near_cap" and sess.channel.open_utterance != w.utterance_id:
+            raise SessionNearCap()  # a started utterance may still finish
         epoch = sess.epoch
         await self._guard_fallback(sess)  # avatar audio appeared after start: never two speakers
         out = await sess.channel.send(
@@ -689,6 +731,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 pass
             if sess.watcher is not None:
                 sess.watcher.cancel()
+            if sess.keepalive is not None:
+                sess.keepalive.cancel()
             if sess.fallback is not None:
                 sess.fallback.close()
             try:
@@ -701,6 +745,19 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         except Exception as exc:
             log.warning("lemonslice room leave failed error_type=%s", type(exc).__name__)
 
+    async def _control(self, provider_session_id: str, event: str, path: str) -> int:
+        """POST one control event; returns the HTTP status. May raise (caller classes it)."""
+        s = self._s
+        rel = path.format(session_id=provider_session_id).lstrip("/")
+        status, _ = await asyncio.to_thread(
+            self._post,
+            f"{s.api_base.rstrip('/')}/{rel}",
+            {"X-API-Key": s.lemonslice_api_key},
+            {"event": event},
+            s.request_timeout_s,
+        )
+        return status
+
     async def _terminate_provider(self, sess: _Sess) -> None:
         s = self._s
         if not sess.provider_session_id:
@@ -710,15 +767,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 "lemonslice session not terminated (no terminate path); idle_timeout applies"
             )
             return
-        path = s.terminate_path.format(session_id=sess.provider_session_id)
         for attempt in range(max(1, s.terminate_attempts)):
             try:
-                status, _ = await asyncio.to_thread(
-                    self._post,
-                    f"{s.api_base.rstrip('/')}/{path.lstrip('/')}",
-                    {"X-API-Key": s.lemonslice_api_key},
-                    {},
-                    s.request_timeout_s,
+                status = await self._control(
+                    sess.provider_session_id, "terminate", s.terminate_path
                 )
                 if status < 300:
                     return
@@ -729,12 +781,59 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             await asyncio.sleep(0.2)
         log.error("lemonslice session NOT terminated after retries; idle_timeout applies")
 
+    async def _keepalive(self, sess: _Sess) -> None:
+        """Send reset-idle-timeout while the avatar is silent. Never touches the speech path:
+        it is its own task, each call is bounded, failures are only counted and logged."""
+        s = self._s
+        failures = 0
+        while not sess.channel.broken:
+            await asyncio.sleep(s.keepalive_s)
+            self._age_state(sess)  # also emits the one-time 80% warning
+            if sess.channel.broken or sess.channel.open_utterance:
+                continue  # speaking already resets the provider idle timer
+            err = ""
+            try:
+                status = await asyncio.wait_for(
+                    self._control(sess.provider_session_id, "reset-idle-timeout", _CONTROL_PATH),
+                    s.request_timeout_s + 1,
+                )
+                if status >= 300:
+                    err = f"status={status}"
+            except Exception as exc:
+                err = f"error_type={type(exc).__name__}"
+            if not err:
+                failures = 0
+                continue
+            failures += 1
+            log.warning("lemonslice keepalive failed consecutive=%d %s", failures, err)
+            if failures == s.keepalive_fail_log_after:
+                log.error("lemonslice keepalive failing; idle_timeout may end the session")
+
+    def _age_state(self, sess: _Sess) -> str:
+        """'ok' | 'near_cap'; logs once at 80% of ``max_session_s``.
+
+        TODO(livento): automatic rollover on near_cap is deliberately not implemented; whether
+        LemonSlice allows a new session right after the cap is unknown (LS4/LS7).
+        """
+        cap = self._s.max_session_s
+        if cap <= 0:
+            return "ok"
+        age = self._mono() - sess.started_at
+        if age >= cap:
+            return "near_cap"
+        if age >= cap * _CAP_WARN_FRACTION and not sess.cap_warned:
+            sess.cap_warned = True
+            log.warning("lemonslice session age %.0fs is 80%% of the %.0fs guard", age, cap)
+        return "ok"
+
     def session_status(self, session_id: str) -> str:
         sess = self._sessions.get(session_id)
         if sess is None:
             raise KeyError(session_id)
         if sess.channel.broken:
             return "channel_broken"
+        if self._age_state(sess) == "near_cap":
+            return "near_cap"
         p = sess.room.remote_participants.get(self._s.avatar_identity)
         return "active" if p is not None else "avatar_absent"
 
