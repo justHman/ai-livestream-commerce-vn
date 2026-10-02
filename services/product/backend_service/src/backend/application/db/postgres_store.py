@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 _SCHEMA = Path(__file__).resolve().parents[2] / "db" / "sql" / "runtime_schema.sql"
 _TERMINAL_SCHEMA = Path(__file__).resolve().parents[2] / "db" / "sql" / "terminal_schema.sql"
+_USAGE_SCHEMA = Path(__file__).resolve().parents[2] / "db" / "sql" / "usage_evidence_schema.sql"
 _CONNECT_TIMEOUT_SECONDS = 5.0
 _COMMAND_TIMEOUT_SECONDS = 5.0
 
@@ -132,6 +133,16 @@ class PostgresRuntimeStore:
     async def apply_terminal_schema(self) -> None:
         """Apply terminal_schema.sql (P0-FB-019). Called only when the feature is enabled."""
         sql = _TERMINAL_SCHEMA.read_text(encoding="utf-8")
+
+        async def apply() -> None:
+            async with self._require_pool().acquire() as conn:
+                await conn.execute(sql)
+
+        await self._command(apply)
+
+    async def apply_usage_evidence_schema(self) -> None:
+        """Apply usage_evidence_schema.sql (P0-FB-017). Called only when the feature is enabled."""
+        sql = _USAGE_SCHEMA.read_text(encoding="utf-8")
 
         async def apply() -> None:
             async with self._require_pool().acquire() as conn:

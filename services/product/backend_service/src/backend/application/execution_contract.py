@@ -67,6 +67,16 @@ def set_terminal_advertised(value: bool) -> None:
     _terminal_advertised = bool(value)
 
 
+# C-USAGE-EVIDENCE-001 (P0-FB-017). Computed, never constant: set only while the durable
+# outbox, webhook URL and secret are configured (usage_evidence.settings.capabilities()).
+_usage_capabilities: tuple[str, ...] = ()
+
+
+def set_usage_evidence_capabilities(values: tuple[str, ...]) -> None:
+    global _usage_capabilities
+    _usage_capabilities = tuple(values)
+
+
 def available_capabilities(rescue: bool = False) -> tuple[str, ...]:
     """Rescue commands are advertised per session, never process-wide.
 
@@ -80,6 +90,7 @@ def available_capabilities(rescue: bool = False) -> tuple[str, ...]:
         if _terminal_advertised
         else AVAILABLE_CAPABILITIES
     )
+    base = base + _usage_capabilities
     if rescue:
         return base + tuple(f"command.{c}" for c in RESCUE_COMMANDS)
     return base

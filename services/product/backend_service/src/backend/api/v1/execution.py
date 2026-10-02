@@ -35,6 +35,7 @@ from backend.application.execution_contract import (
     start_command_id,
 )
 from backend.application.script_authoring.approved_speech import SpeechRejected
+from backend.application.usage_evidence import UsageEvidenceUnavailable
 
 from .router import router, viewer_auth
 from .auth import admin_auth
@@ -67,6 +68,30 @@ async def _save(store: Any, session_id: str, meta: dict[str, Any], fence: Any) -
             raise HTTPException(status_code=503, detail={"code": "session_busy"})
     else:
         await store.set(session_id, meta)
+
+
+async def _stage_usage(d: Any, prior: ExecutionState, updated: ExecutionState, cause: Any) -> list:
+    """P0-FB-017: stage usage evidence for an already-applied fact, before the save.
+
+    Control plane only (the session lock is held). A no-op unless the usage-evidence
+    service is wired (default off). If the durable row cannot be stored the fact is NOT
+    saved: the caller answers 503 and the API retries the same evidence.
+    """
+    ue = getattr(d, "usage_evidence", None)
+    if ue is None:
+        return []
+    try:
+        if isinstance(cause, Evidence):
+            return await ue.stage_evidence(prior, updated, cause)
+        return await ue.stage_command(prior, updated, cause)
+    except UsageEvidenceUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": "usage_evidence_unavailable"}) from exc
+
+
+async def _settle_usage(d: Any, staged: list, *, saved: bool) -> None:
+    if staged:
+        ue = d.usage_evidence
+        await (ue.commit(staged) if saved else ue.abort(staged))
 
 
 async def _load(store: Any, session_id: str) -> tuple[dict[str, Any], ExecutionState]:
@@ -126,7 +151,13 @@ async def record_execution_evidence(
         except ContractRejection as exc:
             raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
         meta["execution_contract"] = updated.model_dump(mode="json")
-        await _save(d.store, session_id, meta, fence)
+        staged = await _stage_usage(d, state, updated, evidence)
+        try:
+            await _save(d.store, session_id, meta, fence)
+        except BaseException:
+            await _settle_usage(d, staged, saved=False)
+            raise
+        await _settle_usage(d, staged, saved=True)
     return {"state": updated.model_dump(mode="json")}
 
 
@@ -157,11 +188,13 @@ async def request_execution_command(
             if not d.coordinator or not d.coordinator.has(session_id):
                 reason = "runtime_not_ready"
         now = datetime.now(timezone.utc)
+        staged: list = []
         if reason is not None:
             outcome = CommandOutcome(
                 **command.model_dump(), status="rejected", reason_code=reason, result_at=now
             )
         else:
+            prior_state = state
             state = apply_rescue(state, command.command, command.command_id, now)
             outcome = CommandOutcome(
                 **command.model_dump(),
@@ -173,6 +206,7 @@ async def request_execution_command(
                 held=state.hold.held,
             )
             meta["execution_contract"] = state.model_dump(mode="json")
+            staged = await _stage_usage(d, prior_state, state, outcome)
         meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(
             mode="json"
         )
@@ -188,7 +222,9 @@ async def request_execution_command(
         except BaseException:
             if hold_fenced:
                 d.approved_speech.block(session_id, prior_block)
+            await _settle_usage(d, staged, saved=False)
             raise
+        await _settle_usage(d, staged, saved=True)
         if outcome.status == "applied":
             await _apply_rescue_effect(d, session_id, command.command)
     if outcome.status == "applied":
@@ -282,18 +318,23 @@ async def _finish_closing(d: Any, session_id: str) -> None:
             state = ExecutionState.model_validate(meta["execution_contract"])
             if state.phase != "closing":
                 return
-            state = apply_evidence(
-                state,
-                Evidence(
-                    **state.model_dump(include=set(ExecutionIdentity.model_fields)),
-                    sequence=state.sequence + 1,
-                    kind="phase_changed",
-                    phase="ending",
-                    occurred_at=datetime.now(timezone.utc),
-                ),
+            closing_evidence = Evidence(
+                **state.model_dump(include=set(ExecutionIdentity.model_fields)),
+                sequence=state.sequence + 1,
+                kind="phase_changed",
+                phase="ending",
+                occurred_at=datetime.now(timezone.utc),
             )
+            prior_state = state
+            state = apply_evidence(state, closing_evidence)
             meta["execution_contract"] = state.model_dump(mode="json")
-            await _save(d.store, session_id, meta, fence)
+            staged = await _stage_usage(d, prior_state, state, closing_evidence)
+            try:
+                await _save(d.store, session_id, meta, fence)
+            except BaseException:
+                await _settle_usage(d, staged, saved=False)
+                raise
+            await _settle_usage(d, staged, saved=True)
         d.approved_speech.block(session_id, "ending")
         if d.hub is not None:
             await d.hub.emit(
