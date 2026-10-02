@@ -9,6 +9,11 @@ only to the avatar participant, plus the RPCs ``lk.clear_buffer``,
 ASSUMPTION [SRC, not verified against LemonSlice, LS2]: topic/RPC names and the
 16 kHz input rate are taken from the public LiveKit avatar plugin source.
 
+Known limitation (F2): ``broken`` is permanent for the channel and is triggered by a single
+missed deadline (``io_timeout_s``, default 2 s) or a lost clear lock. Nothing restarts the session
+automatically; the only surface is ``send`` raising ``AvatarChannelBroken`` and the backend's
+``session_status`` returning ``channel_broken``. A transient stall therefore needs a session restart.
+
 Principle: when ordering or ownership cannot be proven the channel FAILS CLOSED. It is
 marked ``broken`` (typed error on every later send, a fresh session is required) or the
 affected utterance is left explicitly unconfirmed; it never continues on a best-effort basis.
@@ -90,8 +95,18 @@ class _Play:
     cancelled: bool = False  # interrupted: stays unresolved until its own events arrive
     timed_out: bool = False  # waiter gave up: a late finish is consumed here, not by the next one
     finished: bool = False
+    cancel_seq: int = 0  # the clear that interrupted it
     started_at: float | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass
+class _Ack:
+    """Pending answer to one clear_buffer; stays queued (abandoned) after its clear gave up."""
+
+    seq: int
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    abandoned: bool = False
 
 
 class _Stream:
@@ -155,7 +170,8 @@ class AvatarAudioChannel:
         self.sent_ms = 0.0
         self._plays: deque[_Play] = deque()
         self._by_id: dict[str, _Play] = {}
-        self._acks: deque[asyncio.Event] = deque()  # one entry per pending clear (per-clear token)
+        self._acks: deque[_Ack] = deque()  # FIFO, one per clear; abandoned ones absorb late acks
+        self._clear_seq = 0
         self._detached: set[asyncio.Future] = set()
         self.playback_started_at: OrderedDict[str, float] = OrderedDict()
         lp = room.local_participant
@@ -209,9 +225,15 @@ class AvatarAudioChannel:
         wire_id = payload.get("utterance_id")
         if payload.get("interrupted"):
             # Only the answer to one of OUR clear_buffer calls counts, and only if it names
-            # nothing foreign. It resolves that clear, not the interrupted utterances.
+            # nothing foreign. The avatar says it flushed everything written before that clear,
+            # so every record cancelled by it (or an earlier clear) is resolved. An abandoned
+            # clear (it gave up) still takes its own late ack, so it cannot confirm a later one.
             if self._acks and (wire_id is None or str(wire_id) in self._by_id):
-                self._acks.popleft().set()
+                ack = self._acks.popleft()
+                if not ack.abandoned:
+                    ack.event.set()
+                for rec in [r for r in self._plays if r.cancelled and r.cancel_seq <= ack.seq]:
+                    self._retire(rec)
             return "ok"
         rec = self._match(payload, lambda r: r.closed or (r.cancelled and r.wrote))
         if rec is not None:
@@ -450,18 +472,20 @@ class AvatarAudioChannel:
         budget = self._budget if timeout_s is None else timeout_s
         end = time.monotonic() + budget
         self.epoch += 1  # synchronous: every suspended send is now stale
+        self._clear_seq += 1
+        seq = self._clear_seq
         for rec in self._plays:
             if not rec.cancelled:
                 rec.cancelled = True
+                rec.cancel_seq = seq
                 rec.done.set()
-        owned = False
-        try:
-            await asyncio.wait_for(self._io.acquire(), budget * 0.6)
-            owned = True
-        except asyncio.TimeoutError:
+        owned = await self._acquire_bounded(budget * 0.6)
+        if not owned:
             self._break("send lock not acquired before the clear deadline")
-        ack = asyncio.Event()  # per-clear token: never shared with another clear
+        ack = _Ack(seq)  # per-clear token: never shared with another clear
         self._acks.append(ack)
+        while len(self._acks) > 16:
+            self._acks.popleft()
         try:
             if owned:
                 await self._abort(limit=max(0.05, min(0.5, end - time.monotonic())))
@@ -473,17 +497,36 @@ class AvatarAudioChannel:
             except Exception as exc:  # bounded; interrupt must never raise into the coordinator
                 log.warning("avatar clear_buffer not confirmed error_type=%s", type(exc).__name__)
         finally:
-            try:
-                self._acks.remove(ack)
-            except ValueError:
-                pass
+            ack.abandoned = True  # a late ack of THIS clear must not satisfy a later one
             for rec in [r for r in self._plays if r.cancelled and not r.wrote]:
                 self._retire(rec)  # nothing was dispatched: no event can ever belong to it
             if owned:
                 self._utterance = None
                 self._io.release()
 
-    async def _rpc_and_ack(self, ack: asyncio.Event, remaining: float) -> None:
+    async def _acquire_bounded(self, timeout: float) -> bool:
+        """Take the send lock within ``timeout``; a timeout can never leave it held."""
+        acq = asyncio.ensure_future(self._io.acquire())
+        try:
+            await asyncio.wait({acq}, timeout=timeout)
+        except asyncio.CancelledError:
+            self._give_up(acq)
+            raise
+        if acq.done() and not acq.cancelled() and acq.exception() is None:
+            return True
+        self._give_up(acq)
+        return False
+
+    def _give_up(self, acq: asyncio.Future) -> None:
+        acq.cancel()
+
+        def release_if_won(t: asyncio.Future) -> None:
+            if not t.cancelled() and t.exception() is None:
+                self._io.release()  # the acquire won the race with the cancel
+
+        acq.add_done_callback(release_if_won)
+
+    async def _rpc_and_ack(self, ack: _Ack, remaining: float) -> None:
         start = time.monotonic()
         await self._room.local_participant.perform_rpc(
             destination_identity=self._dest,
@@ -491,4 +534,4 @@ class AvatarAudioChannel:
             payload=json.dumps({}),
             response_timeout=remaining,
         )
-        await asyncio.wait_for(ack.wait(), max(0.05, remaining - (time.monotonic() - start)))
+        await asyncio.wait_for(ack.event.wait(), max(0.05, remaining - (time.monotonic() - start)))

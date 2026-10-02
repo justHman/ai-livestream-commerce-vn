@@ -249,7 +249,7 @@ def test_overlapping_clears_with_a_stuck_send_fail_closed_within_the_budget():
         assert time.monotonic() - t0 < 2.0  # budget 0.4 s, never the old ~28 s worst case
         assert not any("error" in b for b in (b1, b2))
         ch = channel(backend, sid)
-        assert ch.broken and not ch._acks  # per-clear tokens are all released
+        assert ch.broken and all(a.abandoned for a in ch._acks)  # no live token left
         with pytest.raises(AvatarChannelBroken):  # no audio may follow a clear that lost the lock
             backend.stream_audio(sid, win("u2", 0))
         assert len(room.streams) == 1 and room.streams[0].chunks == []
@@ -292,8 +292,8 @@ def test_close_and_abort_both_failing_breaks_the_channel(be):
 # ---- P1-2: playback events are matched to the utterance they belong to -------------------
 
 
-def manual_backend(**kw):
-    backend, room, rest = make(**{"playback_margin_s": 0.4, **kw})
+def manual_backend(mode="normal", **kw):
+    backend, room, rest = make(mode, **{"playback_margin_s": 0.4, **kw})
     room.auto = False
     sid = backend.start(StartOptions()).session_id
     return backend, room, sid
@@ -375,16 +375,20 @@ def test_started_before_the_stream_is_opened_stamps_nothing(manual):
     assert backend.playback_info(sid, "u1")["playback_started_at"] is None
 
 
-def test_idless_events_never_confirm_a_newer_utterance_while_an_older_one_is_unresolved(manual):
-    backend, room, sid = manual
-    backend.stream_audio(sid, win("u1", 0))  # written, avatar never reported started
-    backend.interrupt(sid)
-    backend.stream_audio(sid, win("u2", 0))
-    started(room, backend)  # u1's delayed event, no id on the wire: absorbed by u1
-    started(room, backend)  # u1 is still unresolved (no finish seen): never credited to u2
-    assert backend.playback_info(sid, "u2")["playback_started_at"] is None
-    started(room, backend, utterance_id="u2")  # an explicit id is always trusted
-    assert backend.playback_info(sid, "u2")["playback_started_at"] is not None
+def test_idless_events_never_confirm_a_newer_utterance_while_an_older_one_is_unresolved():
+    # the clear ack never arrives (silent avatar): the interrupted utterance stays unresolved
+    backend, room, sid = manual_backend("silent", clear_budget_s=0.3)
+    try:
+        backend.stream_audio(sid, win("u1", 0))  # written, avatar never reported started
+        backend.interrupt(sid)
+        backend.stream_audio(sid, win("u2", 0))
+        started(room, backend)  # u1's delayed event, no id on the wire: absorbed by u1
+        started(room, backend)  # u1 is still unresolved (no ack, no finish): never credited to u2
+        assert backend.playback_info(sid, "u2")["playback_started_at"] is None
+        started(room, backend, utterance_id="u2")  # an explicit id is always trusted
+        assert backend.playback_info(sid, "u2")["playback_started_at"] is not None
+    finally:
+        backend.stop_all()
 
 
 def test_unresolved_records_are_evicted_by_count_not_by_time():
@@ -398,19 +402,89 @@ def test_unresolved_records_are_evicted_by_count_not_by_time():
         backend.stop_all()
 
 
-def test_late_idless_finish_of_an_interrupted_utterance_is_not_credited_to_the_next(manual):
-    backend, room, sid = manual
-    t1, b1 = bg(backend.stream_audio, sid, win("u1", 0, final=True))
-    assert until(lambda: room.streams and room.streams[0].closed_reason is None)
-    backend.interrupt(sid)
-    join(t1)
-    t2, b2 = bg(backend.stream_audio, sid, win("u2", 0, final=True))
-    assert until(lambda: len(room.streams) == 2 and room.streams[1].closed_reason is None)
-    finished(room, backend, interrupted=False)  # u1's late completion
-    assert not channel(backend, sid)._by_id["u2"].done.is_set()
-    finished(room, backend, interrupted=False)
-    join(t2)
-    assert backend.playback_info(sid, "u2")["playback_unconfirmed"] is False
+def test_late_idless_finish_before_any_clear_ack_is_not_credited_to_the_next_utterance():
+    backend, room, sid = manual_backend("silent", clear_budget_s=0.3)  # no ack ever seen
+    try:
+        t1, b1 = bg(backend.stream_audio, sid, win("u1", 0, final=True))
+        assert until(lambda: room.streams and room.streams[0].closed_reason is None)
+        backend.interrupt(sid)
+        join(t1)
+        t2, b2 = bg(backend.stream_audio, sid, win("u2", 0, final=True))
+        assert until(lambda: len(room.streams) == 2 and room.streams[1].closed_reason is None)
+        finished(room, backend, interrupted=False)  # u1's late completion
+        assert not channel(backend, sid)._by_id["u2"].done.is_set()
+        finished(room, backend, interrupted=False)
+        join(t2)
+        assert backend.playback_info(sid, "u2")["playback_unconfirmed"] is False
+    finally:
+        backend.stop_all()
+
+
+def test_clear_ack_resolves_interrupted_records_so_later_utterances_are_confirmed():
+    backend, room, _ = make(playback_margin_s=0.5)  # auto double: answers started/finished/ack
+    sid = backend.start(StartOptions()).session_id
+    try:
+        backend.stream_audio(sid, win("u1", 0))  # written, not final
+        assert until(lambda: backend.playback_info(sid, "u1")["playback_started_at"])
+        backend.interrupt(sid)
+        assert not channel(backend, sid)._plays  # the ack retired the flushed record
+        for uid in ("u2", "u3", "u4"):
+            t0 = time.monotonic()
+            backend.stream_audio(sid, win(uid, 0, final=True))
+            info = backend.playback_info(sid, uid)
+            assert info["playback_unconfirmed"] is False, uid
+            assert info["playback_started_at"] is not None, uid
+            assert time.monotonic() - t0 < 0.45, uid  # no playback_margin timeout
+    finally:
+        backend.stop_all()
+
+
+def test_without_a_clear_ack_later_utterances_stay_unconfirmed_not_falsely_confirmed():
+    backend, room, sid = manual_backend("silent", clear_budget_s=0.3, playback_margin_s=0.1)
+    try:
+        backend.stream_audio(sid, win("u1", 0))
+        backend.interrupt(sid)  # no ack
+        backend.stream_audio(sid, win("u2", 0, final=True))
+        info = backend.playback_info(sid, "u2")
+        assert info["playback_unconfirmed"] is True and info["playback_started_at"] is None
+    finally:
+        backend.stop_all()
+
+
+def test_late_ack_of_an_abandoned_clear_cannot_satisfy_a_later_clear(caplog):
+    backend, room, _ = make(mode="silent")
+    sid = backend.start(StartOptions()).session_id
+    loop = backend._ensure_loop()
+    ch = channel(backend, sid)
+    try:
+        asyncio.run_coroutine_threadsafe(ch.clear_buffer(timeout_s=0.3), loop).result(
+            5
+        )  # A gives up
+        with caplog.at_level(logging.WARNING):
+            fut = asyncio.run_coroutine_threadsafe(ch.clear_buffer(timeout_s=0.6), loop)  # B
+            assert until(lambda: len(ch._acks) == 2)
+            finished(room, backend, interrupted=True)  # A's LATE ack
+            fut.result(5)
+        assert "clear_buffer not confirmed" in caplog.text  # B was not satisfied by it
+    finally:
+        backend.stop_all()
+
+
+def test_lock_wait_timeout_never_leaves_the_send_lock_held():
+    backend, room, _ = make(io_timeout_s=5.0, clear_budget_s=0.3)
+    sid = backend.start(StartOptions()).session_id
+    try:
+        room.hold("write", resistant=True)
+        t_send, box = bg(backend.stream_audio, sid, win("u1", 0, ms=400))
+        assert room.wait_hit("write")
+        backend.interrupt(sid)  # cannot take the lock inside its budget
+        assert channel(backend, sid).broken
+        room.blocked.discard("write")  # the stuck send now finishes and releases the lock
+        join(t_send)
+        assert until(lambda: not channel(backend, sid)._io.locked())
+    finally:
+        room.release("write")
+        backend.stop_all()
 
 
 def test_unknown_explicit_id_never_confirms_a_clear_buffer(caplog):
