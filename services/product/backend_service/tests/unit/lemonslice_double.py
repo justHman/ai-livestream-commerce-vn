@@ -223,6 +223,7 @@ class FakeLemonSlice:
         self.controls: list[tuple[str, str]] = []  # (url, event) of every control POST
         self.control_status = 200
         self.control_raise: BaseException | None = None  # raised by every control POST
+        self.session_id = "ls-1"  # what the REST create call answers
 
     def hold(self) -> threading.Event:
         """Park the next REST call until the returned event is set (REST creation delay)."""
@@ -241,4 +242,4 @@ class FakeLemonSlice:
             self._hold.wait(10)
         if self.status < 300 and body.get("properties"):
             self.room.avatar_joins()
-        return self.status, {"session_id": "ls-1"} if self.status < 300 else {}
+        return self.status, {"session_id": self.session_id} if self.status < 300 else {}

@@ -39,6 +39,8 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import math
+import re
 import threading
 import time
 import uuid
@@ -47,6 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import quote
 
 from backend.application.publishing.datastream import AvatarAudioChannel
 from backend.application.publishing.livekit import mint_room_token
@@ -65,6 +68,10 @@ _KIND_AUDIO = 1
 
 _CONTROL_PATH = "sessions/{session_id}/control"  # DOC-via-assistant, relative to api_base
 _CAP_WARN_FRACTION = 0.8
+# A provider session id becomes ONE URL path segment carrying the API key header.
+_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_TERMINAL_STATUS = frozenset({404, 410})  # the provider session is gone
+_AUTH_STATUS = frozenset({401, 403})  # terminal only when repeated
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,33 @@ class LemonSliceSettings:
     history: int = 256  # bounded playback-history collections
     terminate_attempts: int = 2
 
+    def __post_init__(self) -> None:
+        # Negative/NaN/inf timers would silently disable a safeguard: refuse them (0 = off where
+        # documented: keepalive_s, max_session_s).
+        for name in (
+            "idle_timeout_s",
+            "ready_timeout_s",
+            "request_timeout_s",
+            "keepalive_s",
+            "max_session_s",
+            "playback_margin_s",
+            "avatar_token_ttl_s",
+            "client_token_ttl_s",
+            "io_timeout_s",
+            "clear_budget_s",
+            "audio_recheck_s",
+            "audio_probe_s",
+            "render_offset_ms",
+            "terminate_attempts",
+            "keepalive_fail_log_after",
+        ):
+            v = getattr(self, name)
+            if not math.isfinite(v) or v < 0:
+                raise ValueError(f"{name} must be a finite, non-negative number")
+        for name in ("audio_sample_rate", "history", "fallback_max_queue"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be >= 1")
+
     def __repr__(self) -> str:  # never print secrets
         return "LemonSliceSettings(<redacted>)"
 
@@ -129,6 +163,10 @@ class SessionNearCap(LemonSliceError):
         super().__init__(
             "session_near_cap", "LemonSlice session reached its age guard; start a new session"
         )
+
+
+class _SessionClosing(Exception):
+    """A control call was refused because its session is closing or closed."""
 
 
 class _BoundedSet:
@@ -250,6 +288,9 @@ class _Sess:
     keepalive: Any = None  # reset-idle-timeout loop task
     started_at: float = 0.0  # monotonic
     cap_warned: bool = False
+    closing: bool = False  # read from the HTTP worker thread: set before any teardown step
+    inflight: set = field(default_factory=set)  # control HTTP futures still running
+    degraded: str = ""  # terminal keep-alive outcome (status class); "" = healthy
 
     @property
     def epoch(self) -> int:
@@ -473,7 +514,13 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 raise LemonSliceError(
                     "session_request_failed", f"LemonSlice session request failed status={status}"
                 )
-            sess.provider_session_id = str(data.get("session_id") or "")
+            sid = str(data.get("session_id") or "")
+            if sid and not _SAFE_SESSION_ID.fullmatch(sid):
+                # never interpolate a foreign value into a URL carrying the API key
+                raise LemonSliceError(
+                    "session_id_invalid", "LemonSlice returned an unusable session id"
+                )
+            sess.provider_session_id = sid
             if s.keepalive_s > 0 and sess.provider_session_id:
                 sess.keepalive = asyncio.ensure_future(self._keepalive(sess))
             await self._wait_avatar_video(room)
@@ -587,7 +634,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
             return
         sid = str(data.get("session_id") or "") if status < 300 else ""
-        if sid:
+        if sid and _SAFE_SESSION_ID.fullmatch(sid):
             await self._terminate_provider(SimpleNamespace(provider_session_id=sid))
 
     async def _wait_avatar_video(self, room: Any) -> None:
@@ -725,38 +772,61 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
 
     async def _teardown(self, room_name: str, sess: _Sess | None, room: Any) -> None:
         if sess is not None:
+            sess.closing = True  # first: no keep-alive may start from here on
+            if sess.keepalive is not None:
+                sess.keepalive.cancel()
             try:
                 await self._interrupt(sess)
             except Exception:
                 pass
             if sess.watcher is not None:
                 sess.watcher.cancel()
-            if sess.keepalive is not None:
-                sess.keepalive.cancel()
             if sess.fallback is not None:
                 sess.fallback.close()
             try:
                 await sess.channel.shutdown()
             except Exception as exc:
                 log.warning("channel shutdown error_type=%s", type(exc).__name__)
+            await self._drain_control(sess)  # terminate must be the LAST call to the provider
             await self._terminate_provider(sess)
         try:
             await asyncio.wait_for(room.disconnect(), self._s.io_timeout_s)
         except Exception as exc:
             log.warning("lemonslice room leave failed error_type=%s", type(exc).__name__)
 
-    async def _control(self, provider_session_id: str, event: str, path: str) -> int:
-        """POST one control event; returns the HTTP status. May raise (caller classes it)."""
+    async def _control(
+        self, provider_session_id: str, event: str, path: str, guard: _Sess | None = None
+    ) -> int:
+        """POST one control event; returns the HTTP status. May raise (caller classes it).
+
+        With ``guard`` (keep-alives) the call is tracked on the session and re-checks
+        ``guard.closing`` inside the worker thread right before the HTTP call.
+        """
         s = self._s
-        rel = path.format(session_id=provider_session_id).lstrip("/")
-        status, _ = await asyncio.to_thread(
-            self._post,
-            f"{s.api_base.rstrip('/')}/{rel}",
-            {"X-API-Key": s.lemonslice_api_key},
-            {"event": event},
-            s.request_timeout_s,
-        )
+        rel = path.format(session_id=quote(provider_session_id, safe="")).lstrip("/")
+        url = f"{s.api_base.rstrip('/')}/{rel}"
+
+        def call() -> tuple[int, dict]:
+            if guard is not None and guard.closing:
+                raise _SessionClosing()
+            return self._post(
+                url, {"X-API-Key": s.lemonslice_api_key}, {"event": event}, s.request_timeout_s
+            )
+
+        fut = asyncio.ensure_future(asyncio.to_thread(call))
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())  # never "not retrieved"
+        if guard is not None:
+            guard.inflight.add(fut)
+            fut.add_done_callback(guard.inflight.discard)
+        status, _ = await asyncio.shield(fut)
         return status
+
+    async def _drain_control(self, sess: _Sess) -> None:
+        pending = [f for f in sess.inflight if not f.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=self._s.request_timeout_s + 1)
+            if any(not f.done() for f in pending):
+                log.error("lemonslice keepalive still in flight at terminate")
 
     async def _terminate_provider(self, sess: _Sess) -> None:
         s = self._s
@@ -786,24 +856,37 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         it is its own task, each call is bounded, failures are only counted and logged."""
         s = self._s
         failures = 0
-        while not sess.channel.broken:
+        auth_failures = 0
+        while not sess.channel.broken and not sess.closing:
             await asyncio.sleep(s.keepalive_s)
             self._age_state(sess)  # also emits the one-time 80% warning
+            if sess.closing:
+                return
             if sess.channel.broken or sess.channel.open_utterance:
                 continue  # speaking already resets the provider idle timer
             err = ""
+            status = 0
             try:
                 status = await asyncio.wait_for(
-                    self._control(sess.provider_session_id, "reset-idle-timeout", _CONTROL_PATH),
+                    self._control(
+                        sess.provider_session_id, "reset-idle-timeout", _CONTROL_PATH, sess
+                    ),
                     s.request_timeout_s + 1,
                 )
                 if status >= 300:
                     err = f"status={status}"
+            except _SessionClosing:
+                return
             except Exception as exc:
                 err = f"error_type={type(exc).__name__}"
             if not err:
-                failures = 0
+                failures = auth_failures = 0
                 continue
+            auth_failures = auth_failures + 1 if status in _AUTH_STATUS else 0
+            if status in _TERMINAL_STATUS or auth_failures >= max(1, s.keepalive_fail_log_after):
+                sess.degraded = f"status={status}"
+                log.error("lemonslice keepalive terminal %s; session degraded", sess.degraded)
+                return
             failures += 1
             log.warning("lemonslice keepalive failed consecutive=%d %s", failures, err)
             if failures == s.keepalive_fail_log_after:
@@ -832,6 +915,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             raise KeyError(session_id)
         if sess.channel.broken:
             return "channel_broken"
+        if sess.degraded:
+            return "degraded"
         if self._age_state(sess) == "near_cap":
             return "near_cap"
         p = sess.room.remote_participants.get(self._s.avatar_identity)
