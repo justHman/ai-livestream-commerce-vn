@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from backend.application.entity.models import EntityDocument
 
 from .comment_buffer import ChatQueue, IncomingComment
+from .errors import CoordinatorUnavailable
 from .clustering import Comment, cluster_comments
 from .decision import Decision, Director
 from .embeddings import embedder_status
@@ -143,6 +144,9 @@ class DirectorCoordinator:
         # (tests that do not exercise MJPEG).
         self._orchestrator_registry = orchestrator_registry
         self._queues: dict[str, ChatQueue] = {}
+        # Per-session count of comments routed into the queue. Fences teardown
+        # reconciliation against stale reports (P0-FB-013).
+        self._delivery_seq: dict[str, int] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._playback_tasks: dict[str, asyncio.Task] = {}
         self._prepare_tasks: dict[str, set[asyncio.Task]] = {}
@@ -164,6 +168,12 @@ class DirectorCoordinator:
         # persistence. Fire-and-forget: a failure must never break the speak loop.
         self._pg_store = pg_store
         self._audio_window_callback = audio_window_callback
+        # Sink for "these queued comments were really read out of the queue".
+        # The app composition root points it at
+        # PlatformEventIngestionService.mark_consumed so a comment the tick
+        # consumed is not reconciled as lost at teardown (P0-FB-013). One
+        # unbound callable keeps the ingress ledger out of this module.
+        self.comment_consumed = None
         # The app composition root installs the same boundary used by /say.
         self.approved_speech = None
 
@@ -257,14 +267,21 @@ class DirectorCoordinator:
             name=f"coordinator-playback-{session_id}",
         )
 
-    def stop(self, session_id: str) -> None:
+    def stop(self, session_id: str) -> int:
         """Cancel the tick task, drop the queue, detach runtime.
 
         If the orchestrator is currently speaking for this session, cancel it.
         Idempotent.
+
+        Returns the delivery counter as of teardown. The caller passes it to
+        ``PlatformEventIngestionService.reconcile_session(session_id,
+        attach_seq=...)`` so comments that were routed but never consumed are
+        reconciled as audited non_deliverable instead of dying with the queue
+        (P0-FB-013). The counter is captured BEFORE the state is dropped.
         """
         if self.approved_speech is not None:
             self.approved_speech.cancel(session_id)
+        attach_seq = self._delivery_seq.get(session_id, 0)
         current = self._current_speech.get(session_id)
         if current is not None:
             current.is_cancelled = True
@@ -285,6 +302,7 @@ class DirectorCoordinator:
             asyncio.create_task(entry["orchestrator"].cancel(session_id))
 
         self._queues.pop(session_id, None)
+        self._delivery_seq.pop(session_id, None)
         self._decision_queue.pop(session_id, None)
         self._speech_queue.pop(session_id, None)
         self._decision_locks.pop(session_id, None)
@@ -300,11 +318,17 @@ class DirectorCoordinator:
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
+        return attach_seq
 
-    def stop_all(self) -> None:
-        """Cancel every active coordinator session."""
-        for session_id in list(self._tasks):
-            self.stop(session_id)
+    def stop_all(self) -> dict[str, int]:
+        """Cancel every active coordinator session.
+
+        Returns each session's delivery fence as of its teardown, the same
+        value ``stop`` hands back. A caller that bulk-stops (process
+        shutdown) needs it for every session, otherwise routed work dies
+        with the queues and is never audited (P0-FB-013).
+        """
+        return {session_id: self.stop(session_id) for session_id in list(self._tasks)}
 
     def update_catalog(self, session_id: str, products: list[EntityDocument]) -> None:
         """Refresh catalog and invalidate work created before Re-attach."""
@@ -384,7 +408,8 @@ class DirectorCoordinator:
         """
         queue = self._queues.get(session_id)
         if queue is None:
-            raise KeyError(f"No active coordinator session: {session_id}")
+            raise CoordinatorUnavailable(f"No active coordinator session: {session_id}")
+        self._delivery_seq[session_id] = self._delivery_seq.get(session_id, 0) + 1
         comment = queue.put(text, author, ts=ts)
         # Approved P0 sessions require the authorized execution start command.
         if self._runtime.get_session(session_id).approved_envelope is None:
@@ -637,6 +662,30 @@ class DirectorCoordinator:
         """True if a coordinator session is active for this session_id."""
         return session_id in self._tasks
 
+    def queue_capacity(self, session_id: str) -> int:
+        """Free slots left in the session's ChatQueue; 0 when full.
+
+        ``ChatQueue.put`` evicts the oldest comment once it exceeds
+        ``max_size``, so a producer must be able to ask for headroom BEFORE
+        putting or it silently drops someone else's comment (P0-FB-013).
+        An unknown session is 0 — there is nowhere to put the comment.
+        """
+        queue = self._queues.get(session_id)
+        if queue is None:
+            return 0
+        return queue.free_slots()
+
+    def next_delivery_tick(self, session_id: str | None = None) -> int:
+        """Monotonic count of comments routed through the session's queue.
+
+        Read by the ingress service to fence teardown reconciliation: a
+        delivery stamped with a counter above the teardown's was routed
+        after it and must not be reconciled (P0-FB-013).
+        """
+        if session_id is None:
+            return sum(self._delivery_seq.values())
+        return self._delivery_seq.get(session_id, 0)
+
     def _advance_timers(self, session_id: str, now: float, state: StreamState) -> None:
         """Increment all three elapsed counters by delta since last tick."""
         prev = self._last_tick.get(session_id, now)
@@ -705,6 +754,16 @@ class DirectorCoordinator:
                 )
             )
         state.add_comments(routed)
+        queue.mark_consumed(c.id for c in new_only)
+        # This is the consumption boundary: the comments left ChatQueue and
+        # are now Director state, so a teardown must not reconcile them as
+        # non_deliverable (P0-FB-013). Only ``new_only`` counts — a comment
+        # re-read from the window on a later tick was already consumed.
+        if self.comment_consumed is not None and new_only:
+            try:
+                self.comment_consumed(session_id, {c.id for c in new_only})
+            except Exception:
+                logger.warning("consumed-comment sink failed session=%s", session_id, exc_info=True)
         # Bound the old comment/embedding history at write time (5.10): the
         # ClusterStore owns the long-term demand — this state only feeds the
         # Director's selection window.

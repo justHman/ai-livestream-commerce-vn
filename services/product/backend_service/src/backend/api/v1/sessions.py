@@ -335,7 +335,19 @@ async def sessions_stop(
     d.approved_speech.cancel(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
-        d.coordinator.stop(session_id)
+        # stop() returns the delivery counter as of teardown; comments that
+        # were routed but never consumed die with the dropped queue, so
+        # reconcile them as audited non_deliverable (P0-FB-013).
+        attach_seq = d.coordinator.stop(session_id)
+        ingestion = getattr(d, "event_ingestion", None)
+        if ingestion is not None:
+            reconciled = await ingestion.reconcile_session(session_id, attach_seq=attach_seq)
+            if reconciled:
+                logger.info(
+                    "session.stop reconciled non-deliverable events session=%s count=%d",
+                    session_id,
+                    len(reconciled),
+                )
     # Cancellation above is immediate. Serialize teardown with 007's start
     # receipt writes so a late save cannot resurrect deleted session metadata.
     from .execution import _locked
@@ -508,7 +520,9 @@ async def sessions_events(
     if service is None:
         raise HTTPException(status_code=501, detail="event ingestion not enabled")
     try:
-        return await service.ingest(session_id, req.events)
+        return await service.ingest(
+            session_id, req.events, delivery_outcomes_v1=req.delivery_outcomes_v1
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session_id")
     except SessionLockTimeout:
