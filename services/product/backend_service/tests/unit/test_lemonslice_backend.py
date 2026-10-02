@@ -441,3 +441,41 @@ async def test_rescue_hard_cancel_reaches_lemonslice_backend_but_hold_does_not(
     finally:
         backend._sessions.pop(case.sid, None)
         backend.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_stop_with_lemonslice_backend_writes_terminal_once_and_tears_down(
+    case_factory, monkeypatch
+):
+    """010 x 019: End then stop clears the avatar, terminates it once, one terminal record;
+    GET execution shows the terminal capability with opening_media present."""
+    from backend.api.v1.sessions import _stop_cancelled_session
+    from backend.application.execution_contract import (
+        TERMINAL_CAPABILITY,
+        RESCUE_SWITCH,
+        set_terminal_advertised,
+    )
+    from backend.application.terminal_outcomes import TerminalOutcomes
+
+    from . import test_rescue_commands as rescue_tests
+    from .test_terminal_outcomes import FakePg
+
+    monkeypatch.setenv(RESCUE_SWITCH, "1")
+    case = await rescue_tests.live(case_factory)
+    pg = FakePg()
+    case.d.terminal_outcomes = TerminalOutcomes(pg)
+    backend, room, rest = make(terminate_path="/sessions/{session_id}/terminate")
+    res = backend.start(StartOptions())
+    backend._sessions[case.sid] = backend._sessions[res.session_id]
+    case.d.backend = case.d.coordinator._backend = backend
+    rescue_tests.applied(await rescue_tests.send(case, "end"), "end")
+    assert pg.calls == [] and len(room.times("clear_buffer_done")) == 1
+    set_terminal_advertised(True)
+    try:
+        body = (await case.client.get(f"/api/v1/sessions/{case.sid}/execution")).json()
+    finally:
+        set_terminal_advertised(False)
+    assert TERMINAL_CAPABILITY in body["capabilities"]["available"] and "opening_media" in body
+    await _stop_cancelled_session(case.d, case.sid)
+    assert pg.calls == ["persist"] and len(pg.stored) == 1
+    assert room.disconnected and sum("/terminate" in c[0] for c in rest.calls) == 1
