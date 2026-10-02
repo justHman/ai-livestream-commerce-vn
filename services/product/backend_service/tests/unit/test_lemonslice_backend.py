@@ -413,3 +413,31 @@ def test_resampler_fails_closed_when_livekit_rtc_is_missing(monkeypatch):
     assert (
         UtteranceResampler(16000, 16000).push(b"\x01\x00") == b"\x01\x00"
     )  # same rate needs no livekit
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["interrupt", "end", "emergency_end"])
+async def test_rescue_hard_cancel_reaches_lemonslice_backend_but_hold_does_not(
+    case_factory, monkeypatch, command
+):
+    """016 x 010: hard-cancel rescue commands clear the avatar buffer; Hold sends nothing."""
+    from . import test_rescue_commands as rescue_tests
+
+    monkeypatch.setenv(rescue_tests.RESCUE_SWITCH, "1")
+    case = await rescue_tests.live(case_factory)
+    backend, room, _ = make()
+    res = backend.start(StartOptions())
+    try:
+        backend._sessions[case.sid] = backend._sessions[res.session_id]  # same seam key
+        case.d.backend = case.d.coordinator._backend = backend
+
+        def clears():
+            return [e for e in room.events if e.kind == "rpc" and "clear_buffer" in str(e.detail)]
+
+        rescue_tests.applied(await rescue_tests.send(case, "hold"), "hold")
+        assert not clears()
+        rescue_tests.applied(await rescue_tests.send(case, command), command)
+        assert len(clears()) == 1 and backend._sessions[case.sid].epoch == 1
+    finally:
+        backend._sessions.pop(case.sid, None)
+        backend.stop_all()
