@@ -7,7 +7,7 @@ Modes: ``normal`` | ``video_only`` (the avatar publishes no audio) | ``never``
 (the avatar never joins) | ``silent`` (never sends playback_finished).
 
 Deterministic races: ``room.hold(name)`` blocks the next ``open`` / ``write`` /
-``close`` / ``disconnect`` operation at its gate until ``room.release(name)``;
+``close`` / ``rpc`` / ``disconnect`` operation at its gate until ``room.release(name)``;
 ``room.wait_hit(name)`` returns once an operation is parked there. ``room.auto = False``
 stops the avatar from answering by itself so a test injects playback events with
 ``room.emit``. ``FakeLemonSlice.hold()`` parks the REST call the same way.
@@ -86,6 +86,7 @@ class _Local:
         return _Writer(s, self.room)
 
     async def perform_rpc(self, *, destination_identity, method, payload, response_timeout=None):
+        await self.room.gate("rpc")
         self.room.log("rpc", (destination_identity, method))
         if method == "lk.clear_buffer" and self.room.mode != "silent":
             self.room.log("clear_buffer_done")
@@ -109,12 +110,17 @@ class FakeRoom:
         self.captured: list[tuple[float, bytes]] = []
         self.auto = True
         self.blocked: set[str] = set()
+        self.resistant: set[str] = set()
+        self.fail: dict[str, BaseException] = {}  # raise this at the named gate, once
         self.hits: dict[str, threading.Event] = {}
         self.queue_cleared = 0
 
     # -- deterministic gates (thread-safe: the test thread controls the loop thread)
-    def hold(self, name: str) -> None:
+    def hold(self, name: str, *, resistant: bool = False) -> None:
+        """Park the next ``name`` operation; ``resistant`` swallows cancellation (a hung socket)."""
         self.blocked.add(name)
+        if resistant:
+            self.resistant.add(name)
 
     def release(self, name: str) -> None:
         self.blocked.discard(name)
@@ -125,7 +131,16 @@ class FakeRoom:
     async def gate(self, name: str) -> None:
         self.hits.setdefault(name, threading.Event()).set()
         while name in self.blocked:
-            await asyncio.sleep(0.005)
+            if name in self.resistant:
+                try:
+                    await asyncio.shield(asyncio.sleep(0.005))
+                except asyncio.CancelledError:
+                    pass  # a hung operation that ignores cancellation
+            else:
+                await asyncio.sleep(0.005)
+        exc = self.fail.pop(name, None)
+        if exc is not None:
+            raise exc
 
     def emit(self, loop, method: str, payload: str = "", caller: str = AVATAR) -> None:
         """Deliver one avatar playback RPC on the backend loop and wait for the handler."""

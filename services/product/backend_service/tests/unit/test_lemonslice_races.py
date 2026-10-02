@@ -1,10 +1,10 @@
 """P0-FB-010 Runtime: races the immediate protocol double cannot show.
 
-The double parks open/write/close/disconnect/REST at gates the test controls, and
+The double parks open/write/close/rpc/disconnect/REST at gates the test controls, and
 the test injects avatar playback events itself (``room.auto = False``), so every
-interleaving below is deterministic. Each test names the fix it guards; the
-mutation of that fix (removing the epoch re-check, the event correlation, the
-audio-track check, the future cancellation, ...) makes the test fail.
+interleaving below is deterministic: ordering is synchronized on observable state
+(``until``/``wait_hit``), not on sleeps, and every thread must terminate cleanly.
+Each test names the fix it guards; removing that fix makes it fail.
 """
 
 from __future__ import annotations
@@ -23,7 +23,11 @@ from backend.application.clients.avatar.lemonslice import (
     LemonSliceRenderBackend,
     _FallbackAudioTrack,
 )
-from backend.application.publishing.datastream import AvatarIOError
+from backend.application.publishing.datastream import (
+    AvatarIOError,
+    AvatarProtocolError,
+    AvatarStreamError,
+)
 from backend.application.render.engines_base import StartOptions
 from backend.application.render.windows import AudioWindow
 
@@ -36,19 +40,23 @@ pytestmark = pytest.mark.timeout(40)
 def make(mode="normal", http_post=None, **kw):
     room = FakeRoom(mode)
     rest = FakeLemonSlice(room)
-    pushed: list[bytes] = []
+    room.pushed = []
+    room.unpublished = False
 
     def track_factory(_room, _rate):
         async def publish():
             room.audio_track_published = True
 
         def capture(pcm):
-            pushed.append(pcm)
+            room.pushed.append(pcm)
 
         def clear():
             room.queue_cleared += 1
 
-        return publish, capture, clear
+        async def unpublish():
+            room.unpublished = True
+
+        return publish, capture, clear, unpublish
 
     backend = LemonSliceRenderBackend(
         settings(**kw),
@@ -56,7 +64,6 @@ def make(mode="normal", http_post=None, **kw):
         http_post=http_post or rest,
         audio_track_factory=track_factory,
     )
-    room.pushed = pushed
     return backend, room, rest
 
 
@@ -74,13 +81,27 @@ def bg(fn, *args, **kwargs):
     return t, box
 
 
-def until(cond, timeout=3.0):
+def until(cond, timeout=5.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if cond():
             return True
-        time.sleep(0.01)
+        time.sleep(0.005)
     return cond()
+
+
+def join(*threads, timeout=8.0):
+    for t in threads:
+        t.join(timeout)
+        assert not t.is_alive(), "a background call never terminated"
+
+
+def channel(backend, sid):
+    return backend._sessions[sid].channel
+
+
+def waiters(ch):
+    return len(ch._io._waiters or ())
 
 
 @pytest.fixture
@@ -88,26 +109,25 @@ def be():
     backend, room, rest = make(playback_margin_s=0.3)
     res = backend.start(StartOptions())
     yield backend, room, rest, res.session_id
-    for gate in ("open", "write", "close", "disconnect"):
+    for gate in ("open", "write", "close", "rpc", "disconnect"):
         room.release(gate)
     backend.stop_all()
 
 
-# ---- P1-1: the epoch is an enforced fence --------------------------------------------------
+# ---- P1-1: the epoch is an enforced fence, and a clear is serialized with sends ----------
 
 
 def test_interrupt_while_stream_open_is_pending_writes_nothing_after_clear(be):
     backend, room, _, sid = be
     room.hold("open")
-    t_send, _ = bg(backend.stream_audio, sid, win("u1", 0, ms=400))
+    t_send, box = bg(backend.stream_audio, sid, win("u1", 0, ms=400))
     assert room.wait_hit("open")
-    t_int, _ = bg(backend.interrupt, sid)
-    time.sleep(0.2)
-    assert t_int.is_alive() and not room.times(
-        "clear_buffer_done"
-    )  # clear waits for the stale send
+    t_int, ibox = bg(backend.interrupt, sid)
+    assert until(lambda: channel(backend, sid).epoch == 1)
+    assert not room.times("clear_buffer_done")  # clear waits for the stale send
     room.release("open")
-    t_send.join(5), t_int.join(5)
+    join(t_send, t_int)
+    assert "error" not in box and "error" not in ibox
     s = room.streams[0]
     assert s.chunks == [] and s.closed_reason == "interrupted"
     assert room.times("stream_closed")[0] <= room.times("clear_buffer_done")[0]
@@ -116,12 +136,13 @@ def test_interrupt_while_stream_open_is_pending_writes_nothing_after_clear(be):
 def test_interrupt_during_write_stops_the_remaining_slices(be):
     backend, room, _, sid = be
     room.hold("write")
-    t_send, _ = bg(backend.stream_audio, sid, win("u1", 0, ms=800))  # 4 slices of 200 ms
+    t_send, box = bg(backend.stream_audio, sid, win("u1", 0, ms=800))  # 4 slices of 200 ms
     assert room.wait_hit("write")
-    t_int, _ = bg(backend.interrupt, sid)
-    time.sleep(0.1)
+    t_int, ibox = bg(backend.interrupt, sid)
+    assert until(lambda: channel(backend, sid).epoch == 1)
     room.release("write")
-    t_send.join(5), t_int.join(5)
+    join(t_send, t_int)
+    assert "error" not in box and "error" not in ibox
     s = room.streams[0]
     assert len(s.chunks) == 1  # only the slice already in flight when the interrupt landed
     assert s.chunks[0][0] <= room.times("clear_buffer_done")[0]
@@ -133,37 +154,79 @@ def test_interrupt_during_final_close_does_not_mark_playback_unconfirmed(be):
     room.hold("close")
     t_send, box = bg(backend.stream_audio, sid, win("u1", 0, final=True))
     assert room.wait_hit("close")
-    t_int, _ = bg(backend.interrupt, sid)
-    time.sleep(0.1)
+    t_int, ibox = bg(backend.interrupt, sid)
+    assert until(lambda: channel(backend, sid).epoch == 1)
     room.release("close")
-    t_send.join(5), t_int.join(5)
-    assert "error" not in box
+    join(t_send, t_int)
+    assert "error" not in box and "error" not in ibox
     assert backend.playback_info(sid, "u1")["playback_unconfirmed"] is False
 
 
 def test_window_queued_behind_interrupt_is_dropped(be):
     backend, room, _, sid = be
     room.hold("write")
-    t1, _ = bg(backend.stream_audio, sid, win("u1", 0))
+    t1, b1 = bg(backend.stream_audio, sid, win("u1", 0))
     assert room.wait_hit("write")
-    t2, _ = bg(backend.stream_audio, sid, win("u1", 1, final=True))  # waits for the channel lock
-    time.sleep(0.1)
-    t_int, _ = bg(backend.interrupt, sid)
-    time.sleep(0.1)
+    t2, b2 = bg(backend.stream_audio, sid, win("u1", 1, final=True))  # waits for the lock
+    assert until(lambda: waiters(channel(backend, sid)) == 1)
+    t_int, ib = bg(backend.interrupt, sid)
+    assert until(lambda: channel(backend, sid).epoch == 1)
     room.release("write")
-    for t in (t1, t2, t_int):
-        t.join(5)
+    join(t1, t2, t_int)
+    assert not any("error" in b for b in (b1, b2, ib))
     assert len(room.streams[0].chunks) == 1
 
 
-# ---- P1-2: playback events are matched to the utterance they belong to ---------------------
+def test_new_send_waits_for_the_whole_clear_rpc_and_opens_exactly_one_stream(be):
+    backend, room, _, sid = be
+    backend.stream_audio(sid, win("u1", 0))  # u1 open
+    room.hold("rpc")
+    t_int, ib = bg(backend.interrupt, sid)
+    assert room.wait_hit("rpc")  # the clear RPC is parked
+    t_new, nb = bg(backend.stream_audio, sid, win("u2", 0))  # new epoch
+    assert until(lambda: waiters(channel(backend, sid)) == 1)
+    assert len(room.streams) == 1  # nothing may open while the avatar buffer is being cleared
+    room.release("rpc")
+    join(t_int, t_new)
+    assert "error" not in ib and "error" not in nb
+    assert [s.attributes["livento.utterance_id"] for s in room.streams] == ["u1", "u2"]
+    assert channel(backend, sid).open_utterance == "u2"
+
+
+def test_hung_write_that_ignores_cancellation_cannot_block_interrupt_or_corrupt_next_stream():
+    backend, room, _ = make(io_timeout_s=0.2)
+    sid = backend.start(StartOptions()).session_id
+    try:
+        room.hold("write", resistant=True)
+        t_send, box = bg(backend.stream_audio, sid, win("u1", 0, ms=400))
+        assert room.wait_hit("write")
+        t_int, ib = bg(backend.interrupt, sid)
+        join(t_int)  # hard deadline: returns although the write ignores cancellation
+        assert "error" not in ib
+        join(t_send)
+        assert isinstance(box["error"], AvatarIOError)
+        room.blocked.discard("write")
+        backend.stream_audio(sid, win("u2", 0))
+        assert [s.attributes["livento.utterance_id"] for s in room.streams] == ["u1", "u2"]
+        assert room.streams[1].closed_reason == "open" and len(room.streams[1].chunks) == 1
+    finally:
+        room.release("write")
+        backend.stop_all()
+
+
+# ---- P1-2: playback events are matched to the utterance they belong to -------------------
+
+
+def manual_backend(**kw):
+    backend, room, rest = make(**{"playback_margin_s": 0.4, **kw})
+    room.auto = False
+    sid = backend.start(StartOptions()).session_id
+    return backend, room, sid
 
 
 @pytest.fixture
 def manual():
-    backend, room, rest = make(playback_margin_s=0.4)
-    room.auto = False
-    sid = backend.start(StartOptions()).session_id
+    backend, room, sid = manual_backend()
     yield backend, room, sid
     backend.stop_all()
 
@@ -172,12 +235,17 @@ def finished(room, backend, **payload):
     room.emit(backend._ensure_loop(), "lk.playback_finished", json.dumps(payload))
 
 
+def started(room, backend, **payload):
+    room.emit(backend._ensure_loop(), "lk.playback_started", json.dumps(payload))
+
+
 def test_finish_with_another_utterance_id_never_satisfies_the_waiting_one(manual):
     backend, room, sid = manual
-    t, _ = bg(backend.stream_audio, sid, win("new", 0, final=True))
+    t, box = bg(backend.stream_audio, sid, win("new", 0, final=True))
     assert until(lambda: room.streams and room.streams[0].closed_reason is None)
     finished(room, backend, utterance_id="old", interrupted=False)
-    t.join(5)
+    join(t)
+    assert "error" not in box
     assert backend.playback_info(sid, "new")["playback_unconfirmed"] is True
 
 
@@ -185,17 +253,17 @@ def test_finish_before_the_stream_is_closed_is_dropped(manual):
     backend, room, sid = manual
     backend.stream_audio(sid, win("u1", 0))  # open, written, not final
     finished(room, backend, interrupted=False)  # stale completion lands mid-utterance
-    t, _ = bg(backend.stream_audio, sid, win("u1", 1, final=True))
-    t.join(5)
+    t, box = bg(backend.stream_audio, sid, win("u1", 1, final=True))
+    join(t)
     assert backend.playback_info(sid, "u1")["playback_unconfirmed"] is True
 
 
 def test_interrupted_finish_never_completes_a_live_utterance(manual):
     backend, room, sid = manual
-    t, _ = bg(backend.stream_audio, sid, win("u1", 0, final=True))
+    t, box = bg(backend.stream_audio, sid, win("u1", 0, final=True))
     assert until(lambda: room.streams and room.streams[0].closed_reason is None)
     finished(room, backend, interrupted=True)
-    t.join(5)
+    join(t)
     assert backend.playback_info(sid, "u1")["playback_unconfirmed"] is True
 
 
@@ -206,41 +274,104 @@ def test_late_finish_of_a_timed_out_utterance_is_not_credited_to_the_next(manual
     t, box = bg(backend.stream_audio, sid, win("u2", 0, final=True))
     assert until(lambda: len(room.streams) == 2 and room.streams[1].closed_reason is None)
     finished(room, backend, interrupted=False)  # u1's late completion
-    time.sleep(0.15)
-    assert t.is_alive()  # u2 is still waiting for its own
+    assert not channel(backend, sid)._by_id["u2"].done.is_set()  # u2 still waits for its own
     finished(room, backend, interrupted=False)
-    t.join(5)
+    join(t)
     assert backend.playback_info(sid, "u2")["playback_unconfirmed"] is False
 
 
 def test_started_for_another_utterance_does_not_stamp_the_current_one(manual):
     backend, room, sid = manual
     backend.stream_audio(sid, win("u1", 0))
-    room.emit(backend._ensure_loop(), "lk.playback_started", json.dumps({"utterance_id": "old"}))
+    started(room, backend, utterance_id="old")
     assert backend.playback_info(sid, "u1")["playback_started_at"] is None
-    room.emit(backend._ensure_loop(), "lk.playback_started", json.dumps({"utterance_id": "u1"}))
+    started(room, backend, utterance_id="u1")
     assert backend.playback_info(sid, "u1")["playback_started_at"] is not None
 
 
-def test_started_before_any_audio_was_written_stamps_nothing(manual):
+def test_started_before_the_stream_is_opened_stamps_nothing(manual):
     backend, room, sid = manual
-    room.hold("write")
-    t, _ = bg(backend.stream_audio, sid, win("u1", 0))
-    assert room.wait_hit("write")
-    room.emit(backend._ensure_loop(), "lk.playback_started")
-    room.release("write")
-    t.join(5)
+    room.hold("open")
+    t, box = bg(backend.stream_audio, sid, win("u1", 0))
+    assert room.wait_hit("open")
+    started(room, backend)
+    room.release("open")
+    join(t)
     assert backend.playback_info(sid, "u1")["playback_started_at"] is None
 
 
-# ---- P1-3: interrupt reaches the fallback track; P1-4: never two audio publishers ----------
+def test_late_idless_started_of_an_interrupted_utterance_does_not_stamp_the_next(manual):
+    backend, room, sid = manual
+    backend.stream_audio(sid, win("u1", 0))  # written, avatar never reported started
+    backend.interrupt(sid)
+    backend.stream_audio(sid, win("u2", 0))
+    started(room, backend)  # u1's delayed event, no id on the wire
+    assert backend.playback_info(sid, "u2")["playback_started_at"] is None  # absorbed, not credited
+    started(room, backend)  # one event per interrupted utterance; this one is u2's own
+    assert backend.playback_info(sid, "u2")["playback_started_at"] is not None
+
+
+def test_late_idless_finish_of_an_interrupted_utterance_is_not_credited_to_the_next(manual):
+    backend, room, sid = manual
+    t1, b1 = bg(backend.stream_audio, sid, win("u1", 0, final=True))
+    assert until(lambda: room.streams and room.streams[0].closed_reason is None)
+    backend.interrupt(sid)
+    join(t1)
+    t2, b2 = bg(backend.stream_audio, sid, win("u2", 0, final=True))
+    assert until(lambda: len(room.streams) == 2 and room.streams[1].closed_reason is None)
+    finished(room, backend, interrupted=False)  # u1's late completion
+    assert not channel(backend, sid)._by_id["u2"].done.is_set()
+    finished(room, backend, interrupted=False)
+    join(t2)
+    assert backend.playback_info(sid, "u2")["playback_unconfirmed"] is False
+
+
+def test_unknown_explicit_id_never_confirms_a_clear_buffer(caplog):
+    backend, room, _ = make(mode="silent")
+    sid = backend.start(StartOptions()).session_id
+    loop = backend._ensure_loop()
+    ch = channel(backend, sid)
+    try:
+        with caplog.at_level(logging.WARNING):
+            fut = asyncio.run_coroutine_threadsafe(ch.clear_buffer(timeout_s=0.4), loop)
+            assert until(lambda: ch._clearing is not None)
+            finished(room, backend, interrupted=True, utterance_id="somebody-else")
+            fut.result(5)
+        assert "clear_buffer not confirmed" in caplog.text
+    finally:
+        backend.stop_all()
+
+
+def test_finish_arriving_during_aclose_is_not_lost(manual):
+    backend, room, sid = manual
+    room.hold("close")
+    t, box = bg(backend.stream_audio, sid, win("u1", 0, final=True))
+    assert room.wait_hit("close")
+    finished(room, backend, interrupted=False)  # lands while aclose() is still pending
+    room.release("close")
+    join(t)
+    assert "error" not in box
+    assert backend.playback_info(sid, "u1")["playback_unconfirmed"] is False
+
+
+def test_records_are_capped_on_insert_not_only_during_clear():
+    backend, room, sid = manual_backend(history=3, playback_margin_s=0.02)
+    try:
+        for i in range(8):  # eight utterances whose finish never arrives
+            backend.stream_audio(sid, win(f"u{i}", 0, final=True))
+        ch = channel(backend, sid)
+        assert len(ch._plays) <= 3 and len(ch._by_id) <= 3
+    finally:
+        backend.stop_all()
+
+
+# ---- P1-3 / P1-4: interrupt reaches the fallback track; never two audio publishers -------
 
 
 def fallback_backend(**kw):
-    backend, room, rest = make(
+    return make(
         mode="video_only", fallback_publish=True, audio_probe_s=0.05, render_offset_ms=300, **kw
     )
-    return backend, room, rest
 
 
 def test_pcm_sleeping_for_its_render_offset_is_not_pushed_after_interrupt():
@@ -249,7 +380,7 @@ def test_pcm_sleeping_for_its_render_offset_is_not_pushed_after_interrupt():
     try:
         backend.stream_audio(sid, win("u1", 0))
         backend.interrupt(sid)
-        time.sleep(0.6)
+        time.sleep(0.5)  # longer than the 300 ms offset: the negative must outlive the sleep
         assert room.pushed == [] and room.queue_cleared >= 1
     finally:
         backend.stop_all()
@@ -260,7 +391,7 @@ def test_fallback_pcm_is_pushed_after_the_offset_when_not_interrupted():
     sid = backend.start(StartOptions()).session_id
     try:
         backend.stream_audio(sid, win("u1", 0))
-        assert until(lambda: room.pushed, 2)
+        assert until(lambda: room.pushed, 3)
     finally:
         backend.stop_all()
 
@@ -288,7 +419,41 @@ def test_avatar_audio_appearing_after_start_stops_the_fallback_before_any_write(
         room.add_avatar_audio()
         with pytest.raises(AvatarAudioFallbackRefused):
             backend.stream_audio(sid, win("u1", 0))
-        assert room.streams == [] and room.pushed == []
+        assert room.streams == [] and room.pushed == [] and room.unpublished
+    finally:
+        backend.stop_all()
+
+
+def test_avatar_audio_published_during_a_gated_write_pushes_nothing_and_fails_closed():
+    backend, room, _ = fallback_backend()
+    sid = backend.start(StartOptions()).session_id
+    try:
+        room.hold("write")
+        t, box = bg(backend.stream_audio, sid, win("u1", 0))
+        assert room.wait_hit("write")
+        room.add_avatar_audio()  # the avatar starts publishing audio while the write is pending
+        room.release("write")
+        join(t)
+        assert isinstance(box["error"], AvatarAudioFallbackRefused)
+        assert until(lambda: room.unpublished)
+        with pytest.raises(AvatarAudioFallbackRefused):  # the session fails closed
+            backend.stream_audio(sid, win("u2", 0))
+        assert room.pushed == [] and room.streams[-1].attributes["livento.utterance_id"] == "u1"
+    finally:
+        room.release("write")
+        backend.stop_all()
+
+
+def test_queued_fallback_pcm_is_vetoed_when_avatar_audio_appears_and_track_is_unpublished():
+    backend, room, _ = fallback_backend()
+    sid = backend.start(StartOptions()).session_id
+    try:
+        backend.stream_audio(sid, win("u1", 0))  # queued, sleeping for its offset
+        room.add_avatar_audio()
+        assert until(lambda: room.unpublished, 5)
+        assert room.pushed == []
+        with pytest.raises(AvatarAudioFallbackRefused):
+            backend.stream_audio(sid, win("u2", 0))
     finally:
         backend.stop_all()
 
@@ -305,7 +470,7 @@ def test_fallback_buffer_is_bounded():
     assert asyncio.run(go()) == 3
 
 
-# ---- P2: lifecycle, deadlines, redaction ---------------------------------------------------
+# ---- P2: lifecycle, deadlines, redaction -------------------------------------------------
 
 
 def test_start_timeout_cancels_startup_and_ends_a_session_created_late():
@@ -313,13 +478,27 @@ def test_start_timeout_cancels_startup_and_ends_a_session_created_late():
     release = rest.hold()
     with pytest.raises(LemonSliceError) as err:
         backend._run(backend._start("agent-preset"), 0.3)
-    assert err.value.code == "timeout"
+    assert err.value.code == "timeout" and err.value.__context__ is None
     assert rest.parked.is_set()
-    threading.Timer(0.2, release.set).start()  # the lost REST response finally lands
-    assert until(lambda: rest.calls[-1][0].endswith("/sessions/ls-1/terminate"), 5)
+    threading.Timer(0.1, release.set).start()  # the lost REST response finally lands
+    assert until(lambda: rest.calls[-1][0].endswith("/sessions/ls-1/terminate"), 8)
     assert until(lambda: room.disconnected, 5)
     assert backend._sessions == {}
     backend.stop_all()
+
+
+def test_stop_all_during_a_pending_start_terminates_the_late_session_before_closing_the_loop():
+    backend, room, rest = make(terminate_path="/sessions/{session_id}/terminate")
+    release = rest.hold()
+    t_start, box = bg(backend.start, StartOptions())
+    assert rest.parked.wait(5)
+    thread = backend._thread
+    threading.Timer(0.2, release.set).start()
+    backend.stop_all()  # must wait for the late session, then stop the loop
+    join(t_start)
+    assert rest.calls[-1][0].endswith("/sessions/ls-1/terminate")
+    assert room.disconnected and not thread.is_alive() and backend._loop is None
+    assert "error" in box and backend._sessions == {}
 
 
 def test_stop_all_stops_the_loop_thread_and_the_backend_can_restart():
@@ -359,6 +538,7 @@ def test_stuck_disconnect_does_not_hang_stop():
 
 def test_terminate_failure_is_retried_and_logged_by_class_only(caplog):
     calls = []
+    room_ref = [None]
 
     def post(url, headers, body, timeout):
         calls.append(url)
@@ -367,7 +547,6 @@ def test_terminate_failure_is_retried_and_logged_by_class_only(caplog):
         room_ref[0].avatar_joins()
         return 200, {"session_id": "ls-9"}
 
-    room_ref = [None]
     backend, room, _ = make(
         http_post=post, terminate_path="/sessions/{session_id}/terminate", terminate_attempts=2
     )
@@ -382,7 +561,15 @@ def test_terminate_failure_is_retried_and_logged_by_class_only(caplog):
     backend.stop_all()
 
 
-def test_unexpected_start_error_is_redacted_and_not_chained(caplog):
+def chain(exc):
+    seen = []
+    while exc is not None and exc not in seen:
+        seen.append(exc)
+        exc = exc.__cause__ or exc.__context__
+    return seen
+
+
+def test_unexpected_start_error_is_redacted_and_has_no_cause_or_context(caplog):
     backend, room, _ = make()
 
     async def boom(url, token):
@@ -393,10 +580,40 @@ def test_unexpected_start_error_is_redacted_and_not_chained(caplog):
         with pytest.raises(LemonSliceError) as err:
             backend.start(StartOptions())
     shown = str(err.value) + repr(err.value) + caplog.text
-    assert err.value.code == "start_failed" and err.value.__cause__ is None
-    assert err.value.__suppress_context__
+    assert err.value.code == "start_failed"
+    assert err.value.__cause__ is None and err.value.__context__ is None
     assert LS_KEY not in shown and LK_SECRET not in shown and "wss://lk.example.test" not in shown
     backend.stop_all()
+
+
+def test_unexpected_stream_error_aborts_the_stream_and_is_sanitized_without_context(be):
+    backend, room, _, sid = be
+    room.fail["write"] = RuntimeError(f"socket to wss://lk.example.test failed {LS_KEY}")
+    with pytest.raises(AvatarStreamError) as err:
+        backend.stream_audio(sid, win("u1", 0))
+    assert err.value.__cause__ is None and err.value.__context__ is None
+    assert LS_KEY not in str(err.value) and "RuntimeError" in str(err.value)
+    assert room.streams[0].closed_reason == "interrupted"
+    backend.stream_audio(sid, win("u2", 0))  # the channel recovered
+    assert room.streams[-1].attributes["livento.utterance_id"] == "u2"
+
+
+def test_cancelled_send_closes_the_open_stream(be):
+    backend, room, _, sid = be
+    room.hold("write")
+    with pytest.raises(LemonSliceError):
+        backend._run(backend._stream(backend._sessions[sid], win("u1", 0)), 0.3)  # caller gives up
+    assert until(lambda: room.streams[0].closed_reason == "interrupted")
+
+
+def test_sample_rate_change_inside_one_utterance_is_rejected_not_silently_ignored(be):
+    backend, room, _, sid = be
+    backend.stream_audio(sid, win("u1", 0, ms=100, rate=16000))
+    with pytest.raises(AvatarProtocolError):
+        backend.stream_audio(sid, win("u1", 1, ms=100, rate=8000))
+    assert room.streams[0].closed_reason == "interrupted"
+    backend.stream_audio(sid, win("u2", 0, ms=100, rate=8000, final=True))  # next utterance is free
+    assert abs(len(room.streams[1].pcm) / 2 / 16000 - 0.1) <= 0.02
 
 
 def test_playback_history_is_bounded():
@@ -404,11 +621,11 @@ def test_playback_history_is_bounded():
     sid = backend.start(StartOptions()).session_id
     for i in range(8):
         backend.stream_audio(sid, win(f"u{i}", 0, final=True))
-    assert len(backend._sessions[sid].channel.playback_started_at) <= 3
+    assert len(channel(backend, sid).playback_started_at) <= 3
     backend.stop_all()
 
 
-# ---- resampling edge cases -----------------------------------------------------------------
+# ---- resampling edge cases ---------------------------------------------------------------
 
 
 def raw(uid, seq, pcm, rate=16000, final=False):

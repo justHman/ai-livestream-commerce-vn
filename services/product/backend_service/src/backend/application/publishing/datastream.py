@@ -51,8 +51,21 @@ class UtteranceResampler:
         return b"".join(bytes(f.data) for f in self._rs.flush())
 
 
-class AvatarIOError(RuntimeError):
-    """A data-stream open/write/close exceeded its application deadline (no secrets inside)."""
+class AvatarStreamError(RuntimeError):
+    """Sanitized stream failure: a fixed message (+ exception class name), never a cause chain."""
+
+
+class AvatarIOError(AvatarStreamError):
+    """A data-stream open/write/close/RPC exceeded its application deadline."""
+
+
+class AvatarProtocolError(AvatarStreamError):
+    """The caller broke a stream invariant (e.g. a sample-rate change inside one utterance)."""
+
+
+def _swallow(task: asyncio.Future) -> None:
+    if not task.cancelled():
+        task.exception()  # retrieve it so a detached task never logs "never retrieved"
 
 
 @dataclass
@@ -60,12 +73,22 @@ class _Play:
     """One utterance's playback record; events are matched to records, never to 'whatever is open'."""
 
     id: str
-    wrote: bool = False  # at least one chunk reached the avatar (playback_started is plausible)
-    closed: bool = False  # stream closed normally (playback_finished is plausible)
-    cancelled: bool = False  # interrupted: its events are tombstoned, never credited
+    wrote: bool = False  # a chunk was dispatched to the avatar (playback_started is plausible)
+    closed: bool = False  # stream close was dispatched (playback_finished is plausible)
+    cancelled: bool = False  # interrupted: a tombstone that absorbs its own late events
     timed_out: bool = False  # waiter gave up: a late finish is consumed here, not by the next one
+    finished: bool = False
     started_at: float | None = None
+    expires_at: float | None = None  # tombstone lifetime (monotonic), set when the clear ends
     done: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class _Stream:
+    """Writer wrapper: once poisoned (aborted or detached after a deadline) it refuses writes."""
+
+    def __init__(self, writer: Any) -> None:
+        self.writer = writer
+        self.dead = False
 
 
 class AvatarAudioChannel:
@@ -73,15 +96,19 @@ class AvatarAudioChannel:
 
     Epoch fence: ``epoch`` only grows. ``send`` is bound to the epoch it was called
     with and re-checks it after EVERY await (open, each write, close); a stale send
-    aborts and closes its stream. ``clear_buffer`` bumps the epoch first and then
-    waits for the in-flight send to finish aborting, so the clear is never overtaken
-    by stale audio.
+    aborts and closes its stream. Sends and ``clear_buffer`` share one lock and the
+    clear holds it across the whole RPC, so no new-epoch stream can open or write
+    while the avatar buffer is being cleared. Every stream operation has a hard
+    deadline: the awaited task is cancelled and DETACHED when it expires, even if it
+    swallows cancellation, and its stream is poisoned.
 
     ASSUMPTION [not verified against LemonSlice]: playback RPCs carry no utterance id
     on the wire (an optional ``utterance_id`` in the JSON payload is honoured when
-    present). Without one, events are matched in FIFO order to records that are
-    plausible for the event (started: wrote; finished: closed), interrupted records
-    are tombstoned, and a timed-out record stays queued to absorb its late finish.
+    present). Without one, events are matched in FIFO order to plausible records
+    (started: wrote; finished: closed). Interrupted records stay as tombstones for
+    ``tombstone_ttl_s`` after the clear so a late id-less event of the interrupted
+    utterance is absorbed there; if attribution is ambiguous the new utterance is
+    left unconfirmed, never credited.
     """
 
     def __init__(
@@ -93,6 +120,7 @@ class AvatarAudioChannel:
         clock: Callable[[], float] = time.time,
         io_timeout_s: float = 5.0,
         history: int = 256,
+        tombstone_ttl_s: float = 2.0,
     ) -> None:
         self._room = room
         self._dest = destination_identity
@@ -100,10 +128,12 @@ class AvatarAudioChannel:
         self._clock = clock
         self._io_timeout = io_timeout_s
         self._history = history
+        self._ttl = tombstone_ttl_s
         self.epoch = 0
         self._io = asyncio.Lock()
-        self._writer: Any = None
+        self._stream: _Stream | None = None
         self._utterance: str | None = None
+        self._src_rate: int | None = None
         self._resampler: UtteranceResampler | None = None
         self._carry = b""
         self.sent_ms = 0.0
@@ -124,40 +154,52 @@ class AvatarAudioChannel:
             return {}
         return p if isinstance(p, dict) else {}
 
+    def _purge(self) -> None:
+        now = time.monotonic()
+        for rec in [r for r in self._plays if r.expires_at is not None and r.expires_at <= now]:
+            self._retire(rec)
+
     def _match(self, payload: dict, ok: Callable[[_Play], bool]) -> _Play | None:
+        self._purge()
         wire_id = payload.get("utterance_id")
         if wire_id is not None:
             rec = self._by_id.get(str(wire_id))
             return rec if rec is not None and ok(rec) else None
-        return next((r for r in self._plays if ok(r)), None)
+        return next((r for r in self._plays if ok(r)), None)  # oldest first: tombstones win
 
     async def _on_started(self, data: Any) -> str:
         if data.caller_identity != self._dest:
             return "ok"
         rec = self._match(
-            self._payload(data), lambda r: r.wrote and r.started_at is None and not r.cancelled
+            self._payload(data), lambda r: r.wrote and r.started_at is None and not r.finished
         )
         if rec is not None:
             rec.started_at = self._clock()
-            self.playback_started_at[rec.id] = rec.started_at
-            while len(self.playback_started_at) > self._history:
-                self.playback_started_at.popitem(last=False)
+            if not rec.cancelled:  # an interrupted utterance absorbs the event, never records it
+                self.playback_started_at[rec.id] = rec.started_at
+                while len(self.playback_started_at) > self._history:
+                    self.playback_started_at.popitem(last=False)
         return "ok"
 
     async def _on_finished(self, data: Any) -> str:
         if data.caller_identity != self._dest:
             return "ok"
-        if self._clearing is not None:  # the answer to our own clear_buffer
-            self._clearing.set()
-            return "ok"
         payload = self._payload(data)
+        wire_id = payload.get("utterance_id")
         if payload.get("interrupted"):
-            return "ok"  # never completes a live utterance
-        rec = self._match(payload, lambda r: r.closed)
+            # Only the answer to OUR clear_buffer counts, and only if it names nothing foreign.
+            if self._clearing is not None and (wire_id is None or str(wire_id) in self._by_id):
+                self._clearing.set()
+            return "ok"
+        rec = self._match(
+            payload, lambda r: not r.finished and (r.closed or (r.cancelled and r.wrote))
+        )
         if rec is not None:
-            self._retire(rec)
-            if not rec.cancelled and not rec.timed_out:
-                rec.done.set()
+            rec.finished = True
+            if rec.cancelled or rec.timed_out:
+                self._retire(rec)
+            else:
+                rec.done.set()  # stays indexed until wait_finished consumes it
         return "ok"
 
     def _retire(self, rec: _Play) -> None:
@@ -176,102 +218,137 @@ class AvatarAudioChannel:
         return epoch != self.epoch
 
     async def _bounded(self, awaitable: Any, what: str) -> Any:
+        """Hard deadline: never waits past ``io_timeout`` even if the awaited task ignores cancel."""
+        task = asyncio.ensure_future(awaitable)
         try:
-            return await asyncio.wait_for(awaitable, self._io_timeout)
-        except asyncio.TimeoutError:
-            raise AvatarIOError(f"avatar stream {what} timed out") from None
+            done, _ = await asyncio.wait({task}, timeout=self._io_timeout)
+        except asyncio.CancelledError:
+            task.cancel()
+            task.add_done_callback(_swallow)
+            raise
+        if task in done:
+            return task.result()
+        task.cancel()
+        task.add_done_callback(_swallow)
+        raise AvatarIOError(f"avatar stream {what} timed out")
 
     async def send(
         self, pcm: bytes, *, src_rate: int, utterance_id: str, epoch: int, final: bool
     ) -> bytes | None:
         """Write one window; returns the resampled PCM, or None if the epoch fence aborted it."""
         async with self._io:
-            return await self._send(pcm, src_rate, utterance_id, epoch, final)
+            failure: AvatarStreamError | None = None
+            result: bytes | None = None
+            try:
+                result = await self._send(pcm, src_rate, utterance_id, epoch, final)
+            except AvatarStreamError as exc:
+                failure = exc
+            except asyncio.CancelledError:
+                await self._abort()
+                raise
+            except Exception as exc:
+                failure = AvatarStreamError(f"avatar stream failed error_type={type(exc).__name__}")
+            if failure is not None:  # raised outside any except block: no __context__ / __cause__
+                await self._abort()
+                raise failure
+            return result
 
     async def _send(
         self, pcm: bytes, src_rate: int, utterance_id: str, epoch: int, final: bool
     ) -> bytes | None:
         if self._fenced(epoch):
             return None
-        try:
-            if self._writer is not None and self._utterance != utterance_id:
-                await self._close(reason=None)  # previous utterance ended without a final
-                if self._fenced(epoch):
-                    return None
-            if self._writer is None:
-                rec = _Play(utterance_id)
-                self._plays.append(rec)
-                self._by_id[utterance_id] = rec
-                self._utterance = utterance_id
-                self._resampler = UtteranceResampler(src_rate, self.sample_rate)
-                self._carry = b""
-                self.sent_ms = 0.0
-                self._writer = await self._bounded(
-                    self._room.local_participant.stream_bytes(
-                        name=f"livento-{utterance_id}",
-                        topic=AUDIO_TOPIC,
-                        destination_identities=[self._dest],
-                        attributes={
-                            "sample_rate": str(self.sample_rate),
-                            "num_channels": "1",
-                            "livento.utterance_id": utterance_id,
-                            "livento.epoch": str(epoch),
-                        },
-                    ),
-                    "open",
-                )
-                if self._fenced(epoch):
-                    await self._abort()
-                    return None
-            assert self._resampler is not None
-            pcm = self._carry + pcm
-            if len(pcm) % 2:  # int16 samples: never split one across windows
-                pcm, self._carry = pcm[:-1], pcm[-1:]
-            else:
-                self._carry = b""
-            out = self._resampler.push(pcm) + (self._resampler.flush() if final else b"")
-            # Engines may return whole utterances: write in <= 200 ms slices (even sample count).
-            step = self.sample_rate // 5 * 2
-            for i in range(0, len(out), step):
-                if self._fenced(epoch):
-                    await self._abort()
-                    return None
-                await self._bounded(self._writer.write(out[i : i + step]), "write")
-                rec = self._by_id.get(utterance_id)
-                if rec is not None:
-                    rec.wrote = True
-                if self._fenced(epoch):
-                    await self._abort()
-                    return None
-            self.sent_ms += len(out) / 2 / self.sample_rate * 1000
-            if final:
-                await self._close(reason=None)
-                if self._fenced(epoch):
-                    return None
-            return out
-        except AvatarIOError:
-            await self._abort()
-            raise
+        if self._stream is not None and self._utterance == utterance_id:
+            if src_rate != self._src_rate:
+                raise AvatarProtocolError("sample rate changed inside one utterance")
+        elif self._stream is not None:
+            await self._close(reason=None)  # previous utterance ended without a final
+            if self._fenced(epoch):
+                return None
+        if self._stream is None:
+            rec = _Play(utterance_id)
+            self._plays.append(rec)
+            self._by_id[utterance_id] = rec
+            while len(self._plays) > self._history:  # cap on insert
+                self._retire(self._plays[0])
+            self._utterance = utterance_id
+            self._src_rate = src_rate
+            self._resampler = UtteranceResampler(src_rate, self.sample_rate)
+            self._carry = b""
+            self.sent_ms = 0.0
+            writer = await self._bounded(
+                self._room.local_participant.stream_bytes(
+                    name=f"livento-{utterance_id}",
+                    topic=AUDIO_TOPIC,
+                    destination_identities=[self._dest],
+                    attributes={
+                        "sample_rate": str(self.sample_rate),
+                        "num_channels": "1",
+                        "livento.utterance_id": utterance_id,
+                        "livento.epoch": str(epoch),
+                    },
+                ),
+                "open",
+            )
+            self._stream = _Stream(writer)
+            if self._fenced(epoch):
+                await self._abort()
+                return None
+        assert self._resampler is not None
+        pcm = self._carry + pcm
+        if len(pcm) % 2:  # int16 samples: never split one across windows
+            pcm, self._carry = pcm[:-1], pcm[-1:]
+        else:
+            self._carry = b""
+        out = self._resampler.push(pcm) + (self._resampler.flush() if final else b"")
+        # Engines may return whole utterances: write in <= 200 ms slices (even sample count).
+        step = self.sample_rate // 5 * 2
+        for i in range(0, len(out), step):
+            stream = self._stream
+            if self._fenced(epoch) or stream is None or stream.dead:
+                await self._abort()
+                return None
+            rec = self._by_id.get(utterance_id)
+            if rec is not None:
+                rec.wrote = True  # dispatched: the avatar may report started before write returns
+            await self._bounded(stream.writer.write(out[i : i + step]), "write")
+            if self._fenced(epoch):
+                await self._abort()
+                return None
+        self.sent_ms += len(out) / 2 / self.sample_rate * 1000
+        if final:
+            await self._close(reason=None)
+            if self._fenced(epoch):
+                return None
+        return out
 
     async def _close(self, *, reason: str | None) -> None:
-        writer, self._writer = self._writer, None
+        stream, self._stream = self._stream, None
         rec = self._by_id.get(self._utterance or "")
         if rec is not None and reason is None:
-            rec.closed = True
-        if writer is not None:
+            rec.closed = True  # before the await: a finish may arrive while aclose() is pending
+        if stream is None:
+            return
+        if reason is not None:
+            stream.dead = True
+        try:
             await self._bounded(
-                writer.aclose(reason=reason) if reason else writer.aclose(), "close"
+                stream.writer.aclose(reason=reason) if reason else stream.writer.aclose(), "close"
             )
+        finally:
+            stream.dead = True
 
     async def _abort(self) -> None:
         """Best-effort abort of the open stream (bounded; never raises)."""
         try:
             await self._close(reason="interrupted")
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             log.warning("avatar stream abort failed error_type=%s", type(exc).__name__)
 
     async def wait_finished(self, utterance_id: str, timeout_s: float) -> bool:
-        """True only if ``lk.playback_finished`` was matched to THIS utterance in time."""
+        """True only if ``lk.playback_finished`` was matched to THIS utterance (even if early)."""
         rec = self._by_id.get(utterance_id)
         if rec is None:
             return False
@@ -280,44 +357,57 @@ class AvatarAudioChannel:
         except asyncio.TimeoutError:
             rec.timed_out = True  # stays queued so its late finish is not credited to the next
             return False
-        return not rec.cancelled
+        ok = rec.finished and not rec.cancelled
+        if ok:
+            self._retire(rec)
+        return ok
 
     async def clear_buffer(self, timeout_s: float = 2.0) -> None:
-        """Fence stale sends, abort the open stream, clear the avatar buffer, await its answer."""
+        """Fence stale sends, abort the open stream, clear the avatar buffer, await its answer.
+
+        The send lock is held across the whole RPC, so a new-epoch send cannot open or write
+        while the avatar buffer is being cleared.
+        """
         self.epoch += 1  # synchronous: every suspended send is now stale
         for rec in self._plays:
-            rec.cancelled = True
-            rec.done.set()
-        clearing = self._clearing = asyncio.Event()
+            if not rec.cancelled:
+                rec.cancelled = True
+                rec.done.set()
+        owned = False
         try:
-            try:  # the stale send resumes, sees the new epoch and aborts; bounded
-                await asyncio.wait_for(self._io.acquire(), self._io_timeout)
-                acquired = True
-            except asyncio.TimeoutError:
-                acquired = False
-                log.warning("avatar interrupt did not wait for a stuck send")
-            try:
+            # Every holder is bounded by io_timeout per operation and stops at the next fence check.
+            await asyncio.wait_for(self._io.acquire(), self._io_timeout * 3 + 1)
+            owned = True
+        except asyncio.TimeoutError:
+            log.warning("avatar interrupt could not take the send lock before its deadline")
+        try:
+            if owned:
                 await self._abort()
-            finally:
-                if acquired:
-                    self._io.release()
-            confirmed = False
+            elif self._stream is not None:
+                self._stream.dead = True  # refuse any further write by the stuck send
+            self._clearing = clearing = asyncio.Event()
             try:
-                await self._room.local_participant.perform_rpc(
-                    destination_identity=self._dest,
-                    method=RPC_CLEAR_BUFFER,
-                    payload=json.dumps({}),
-                    response_timeout=timeout_s,
-                )
+                await self._bounded_rpc(timeout_s)
                 await asyncio.wait_for(clearing.wait(), timeout_s)
-                confirmed = True
             except Exception as exc:  # bounded; interrupt must never raise into the coordinator
                 log.warning("avatar clear_buffer not confirmed error_type=%s", type(exc).__name__)
-            if confirmed:  # the avatar buffer is empty: nothing older can still arrive
-                for rec in [r for r in self._plays if r.cancelled]:
-                    self._retire(rec)
-            while len(self._plays) > self._history:
-                self._retire(self._plays[0])
         finally:
             self._clearing = None
-            self._utterance = None
+            expires = time.monotonic() + self._ttl
+            for rec in self._plays:
+                if rec.cancelled and rec.expires_at is None:
+                    rec.expires_at = expires  # tombstone until the late events had time to land
+            if owned:
+                self._utterance = None
+                self._io.release()
+
+    async def _bounded_rpc(self, timeout_s: float) -> None:
+        await self._bounded(
+            self._room.local_participant.perform_rpc(
+                destination_identity=self._dest,
+                method=RPC_CLEAR_BUFFER,
+                payload=json.dumps({}),
+                response_timeout=timeout_s,
+            ),
+            "rpc",
+        )

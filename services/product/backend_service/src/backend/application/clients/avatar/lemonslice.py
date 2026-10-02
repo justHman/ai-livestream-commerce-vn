@@ -31,6 +31,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from backend.application.publishing.datastream import AvatarAudioChannel
@@ -74,6 +75,7 @@ class LemonSliceSettings:
     fallback_max_queue: int = 512  # bounded fallback buffer (chunks)
     history: int = 256  # bounded playback-history collections
     terminate_attempts: int = 2
+    tombstone_ttl_s: float = 2.0  # how long an interrupted utterance absorbs its late events
 
     def __repr__(self) -> str:  # never print secrets
         return "LemonSliceSettings(<redacted>)"
@@ -126,7 +128,11 @@ def _httpx_post(url: str, headers: dict, body: dict, timeout: float) -> tuple[in
 
 
 class _FallbackAudioTrack:
-    """Runtime-owned audio track for the video-only avatar case (delayed, bounded)."""
+    """Runtime-owned audio track for the video-only avatar case (delayed, bounded).
+
+    ``veto`` is asked right before every push and after it: when the avatar turns out to
+    publish its own audio the track stops pushing and ``on_veto`` fails the session closed.
+    """
 
     def __init__(
         self,
@@ -134,16 +140,25 @@ class _FallbackAudioTrack:
         offset_ms: int,
         clear: Callable[[], Any] | None = None,
         max_queue: int = 512,
+        veto: Callable[[], bool] | None = None,
+        on_veto: Callable[[], None] | None = None,
+        unpublish: Callable[[], Any] | None = None,
     ) -> None:
         self._capture = capture
         self._clear = clear
+        self._veto = veto
+        self._on_veto = on_veto
+        self.unpublish = unpublish
         self._offset = offset_ms / 1000
         self._max = max_queue
         self._q: asyncio.Queue = asyncio.Queue()
         self._gen = 0
+        self._stopped = False
         self._task = asyncio.ensure_future(self._run())
 
     def enqueue(self, pcm: bytes) -> None:
+        if self._stopped:
+            return
         if self._q.qsize() >= self._max:
             self._q.get_nowait()  # bounded: drop the oldest chunk
         self._q.put_nowait((self._gen, time.monotonic() + self._offset, pcm))
@@ -159,20 +174,34 @@ class _FallbackAudioTrack:
                 self._clear()  # e.g. rtc.AudioSource.clear_queue
             except Exception as exc:
                 log.warning("fallback buffer clear failed error_type=%s", type(exc).__name__)
-        self._task = asyncio.ensure_future(self._run())
+        if not self._stopped:
+            self._task = asyncio.ensure_future(self._run())
+
+    def _vetoed(self) -> bool:
+        if self._veto is None or not self._veto():
+            return False
+        if not self._stopped and self._on_veto is not None:
+            self._stopped = True
+            self._on_veto()
+        return True
 
     async def _run(self) -> None:
         gen = self._gen
-        while True:
+        while not self._stopped:
             g, due, pcm = await self._q.get()
             await asyncio.sleep(max(0.0, due - time.monotonic()))
             if g != self._gen or gen != self._gen:  # interrupted while it slept
                 continue
+            if self._vetoed():
+                return
             res = self._capture(pcm)
             if asyncio.iscoroutine(res):
                 await res
+            if self._vetoed():
+                return
 
     def close(self) -> None:
+        self._stopped = True
         self._task.cancel()
 
 
@@ -184,7 +213,7 @@ class _Sess:
     cleared: _BoundedSet = field(default_factory=lambda: _BoundedSet(256))
     unconfirmed: _BoundedSet = field(default_factory=lambda: _BoundedSet(256))
     fallback: _FallbackAudioTrack | None = None
-    late_post: Any = None
+    refused: bool = False  # avatar audio was detected while the fallback ran: fail closed
 
     @property
     def epoch(self) -> int:
@@ -211,6 +240,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._sessions: dict[str, _Sess] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
+        self._tasks: set[asyncio.Task] = set()  # startups/cleanups in flight (loop thread)
+        self._reapers: set[asyncio.Task] = set()  # late-REST-session cleanups (loop thread)
         self._loop_lock = threading.Lock()
 
     # ---- loop thread ------------------------------------------------
@@ -225,13 +256,38 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 self._loop = loop
             return self._loop
 
+    async def _tracked(self, coro: Any) -> Any:
+        """Loop-thread wrapper so stop_all() can find and await every in-flight operation."""
+        task = asyncio.current_task()
+        assert task is not None
+        self._tasks.add(task)
+        try:
+            return await coro
+        finally:
+            self._tasks.discard(task)
+
     def _run(self, coro: Any, timeout: float | None = None) -> Any:
-        fut = asyncio.run_coroutine_threadsafe(coro, self._ensure_loop())
+        fut = asyncio.run_coroutine_threadsafe(self._tracked(coro), self._ensure_loop())
         try:
             return fut.result(timeout)
         except concurrent.futures.TimeoutError:
-            fut.cancel()  # never leave the coroutine running after the caller gave up
-            raise LemonSliceError("timeout", "LemonSlice backend call timed out") from None
+            pass
+        fut.cancel()  # never leave the coroutine running after the caller gave up
+        raise LemonSliceError("timeout", "LemonSlice backend call timed out")
+
+    async def _drain(self, *, startups: bool) -> None:
+        """Cancel/await startup tasks (cleanup runs inside them) or, later, late-session reapers."""
+        me = asyncio.current_task()
+        pool = self._tasks if startups else self._reapers
+        pending = [t for t in pool if t is not me and not t.done()]
+        if startups:
+            for t in pending:
+                t.cancel()
+        if pending:
+            await asyncio.wait(pending, timeout=self._s.request_timeout_s * 3 + 5)
+        for t in pending:
+            if not t.done():
+                t.cancel()
 
     def _shutdown_loop(self) -> None:
         with self._loop_lock:
@@ -256,16 +312,24 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         source = rtc.AudioSource(sample_rate, 1)
         track = rtc.LocalAudioTrack.create_audio_track("livento-audio", source)
 
+        publication: list[Any] = []
+
         async def publish() -> None:
-            await room.local_participant.publish_track(
-                track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+            publication.append(
+                await room.local_participant.publish_track(
+                    track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+                )
             )
+
+        async def unpublish() -> None:
+            if publication:
+                await room.local_participant.unpublish_track(publication.pop().sid)
 
         async def capture(pcm: bytes) -> None:
             n = len(pcm) // 2
             await source.capture_frame(rtc.AudioFrame(pcm, sample_rate, 1, n))
 
-        return publish, capture, source.clear_queue
+        return publish, capture, source.clear_queue, unpublish
 
     # ---- RenderBackend ---------------------------------------------
     def start(self, opts: StartOptions) -> StartResult:
@@ -316,6 +380,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         )
         sess: _Sess | None = None
         post_task: asyncio.Future | None = None
+        failure: BaseException | None = None
         try:
             await asyncio.wait_for(room.connect(s.livekit_url, runtime_token), s.ready_timeout_s)
             sess = _Sess(
@@ -327,6 +392,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     clock=self._clock,
                     io_timeout_s=s.io_timeout_s,
                     history=s.history,
+                    tombstone_ttl_s=s.tombstone_ttl_s,
                 ),
             )
             sess.cleared = _BoundedSet(s.history)
@@ -363,27 +429,23 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 # Look BEFORE publishing: an avatar with its own audio plus ours = two speakers.
                 if await self._avatar_has_audio(room, s.audio_probe_s):
                     raise AvatarAudioFallbackRefused()
-                publish, capture, *clear = self._track_factory(room, s.audio_sample_rate)
+                publish, capture, *extra = self._track_factory(room, s.audio_sample_rate)
                 await asyncio.wait_for(publish(), s.io_timeout_s)
-                sess.fallback = _FallbackAudioTrack(
-                    capture, s.render_offset_ms, clear[0] if clear else None, s.fallback_max_queue
-                )
+                sess.fallback = self._new_fallback(sess, capture, extra)
         except BaseException as exc:
-            if post_task is not None and sess is not None and not sess.provider_session_id:
-                # Caller gave up while the REST call was in flight: if it lands, end that session.
-                try:
-                    status, data = await asyncio.wait_for(post_task, s.request_timeout_s + 1)
-                    if status < 300:
-                        sess.provider_session_id = str(data.get("session_id") or "")
-                except BaseException:
-                    log.warning("lemonslice late session creation could not be confirmed")
+            failure = exc
+        if failure is not None:
+            if post_task is not None:
+                # The caller gave up while the REST call was in flight: a reaper owned by the
+                # backend ends the session if that call lands (stop_all awaits it).
+                self._spawn_reaper(post_task)
             await self._teardown(room_name, sess, room)
-            if isinstance(exc, asyncio.CancelledError | LemonSliceError):
-                raise
-            # never chain the original: it may carry request URLs/headers
+            if isinstance(failure, asyncio.CancelledError | LemonSliceError):
+                raise failure
+            # raised outside the except block: no __context__, and never the original message
             raise LemonSliceError(
-                "start_failed", f"LemonSlice start failed error_type={type(exc).__name__}"
-            ) from None
+                "start_failed", f"LemonSlice start failed error_type={type(failure).__name__}"
+            )
         self._sessions[room_name] = sess
         client_token = mint_room_token(
             api_key=s.livekit_api_key,
@@ -401,6 +463,54 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             livekit_client_token=client_token,
             mode="LEMONSLICE",
         )
+
+    def _new_fallback(self, sess: _Sess, capture: Any, extra: list[Any]) -> _FallbackAudioTrack:
+        clear = extra[0] if len(extra) > 0 else None
+        unpublish = extra[1] if len(extra) > 1 else None
+        return _FallbackAudioTrack(
+            capture,
+            self._s.render_offset_ms,
+            clear,
+            self._s.fallback_max_queue,
+            veto=lambda: self._avatar_audio_now(sess.room),
+            on_veto=lambda: self._tasks_add(asyncio.ensure_future(self._trip_fallback(sess))),
+            unpublish=unpublish,
+        )
+
+    def _tasks_add(self, task: asyncio.Task) -> None:
+        self._reapers.add(task)
+        task.add_done_callback(self._reapers.discard)
+
+    async def _trip_fallback(self, sess: _Sess) -> None:
+        """Avatar audio detected while our fallback runs: unpublish ours, drain, fail closed."""
+        sess.refused = True
+        fb = sess.fallback
+        if fb is None:
+            return
+        fb.drain()
+        fb.close()
+        if fb.unpublish is not None:
+            try:
+                await asyncio.wait_for(fb.unpublish(), self._s.io_timeout_s)
+            except Exception as exc:
+                log.warning("fallback unpublish failed error_type=%s", type(exc).__name__)
+        log.error("avatar publishes audio: fallback track stopped, session fails closed")
+
+    def _spawn_reaper(self, post_task: asyncio.Future) -> None:
+        self._tasks_add(asyncio.ensure_future(self._reap_late_session(post_task)))
+
+    async def _reap_late_session(self, post_task: asyncio.Future) -> None:
+        """End a provider session whose creation outlived its caller."""
+        try:
+            status, data = await asyncio.wait_for(
+                asyncio.shield(post_task), self._s.request_timeout_s * 3
+            )
+        except BaseException as exc:
+            log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
+            return
+        sid = str(data.get("session_id") or "") if status < 300 else ""
+        if sid:
+            await self._terminate_provider(SimpleNamespace(provider_session_id=sid))
 
     async def _wait_avatar_video(self, room: Any) -> None:
         try:
@@ -457,10 +567,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             return
         assert w.pcm is not None  # checked in stream_audio
         epoch = sess.epoch
-        if sess.fallback is not None and self._avatar_audio_now(sess.room):
-            # Avatar audio appeared after start: a second publisher would double the audio.
-            sess.fallback.drain()
-            raise AvatarAudioFallbackRefused()
+        await self._guard_fallback(sess)  # avatar audio appeared after start: never two speakers
         out = await sess.channel.send(
             w.pcm,
             src_rate=w.sample_rate,
@@ -468,6 +575,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             epoch=epoch,
             final=w.is_final,
         )
+        await self._guard_fallback(sess)  # re-check after the await
         if out is None:  # fenced by an interrupt while suspended: stale audio was dropped
             return
         if sess.fallback is not None and out and epoch == sess.epoch:
@@ -480,6 +588,14 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if not ok:
                 sess.unconfirmed.add(w.utterance_id)
                 log.warning("avatar playback_unconfirmed utterance=%s", w.utterance_id)
+
+    async def _guard_fallback(self, sess: _Sess) -> None:
+        if sess.fallback is None and not sess.refused:
+            return
+        if not sess.refused and self._avatar_audio_now(sess.room):
+            await self._trip_fallback(sess)
+        if sess.refused:
+            raise AvatarAudioFallbackRefused()
 
     def interrupt(self, session_id: str) -> None:
         sess = self._sessions.get(session_id)
@@ -502,11 +618,15 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._run(self._teardown(session_id, sess, sess.room))
 
     def stop_all(self) -> None:
+        if self._loop is not None:
+            self._run(self._drain(startups=True))  # cancelled startups clean up inside their task
         for sid in list(self._sessions):
             try:
                 self.stop(sid)
             except Exception as exc:
                 log.warning("lemonslice stop_all error_type=%s", type(exc).__name__)
+        if self._loop is not None:
+            self._run(self._drain(startups=False))  # late REST sessions are ended before exit
         self._shutdown_loop()
 
     async def _teardown(self, room_name: str, sess: _Sess | None, room: Any) -> None:
