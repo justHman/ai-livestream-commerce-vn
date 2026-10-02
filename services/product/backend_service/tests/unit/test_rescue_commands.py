@@ -184,7 +184,12 @@ async def test_hold_at_safe_boundary_lets_current_utterance_finish(case_factory,
     comment = coordinator.ingest(case.sid, "Bao lâu giao hàng?", "viewer")
     await coordinator._tick_once(case.sid)
     ds = case.d.director.get_session(case.sid)
-    assert comment.id in {c.id for c in ds.director.state.rolling_comments}
+    # A P0 session is reducer-fed (014): ingestion still consumes the comment,
+    # the raw rolling window is not used.
+    consumed = set(coordinator._consumed_ids(case.sid))
+    consumed |= {c.id for c in ds.director.state.rolling_comments}
+    assert comment.id in consumed
+    assert coordinator._queues[case.sid].free_slots() == coordinator._queues[case.sid].max_size
     assert not coordinator._decision_queue[case.sid] and not coordinator._prepare_tasks[case.sid]
     say = await case.client.post(
         f"/api/v1/sessions/{case.sid}/say", json={"text": TEXT, "generate": False}

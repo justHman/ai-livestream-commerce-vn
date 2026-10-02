@@ -873,6 +873,10 @@ class DirectorCoordinator:
                     )
             self._remember_consumed(session_id, new_only)
             now = ds.now()
+            if self._frozen(session_id):
+                # Hold freezes Director timers and scheduling, not ingestion.
+                self._last_tick[session_id] = now
+                return
             self._advance_timers(session_id, now, state)
             await self._fill_prepared(session_id)
             return

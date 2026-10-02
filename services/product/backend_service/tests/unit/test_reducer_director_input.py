@@ -1053,3 +1053,23 @@ async def test_reducer_mode_tick_releases_real_chat_queue_capacity() -> None:
         assert queue.free_slots() == size
         assert coord.queue_capacity("s1") == size
     coord.stop("s1")
+
+
+async def test_held_reducer_session_still_consumes_but_freezes_director_timers() -> None:
+    """Hold freezes timers and scheduling, never ingestion (013 + 014 + 016)."""
+    from backend.application.script_authoring.approved_speech import ApprovedSpeech
+
+    coord, runtime, _ = _coordinator("s1", reducer=_reducer())
+    coord.approved_speech = ApprovedSpeech(None, lambda: None)
+    coord.start("s1", _products(), activated=True)
+    coord.set_reducer_mode("s1", True)
+    state = runtime._sessions["s1"].director.state
+    queue = coord._queues["s1"]
+    coord.approved_speech.block("s1", "held")
+    before = state.phase_elapsed_sec
+    for i in range(3):
+        queue.put(f"h{i}", f"v{i}", ts=time.time())
+    await coord._tick_once("s1")
+    assert queue.free_slots() == queue.max_size  # consumed, not dropped
+    assert state.phase_elapsed_sec == before  # timers frozen
+    coord.stop("s1")
