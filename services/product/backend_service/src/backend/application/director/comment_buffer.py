@@ -58,7 +58,9 @@ class ChatQueue:
     def mark_consumed(self, ids) -> None:
         """Record that these comments left the queue for Director state."""
         with self._lock:
-            self._consumed.update(ids)
+            # Ignore ids already evicted (a legacy producer can evict while the
+            # tick awaits); unknown markers would never be removed.
+            self._consumed.update({c.id for c in self._deque}.intersection(ids))
 
     def free_slots(self) -> int:
         """Slots a producer may fill without evicting an unconsumed comment."""

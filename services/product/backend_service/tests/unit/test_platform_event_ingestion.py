@@ -7,6 +7,8 @@ non-comment signals (never embedded/queued), and stable unique-viewer keys.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import time
 
 import pytest
@@ -1433,3 +1435,105 @@ async def test_events_posted_to_a_stopped_session_are_not_consumed_or_delivered(
     finally:
         await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
         patch.undo()
+
+
+class _FencedRejectingStore(InMemorySessionStore):
+    """Store whose distributed lock is held but whose commits are rejected."""
+
+    @asynccontextmanager
+    async def with_session_lock(self, session_id, acquire_timeout_seconds=None):
+        yield object()
+
+    async def commit_if_owner(self, fence, meta) -> bool:
+        return False
+
+
+class _OkCoordinator:
+    def has(self, session_id: str) -> bool:
+        return True
+
+    def ingest(self, session_id, text, author, ts=None):
+        return type("C", (), {"id": "c-ok"})()
+
+
+@pytest.mark.asyncio
+async def test_lost_lock_ownership_is_not_isolated_into_a_fabricated_duplicate() -> None:
+    from backend.application.db.session_store import SessionLockTimeout
+
+    store = _FencedRejectingStore()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store, coordinator=_OkCoordinator())
+    event = PlatformEvent(**_event("lost-1", text="hi"))
+
+    # The same event twice: swallowing the stale-owner error would let the
+    # second copy hit uncommitted in-memory dedup state and report 'duplicate'.
+    with pytest.raises(SessionLockTimeout):
+        await service.ingest("s1", [event, event], delivery_outcomes_v1=True)
+    # Nothing was persisted, so a later submission is not a duplicate either.
+    assert (await store.get("s1")).get("platform_event_dedup") in (None, {}, [])
+
+
+class _SecretCoordinator:
+    def has(self, session_id: str) -> bool:
+        return True
+
+    def ingest(self, session_id, text, author, ts=None):
+        raise KeyError("SECRET-MARKER-123")
+
+
+@pytest.mark.asyncio
+async def test_per_event_failure_log_does_not_leak_exception_text(caplog) -> None:
+    service, _ = await _fresh_service(coordinator=_SecretCoordinator())
+    with caplog.at_level("DEBUG"):
+        result = await service.ingest(
+            "s1", [PlatformEvent(**_event("leak-1", text="hi"))], delivery_outcomes_v1=True
+        )
+    assert result["events"][0]["status"] == "not_ready"
+    assert "ingest_event_failed" in caplog.text
+    assert "leak-1" in caplog.text and "KeyError" in caplog.text
+    assert "SECRET-MARKER-123" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+class _FlakyOnceCoordinator:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def has(self, session_id: str) -> bool:
+        return True
+
+    def ingest(self, session_id, text, author, ts=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise KeyError(session_id)
+        return type("C", (), {"id": "c-recovered"})()
+
+
+@pytest.mark.asyncio
+async def test_isolated_failure_recovers_on_retry_of_the_same_event() -> None:
+    service, _ = await _fresh_service(coordinator=_FlakyOnceCoordinator())
+    event = PlatformEvent(**_event("rec-1", text="hi"))
+    first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert first["events"][0]["status"] == "not_ready"
+    second = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert second["events"][0]["status"] == "routed"
+    assert second["events"][0]["comment_id"] == "c-recovered"
+    assert (await service.ingest("s1", [event], delivery_outcomes_v1=True))["events"][0][
+        "status"
+    ] == "duplicate"
+
+
+def test_mark_consumed_ignores_evicted_ids_and_stays_bounded() -> None:
+    from backend.application.director.comment_buffer import ChatQueue
+
+    queue = ChatQueue("s", max_size=3)
+    snapshot = [queue.put(f"t{i}", "a") for i in range(3)]
+    for i in range(3, 6):  # legacy producer evicts every snapshot entry
+        queue.put(f"t{i}", "a")
+    queue.mark_consumed([c.id for c in snapshot] * 2)  # evicted + duplicates
+    assert len(queue._consumed) == 0
+    live = [c.id for c in queue.snapshot()]
+    queue.mark_consumed(live + live)
+    assert len(queue._consumed) <= len(queue) == 3
+    queue.clear()
+    assert len(queue) == 0 and not queue._consumed

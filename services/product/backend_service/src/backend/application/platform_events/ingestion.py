@@ -182,6 +182,9 @@ def _source_key_for(event: PlatformEvent) -> Optional[str]:
     ).hexdigest()
 
 
+_RETRYABLE_EVENT_ERRORS = (KeyError,)
+
+
 def _event_failure_reason(exc: Exception) -> str:
     """Sanitized reason for a per-event ingest failure.
 
@@ -856,14 +859,21 @@ class PlatformEventIngestionService:
                         truthful_outcomes=truthful_outcomes,
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 - re-raised unless retryable
+            except _RETRYABLE_EVENT_ERRORS as exc:
+                # Allow-list: only a coordinator teardown (KeyError) is an
+                # expected per-event failure. Lost lock ownership
+                # (StaleOwnerWriteError), cancellation and programming errors
+                # must escape, or uncommitted dedup state would be reported as
+                # a fabricated ``duplicate`` on the next event.
                 if not truthful_outcomes:
                     raise
+                # Type name + identities only: exception text and tracebacks
+                # can carry payloads or credentials.
                 logger.warning(
-                    "platform_event.ingest_event_failed session=%s event=%s",
+                    "platform_event.ingest_event_failed session=%s event=%s error=%s",
                     session_id,
                     event.event_id,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 results.append(
                     {
