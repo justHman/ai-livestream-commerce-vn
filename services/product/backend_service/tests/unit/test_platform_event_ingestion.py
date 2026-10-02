@@ -837,12 +837,13 @@ async def test_session_stop_reconciles_routed_work_over_http() -> None:
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         await _assert_stop_reconciles(case, BINDING, p0_event)
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -880,7 +881,8 @@ async def test_comment_the_coordinator_actually_consumed_is_not_non_deliverable(
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         meta = dict(await case.d.store.get(case.sid))
@@ -909,7 +911,7 @@ async def test_comment_the_coordinator_actually_consumed_is_not_non_deliverable(
         outcomes = case.d.event_ingestion.terminal_outcomes(case.sid)
         assert outcomes["e2e-2"].outcome == "consumed"
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -923,7 +925,8 @@ async def test_stop_all_returns_the_fence_each_session_needed() -> None:
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         meta = dict(await case.d.store.get(case.sid))
@@ -946,7 +949,7 @@ async def test_stop_all_returns_the_fence_each_session_needed() -> None:
             case.sid, attach_seq=fences[case.sid]
         ) == ["fence-1"]
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -961,7 +964,8 @@ async def test_process_shutdown_reconciles_routed_work_instead_of_dropping_it() 
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         meta = dict(await case.d.store.get(case.sid))
@@ -986,7 +990,7 @@ async def test_process_shutdown_reconciles_routed_work_instead_of_dropping_it() 
         outcomes = case.d.event_ingestion.terminal_outcomes(case.sid)
         assert outcomes["bulk-1"].outcome == "non_deliverable"
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -1142,7 +1146,8 @@ async def test_p0_v1_binding_path_preserves_the_original_occurred_at() -> None:
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         meta = dict(await case.d.store.get(case.sid))
@@ -1170,7 +1175,7 @@ async def test_p0_v1_binding_path_preserves_the_original_occurred_at() -> None:
         queued = case.d.coordinator._queues[case.sid].snapshot()
         assert [comment.ts for comment in queued] == [occurred_at]
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -1185,7 +1190,8 @@ async def test_p0_v1_hard_expired_comment_stays_rejected_over_http() -> None:
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         meta = dict(await case.d.store.get(case.sid))
@@ -1222,7 +1228,7 @@ async def test_p0_v1_hard_expired_comment_stays_rejected_over_http() -> None:
         assert retry["status"] == "duplicate"
         assert retry["status"] not in ("accepted", "routed")
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -1347,7 +1353,8 @@ async def test_real_chat_queue_overflow_is_retryable_never_evicting() -> None:
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         meta = dict(await case.d.store.get(case.sid))
@@ -1391,7 +1398,7 @@ async def test_real_chat_queue_overflow_is_retryable_never_evicting() -> None:
         retry = await ingestion.ingest(case.sid, batch("over", 5), delivery_outcomes_v1=True)
         assert [e["status"] for e in retry["events"]] == ["routed"] * 5
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -1408,7 +1415,8 @@ async def test_events_posted_to_a_stopped_session_are_not_consumed_or_delivered(
     from .test_p0_comment_contract import BINDING, event as p0_event
 
     patch = pytest.MonkeyPatch()
-    create_case = await anext(_case_factory.__wrapped__(patch))
+    factory = _case_factory.__wrapped__(patch)
+    create_case = await anext(factory)
     try:
         case = await create_case()
         meta = dict(await case.d.store.get(case.sid))
@@ -1434,7 +1442,7 @@ async def test_events_posted_to_a_stopped_session_are_not_consumed_or_delivered(
         assert case.sid not in case.d.coordinator._queues
         assert "late-1" not in case.d.event_ingestion.terminal_outcomes(case.sid)
     finally:
-        await anext(_case_factory.__wrapped__(patch), None)  # fixture teardown
+        await anext(factory, None)  # resume + exhaust the ORIGINAL generator
         patch.undo()
 
 
@@ -1620,3 +1628,58 @@ async def test_remaining_ingestion_logs_do_not_leak_exception_text(caplog) -> No
         assert fragment in caplog.text, fragment
     assert SECRET not in caplog.text
     assert "Traceback" not in caplog.text
+
+
+class _FailingDedupWriteStore(InMemorySessionStore):
+    """Real store write fails once the dedup record is in the metadata."""
+
+    async def set(self, session_id, data, ttl_seconds=None):
+        if "platform_event_ids" in data:
+            raise ConnectionError("dedup write failed")
+        await super().set(session_id, data, ttl_seconds)
+
+
+@pytest.mark.asyncio
+async def test_failed_dedup_write_is_not_reported_as_delivered_or_later_duplicate() -> None:
+    store = _FailingDedupWriteStore()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store, coordinator=_OkCoordinator())
+    event = PlatformEvent(**_event("dw-1", text="hi"))
+
+    # Routed to the coordinator but its dedup record cannot be persisted: the
+    # batch must surface a failure so the API redelivers, never a success.
+    with pytest.raises(ConnectionError):
+        await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert "platform_event_ids" not in (await store.get("s1"))
+    # Redelivery sees no dedup record, so it is processed again (at-least-once);
+    # it is never fabricated into a 'duplicate'.
+    with pytest.raises(ConnectionError):
+        await service.ingest("s1", [event], delivery_outcomes_v1=True)
+
+
+@pytest.mark.asyncio
+async def test_lost_ownership_on_dedup_write_is_not_reported_as_delivered() -> None:
+    from backend.application.db.session_store import SessionLockTimeout
+
+    class Fenced(_FencedRejectingStore):
+        pass
+
+    store = Fenced()
+    await store.set("s1", {"status": "active"})
+    service = PlatformEventIngestionService(store=store, coordinator=_OkCoordinator())
+    event = PlatformEvent(**_event("dw-2", text="hi"))
+    for _ in range(2):
+        with pytest.raises(SessionLockTimeout):
+            await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert "platform_event_ids" not in (await store.get("s1"))
+
+
+@pytest.mark.asyncio
+async def test_successful_dedup_write_is_recorded_and_second_submission_is_duplicate() -> None:
+    service, store = await _fresh_service(coordinator=_OkCoordinator())
+    event = PlatformEvent(**_event("dw-3", text="hi"))
+    first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert first["events"][0]["status"] == "routed"
+    assert [e["event_id"] for e in (await store.get("s1"))["platform_event_ids"]] == ["dw-3"]
+    second = await service.ingest("s1", [event], delivery_outcomes_v1=True)
+    assert second["events"][0]["status"] == "duplicate"

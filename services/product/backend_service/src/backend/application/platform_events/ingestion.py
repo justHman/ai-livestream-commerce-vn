@@ -520,7 +520,10 @@ class PlatformEventIngestionService:
         if len(entries) > self._dedup_max_ids:
             entries = entries[-self._dedup_max_ids :]
         meta[_DEDUP_KEY] = entries
-        await self._save_meta(session_id, meta, fence=fence)
+        # Strict: the dedup record is what makes a redelivery safe. A swallowed
+        # write failure would report success for an event whose identity was
+        # never persisted (P0-FB-013 route-before-dedup-persistence).
+        await self._save_meta(session_id, meta, fence=fence, strict=True)
 
     # ------------------------------------------------------------------
     # Per-event processing
