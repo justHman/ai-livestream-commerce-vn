@@ -151,6 +151,12 @@ class _StubTTS(TTSEngine):
 def mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RENDER_BACKEND", "mock")
     monkeypatch.delenv("LIVEAVATAR_API_KEY", raising=False)
+    # authorize_session gives these sessions an execution_contract; lift the 015
+    # P0 direct-say guard so the lock/streaming behaviour under test stays covered.
+    async def _allow(d, req):
+        return None
+
+    monkeypatch.setattr("backend.api.v1.sessions._reject_p0_direct_say", _allow)
     monkeypatch.setenv("LLM_ENGINE", "none")
     monkeypatch.setenv("TTS_ENGINE", "tone")
     monkeypatch.setenv("SESSION_STORE", "memory")
