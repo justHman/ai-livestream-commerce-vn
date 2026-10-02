@@ -15,6 +15,7 @@ import pytest
 
 from backend.application.db.memory_session_store import InMemorySessionStore
 from backend.application.director.coordinator import DirectorCoordinator
+from backend.application.director.errors import CoordinatorUnavailable
 from backend.application.platform_events import PlatformEvent
 from backend.application.platform_events.ingestion import PlatformEventIngestionService
 from backend.application.reducer import AcceptedComment, FastReducer, FastReducerConfig
@@ -1248,7 +1249,7 @@ class _DyingMidBatchCoordinator:
 
     def ingest(self, session_id, text, author, ts=None):
         if self.ingested:
-            raise KeyError(session_id)
+            raise CoordinatorUnavailable(session_id)
         self.ingested.append((session_id, text))
         return type("C", (), {"id": "comment-1"})()
 
@@ -1470,7 +1471,9 @@ async def test_lost_lock_ownership_is_not_isolated_into_a_fabricated_duplicate()
     with pytest.raises(SessionLockTimeout):
         await service.ingest("s1", [event, event], delivery_outcomes_v1=True)
     # Nothing was persisted, so a later submission is not a duplicate either.
-    assert (await store.get("s1")).get("platform_event_dedup") in (None, {}, [])
+    assert "platform_event_ids" not in (await store.get("s1"))
+    with pytest.raises(SessionLockTimeout):
+        await service.ingest("s1", [event], delivery_outcomes_v1=True)
 
 
 class _SecretCoordinator:
@@ -1478,7 +1481,7 @@ class _SecretCoordinator:
         return True
 
     def ingest(self, session_id, text, author, ts=None):
-        raise KeyError("SECRET-MARKER-123")
+        raise CoordinatorUnavailable("SECRET-MARKER-123")
 
 
 @pytest.mark.asyncio
@@ -1490,7 +1493,7 @@ async def test_per_event_failure_log_does_not_leak_exception_text(caplog) -> Non
         )
     assert result["events"][0]["status"] == "not_ready"
     assert "ingest_event_failed" in caplog.text
-    assert "leak-1" in caplog.text and "KeyError" in caplog.text
+    assert "leak-1" in caplog.text and "CoordinatorUnavailable" in caplog.text
     assert "SECRET-MARKER-123" not in caplog.text
     assert "Traceback" not in caplog.text
 
@@ -1505,7 +1508,7 @@ class _FlakyOnceCoordinator:
     def ingest(self, session_id, text, author, ts=None):
         self.calls += 1
         if self.calls == 1:
-            raise KeyError(session_id)
+            raise CoordinatorUnavailable(session_id)
         return type("C", (), {"id": "c-recovered"})()
 
 
@@ -1537,3 +1540,83 @@ def test_mark_consumed_ignores_evicted_ids_and_stays_bounded() -> None:
     assert len(queue._consumed) <= len(queue) == 3
     queue.clear()
     assert len(queue) == 0 and not queue._consumed
+
+
+@pytest.mark.asyncio
+async def test_injected_keyerror_during_dedup_commit_escapes_the_guard(monkeypatch) -> None:
+    service, store = await _fresh_service(coordinator=_OkCoordinator())
+
+    async def boom(*args, **kwargs):
+        raise KeyError("dedup-commit")
+
+    monkeypatch.setattr(service, "_record_seen", boom)
+    event = PlatformEvent(**_event("kd-1", text="hi"))
+    # Legacy behaviour: the batch fails; no not_ready followed by a duplicate.
+    with pytest.raises(KeyError):
+        await service.ingest("s1", [event, event], delivery_outcomes_v1=True)
+    assert "platform_event_ids" not in (await store.get("s1"))
+
+
+@pytest.mark.asyncio
+async def test_malformed_dedup_entry_is_not_reported_as_coordinator_teardown() -> None:
+    service, store = await _fresh_service(coordinator=_OkCoordinator())
+    await store.set("s1", {"status": "active", "platform_event_ids": [{"ts": time.time()}]})
+    with pytest.raises(KeyError) as caught:
+        await service.ingest(
+            "s1", [PlatformEvent(**_event("mal-1", text="hi"))], delivery_outcomes_v1=True
+        )
+    assert not isinstance(caught.value, CoordinatorUnavailable)
+
+
+def test_genuine_coordinator_teardown_is_the_isolated_keyerror_subclass() -> None:
+    assert issubclass(CoordinatorUnavailable, KeyError)
+    coordinator = DirectorCoordinator.__new__(DirectorCoordinator)
+    coordinator._queues = {}
+    with pytest.raises(CoordinatorUnavailable):
+        coordinator.ingest("gone", "x", "a")
+
+
+class _Boom(Exception):
+    pass
+
+
+SECRET = "SECRET-LOG-MARKER-456"
+
+
+@pytest.mark.asyncio
+async def test_remaining_ingestion_logs_do_not_leak_exception_text(caplog) -> None:
+    class Store(InMemorySessionStore):
+        async def get(self, session_id):
+            raise _Boom(SECRET)
+
+        async def set(self, session_id, data, ttl_seconds=None):
+            raise _Boom(SECRET)
+
+    class Coord:
+        def has(self, session_id):
+            raise _Boom(SECRET)
+
+        def queue_capacity(self, session_id):
+            raise _Boom(SECRET)
+
+        def next_delivery_tick(self, session_id):
+            raise _Boom(SECRET)
+
+    service = PlatformEventIngestionService(store=Store(), coordinator=Coord())
+    with caplog.at_level("DEBUG", logger="backend.application.platform_events.ingestion"):
+        assert await service._session_exists("s1") is False  # coordinator.has path
+        with pytest.raises(_Boom):
+            await service._load_meta("s1")  # meta read path
+        await service._save_meta("s1", {})  # meta write path (non-strict)
+        assert service._has_queue_capacity("s1") is True  # queue_capacity path
+        assert service._next_delivery_seq("s1") == 0  # next_delivery_tick path
+    for fragment in (
+        "coordinator.has",
+        "meta read",
+        "meta write",
+        "queue_capacity",
+        "next_delivery_tick",
+    ):
+        assert fragment in caplog.text, fragment
+    assert SECRET not in caplog.text
+    assert "Traceback" not in caplog.text

@@ -54,6 +54,7 @@ from typing import Any, Callable, Optional
 
 from backend.application.db import SessionStore
 from backend.application.db.session_store import SessionLockTimeout, StaleOwnerWriteError
+from backend.application.director.errors import CoordinatorUnavailable
 from backend.application.safety_gate import SafetyGate
 from backend.application.safety_gate.intake import IntakeSafety
 
@@ -182,7 +183,7 @@ def _source_key_for(event: PlatformEvent) -> Optional[str]:
     ).hexdigest()
 
 
-_RETRYABLE_EVENT_ERRORS = (KeyError,)
+_RETRYABLE_EVENT_ERRORS = (CoordinatorUnavailable,)
 
 
 def _event_failure_reason(exc: Exception) -> str:
@@ -192,7 +193,7 @@ def _event_failure_reason(exc: Exception) -> str:
     it lands in a response the caller logs. A missing coordinator is called out
     by name because that is the expected cause and it is retryable.
     """
-    if isinstance(exc, KeyError):
+    if isinstance(exc, CoordinatorUnavailable):
         return "coordinator_torn_down_before_acceptance"
     return "event_ingest_failed"
 
@@ -250,8 +251,10 @@ class PlatformEventIngestionService:
             try:
                 if self._coordinator.has(session_id):
                     return True
-            except Exception:
-                logger.debug("coordinator.has failed session=%s", session_id, exc_info=True)
+            except Exception as exc:
+                logger.debug(
+                    "coordinator.has failed session=%s error=%s", session_id, type(exc).__name__
+                )
         return False
 
     async def _load_meta(self, session_id: str) -> dict:
@@ -259,8 +262,10 @@ class PlatformEventIngestionService:
             return {}
         try:
             return dict(await self._store.get(session_id) or {})
-        except Exception:
-            logger.warning("session meta read failed session=%s", session_id, exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "session meta read failed session=%s error=%s", session_id, type(exc).__name__
+            )
             raise
 
     async def _save_meta(
@@ -276,10 +281,12 @@ class PlatformEventIngestionService:
             return
         try:
             await self._store.set(session_id, meta)
-        except Exception:
+        except Exception as exc:
             if strict:
                 raise
-            logger.warning("session meta write failed session=%s", session_id, exc_info=True)
+            logger.warning(
+                "session meta write failed session=%s error=%s", session_id, type(exc).__name__
+            )
 
     async def _screen(self, session_id, meta, text, *, fence=None, defer_replay=False, **context):
         previous_recent = (meta.get("runtime_safety") or {}).get("recent", [])
@@ -401,9 +408,11 @@ class PlatformEventIngestionService:
             return True
         try:
             return int(capacity_fn(session_id)) > 0
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "coordinator.queue_capacity failed session=%s", session_id, exc_info=True
+                "coordinator.queue_capacity failed session=%s error=%s",
+                session_id,
+                type(exc).__name__,
             )
             return True
 
@@ -693,8 +702,12 @@ class PlatformEventIngestionService:
             return 0
         try:
             return int(seq_fn(session_id))
-        except Exception:
-            logger.warning("coordinator.next_delivery_tick failed", exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "coordinator.next_delivery_tick failed session=%s error=%s",
+                session_id,
+                type(exc).__name__,
+            )
             return 0
 
     def _track_routed(
@@ -860,7 +873,7 @@ class PlatformEventIngestionService:
                     )
                 )
             except _RETRYABLE_EVENT_ERRORS as exc:
-                # Allow-list: only a coordinator teardown (KeyError) is an
+                # Allow-list: only a coordinator teardown (CoordinatorUnavailable) is an
                 # expected per-event failure. Lost lock ownership
                 # (StaleOwnerWriteError), cancellation and programming errors
                 # must escape, or uncommitted dedup state would be reported as

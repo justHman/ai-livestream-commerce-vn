@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from backend.application.entity.models import EntityDocument
 
 from .comment_buffer import ChatQueue, IncomingComment
+from .errors import CoordinatorUnavailable
 from .clustering import Comment, cluster_comments
 from .decision import Decision, Director
 from .embeddings import embedder_status
@@ -407,7 +408,7 @@ class DirectorCoordinator:
         """
         queue = self._queues.get(session_id)
         if queue is None:
-            raise KeyError(f"No active coordinator session: {session_id}")
+            raise CoordinatorUnavailable(f"No active coordinator session: {session_id}")
         self._delivery_seq[session_id] = self._delivery_seq.get(session_id, 0) + 1
         comment = queue.put(text, author, ts=ts)
         # Approved P0 sessions require the authorized execution start command.
