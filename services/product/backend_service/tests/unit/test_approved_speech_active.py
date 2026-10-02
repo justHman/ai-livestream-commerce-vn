@@ -7,6 +7,7 @@ DirectorRuntime, Coordinator, speech boundary and chunker are real.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 from dataclasses import replace
 from types import SimpleNamespace
@@ -182,6 +183,23 @@ async def case_factory(monkeypatch):
     await asyncio.sleep(0)
 
 
+@pytest.fixture
+def direct_say_guard_off(monkeypatch):
+    """Lift the 015 P0 direct-say guard so the 005 boundary stays covered.
+
+    Merchant-scoped approved speech needs an execution_contract, so the only
+    sessions that reach the boundary through /say are the P0 sessions that
+    015 now rejects up front. These tests exercise the boundary, not the route.
+    """
+
+    async def allow(d, req):
+        return None
+
+    monkeypatch.setattr(
+        importlib.import_module("backend.api.v1.sessions"), "_reject_p0_direct_say", allow
+    )
+
+
 def decision(case, *, generated=False):
     return Decision(
         action="answer_cluster" if generated else "introduce_product",
@@ -319,7 +337,9 @@ async def test_locked_prepared_bytes_cannot_change(case_factory):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cloud", [False, True])
 @pytest.mark.parametrize("cancel", ["interrupt", "stop"])
-async def test_late_generated_completion_is_fenced(case_factory, cloud, cancel):
+async def test_late_generated_completion_is_fenced(
+    case_factory, direct_say_guard_off, cloud, cancel
+):
     case = await case_factory(cloud=cloud)
     case.llm.release.clear()
     pending = asyncio.create_task(
@@ -344,7 +364,9 @@ async def test_late_generated_completion_is_fenced(case_factory, cloud, cancel):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cloud", [False, True])
 @pytest.mark.parametrize("generate", [False, True])
-async def test_direct_say_valid_content_and_version_evidence(case_factory, cloud, generate):
+async def test_direct_say_valid_content_and_version_evidence(
+    case_factory, direct_say_guard_off, cloud, generate
+):
     case = await case_factory(cloud=cloud)
     response = await case.client.post(
         f"/api/v1/sessions/{case.sid}/say",
@@ -386,7 +408,9 @@ async def test_late_director_preparation_is_fenced(case_factory, cloud):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalidate", ["cancel", "expire"])
-async def test_pending_tts_audio_cannot_escape_after_invalidation(case_factory, invalidate):
+async def test_pending_tts_audio_cannot_escape_after_invalidation(
+    case_factory, direct_say_guard_off, invalidate
+):
     case = await case_factory()
     audio = []
 
@@ -416,7 +440,9 @@ async def test_pending_tts_audio_cannot_escape_after_invalidation(case_factory, 
 
 
 @pytest.mark.asyncio
-async def test_default_adaptive_chunker_preserves_locked_script(case_factory, monkeypatch):
+async def test_default_adaptive_chunker_preserves_locked_script(
+    case_factory, direct_say_guard_off, monkeypatch
+):
     case = await case_factory()
     monkeypatch.setenv("TEXT_CHUNK_POLICY", "adaptive_vi")
     response = await case.client.post(
