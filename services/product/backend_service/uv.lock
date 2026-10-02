@@ -86,6 +86,7 @@ test = [
 dev = [
     { name = "async-timeout" },
     { name = "asyncpg" },
+    { name = "livekit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -123,6 +124,7 @@ provides-extras = ["director", "livekit", "postgres", "test"]
 dev = [
     { name = "async-timeout" },
     { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "livekit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
