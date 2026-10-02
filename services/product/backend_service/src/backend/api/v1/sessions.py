@@ -471,7 +471,25 @@ async def sessions_attach(
             )
         else:
             d.coordinator.update_catalog(session_id, products)
+        _configure_reducer_mode(d, session_id, meta, products)
     return {"ok": True, "will_speak": False, **info}
+
+
+def _configure_reducer_mode(d: Any, session_id: str, meta: dict, products) -> None:
+    """Select the decision input for this session and bind its catalog.
+
+    A P0 session (one carrying an ``execution_contract``) is fed by the bounded
+    reducer; a legacy session keeps the raw-comment feed verbatim. This is a
+    Runtime engineering selector, not a Product Rule, and it is inert for
+    legacy sessions.
+    """
+    if d.reducer is None:
+        return
+    if not meta.get("execution_contract"):
+        return
+    current = products[0].id if products else None
+    d.reducer.set_session_catalog(session_id, list(products), current)
+    d.coordinator.set_reducer_mode(session_id, True)
 
 
 @_router.patch("/sessions/{session_id}/config")
