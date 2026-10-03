@@ -25,10 +25,44 @@ symbols (``BASE_SALE_PERSONA``).
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
+
+
+def _timer_env(name: str, default: str) -> float:
+    """Finite, non-negative float from the environment (0 = explicit disable where documented).
+
+    A negative/NaN/inf value would silently disable a safeguard, so it is refused by name.
+    """
+    raw = os.environ.get(name, default)
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a finite, non-negative number") from None
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite, non-negative number")
+    return value
+
+
+def _positive_timer_env(name: str, default: str) -> float:
+    value = _timer_env(name, default)
+    if value <= 0:
+        raise ValueError(f"{name} must be a finite, positive number")
+    return value
+
+
+def _int_env(name: str, default: str, minimum: int = 0) -> int:
+    """Strict integer from the environment; errors name the variable and never echo the value."""
+    try:
+        value = int(os.environ.get(name, default))
+    except ValueError:
+        raise ValueError(f"{name} must be an integer >= {minimum}") from None
+    if value < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    return value
 
 
 def _dsn_is_loopback(database_url: str) -> bool:
@@ -177,7 +211,7 @@ class LLMConfig:
     stream: bool = False  # LLM_STREAM=1 -> emit TextChunks via stream_chunks()
     base_url: str = ""  # remote OpenAI-compat endpoint (LLM_BASE_URL)
     guided_json: bool = False  # LLM_GUIDED_JSON / outlines structured output
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict, repr=False)  # may carry credentials
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -279,7 +313,7 @@ class TTSConfig:
     ref_audio: Optional[str] = None
     preset_id: str = "vieneu-v3-turbo"
     base_url: str = ""  # remote TTS service URL (TTS_BASE_URL)
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict, repr=False)  # carries the TTS api_key
 
     @classmethod
     def from_env(cls) -> "TTSConfig":
@@ -427,8 +461,8 @@ class PublishingConfig:
     """LiveKit publishing settings — credentials stay server-side."""
 
     livekit_url: str = ""
-    livekit_api_key: str = ""
-    livekit_api_secret: str = ""
+    livekit_api_key: str = field(default="", repr=False)
+    livekit_api_secret: str = field(default="", repr=False)
     room_ttl_sec: int = 3600
     fps: int = 25
 
@@ -463,7 +497,7 @@ class AppConfig:
 
     # Session storage
     store_backend: str = "memory"
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = field(default="redis://localhost:6379/0", repr=False)  # may embed a password
 
     # CORS
     cors_origins: str = "*"
@@ -499,8 +533,8 @@ class AppConfig:
     director_enabled: bool = False
 
     # Auth tokens (Task 7). Empty + app_env="dev" -> auth disabled.
-    backend_api_token: str = ""  # viewer token: /lite/* + /ws/control
-    admin_api_token: str = ""  # admin token: /engines/* + /debug/*
+    backend_api_token: str = field(default="", repr=False)  # viewer: /lite/* + /ws/control
+    admin_api_token: str = field(default="", repr=False)  # admin: /engines/* + /debug/*
 
     # Debug mode gate (Task 7). When False, /debug/* -> 404.
     debug_enabled: bool = False
@@ -508,19 +542,19 @@ class AppConfig:
     # Remote service URLs (AWS multi-service; empty offline)
     avatar_base_url: str = ""
     livekit_url: str = ""
-    livekit_api_key: str = ""
-    livekit_api_secret: str = ""
+    livekit_api_key: str = field(default="", repr=False)
+    livekit_api_secret: str = field(default="", repr=False)
     lmcache_enabled: bool = False
     # Pipecat orchestration toggle (full wiring is another agent). Default off.
     pipecat_enabled: bool = False
     # Director coverage match threshold (speech vs key_selling_points)
     coverage_match_threshold: float = 0.75
     # Optional Postgres runtime (Wave D). Empty = store disabled.
-    database_url: str = ""
+    database_url: str = field(default="", repr=False)  # DSN embeds the password
     # Backend audio publish to LiveKit SFU (stub until SDK wired).
     livekit_publish: bool = False
     # cloud_lemonslice (P0-FB-010). Empty/off by default; see clients/avatar/lemonslice.py.
-    lemonslice_api_key: str = ""
+    lemonslice_api_key: str = field(default="", repr=False)
     lemonslice_api_base: str = "https://lemonslice.com/api/liveai"
     lemonslice_agent_id: str = ""
     lemonslice_avatar_allowlist: str = ""
@@ -528,7 +562,11 @@ class AppConfig:
     lemonslice_idle_timeout_s: int = 60
     lemonslice_ready_timeout_s: float = 30.0
     lemonslice_avatar_identity: str = "lemonslice-avatar-agent"
-    lemonslice_terminate_path: str = ""
+    lemonslice_terminate_path: str = "sessions/{session_id}/control"
+    lemonslice_send_livekit_session_id: bool = False
+    lemonslice_keepalive_s: float = 20.0
+    lemonslice_max_session_s: float = 1500.0
+    lemonslice_control_deadline_s: float = 15.0
     avatar_audio_fallback_publish: bool = False
     avatar_render_offset_ms: int = 0
 
@@ -620,19 +658,27 @@ class AppConfig:
             or "https://lemonslice.com/api/liveai",
             lemonslice_agent_id=os.environ.get("LEMONSLICE_AGENT_ID", ""),
             lemonslice_avatar_allowlist=os.environ.get("LEMONSLICE_AVATAR_ALLOWLIST", ""),
-            lemonslice_audio_sample_rate=int(
-                os.environ.get("LEMONSLICE_AUDIO_SAMPLE_RATE", "16000")
-            ),
-            lemonslice_idle_timeout_s=int(os.environ.get("LEMONSLICE_IDLE_TIMEOUT_S", "60")),
-            lemonslice_ready_timeout_s=float(os.environ.get("LEMONSLICE_READY_TIMEOUT_S", "30")),
+            lemonslice_audio_sample_rate=_int_env("LEMONSLICE_AUDIO_SAMPLE_RATE", "16000", 1),
+            lemonslice_idle_timeout_s=_int_env("LEMONSLICE_IDLE_TIMEOUT_S", "60"),
+            lemonslice_ready_timeout_s=_timer_env("LEMONSLICE_READY_TIMEOUT_S", "30"),
             lemonslice_avatar_identity=os.environ.get("LEMONSLICE_AVATAR_IDENTITY")
             or "lemonslice-avatar-agent",
-            lemonslice_terminate_path=os.environ.get("LEMONSLICE_TERMINATE_PATH", ""),
+            lemonslice_terminate_path=os.environ.get("LEMONSLICE_TERMINATE_PATH")
+            or "sessions/{session_id}/control",
+            lemonslice_send_livekit_session_id=os.environ.get(
+                "LEMONSLICE_SEND_LIVEKIT_SESSION_ID", "0"
+            ).lower()
+            in ("1", "true", "on", "yes"),
+            lemonslice_keepalive_s=_timer_env("LEMONSLICE_KEEPALIVE_S", "20"),
+            lemonslice_max_session_s=_timer_env("LEMONSLICE_MAX_SESSION_S", "1500"),
+            lemonslice_control_deadline_s=_positive_timer_env(
+                "LEMONSLICE_CONTROL_DEADLINE_S", "15"
+            ),
             avatar_audio_fallback_publish=os.environ.get(
                 "AVATAR_AUDIO_FALLBACK_PUBLISH", "0"
             ).lower()
             in ("1", "true", "on", "yes"),
-            avatar_render_offset_ms=int(os.environ.get("AVATAR_RENDER_OFFSET_MS", "0")),
+            avatar_render_offset_ms=_int_env("AVATAR_RENDER_OFFSET_MS", "0"),
             llm=llm_cfg,
             tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),
@@ -806,6 +852,10 @@ class AppConfig:
                 fallback_publish=self.avatar_audio_fallback_publish,
                 render_offset_ms=self.avatar_render_offset_ms,
                 terminate_path=self.lemonslice_terminate_path,
+                send_livekit_session_id=self.lemonslice_send_livekit_session_id,
+                keepalive_s=self.lemonslice_keepalive_s,
+                max_session_s=self.lemonslice_max_session_s,
+                control_deadline_s=self.lemonslice_control_deadline_s,
             )
         )
 
