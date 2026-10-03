@@ -161,60 +161,36 @@
         "title": "BatchGenerateReq",
         "type": "object"
       },
-      "CommandRequest": {
+      "BudgetLeaseRequest": {
         "properties": {
-          "actor_id": {
+          "expires_at": {
+            "maxLength": 64,
             "minLength": 1,
-            "title": "Actor Id",
+            "title": "Expires At",
             "type": "string"
           },
-          "business_session_id": {
+          "identity": {
+            "$ref": "#/components/schemas/ExecutionIdentity"
+          },
+          "lease_id": {
+            "maxLength": 255,
             "minLength": 1,
-            "title": "Business Session Id",
+            "title": "Lease Id",
             "type": "string"
           },
-          "command": {
-            "minLength": 1,
-            "title": "Command",
-            "type": "string"
-          },
-          "command_id": {
-            "minLength": 1,
-            "title": "Command Id",
-            "type": "string"
-          },
-          "generation": {
-            "minLength": 1,
-            "title": "Generation",
-            "type": "string"
-          },
-          "requested_at": {
-            "format": "date-time",
-            "title": "Requested At",
-            "type": "string"
-          },
-          "runtime_session_id": {
-            "minLength": 1,
-            "title": "Runtime Session Id",
-            "type": "string"
-          },
-          "tenant_id": {
-            "minLength": 1,
-            "title": "Tenant Id",
-            "type": "string"
+          "sequence": {
+            "minimum": 1.0,
+            "title": "Sequence",
+            "type": "integer"
           }
         },
         "required": [
-          "tenant_id",
-          "business_session_id",
-          "runtime_session_id",
-          "generation",
-          "command_id",
-          "command",
-          "actor_id",
-          "requested_at"
+          "identity",
+          "lease_id",
+          "sequence",
+          "expires_at"
         ],
-        "title": "CommandRequest",
+        "title": "BudgetLeaseRequest",
         "type": "object"
       },
       "CommentPayload": {
@@ -627,6 +603,38 @@
           "occurred_at"
         ],
         "title": "Evidence",
+        "type": "object"
+      },
+      "ExecutionIdentity": {
+        "properties": {
+          "business_session_id": {
+            "minLength": 1,
+            "title": "Business Session Id",
+            "type": "string"
+          },
+          "generation": {
+            "minLength": 1,
+            "title": "Generation",
+            "type": "string"
+          },
+          "runtime_session_id": {
+            "minLength": 1,
+            "title": "Runtime Session Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "business_session_id",
+          "runtime_session_id",
+          "generation"
+        ],
+        "title": "ExecutionIdentity",
         "type": "object"
       },
       "Fact": {
@@ -1762,6 +1770,74 @@
           }
         },
         "title": "RenderPreviewReq",
+        "type": "object"
+      },
+      "RescueCommandRequest": {
+        "description": "Wire request: ``reason_code`` is additive and optional (FLAG-018-1).\n\nIt exists only here, never on ``CommandOutcome`` (whose ``reason_code`` is the\noutcome reason), and only the API's ``system:live-credits`` may send it.",
+        "properties": {
+          "actor_id": {
+            "minLength": 1,
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "business_session_id": {
+            "minLength": 1,
+            "title": "Business Session Id",
+            "type": "string"
+          },
+          "command": {
+            "minLength": 1,
+            "title": "Command",
+            "type": "string"
+          },
+          "command_id": {
+            "minLength": 1,
+            "title": "Command Id",
+            "type": "string"
+          },
+          "generation": {
+            "minLength": 1,
+            "title": "Generation",
+            "type": "string"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "runtime_session_id": {
+            "minLength": 1,
+            "title": "Runtime Session Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "business_session_id",
+          "runtime_session_id",
+          "generation",
+          "command_id",
+          "command",
+          "actor_id",
+          "requested_at"
+        ],
+        "title": "RescueCommandRequest",
         "type": "object"
       },
       "RuntimeConfigReq": {
@@ -4325,6 +4401,58 @@
         "summary": "Get Execution"
       }
     },
+    "/api/v1/sessions/{session_id}/execution/budget-lease": {
+      "post": {
+        "description": "P0-FB-018 S6: store the backend-issued lease. Inert (409) unless enforcement is on.",
+        "operationId": "push_budget_lease_api_v1_sessions__session_id__execution_budget_lease_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetLeaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Push Budget Lease Api V1 Sessions  Session Id  Execution Budget Lease Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Push Budget Lease"
+      }
+    },
     "/api/v1/sessions/{session_id}/execution/commands": {
       "post": {
         "operationId": "request_execution_command_api_v1_sessions__session_id__execution_commands_post",
@@ -4343,7 +4471,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CommandRequest"
+                "$ref": "#/components/schemas/RescueCommandRequest"
               }
             }
           },
