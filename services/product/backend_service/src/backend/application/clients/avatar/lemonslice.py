@@ -109,30 +109,38 @@ class LemonSliceSettings:
 
     def __post_init__(self) -> None:
         # Negative/NaN/inf timers would silently disable a safeguard: refuse them (0 = off where
-        # documented: keepalive_s, max_session_s).
+        # documented: keepalive_s, max_session_s). Messages name the field, never the value.
         for name in (
-            "idle_timeout_s",
             "ready_timeout_s",
             "request_timeout_s",
             "keepalive_s",
             "max_session_s",
             "playback_margin_s",
-            "avatar_token_ttl_s",
-            "client_token_ttl_s",
             "io_timeout_s",
             "clear_budget_s",
             "audio_recheck_s",
             "audio_probe_s",
-            "render_offset_ms",
-            "terminate_attempts",
-            "keepalive_fail_log_after",
         ):
             v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, int | float):
+                raise ValueError(f"{name} must be a finite, non-negative number")
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be a finite, non-negative number")
-        for name in ("audio_sample_rate", "history", "fallback_max_queue"):
-            if getattr(self, name) < 1:
-                raise ValueError(f"{name} must be >= 1")
+        # counts and sizes: real integers only (no float, NaN, bool), with a lower bound
+        for name, low in (
+            ("idle_timeout_s", 0),
+            ("avatar_token_ttl_s", 1),
+            ("client_token_ttl_s", 1),
+            ("render_offset_ms", 0),
+            ("terminate_attempts", 1),
+            ("keepalive_fail_log_after", 1),
+            ("audio_sample_rate", 1),
+            ("history", 1),
+            ("fallback_max_queue", 1),
+        ):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, int) or v < low:
+                raise ValueError(f"{name} must be an integer >= {low}")
 
     def __repr__(self) -> str:  # never print secrets
         return "LemonSliceSettings(<redacted>)"
@@ -289,7 +297,9 @@ class _Sess:
     started_at: float = 0.0  # monotonic
     cap_warned: bool = False
     closing: bool = False  # read from the HTTP worker thread: set before any teardown step
-    inflight: set = field(default_factory=set)  # control HTTP futures still running
+    # Serializes control HTTP calls of one session: terminate waits (bounded) for a running
+    # keep-alive, and a late keep-alive worker re-checks ``closing`` while holding it.
+    ctl_lock: threading.Lock = field(default_factory=threading.Lock)
     degraded: str = ""  # terminal keep-alive outcome (status class); "" = healthy
 
     @property
@@ -514,8 +524,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 raise LemonSliceError(
                     "session_request_failed", f"LemonSlice session request failed status={status}"
                 )
-            sid = str(data.get("session_id") or "")
-            if sid and not _SAFE_SESSION_ID.fullmatch(sid):
+            sid = data.get("session_id")
+            if not isinstance(sid, str) or not _SAFE_SESSION_ID.fullmatch(sid):
                 # never interpolate a foreign value into a URL carrying the API key
                 raise LemonSliceError(
                     "session_id_invalid", "LemonSlice returned an unusable session id"
@@ -633,8 +643,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         except BaseException as exc:
             log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
             return
-        sid = str(data.get("session_id") or "") if status < 300 else ""
-        if sid and _SAFE_SESSION_ID.fullmatch(sid):
+        sid = data.get("session_id") if status < 300 else None
+        if isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):
             await self._terminate_provider(SimpleNamespace(provider_session_id=sid))
 
     async def _wait_avatar_video(self, room: Any) -> None:
@@ -787,8 +797,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 await sess.channel.shutdown()
             except Exception as exc:
                 log.warning("channel shutdown error_type=%s", type(exc).__name__)
-            await self._drain_control(sess)  # terminate must be the LAST call to the provider
-            await self._terminate_provider(sess)
+            try:
+                await self._terminate_provider(sess)
+            except Exception as exc:  # the room must still be left
+                log.error("lemonslice terminate error_type=%s", type(exc).__name__)
         try:
             await asyncio.wait_for(room.disconnect(), self._s.io_timeout_s)
         except Exception as exc:
@@ -799,34 +811,40 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     ) -> int:
         """POST one control event; returns the HTTP status. May raise (caller classes it).
 
-        With ``guard`` (keep-alives) the call is tracked on the session and re-checks
-        ``guard.closing`` inside the worker thread right before the HTTP call.
+        With ``guard`` the call is serialized with the session's other control calls. A
+        keep-alive re-checks ``guard.closing`` while holding the lock, right before the HTTP call;
+        terminate waits for the lock a bounded time and then proceeds regardless.
         """
         s = self._s
         rel = path.format(session_id=quote(provider_session_id, safe="")).lstrip("/")
         url = f"{s.api_base.rstrip('/')}/{rel}"
 
-        def call() -> tuple[int, dict]:
-            if guard is not None and guard.closing:
-                raise _SessionClosing()
+        def send() -> tuple[int, dict]:
             return self._post(
                 url, {"X-API-Key": s.lemonslice_api_key}, {"event": event}, s.request_timeout_s
             )
 
+        def call() -> tuple[int, dict]:
+            if guard is None:
+                return send()
+            if event == "terminate":
+                got = guard.ctl_lock.acquire(timeout=s.request_timeout_s + 1)
+                try:
+                    if not got:
+                        log.error("lemonslice control call still in flight at terminate")
+                    return send()
+                finally:
+                    if got:
+                        guard.ctl_lock.release()
+            with guard.ctl_lock:
+                if guard.closing:  # checked after any park, immediately before the send
+                    raise _SessionClosing()
+                return send()
+
         fut = asyncio.ensure_future(asyncio.to_thread(call))
         fut.add_done_callback(lambda f: f.cancelled() or f.exception())  # never "not retrieved"
-        if guard is not None:
-            guard.inflight.add(fut)
-            fut.add_done_callback(guard.inflight.discard)
         status, _ = await asyncio.shield(fut)
         return status
-
-    async def _drain_control(self, sess: _Sess) -> None:
-        pending = [f for f in sess.inflight if not f.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=self._s.request_timeout_s + 1)
-            if any(not f.done() for f in pending):
-                log.error("lemonslice keepalive still in flight at terminate")
 
     async def _terminate_provider(self, sess: _Sess) -> None:
         s = self._s
@@ -837,10 +855,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 "lemonslice session not terminated (no terminate path); idle_timeout applies"
             )
             return
-        for attempt in range(max(1, s.terminate_attempts)):
+        attempts = s.terminate_attempts if isinstance(s.terminate_attempts, int) else 2
+        guard = sess if isinstance(sess, _Sess) else None
+        for attempt in range(max(1, attempts)):
             try:
                 status = await self._control(
-                    sess.provider_session_id, "terminate", s.terminate_path
+                    sess.provider_session_id, "terminate", s.terminate_path, guard
                 )
                 if status < 300:
                     return

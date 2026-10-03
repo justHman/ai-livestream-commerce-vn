@@ -176,6 +176,9 @@ class AvatarAudioChannel:
         # attributed to the oldest unresolved record (the true owner is gone), so none is credited
         # until a clear ack resolves everything cancelled before it.
         self._ambiguous = False
+        # Audio was dispatched and nothing proves it is gone from the avatar. Eviction never
+        # resets it: only a clear ack, or the finish of ALL dispatched audio, does.
+        self._unflushed_audio = False
         self._detached: set[asyncio.Future] = set()
         self.playback_started_at: OrderedDict[str, float] = OrderedDict()
         lp = room.local_participant
@@ -239,12 +242,15 @@ class AvatarAudioChannel:
                 if not ack.abandoned:
                     ack.event.set()
                     self._ambiguous = False  # the avatar flushed everything written before it
+                    self._unflushed_audio = False
                 for rec in [r for r in self._plays if r.cancelled and r.cancel_seq <= ack.seq]:
                     self._retire(rec)
             return "ok"
         rec = self._match(payload, lambda r: r.closed or (r.cancelled and r.wrote))
         if rec is not None:
             rec.finished = True
+            if not self._ambiguous and not any(r.wrote and not r.finished for r in self._plays):
+                self._unflushed_audio = False  # every dispatched utterance provably finished
             if rec.cancelled or rec.timed_out:
                 self._retire(rec)
             else:
@@ -410,6 +416,7 @@ class AvatarAudioChannel:
             if self._fenced(epoch) or stream is None or stream.dead:
                 await self._abort()
                 return None
+            self._unflushed_audio = True
             rec = self._by_id.get(utterance_id)
             if rec is not None:
                 rec.wrote = True  # dispatched: the avatar may report started before write returns
@@ -480,10 +487,8 @@ class AvatarAudioChannel:
         """
         budget = self._budget if timeout_s is None else timeout_s
         end = time.monotonic() + budget
-        # Audio may be buffered at the avatar: an open stream or a dispatched, unfinished record.
-        needs_clear = self._stream is not None or any(
-            r.wrote and not r.finished for r in self._plays
-        )
+        # Audio may be buffered at the avatar (survives record eviction, unlike the records).
+        needs_clear = self._stream is not None or self._unflushed_audio
         self.epoch += 1  # synchronous: every suspended send is now stale
         self._clear_seq += 1
         seq = self._clear_seq

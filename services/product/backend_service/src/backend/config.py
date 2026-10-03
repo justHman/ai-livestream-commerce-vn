@@ -47,6 +47,17 @@ def _timer_env(name: str, default: str) -> float:
     return value
 
 
+def _int_env(name: str, default: str, minimum: int = 0) -> int:
+    """Strict integer from the environment; errors name the variable and never echo the value."""
+    try:
+        value = int(os.environ.get(name, default))
+    except ValueError:
+        raise ValueError(f"{name} must be an integer >= {minimum}") from None
+    if value < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    return value
+
+
 def _dsn_is_loopback(database_url: str) -> bool:
     """True when the DSN targets a loopback host (an embedded/local dev store).
 
@@ -639,10 +650,8 @@ class AppConfig:
             or "https://lemonslice.com/api/liveai",
             lemonslice_agent_id=os.environ.get("LEMONSLICE_AGENT_ID", ""),
             lemonslice_avatar_allowlist=os.environ.get("LEMONSLICE_AVATAR_ALLOWLIST", ""),
-            lemonslice_audio_sample_rate=int(
-                os.environ.get("LEMONSLICE_AUDIO_SAMPLE_RATE", "16000")
-            ),
-            lemonslice_idle_timeout_s=int(_timer_env("LEMONSLICE_IDLE_TIMEOUT_S", "60")),
+            lemonslice_audio_sample_rate=_int_env("LEMONSLICE_AUDIO_SAMPLE_RATE", "16000", 1),
+            lemonslice_idle_timeout_s=_int_env("LEMONSLICE_IDLE_TIMEOUT_S", "60"),
             lemonslice_ready_timeout_s=_timer_env("LEMONSLICE_READY_TIMEOUT_S", "30"),
             lemonslice_avatar_identity=os.environ.get("LEMONSLICE_AVATAR_IDENTITY")
             or "lemonslice-avatar-agent",
@@ -658,7 +667,7 @@ class AppConfig:
                 "AVATAR_AUDIO_FALLBACK_PUBLISH", "0"
             ).lower()
             in ("1", "true", "on", "yes"),
-            avatar_render_offset_ms=int(os.environ.get("AVATAR_RENDER_OFFSET_MS", "0")),
+            avatar_render_offset_ms=_int_env("AVATAR_RENDER_OFFSET_MS", "0"),
             llm=llm_cfg,
             tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),

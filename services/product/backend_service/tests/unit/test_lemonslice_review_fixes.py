@@ -99,7 +99,9 @@ def test_transient_5xx_keeps_retrying_and_the_session_stays_active():
 # ---- A3: provider session id is one safe path segment ----------------------------------------
 
 
-@pytest.mark.parametrize("bad", ["../../../admin", "a/b", "a?x=1", "a b", "x" * 129, "..%2f"])
+@pytest.mark.parametrize(
+    "bad", ["../../../admin", "a/b", "a?x=1", "a b", "x" * 129, "..%2f", "", 123, True, None]
+)
 def test_unsafe_provider_session_id_refuses_start_and_terminates_nothing(bad):
     backend, room, rest = make(keepalive_s=0.03)
     rest.session_id = bad
@@ -237,3 +239,101 @@ def test_config_reprs_contain_no_secret():
     pub = PublishingConfig(livekit_url="wss://x", livekit_api_key="K-1", livekit_api_secret="S-2")
     text = repr(cfg) + repr(pub)
     assert not [x for x in secrets if x in text]
+
+
+# ---- round 2 ------------------------------------------------------------------------------------
+
+
+def test_late_keepalive_worker_released_after_stop_sends_nothing():
+    backend, room, rest = races_make(keepalive_s=0.03, request_timeout_s=0.5)
+    sid = backend.start(StartOptions()).session_id
+    lock = backend._sessions[sid].ctl_lock
+    lock.acquire()  # park the keep-alive worker right before its send
+    try:
+        time.sleep(0.2)
+        backend.stop(sid)  # terminate waits its bound for the lock, then proceeds
+    finally:
+        lock.release()
+    time.sleep(0.3)  # the late worker now runs: it must see the session closed
+    assert [e for _, e in rest.controls] == ["terminate"]
+    backend.stop_all()
+
+
+def test_failed_clear_after_evicted_unresolved_audio_still_breaks_the_channel():
+    backend, room, _ = races_make(history=1, playback_margin_s=0.02)
+    room.auto = False
+    sid = backend.start(StartOptions()).session_id
+    try:
+        backend.stream_audio(sid, win("u1", 0))  # audio dispatched, never confirmed
+        backend.stream_audio(sid, win("u2", 0, ms=0, final=True))  # evicts u1's record
+        room.fail["rpc"] = RuntimeError("rpc blew up")
+        backend.interrupt(sid)
+        assert channel(backend, sid).broken
+        with pytest.raises(AvatarChannelBroken):
+            backend.stream_audio(sid, win("u3", 0))
+    finally:
+        backend.stop_all()
+
+
+def test_failed_clear_after_completed_playback_is_benign():
+    backend, room, _ = races_make(playback_margin_s=0.5)
+    sid = backend.start(StartOptions()).session_id
+    try:
+        backend.stream_audio(sid, win("u1", 0, final=True))  # auto avatar confirms the finish
+        room.fail["rpc"] = RuntimeError("rpc blew up")
+        backend.interrupt(sid)
+        assert channel(backend, sid).broken is None
+    finally:
+        backend.stop_all()
+
+
+COUNTS = [
+    "history",
+    "fallback_max_queue",
+    "audio_sample_rate",
+    "terminate_attempts",
+    "idle_timeout_s",
+]
+
+
+@pytest.mark.parametrize("name", COUNTS)
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), 1.5, -1, True, "fake-secret-xyz"])
+def test_settings_reject_non_integer_counts_without_echoing_the_value(name, bad):
+    with pytest.raises(ValueError, match=name) as err:
+        settings(**{name: bad})
+    assert "fake-secret-xyz" not in str(err.value)
+
+
+@pytest.mark.parametrize("name", TIMERS)
+def test_settings_reject_non_numeric_timers_without_echoing_the_value(name):
+    with pytest.raises(ValueError, match=name) as err:
+        settings(**{name: "fake-secret-xyz"})
+    assert "fake-secret-xyz" not in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "var", ["LEMONSLICE_AUDIO_SAMPLE_RATE", "LEMONSLICE_IDLE_TIMEOUT_S", "AVATAR_RENDER_OFFSET_MS"]
+)
+@pytest.mark.parametrize("bad", ["1.5", "nan", "-1", "fake-secret-xyz"])
+def test_env_integers_are_strict_and_never_echo_the_value(monkeypatch, var, bad):
+    monkeypatch.setenv(var, bad)
+    with pytest.raises(ValueError, match=var) as err:
+        AppConfig.from_env()
+    assert "fake-secret-xyz" not in str(err.value) and "1.5" not in str(err.value)
+
+
+@pytest.mark.parametrize("var", ["LEMONSLICE_KEEPALIVE_S", "LEMONSLICE_MAX_SESSION_S"])
+def test_env_timers_never_echo_the_value(monkeypatch, var):
+    monkeypatch.setenv(var, "fake-secret-xyz")
+    with pytest.raises(ValueError, match=var) as err:
+        AppConfig.from_env()
+    assert "fake-secret-xyz" not in str(err.value)
+
+
+def test_stop_still_terminates_and_disconnects_with_a_corrupt_attempt_count():
+    backend, room, rest = make(keepalive_s=0)
+    sid = backend.start(StartOptions()).session_id
+    object.__setattr__(backend._s, "terminate_attempts", 1.5)
+    backend.stop(sid)
+    assert [e for _, e in rest.controls] == ["terminate"] and room.disconnected
+    backend.stop_all()
