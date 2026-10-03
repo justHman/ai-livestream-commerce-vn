@@ -448,11 +448,19 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
             d, session_id
         ):
             raise HTTPException(status_code=404, detail="unknown session_id")
-    from backend.application.budget_lease import settle_unstaged
+    from backend.application.budget_lease import keep_for_unstaged
 
-    # A terminal usage fact that could not be staged is NOT dropped with the session meta.
-    await settle_unstaged(d, session_id, fence)
+    # Media cleanup and the 019 terminal record come FIRST and are never blocked by usage
+    # evidence. A terminal usage fact that could not be staged keeps ONLY the meta (the
+    # watcher retries it); everything else is released as before.
     await teardown_then_persist(d, session_id)
+    if await keep_for_unstaged(d, session_id, fence):
+        return {"ok": True, "stopped": session_id}
+    await delete_session_meta(d, session_id)
+    return {"ok": True, "stopped": session_id}
+
+
+async def delete_session_meta(d: Any, session_id: str) -> None:
     sender = getattr(d, "usage_sender", None)
     if sender is not None:
         # The session meta holds the only commit proof of unresolved usage evidence rows:
@@ -463,7 +471,6 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
         await d.hub.emit(session_id, {"type": "session.stopped"})
     # P4 hardening: drop the per-session lock entry to prevent memory leak.
     d.locks.drop(session_id)
-    return {"ok": True, "stopped": session_id}
 
 
 # ── Director-driven endpoints (orchestration) ───────────────────────

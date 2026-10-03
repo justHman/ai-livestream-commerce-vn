@@ -49,6 +49,10 @@ FAILURE_KEY = "execution_failure_class"
 # cleanup and the terminal record are done (the stop path then deletes the session meta).
 TERMINATION_KEY = "execution_lease_termination"
 UNSTAGED_KEY = "usage_terminal_unstaged"
+# TERMINATION_KEY values: "pending" (cleanup / 019 record owed) -> "settling" (cleanup and the
+# 019 record are DONE; the session meta is kept only for the unstaged usage fact).
+UNSTAGEABLE_AFTER = 5  # permanent (422) staging failures before the fact is parked for an operator
+SCAN_EVERY = 30  # sweeps between meta scans for stranded lease work
 GATE_REASON = "lease_expired"
 SYSTEM_ACTOR = "system:live-credits"
 EXHAUSTED = "entitlement_exhausted"
@@ -204,6 +208,51 @@ async def termination_pending(d: Any, session_id: str) -> bool:
     return bool(meta and meta.get(TERMINATION_KEY) == "pending")
 
 
+async def keep_for_unstaged(d: Any, session_id: str, fence: Any = None) -> bool:
+    """After cleanup + the 019 record: try the unstaged fact once. True => KEEP the meta.
+
+    Never raises (except cancellation): a staging failure must not block media cleanup or the
+    terminal record, which already happened. A permanent (422) failure repeated
+    ``UNSTAGEABLE_AFTER`` times parks the fact as ``unstageable`` (ERROR, health counter) and
+    the meta is kept for an operator.
+    """
+    from backend.api.v1.execution import _save
+
+    meta = await d.store.get(session_id)
+    fact = (meta or {}).get(UNSTAGED_KEY)
+    if not fact:
+        return False
+    if fact.get("unstageable"):
+        return True
+    try:
+        await settle_unstaged(d, session_id, fence)
+        return False
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        meta = copy.deepcopy(await d.store.get(session_id) or {})
+        fact = meta.get(UNSTAGED_KEY)
+        if not fact:
+            return False
+        meta[TERMINATION_KEY] = "settling"
+        if getattr(exc, "status_code", None) == 422:
+            fact["attempts"] = int(fact.get("attempts", 0)) + 1
+            if fact["attempts"] >= UNSTAGEABLE_AFTER:
+                fact["unstageable"] = True
+                logger.error(
+                    "usage terminal fact UNSTAGEABLE, parked for an operator session=%s",
+                    session_id,
+                )
+        logger.error("usage terminal fact still unstaged session=%s", session_id, exc_info=True)
+        try:
+            await _save(d.store, session_id, meta, fence)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("could not persist unstaged marker session=%s", session_id, exc_info=True)
+        return True
+
+
 async def settle_unstaged(d: Any, session_id: str, fence: Any = None) -> None:
     """Stage the terminal usage fact that could not be staged when the lease failed.
 
@@ -255,6 +304,8 @@ class BudgetLeaseEnforcer:
         # Sessions whose terminal usage fact is still unstaged (health / backlog counter),
         # with the per-session retry backoff (attempts, not-before).
         self.unstaged_pending: dict[str, tuple[int, datetime]] = {}
+        self.unstageable: set[str] = set()
+        self._sweeps = 0
         # The speech gate compares THIS clock with the expiry at check time.
         container.approved_speech.lease_clock = clock
         self._gate_started: dict[str, datetime] = {}
@@ -283,14 +334,43 @@ class BudgetLeaseEnforcer:
         ids = self._candidates()
         if asyncio.iscoroutine(ids):
             ids = await ids
+        ids = set(ids) | set(await self._stored_ids())
         for session_id in ids:
             try:
-                self._sync_expiry(session_id, await self._d.store.get(session_id))
+                meta = await self._d.store.get(session_id)
+                self._sync_expiry(session_id, meta)
+                if meta and (
+                    LEASE_KEY in meta
+                    or meta.get(TERMINATION_KEY) in ("pending", "settling")
+                    or meta.get(UNSTAGED_KEY)
+                ):
+                    self.tracked.add(session_id)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("lease rehydrate failed session=%s", session_id)
-            self.tracked.add(session_id)
+
+    async def _stored_ids(self) -> list[str]:
+        lister = getattr(self._d.store, "list_session_ids", None)
+        if lister is None:
+            return []
+        try:
+            return list(await lister())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("lease scan: session ids unreadable", exc_info=True)
+            return []
+
+    async def _scan_pending(self) -> None:
+        """Re-track lease work that registry discovery cannot see (e.g. an execution that
+        already has a 019 terminal record is excluded from list_unterminated_executions)."""
+        for session_id in await self._stored_ids():
+            meta = await self._d.store.get(session_id)
+            if meta and (
+                meta.get(TERMINATION_KEY) in ("pending", "settling") or meta.get(UNSTAGED_KEY)
+            ):
+                self.tracked.add(session_id)
 
     def _sync_expiry(self, session_id: str, meta: Mapping[str, Any] | None) -> None:
         expiry = None
@@ -304,6 +384,9 @@ class BudgetLeaseEnforcer:
 
     async def sweep(self) -> list[str]:
         """Enforce expiry once. Returns the sessions ended by this pass."""
+        self._sweeps += 1
+        if self._sweeps % SCAN_EVERY == 0:
+            await self._scan_pending()
         ids = self._candidates()
         if asyncio.iscoroutine(ids):
             ids = await ids
@@ -328,11 +411,15 @@ class BudgetLeaseEnforcer:
         if state.phase == "failed" and meta.get(TERMINATION_KEY) == "pending":
             # Failed by lease expiry but cleanup / terminal record not done yet: retry.
             return await self._complete(session_id)
-        if LEASE_KEY not in meta or state.phase not in _ENFORCED_PHASES:
-            self._release(session_id)
+        if state.phase == "failed" and meta.get(TERMINATION_KEY) == "settling":
+            return await self._settle(session_id)  # only the usage fact is still owed
+        if LEASE_KEY not in meta or state.phase in ("ended", "failed"):
+            self._release(session_id)  # no lease, or terminal: drop tracking AND the expiry
             return False
         now = self._clock()
         self._sync_expiry(session_id, meta)  # renewal / rehydrate; the gate itself is clock-based
+        if state.phase not in _ENFORCED_PHASES:
+            return False  # pre-live / closing: keep tracking and the expiry fence
         if not lease_expired(meta, now):
             self._gate_started.pop(session_id, None)  # renewed inside the wait window
             return False
@@ -443,13 +530,6 @@ class BudgetLeaseEnforcer:
         except asyncio.CancelledError:
             raise
         except Exception:
-            meta = await self._d.store.get(session_id)
-            if meta and meta.get(UNSTAGED_KEY):
-                attempts += 1
-                self.unstaged_pending[session_id] = (
-                    attempts,
-                    now + timedelta(seconds=min(30.0, 0.5 * (2**attempts))),
-                )
             logger.error(
                 "lease termination completion failed, will retry session=%s unstaged_pending=%d",
                 session_id,
@@ -458,7 +538,45 @@ class BudgetLeaseEnforcer:
             )
             self.tracked.add(session_id)
             return False
+        meta = await self._d.store.get(session_id)
+        if meta is not None and meta.get(UNSTAGED_KEY):
+            self._note_unstaged(session_id, meta, now)  # cleanup + 019 record are done
+            return True
         self.unstaged_pending.pop(session_id, None)
+        self.unstageable.discard(session_id)
+        self._release(session_id)
+        return True
+
+    def _note_unstaged(self, session_id: str, meta: Mapping[str, Any], now: datetime) -> None:
+        """Backlog counter + backoff for a terminal fact that is still unstaged."""
+        self.tracked.add(session_id)
+        if meta[UNSTAGED_KEY].get("unstageable"):
+            self.unstaged_pending.pop(session_id, None)
+            self.unstageable.add(session_id)
+            return
+        attempts = self.unstaged_pending.get(session_id, (0, now))[0] + 1
+        self.unstaged_pending[session_id] = (
+            attempts,
+            now + timedelta(seconds=min(30.0, 0.5 * (2**attempts))),
+        )
+
+    async def _settle(self, session_id: str) -> bool:
+        """Cleanup and the 019 record are done: retry ONLY the unstaged usage fact."""
+        from backend.api.v1.execution import _locked
+        from backend.api.v1.sessions import delete_session_meta
+
+        now = self._clock()
+        if now < self.unstaged_pending.get(session_id, (0, now))[1]:
+            return False
+        async with _locked(self._d.store, session_id) as fence:
+            if await keep_for_unstaged(self._d, session_id, fence):
+                meta = await self._d.store.get(session_id)
+                if meta is not None:
+                    self._note_unstaged(session_id, meta, now)
+                return False
+            await delete_session_meta(self._d, session_id)
+        self.unstaged_pending.pop(session_id, None)
+        self.unstageable.discard(session_id)
         self._release(session_id)
         return True
 

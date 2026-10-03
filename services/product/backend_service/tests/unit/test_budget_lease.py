@@ -644,17 +644,32 @@ async def test_commands_without_reason_code_work_with_either_token_and_401_other
 # -- round 2 ---------------------------------------------------------------------------
 
 
+def count_backend_stops(case, monkeypatch):
+    calls = []
+    real = case.d.backend.stop
+
+    def counting(sid):
+        calls.append(sid)
+        return real(sid)
+
+    monkeypatch.setattr(case.d.backend, "stop", counting)
+    return calls
+
+
 @pytest.mark.asyncio
-async def test_completion_keeps_the_session_until_the_unstaged_terminal_fact_is_staged(
-    case_factory,
+async def test_completion_cleans_up_and_records_then_keeps_meta_only_for_the_unstaged_fact(
+    case_factory, monkeypatch
 ):
     from .test_usage_evidence import FakeUsage
 
     case, rig, pg = await terminal_rig(case_factory)
+    stops = count_backend_stops(case, monkeypatch)
     usage = case.d.usage_evidence = FakeUsage(fail=True)
     assert await rig.enforcer.sweep() == [case.sid]  # failed is saved regardless
+    # teardown + the 019 terminal record happened despite the usage outbox being down
+    assert stops == [case.sid] and len(pg.stored) == 1
     meta = await case.d.store.get(case.sid)
-    assert meta["usage_terminal_unstaged"] and pg.stored == {}  # NOT cleaned up yet
+    assert meta["usage_terminal_unstaged"] and meta["execution_lease_termination"] == "settling"
     assert len(rig.enforcer.unstaged_pending) == 1  # backlog / health counter
     await rig.enforcer.sweep()  # inside the backoff window: no hammering
     assert usage.staged == [] and await case.d.store.get(case.sid) is not None
@@ -662,10 +677,88 @@ async def test_completion_keeps_the_session_until_the_unstaged_terminal_fact_is_
     rig.now += timedelta(seconds=60)  # injected clock past the backoff
     await rig.enforcer.sweep()
     assert len(usage.staged) == 1 and usage.committed == [f"e{usage.staged[0]}"]
-    assert len(pg.stored) == 1 and await case.d.store.get(case.sid) is None
+    assert await case.d.store.get(case.sid) is None
     assert rig.enforcer.unstaged_pending == {}
     await rig.enforcer.sweep()
-    assert len(usage.staged) == 1 and len(pg.stored) == 1
+    assert len(usage.staged) == 1 and len(pg.stored) == 1 and stops == [case.sid]  # exactly once
+
+
+@pytest.mark.asyncio
+async def test_completion_invalid_identity_never_blocks_cleanup_and_parks_the_fact(
+    case_factory, monkeypatch
+):
+    from backend.application.usage_evidence import UsageEvidenceRejected
+
+    from .test_usage_evidence import FakeUsage
+
+    class Rejecting(FakeUsage):
+        async def stage_evidence(self, prior, updated, e, meta):
+            raise UsageEvidenceRejected("bad identity")
+
+    case, rig, pg = await terminal_rig(case_factory)
+    stops = count_backend_stops(case, monkeypatch)
+    case.d.usage_evidence = Rejecting()
+    await rig.enforcer.sweep()
+    assert stops == [case.sid] and len(pg.stored) == 1  # cleanup + record not blocked
+    for _ in range(budget_lease.UNSTAGEABLE_AFTER + 2):
+        rig.now += timedelta(seconds=60)
+        await rig.enforcer.sweep()
+    meta = await case.d.store.get(case.sid)
+    assert meta["usage_terminal_unstaged"]["unstageable"] is True  # parked, meta kept
+    assert rig.enforcer.unstageable == {case.sid} and rig.enforcer.unstaged_pending == {}
+    assert stops == [case.sid] and len(pg.stored) == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_fresh_enforcer_rediscovers_stranded_lease_work_despite_a_terminal_record(
+    case_factory, monkeypatch
+):
+    from .test_usage_evidence import FakeUsage
+
+    case, rig, pg = await terminal_rig(case_factory)
+    usage = case.d.usage_evidence = FakeUsage(fail=True)
+    await rig.enforcer.sweep()  # cleaned up, 019 record stored, meta kept for the fact
+    assert len(pg.stored) == 1 and await case.d.store.get(case.sid) is not None
+    monkeypatch.setattr(case.d, "orchestrators", {})  # a restarted process holds nothing
+    fresh = BudgetLeaseEnforcer(case.d, rig.settings, clock=lambda: rig.now)
+    assert fresh.tracked == set()
+    await fresh.rehydrate()  # discovery by scanning session meta, not the PG registry
+    assert fresh.tracked == {case.sid}
+    usage.fail = False
+    await fresh.sweep()
+    assert len(usage.staged) == 1 and await case.d.store.get(case.sid) is None
+    assert len(pg.stored) == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_periodic_scan_retracks_stranded_work(case_factory, monkeypatch):
+    from .test_usage_evidence import FakeUsage
+
+    case, rig, pg = await terminal_rig(case_factory)
+    case.d.usage_evidence = FakeUsage(fail=True)
+    await rig.enforcer.sweep()
+    monkeypatch.setattr(case.d, "orchestrators", {})
+    fresh = BudgetLeaseEnforcer(case.d, rig.settings, clock=lambda: rig.now)
+    assert await fresh._default_candidates() == set()
+    for _ in range(budget_lease.SCAN_EVERY):
+        await fresh.sweep()
+    assert case.sid in fresh.tracked
+
+
+@pytest.mark.asyncio
+async def test_pre_live_sweep_keeps_the_expiry_fence(case_factory):
+    case = await live(case_factory, phase="ready")
+    rig = Rig(case)
+    await rig.lease(10)
+    await rig.enforcer.rehydrate()
+    rig.now = T0 + timedelta(seconds=5)
+    assert await rig.enforcer.sweep() == []  # a READY sweep must not drop tracking or expiry
+    assert case.sid in rig.enforcer.tracked
+    meta = await case.d.store.get(case.sid)
+    meta["execution_contract"]["phase"] = "warming"
+    await case.d.store.set(case.sid, meta)
+    rig.now = T0 + timedelta(seconds=20)  # beyond expiry, NO sweep in between
+    assert refuses(case) == "lease_expired"
 
 
 @pytest.mark.asyncio
