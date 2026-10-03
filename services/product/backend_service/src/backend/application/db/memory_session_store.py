@@ -30,6 +30,9 @@ class InMemorySessionStore(SessionStore):
         self._store.pop(session_id, None)
         return existed
 
+    async def list_session_ids(self) -> list[str]:
+        return list(self._store)
+
     async def exists(self, session_id: str) -> bool:
         return session_id in self._store
 

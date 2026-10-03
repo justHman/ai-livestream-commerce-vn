@@ -27,9 +27,10 @@ AVAILABLE_CAPABILITIES = (
 # P0-FB-016 rescue commands (C-RESCUE-CMD-001). Disabled until compatible: the
 # API business hook for End/Emergency End ships behind the same deploy switch,
 # so neither side is advertised without the other.
-# Extensible by contract amendment only (e.g. C-RESCUE-CMD-001 FLAG-018-1
-# `entitlement_exhausted` for system-originated end, owned by P0-FB-018).
-ENDED_REASONS = ("normal_end", "merchant_emergency_end")
+# FLAG-018-1 (P0-FB-018): `entitlement_exhausted` is a system-originated end reason,
+# accepted additively; the command-level gate (actor system:live-credits only) is in
+# api/v1/execution.py.
+ENDED_REASONS = ("normal_end", "merchant_emergency_end", "entitlement_exhausted")
 RESCUE_COMMANDS = ("hold", "resume", "interrupt", "end", "emergency_end")
 # TRUTH (open product decision F4): at P0 `end` performs NO spoken closing. The
 # approved envelope has no closing artifact, so End hard-cancels the utterance in
@@ -67,6 +68,10 @@ def set_terminal_advertised(value: bool) -> None:
     _terminal_advertised = bool(value)
 
 
+# P0-FB-018 S6 (NEW, proposed). Advertised only while the lease expiry watcher is wired
+# AND enabled (budget_lease.py); never part of the static tuple, default "absent".
+BUDGET_LEASE_CAPABILITY = "budget.lease.v1"
+
 # C-USAGE-EVIDENCE-001 (P0-FB-017). Computed, never constant: set only while the durable
 # outbox, webhook URL and secret are configured (usage_evidence.settings.capabilities()).
 _usage_capabilities: tuple[str, ...] = ()
@@ -90,6 +95,11 @@ def available_capabilities(rescue: bool = False) -> tuple[str, ...]:
         if _terminal_advertised
         else AVAILABLE_CAPABILITIES
     )
+    from backend.application.budget_lease import is_active as lease_active
+
+    if lease_active():
+        base = (*base, BUDGET_LEASE_CAPABILITY)
+
     base = base + _usage_capabilities
     if rescue:
         return base + tuple(f"command.{c}" for c in RESCUE_COMMANDS)
@@ -260,6 +270,16 @@ class CommandRequest(ExecutionIdentity):
     requested_at: datetime
 
 
+class RescueCommandRequest(CommandRequest):
+    """Wire request: ``reason_code`` is additive and optional (FLAG-018-1).
+
+    It exists only here, never on ``CommandOutcome`` (whose ``reason_code`` is the
+    outcome reason), and only the API's ``system:live-credits`` may send it.
+    """
+
+    reason_code: str | None = None
+
+
 class CommandOutcome(CommandRequest):
     status: Literal["accepted", "applied", "rejected"]
     reason_code: str | None = None
@@ -268,6 +288,8 @@ class CommandOutcome(CommandRequest):
     opening_turn_id: str | None = None
     effect: str | None = None
     held: bool | None = None
+    # The accepted FLAG-018-1 end reason bound to this command_id (None when absent).
+    end_reason: str | None = None
 
 
 def command_rejection(

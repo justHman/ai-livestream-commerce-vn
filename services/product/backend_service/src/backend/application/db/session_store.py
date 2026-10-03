@@ -49,6 +49,10 @@ class SessionStore(ABC):
     @abstractmethod
     async def exists(self, session_id: str) -> bool: ...
 
+    async def list_session_ids(self) -> list[str]:
+        """Every stored session id (recovery scans only; default none for exotic stores)."""
+        return []
+
     def exists_sync(self, session_id: str) -> bool:
         """Sync convenience for route-layer guards; default False.
 

@@ -42,6 +42,7 @@ CLEANUP_MAX_ATTEMPTS = 3
 _TRUE = ("1", "true", "yes", "on")
 _LOOPBACK = ("localhost", "127.0.0.1", "::1")
 _END_REASON_BY_COMMAND = {"end": "normal_end", "emergency_end": "merchant_emergency_end"}
+_END_REASONS = ("normal_end", "merchant_emergency_end", "entitlement_exhausted")
 _FAILURE_CLASSES = (
     "runtime_lost",
     "runtime_error",
@@ -154,10 +155,15 @@ def build_terminal_record(
         )
 
     reason: str | None = None
-    if state.phase == "ended" and state.terminal_reason in ("normal_end", "merchant_emergency_end"):
+    if state.phase == "ended" and state.terminal_reason in _END_REASONS:
         reason = state.terminal_reason
     elif state.phase != "failed" and command is not None:
-        reason = _END_REASON_BY_COMMAND[command["command"]]
+        # FLAG-018-1: the system-originated reason bound to the applied command.
+        reason = (
+            command["end_reason"]
+            if command.get("end_reason") == "entitlement_exhausted"
+            else _END_REASON_BY_COMMAND[command["command"]]
+        )
 
     common: dict[str, Any] = dict(
         identity=identity,
