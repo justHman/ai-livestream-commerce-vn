@@ -7,6 +7,7 @@ Credits, prices, balances or billable durations (BR-PRICING-001/002).
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -20,7 +21,15 @@ from backend.application.execution_contract import (
 
 from . import envelope
 from .outbox import Staged, StageBlocked, UsageOutbox
-from .sender import COMMITS_KEY, MAX_PENDING_TOKENS, UsageSender
+from .sender import (  # noqa: F401
+    CLEANUP_KEY,
+    COMMITS_KEY,
+    EVIDENCE_TTL,
+    MAX_PENDING_TOKENS,
+    UNSTAGED_KEY,
+    UsageSender,
+    holds_evidence,
+)
 from .settings import CogsBuffer, CogsSample, UsageEvidenceSettings
 
 __all__ = [
@@ -50,6 +59,8 @@ class UsageEvidence:
         self.settings = settings
         self.cogs = CogsBuffer(settings.cogs_buffer)
         self.rejected_invalid_identity = 0
+        # Sessions whose meta holds deferred (unstaged) evidence; drained by the sender.
+        self.unstaged_sessions: set[str] = set()
 
     @staticmethod
     def _proof(meta: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +132,24 @@ class UsageEvidence:
             logger.warning(
                 "usage evidence ready flip deferred to sweeper error_type=%s", type(exc).__name__
             )
+
+    def defer_entries(
+        self, prior: ExecutionState, updated: ExecutionState, cause: Any
+    ) -> list[dict[str, Any]]:
+        """Serializable facts for a safety command that could not be staged (see UNSTAGED_KEY)."""
+        if isinstance(cause, Evidence):
+            drafts = envelope.derive_from_evidence(prior, updated, cause, self.settings.gates)
+        else:
+            drafts = envelope.derive_from_command(prior, updated, cause, self.settings.gates)
+        envelope.validate_identity(
+            envelope.identity_of(updated)
+        )  # InvalidIdentity: never reportable
+        identity = envelope.identity_of(updated).model_dump()
+        now = time.time()  # the bounded give-up counts from here
+        return [
+            {"identity": identity, "draft": envelope.draft_to_dict(d), "deferred_at": now}
+            for d in drafts
+        ]
 
     @staticmethod
     def stamp(meta: dict[str, Any], staged: Sequence[Staged]) -> None:
