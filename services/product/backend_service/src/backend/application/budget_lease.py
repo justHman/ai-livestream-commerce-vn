@@ -574,7 +574,7 @@ class BudgetLeaseEnforcer:
                 if meta is not None:
                     self._note_unstaged(session_id, meta, now)
                 return False
-            await delete_session_meta(self._d, session_id)
+            await delete_session_meta(self._d, session_id, fence)
         self.unstaged_pending.pop(session_id, None)
         self.unstageable.discard(session_id)
         self._release(session_id)

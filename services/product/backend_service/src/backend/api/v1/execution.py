@@ -166,6 +166,13 @@ async def _settle_usage(
             await ue.abort(staged)
 
 
+async def _load_meta(store: Any, session_id: str) -> dict[str, Any]:
+    meta = await store.get(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="unknown session_id")
+    return copy.deepcopy(meta)
+
+
 async def _load(store: Any, session_id: str) -> tuple[dict[str, Any], ExecutionState]:
     meta = await store.get(session_id)
     if meta is None:

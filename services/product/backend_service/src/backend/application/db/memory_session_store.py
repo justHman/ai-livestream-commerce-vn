@@ -36,8 +36,5 @@ class InMemorySessionStore(SessionStore):
     async def exists(self, session_id: str) -> bool:
         return session_id in self._store
 
-    async def list_session_ids(self) -> list[str]:
-        return list(self._store)
-
     def exists_sync(self, session_id: str) -> bool:
         return session_id in self._store

@@ -212,14 +212,18 @@ class UsageSender:
             logger.warning("usage evidence retention failed error_type=%s", type(exc).__name__)
         return resolved
 
-    async def resolve_session(self, runtime_session_id: str) -> int:
+    def track(self, session_id: str) -> None:
+        """Session meta kept for deferred work (unstaged facts / cleanup marker): sweep it."""
+        self._unstaged.add(session_id)
+
+    async def resolve_session(self, runtime_session_id: str, fence: Any = None) -> int:
         """Resolve every unresolved row of one session. The CALLER holds the session lock.
 
         Used by stop/cleanup BEFORE the session meta (the only copy of the commit proof) is
         deleted. Returns how many rows/facts REMAIN unresolved (0 = safe to delete the meta);
         raises on an infrastructure error, which the caller must treat as "unresolved".
         """
-        await self._drain_one(runtime_session_id, None)
+        await self._drain_one(runtime_session_id, fence)
         rows = await self._outbox.staged_for_session(runtime_session_id)
         remaining = 0
         for row in sorted(rows, key=lambda r: int(r["staged_version"])):
@@ -247,7 +251,7 @@ class UsageSender:
             try:
                 for sid in await lister() if lister else ():
                     meta = await self._store.get(sid)
-                    if (meta or {}).get(UNSTAGED_KEY):
+                    if (meta or {}).get(UNSTAGED_KEY) or (meta or {}).get(CLEANUP_KEY):
                         self._unstaged.add(sid)
             except asyncio.CancelledError:
                 raise
@@ -259,6 +263,10 @@ class UsageSender:
             try:
                 async with self._session_lock(sid) as fence:
                     done += await self._drain_one(sid, fence)
+                    meta = await self._store.get(sid)
+                    await self._cleanup_if_done(sid, meta)  # Stop kept it: delete once clean
+                    if meta is None or not (meta.get(UNSTAGED_KEY) or meta.get(CLEANUP_KEY)):
+                        self._unstaged.discard(sid)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -275,7 +283,6 @@ class UsageSender:
         meta = await self._store.get(sid)
         entries = list((meta or {}).get(UNSTAGED_KEY) or [])
         if not entries:
-            self._unstaged.discard(sid)
             return 0
         raw = meta.get(COMMITS_KEY) or {}
         version = int(raw.get("version", 0))
@@ -314,8 +321,6 @@ class UsageSender:
                 raise RuntimeError("session lock lost while recording deferred usage evidence")
         else:
             await self._store.set(sid, meta)
-        if not remaining:
-            self._unstaged.discard(sid)
         try:
             await self._outbox.mark_ready(flips)
         except asyncio.CancelledError:
@@ -330,7 +335,12 @@ class UsageSender:
             return
         if await self._outbox.staged_for_session(sid) or (meta or {}).get(UNSTAGED_KEY):
             return
+        from backend.application.budget_lease import UNSTAGED_KEY as LEASE_UNSTAGED_KEY
+
+        if (meta or {}).get(LEASE_UNSTAGED_KEY):  # 018's own terminal fact still owes staging
+            return
         await self._store.delete(sid)
+        self._unstaged.discard(sid)
 
     async def _resolve(self, rows: list[dict[str, Any]], deadline: float) -> int:
         # Commit order within an identity: lower staged_version first.

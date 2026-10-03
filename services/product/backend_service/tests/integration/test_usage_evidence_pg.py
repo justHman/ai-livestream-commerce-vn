@@ -1096,7 +1096,7 @@ async def test_stop_resolves_a_deferred_ready_flip_before_the_meta_is_deleted(pg
     st = await outbox.stage(ident, [draft(seq=5)])
     await store.set(ident.runtime_session_id, meta_at(ident, 5, [st[0].token]))  # committed
     sender = await sweeper(pg, store, locked=lambda sid: _locked(store, sid))
-    assert await sender.resolve_session(ident.runtime_session_id) == 1
+    assert await sender.resolve_session(ident.runtime_session_id) == 0
     await store.delete(ident.runtime_session_id)  # the stop path deletes the meta
     (row,) = await rows(pg, ident)
     assert row["status"] == "ready"
@@ -1110,8 +1110,8 @@ async def test_stop_discards_a_provably_uncommitted_attempt_and_keeps_an_unreada
     await store.set(ident.runtime_session_id, meta_at(ident, 4))  # token absent, meta present
     await outbox.stage(other, [draft(seq=5)])  # its meta is already gone (expiry)
     sender = await sweeper(pg, store)
-    assert await sender.resolve_session(ident.runtime_session_id) == 1
-    assert await sender.resolve_session(other.runtime_session_id) == 0
+    assert await sender.resolve_session(ident.runtime_session_id) == 0
+    assert await sender.resolve_session(other.runtime_session_id) == 1  # unresolved
     assert [r["status"] for r in await rows(pg, ident)] == ["discarded"]
     assert [r["status"] for r in await rows(pg, other)] == ["staged"]  # never dropped
 
