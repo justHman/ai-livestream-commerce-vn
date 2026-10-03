@@ -51,8 +51,10 @@ class UsageEvidenceSettings:
     http_timeout: float = 10.0
     flush_timeout: float = 5.0
     cogs_buffer: int = 1000
-    # Staged rows whose session cannot be resolved are parked, then dropped after this long.
-    unresolved_ttl: float = 7 * 86400.0
+    # Per-sweep wall-clock budget, and the backoff for a session whose lock is busy.
+    sweep_budget: float = 20.0
+    busy_backoff_base: float = 5.0
+    busy_backoff_cap: float = 300.0
     # Delivered / permanently-failed / discarded rows are deleted after this many days.
     retention_days: float = 14.0
     retention_batch: int = 500
@@ -72,7 +74,9 @@ class UsageEvidenceSettings:
             backoff_cap=_num(env, "BACKOFF_CAP_SECONDS", 300.0),
             sweep_age=_num(env, "SWEEP_AGE_SECONDS", 60.0),
             cogs_buffer=int(_num(env, "COGS_BUFFER", 1000)),
-            unresolved_ttl=_num(env, "UNRESOLVED_TTL_SECONDS", 7 * 86400.0),
+            sweep_budget=_num(env, "SWEEP_BUDGET_SECONDS", 20.0),
+            busy_backoff_base=_num(env, "BUSY_BACKOFF_BASE_SECONDS", 5.0),
+            busy_backoff_cap=_num(env, "BUSY_BACKOFF_CAP_SECONDS", 300.0),
             retention_days=_num(env, "RETENTION_DAYS", 14.0),
         )
 

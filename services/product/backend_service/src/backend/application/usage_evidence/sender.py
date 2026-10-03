@@ -165,23 +165,26 @@ class UsageSender:
         """Resolve staged rows older than the configured age, with proof of the attempt.
 
         Per row, under the SAME per-session lock the request path holds from staging
-        through the save (so no save is in flight): re-read the row, then read the session.
-        The session proof lists committed ``stage_token``s. Token present -> the exact stored
-        payload committed: ``mark_ready`` (numbered in commit order). Token absent -> that
-        attempt provably never committed (nothing can commit it any more): discard. A row
-        whose session is missing/unreadable/another generation is parked (backoff, reason
-        recorded) and dropped with an audit log after ``unresolved_ttl``. Finally finished
-        rows past retention are deleted.
+        through the save: re-read the row (token + status compare-and-set), then the session.
+        Token in the session proof -> the exact stored payload committed: ``mark_ready``
+        (numbered in commit order). Token absent from a readable session of the same
+        identity -> that attempt provably never committed (the lock excludes any save in
+        flight): discard. ANYTHING ELSE (session missing, unreadable, other generation) is
+        ``proof_unavailable``: the row is parked with backoff and an ERROR log, exposed in
+        health, and NEVER discarded or dropped on a timer. A busy lock defers the row with
+        a jittered exponential backoff so it cannot starve others; each sweep has a
+        wall-clock budget. Finally finished rows past retention are deleted.
         """
         if self._store is None:
             return 0
         resolved = 0
+        deadline = time.monotonic() + self._settings.sweep_budget
         for _ in range(_SWEEP_BATCHES):
             rows = await self._outbox.stale_staged(self._settings.sweep_age, _SWEEP_LIMIT)
             if not rows:
                 break
-            resolved += await self._resolve(rows)
-            if len(rows) < _SWEEP_LIMIT:
+            resolved += await self._resolve(rows, deadline)
+            if len(rows) < _SWEEP_LIMIT or time.monotonic() >= deadline:
                 break
         try:
             await self._outbox.purge(self._settings.retention_days, self._settings.retention_batch)
@@ -191,36 +194,75 @@ class UsageSender:
             logger.warning("usage evidence retention failed error_type=%s", type(exc).__name__)
         return resolved
 
-    async def _resolve(self, rows: list[dict[str, Any]]) -> int:
+    async def resolve_session(self, runtime_session_id: str) -> int:
+        """Resolve every unresolved row of one session. The CALLER holds the session lock.
+
+        Used by stop/cleanup BEFORE the session meta (the only copy of the commit proof)
+        is deleted. Best effort: a failure is logged loudly and the rows stay staged.
+        """
+        try:
+            rows = await self._outbox.staged_for_session(runtime_session_id)
+            done = 0
+            for row in sorted(rows, key=lambda r: int(r["staged_version"])):
+                outcome = await self._resolve_one(row)
+                done += outcome in ("ready", "discarded")
+                if outcome not in (None, "ready", "discarded"):
+                    logger.error(
+                        "usage evidence rows left unresolved at session cleanup session=%s id=%s "
+                        "outcome=%s",
+                        runtime_session_id,
+                        row["event_id"],
+                        outcome,
+                    )
+            return done
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "usage evidence session-cleanup resolve failed session=%s error_type=%s",
+                runtime_session_id,
+                type(exc).__name__,
+            )
+            return 0
+
+    async def _resolve(self, rows: list[dict[str, Any]], deadline: float) -> int:
         # Commit order within an identity: lower staged_version first.
         rows = sorted(
             rows, key=lambda r: (tuple(r[k] for k in _IDENTITY_KEYS), int(r["staged_version"]))
         )
         done = 0
         parked: dict[str, list[str]] = {}
+        busy: list[str] = []
         for row in rows:
+            if time.monotonic() >= deadline:
+                break  # the remaining rows stay due and are picked up by the next sweep
             try:
                 async with self._session_lock(row["runtime_session_id"]):
                     outcome = await self._resolve_one(row)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # lock busy/timeout, store or DB hiccup: try again later
+            except Exception as exc:  # lock busy/timeout, store or DB hiccup
                 logger.warning("usage sweep deferred error_type=%s", type(exc).__name__)
+                busy.append(row["event_id"])
                 continue
-            if outcome in ("ready", "discarded", "expired"):
+            if outcome in ("ready", "discarded"):
                 done += 1
             elif outcome is not None:
                 parked.setdefault(outcome, []).append(row["event_id"])
+        if busy:
+            await self._outbox.defer(
+                busy, base=self._settings.busy_backoff_base, cap=self._settings.busy_backoff_cap
+            )
         for reason, ids in parked.items():
             await self._outbox.park(ids, reason=reason, retry_in=self._settings.sweep_age)
         return done
 
     async def _resolve_one(self, row: dict[str, Any]) -> str | None:
-        """Decide one row. Runs under the session lock. Returns a park reason or an outcome."""
+        """Decide one row. Runs under the session lock. Returns an outcome or a park reason."""
         eid, token = row["event_id"], row["stage_token"]
         fresh = await self._outbox.get_staged(eid)
         if fresh is None or fresh["status"] != "staged" or fresh["stage_token"] != token:
-            return None  # resolved or re-staged meanwhile: that attempt owns its own fate
+            return None  # resolved or replaced meanwhile: that attempt owns its own fate
         reason = None
         meta = None
         try:
@@ -239,15 +281,14 @@ class UsageSender:
         ):
             reason = "generation_changed"
         if reason is not None:
-            if float(row.get("age_seconds") or 0) >= self._settings.unresolved_ttl:
-                logger.error(
-                    "usage evidence AUDIT dropped unresolvable staged row id=%s reason=%s",
-                    eid,
-                    reason,
-                )
-                await self._outbox.release([(eid, token)], delete=False)
-                return "expired"
-            return reason
+            # Unknown commit status: never discard, never drop on a timer.
+            logger.error(
+                "usage evidence proof_unavailable id=%s reason=%s: row kept staged for an "
+                "operator (it may be a committed fact)",
+                eid,
+                reason,
+            )
+            return "proof_unavailable:" + reason
         tokens = ((meta or {}).get(COMMITS_KEY) or {}).get("tokens") or {}
         if token in tokens:
             flipped = await self._outbox.mark_ready([(eid, token)])

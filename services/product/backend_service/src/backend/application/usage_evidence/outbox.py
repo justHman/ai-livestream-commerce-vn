@@ -67,15 +67,15 @@ class UsageOutbox:
     ) -> list[Staged]:
         """Stage one ATTEMPT per draft, each with its own fresh ``stage_token``.
 
-        A staged row is never reused for a different attempt: re-staging a still-staged
-        semantic fact replaces its payload AND token together, so a proof naming the old
-        token can never authorize the new bytes (or vice versa). If the old token is
-        already in the session's committed proof the old payload is a committed fact and
-        must not be replaced: ``StageBlocked`` (the caller answers 503, the sweeper
-        resolves it). Rows that are already final (ready, delivered, ...) are returned
-        unchanged with ``token=None``; there is nothing to commit for them.
-
-        ``usage_sequence`` is assigned only at ``mark_ready``.
+        A still-staged row is NEVER replaced: it belongs to another attempt (possibly an
+        expired-lease holder, possibly already committed), so ``StageBlocked`` is raised
+        and the sweeper resolves it with proof. Only a ``discarded`` tombstone is revived,
+        by a compare-and-set on the token this call observed, and a brand-new row is
+        inserted with ``ON CONFLICT DO NOTHING``; losing either race is ``StageBlocked``.
+        Rows that are already final (ready, delivered, ...) are returned unchanged with
+        ``token=None``. ``committed_tokens`` (the session proof) is used only to choose
+        the opening interval from COMMITTED facts. ``usage_sequence`` is assigned at
+        ``mark_ready``.
         """
         envelope.validate_identity(identity)
         key = _key(identity)
@@ -87,7 +87,7 @@ class UsageOutbox:
                     for draft in drafts:
                         opening = draft.opening_ref
                         if opening is None:
-                            opening = await self._open_unusable(conn, key)
+                            opening = await self._open_unusable(conn, key, committed_tokens)
                             if opening is None:
                                 continue  # no stored start to close: nothing truthful to say
                         interval = envelope.interval_id(identity, draft.interval_kind, opening)
@@ -113,11 +113,7 @@ class UsageOutbox:
                                 )
                             )
                             continue
-                        if (
-                            existing is not None
-                            and existing["status"] == "staged"
-                            and existing["stage_token"] in committed_tokens
-                        ):
+                        if existing is not None and existing["status"] == "staged":
                             raise StageBlocked(existing["event_id"])
                         token = uuid.uuid4().hex
                         eid, body = envelope.build_body(
@@ -129,13 +125,14 @@ class UsageOutbox:
                         )
                         sha = hashlib.sha256(body).hexdigest()
                         if existing is None:
-                            await conn.execute(
+                            inserted = await conn.execute(
                                 f"""
                                 INSERT INTO usage_evidence_outbox
                                     (event_id, event_type, {_ID_COLUMNS}, kind, interval_id,
                                      execution_sequence, applied_sequence, occurred_at,
                                      body, body_sha256, stage_token, staged_version)
                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                ON CONFLICT DO NOTHING
                                 """,
                                 eid,
                                 envelope.EVENT_TYPE,
@@ -150,8 +147,10 @@ class UsageOutbox:
                                 token,
                                 int(version),
                             )
+                            if not inserted.endswith(" 1"):
+                                raise StageBlocked(eid)  # another writer inserted first
                         else:
-                            await conn.execute(
+                            revived = await conn.execute(
                                 """
                                 UPDATE usage_evidence_outbox
                                    SET status = 'staged', usage_sequence = NULL,
@@ -161,7 +160,8 @@ class UsageOutbox:
                                        attempts = 0, last_status = NULL, last_error = NULL,
                                        next_attempt_at = NOW(),
                                        created_at = NOW(), updated_at = NOW()
-                                 WHERE event_id = $1
+                                 WHERE event_id = $1 AND status = 'discarded'
+                                   AND stage_token IS NOT DISTINCT FROM $9
                                 """,
                                 eid,
                                 draft.execution_sequence,
@@ -171,20 +171,34 @@ class UsageOutbox:
                                 sha,
                                 token,
                                 int(version),
+                                existing["stage_token"],
                             )
+                            if not revived.endswith(" 1"):
+                                raise StageBlocked(eid)  # the tombstone changed under us
                         out.append(Staged(eid, "staged", None, True, token, int(version)))
                     return out
 
         return await self._pg._command(run)
 
     @staticmethod
-    async def _open_unusable(conn: Any, key: tuple[str, ...]) -> str | None:
+    async def _open_unusable(
+        conn: Any, key: tuple[str, ...], committed_tokens: Any = frozenset()
+    ) -> str | None:
+        """The opening unusable interval, from COMMITTED facts only.
+
+        Committed = a row already final (ready/delivered/...) or a still-staged row whose
+        stage_token is in the session's committed proof. An uncommitted staging attempt
+        (never saved) must never be chosen.
+        """
         seq = await conn.fetchval(
             "SELECT execution_sequence FROM usage_evidence_outbox "
             "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
-            "= ($1, $2, $3, $4) AND kind = 'unusable_started' AND status <> 'discarded' "
+            "= ($1, $2, $3, $4) AND kind = 'unusable_started' "
+            "AND (status IN ('ready', 'delivered', 'conflict', 'rejected') "
+            "     OR (status = 'staged' AND stage_token = ANY($5::text[]))) "
             "ORDER BY execution_sequence DESC LIMIT 1",
             *key,
+            list(committed_tokens),
         )
         return None if seq is None else str(seq)
 
@@ -355,6 +369,39 @@ class UsageOutbox:
                     "ORDER BY next_attempt_at, created_at LIMIT $2",
                     float(older_than_seconds),
                     int(limit),
+                )
+
+        return [dict(r) for r in await self._pg._command(run)]
+
+    async def defer(self, event_ids: Sequence[str], *, base: float, cap: float) -> int:
+        """The session lock was busy: back off (exponential, jittered, capped), no verdict."""
+
+        async def run() -> int:
+            async with self._pg._require_pool().acquire() as conn:
+                result = await conn.execute(
+                    "UPDATE usage_evidence_outbox SET attempts = attempts + 1, "
+                    "next_attempt_at = NOW() + make_interval(secs => LEAST($3::float8, "
+                    "$2::float8 * power(2, LEAST(attempts, 16)) * (0.5 + random()))), "
+                    "updated_at = NOW() WHERE event_id = ANY($1::text[]) AND status = 'staged'",
+                    list(event_ids),
+                    float(base),
+                    float(cap),
+                )
+                return int(result.rsplit(" ", 1)[-1])
+
+        return await self._pg._command(run)
+
+    async def staged_for_session(self, runtime_session_id: str) -> list[dict[str, Any]]:
+        """All unresolved rows of one session (the stop path resolves them before cleanup)."""
+
+        async def run() -> list[Any]:
+            async with self._pg._require_pool().acquire() as conn:
+                return await conn.fetch(
+                    f"SELECT event_id, {_ID_COLUMNS}, applied_sequence, attempts, stage_token, "
+                    "staged_version, 0::float8 AS age_seconds FROM usage_evidence_outbox "
+                    "WHERE runtime_session_id = $1 AND status = 'staged' "
+                    "ORDER BY staged_version",
+                    runtime_session_id,
                 )
 
         return [dict(r) for r in await self._pg._command(run)]

@@ -438,6 +438,11 @@ async def _stop_cancelled_session(d: Any, session_id: str) -> dict[str, Any]:
         if not await terminal_retry_pending(d, session_id):
             raise HTTPException(status_code=404, detail="unknown session_id")
     await teardown_then_persist(d, session_id)
+    sender = getattr(d, "usage_sender", None)
+    if sender is not None:
+        # The session meta holds the only commit proof of unresolved usage evidence rows:
+        # resolve them (we hold the session lock) BEFORE it is deleted.
+        await sender.resolve_session(session_id)
     await d.store.delete(session_id)
     if d.hub is not None:
         await d.hub.emit(session_id, {"type": "session.stopped"})
