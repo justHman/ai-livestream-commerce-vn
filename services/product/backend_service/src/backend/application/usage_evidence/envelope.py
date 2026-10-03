@@ -167,6 +167,32 @@ def build_body(
     return eid, body
 
 
+def draft_to_dict(draft: Draft) -> dict[str, Any]:
+    """JSON-safe form of a Draft (deferred usage evidence kept in the session meta)."""
+    return {
+        "kind": draft.kind,
+        "interval_kind": draft.interval_kind,
+        "boundary": draft.boundary,
+        "opening_ref": draft.opening_ref,
+        "phase": draft.phase,
+        "occurred_at": utc_text(draft.occurred_at),
+        "applied_sequence": draft.applied_sequence,
+        "execution_sequence": draft.execution_sequence,
+        "reason_code": draft.reason_code,
+        "command_id": draft.command_id,
+        "health_source": draft.health_source,
+        "media": dict(draft.media) if draft.media is not None else None,
+    }
+
+
+def draft_from_dict(raw: Mapping[str, Any]) -> Draft:
+    fields = dict(raw)
+    fields["occurred_at"] = datetime.fromisoformat(
+        str(fields["occurred_at"]).replace("Z", "+00:00")
+    )
+    return Draft(**fields)
+
+
 def finalize_body(staged_body: bytes, usage_sequence: int) -> bytes:
     """Stamp the final ``usage_sequence`` into a staged body (ready-time numbering).
 

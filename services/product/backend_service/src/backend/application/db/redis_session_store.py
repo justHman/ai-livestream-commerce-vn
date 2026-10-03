@@ -78,6 +78,16 @@ class RedisSessionStore(SessionStore):
         client = await self._ensure()
         return (await client.delete(f"session:{session_id}")) > 0
 
+    async def list_session_ids(self) -> list[str]:
+        """Live session ids (startup discovery of deferred usage evidence)."""
+        client = await self._ensure()
+        out = []
+        async for key in client.scan_iter(match="session:*", count=500):
+            key = key.decode() if isinstance(key, bytes) else key
+            if not key.endswith(":lock"):
+                out.append(key[len("session:") :])
+        return out
+
     async def exists(self, session_id: str) -> bool:
         client = await self._ensure()
         return (await client.exists(f"session:{session_id}")) > 0

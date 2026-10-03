@@ -439,11 +439,34 @@ async def _stop_cancelled_session(d: Any, session_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="unknown session_id")
     await teardown_then_persist(d, session_id)
     sender = getattr(d, "usage_sender", None)
+    keep_meta = False
     if sender is not None:
         # The session meta holds the only commit proof of unresolved usage evidence rows:
-        # resolve them (we hold the session lock) BEFORE it is deleted.
-        await sender.resolve_session(session_id)
-    await d.store.delete(session_id)
+        # resolve them (we hold the session lock) BEFORE it is deleted. If any remain (or
+        # the outbox errors) KEEP the meta; the sweeper deletes it once they are resolved.
+        try:
+            unresolved = await sender.resolve_session(session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("usage evidence resolve failed at stop session=%s", session_id)
+            unresolved = 1
+        if unresolved:
+            try:
+                meta = await d.store.get(session_id)
+                if meta is not None:
+                    meta["usage_evidence_cleanup"] = True
+                    await d.store.set(session_id, meta)
+            except Exception:
+                logger.error("usage evidence cleanup marker failed session=%s", session_id)
+            logger.error(
+                "session meta KEPT at stop: %d unresolved usage evidence rows session=%s",
+                unresolved,
+                session_id,
+            )
+            keep_meta = True
+    if not keep_meta:
+        await d.store.delete(session_id)
     if d.hub is not None:
         await d.hub.emit(session_id, {"type": "session.stopped"})
     # P4 hardening: drop the per-session lock entry to prevent memory leak.
