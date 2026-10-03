@@ -313,7 +313,9 @@ class BudgetLeaseEnforcer:
             except Exception:
                 logger.warning("lease expiry provider flush failed session=%s", session_id)
         self._release(session_id)
-        logger.warning("audit_event=budget_lease_expired failure_class=control_lost session=%s", session_id)
+        logger.warning(
+            "audit_event=budget_lease_expired failure_class=control_lost session=%s", session_id
+        )
         if d.hub is not None:
             await d.hub.emit(
                 session_id,
