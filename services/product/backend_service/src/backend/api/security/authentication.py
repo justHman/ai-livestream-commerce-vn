@@ -86,6 +86,17 @@ async def require_admin(request: Request) -> None:
     raise HTTPException(status_code=401, detail="invalid credentials")
 
 
+async def require_viewer_or_admin(request: Request) -> None:
+    """Viewer OR admin token (system callers hold only the admin token). Else the viewer 401."""
+    try:
+        await require_viewer(request)
+    except HTTPException as viewer_denied:
+        try:
+            await require_admin(request)
+        except HTTPException:
+            raise viewer_denied from None
+
+
 def ws_token_valid(ws: WebSocket, config: AppConfig) -> bool:
     """Validate the WS token from ``?token=...`` before ``accept()``.
 

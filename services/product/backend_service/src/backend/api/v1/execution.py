@@ -41,7 +41,7 @@ from backend.application.script_authoring.approved_speech import SpeechRejected
 from backend.application.usage_evidence import UsageEvidenceRejected, UsageEvidenceUnavailable
 
 from .router import router, viewer_auth
-from .auth import admin_auth
+from .auth import admin_auth, viewer_or_admin_auth
 
 logger = logging.getLogger(__name__)
 _locks: dict[str, asyncio.Lock] = {}
@@ -289,8 +289,10 @@ async def request_execution_command(
     session_id: str,
     wire: RescueCommandRequest,
     request: Request,
-    _: None = Depends(viewer_auth),
+    _: None = Depends(viewer_or_admin_auth),
 ) -> dict[str, Any]:
+    # Viewer OR admin token. Admin without reason_code behaves exactly like viewer;
+    # reason_code is accepted only with the admin token + system actor (_checked_reason).
     d = container_from_request(request)
     end_reason = await _checked_reason(d, request, session_id, wire)
     command = CommandRequest(**wire.model_dump(exclude={"reason_code"}))

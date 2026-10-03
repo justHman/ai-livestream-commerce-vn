@@ -565,3 +565,75 @@ async def test_reason_code_end_stages_command_evidence_once(case_factory, direct
     usage.calls = []
     await command(case, "end", actor_id=SYSTEM, reason_code="entitlement_exhausted")
     assert usage.calls == [("end", "entitlement_exhausted")]
+
+
+# -- auth planes on the commands route (real dependencies, DISTINCT tokens configured) ----
+
+VIEWER = {"Authorization": "Bearer viewer-secret"}
+
+
+async def tokened(case_factory, monkeypatch):
+    case = await live(case_factory)
+    monkeypatch.setattr(case.d.config, "app_env", "prod", raising=False)
+    monkeypatch.setattr(case.d.config, "backend_api_token", "viewer-secret", raising=False)
+    monkeypatch.setattr(case.d.config, "admin_api_token", "admin-secret", raising=False)
+    return case
+
+
+@pytest.mark.asyncio
+async def test_system_end_with_only_the_admin_token_succeeds(
+    case_factory, direct_say_guard_off, monkeypatch
+):
+    case = await tokened(case_factory, monkeypatch)
+    for name in ("end",):
+        r = await command(
+            case, name, headers=ADMIN, actor_id=SYSTEM, reason_code="entitlement_exhausted"
+        )
+        assert applied(r, name)["end_reason"] == "entitlement_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_system_emergency_end_with_only_the_admin_token_succeeds(
+    case_factory, direct_say_guard_off, monkeypatch
+):
+    case = await tokened(case_factory, monkeypatch)
+    r = await command(
+        case, "emergency_end", headers=ADMIN, actor_id=SYSTEM, reason_code="entitlement_exhausted"
+    )
+    assert applied(r, "emergency_end")["end_reason"] == "entitlement_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_reason_code_is_403_with_the_viewer_token_or_a_non_system_actor(
+    case_factory, direct_say_guard_off, monkeypatch
+):
+    case = await tokened(case_factory, monkeypatch)
+    r = await command(
+        case,
+        "end",
+        status=403,
+        headers=VIEWER,
+        actor_id=SYSTEM,
+        reason_code="entitlement_exhausted",
+    )
+    assert r["error"]["code"] == "reason_code_forbidden"
+    r = await command(
+        case,
+        "end",
+        status=403,
+        headers=ADMIN,
+        actor_id="owner-1",
+        reason_code="entitlement_exhausted",
+    )
+    assert r["error"]["code"] == "reason_code_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_commands_without_reason_code_work_with_either_token_and_401_otherwise(
+    case_factory, direct_say_guard_off, monkeypatch
+):
+    case = await tokened(case_factory, monkeypatch)
+    await command(case, "hold", headers=VIEWER)  # unchanged merchant path
+    await command(case, "resume", headers=ADMIN)  # admin without reason_code == viewer
+    for headers in ({}, {"Authorization": "Bearer nope"}):
+        await command(case, "hold", status=401, headers=headers, command_id="h2")

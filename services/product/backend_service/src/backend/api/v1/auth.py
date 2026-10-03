@@ -28,11 +28,13 @@ from __future__ import annotations
 from backend.api.security.authentication import (
     require_admin as admin_auth,
     require_viewer as viewer_auth,
+    require_viewer_or_admin as viewer_or_admin_auth,
     ws_token_valid as validate_ws_token,
 )
 
 __all__ = [
     "viewer_auth",
     "admin_auth",
+    "viewer_or_admin_auth",
     "validate_ws_token",
 ]
