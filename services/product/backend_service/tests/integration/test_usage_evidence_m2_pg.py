@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -378,3 +379,40 @@ async def test_purge_never_deletes_a_row_that_was_revived_while_the_delete_waite
         assert await purge == 0
     assert [r["status"] for r in await rows(pg, ident)] == ["staged"]
     assert st.event_id
+
+
+async def test_later_evidence_cannot_overtake_a_deferred_emergency_end_fact_in_postgres(
+    case_factory, pg
+):
+    from fastapi import HTTPException, Request
+
+    from backend.application.execution_contract import Evidence
+
+    case = await pg_case(case_factory, pg)
+    case.outbox.fail = {"*"}
+    await send(case, "emergency_end", "ee-order", tenant_id=TENANT)
+    seq = (await case.d.store.get(case.sid))["execution_contract"]["sequence"]
+    case.outbox.fail = set()
+    request = Request(
+        {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(container=case.d))}
+    )
+    later = Evidence(
+        tenant_id=TENANT,
+        business_session_id="business-1",
+        runtime_session_id=case.sid,
+        generation="generation-1",
+        sequence=seq + 1,
+        kind="terminal",
+        phase="ended",
+        reason_code="normal_end",
+        occurred_at=NOW,
+    )
+    with pytest.raises(HTTPException) as caught:
+        await ex.record_execution_evidence(case.sid, later, request, None)
+    assert caught.value.status_code == 503 and await usage_rows(pg, case) == []
+    await case.d.usage_sender.sweep()
+    await ex.record_execution_evidence(case.sid, later, request, None)
+    assert [(r["kind"], r["usage_sequence"]) for r in await usage_rows(pg, case)] == [
+        ("phase_changed", 1),
+        ("terminal", 2),
+    ]
