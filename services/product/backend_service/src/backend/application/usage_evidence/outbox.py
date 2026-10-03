@@ -8,6 +8,8 @@ in one statement and finished with another that must present the token.
 from __future__ import annotations
 
 import hashlib
+import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -16,6 +18,8 @@ from backend.application.execution_contract import ExecutionIdentity
 
 from . import envelope
 from .envelope import Draft
+
+logger = logging.getLogger(__name__)
 
 _ID_COLUMNS = "tenant_id, business_session_id, runtime_session_id, generation"
 _ID_NAMES = ("tenant_id", "business_session_id", "runtime_session_id", "generation")
@@ -36,6 +40,12 @@ class Staged:
     status: str
     usage_sequence: int | None
     created: bool
+    token: str | None = None  # this staging attempt (None: an already-final row)
+    version: int = 0
+
+
+class StageBlocked(Exception):
+    """A committed-but-unresolved attempt owns this semantic row: fail closed, retry later."""
 
 
 class UsageOutbox:
@@ -47,14 +57,25 @@ class UsageOutbox:
 
     # -- lifecycle rows (control plane) ------------------------------------
 
-    async def stage(self, identity: ExecutionIdentity, drafts: Sequence[Draft]) -> list[Staged]:
-        """Insert rows as ``staged`` (no usage number yet), or return the existing ones.
+    async def stage(
+        self,
+        identity: ExecutionIdentity,
+        drafts: Sequence[Draft],
+        *,
+        version: int = 1,
+        committed_tokens: frozenset[str] | set[str] = frozenset(),
+    ) -> list[Staged]:
+        """Stage one ATTEMPT per draft, each with its own fresh ``stage_token``.
 
-        ``usage_sequence`` is assigned only when a row becomes ``ready`` (see
-        ``mark_ready``), so a staged row that is later discarded can never leave a gap.
-        The staged body carries a placeholder number (0). A re-derivation returns the
-        stored row (same event_id; event_id does not depend on usage_sequence). A
-        ``discarded`` row is revived as ``staged``.
+        A staged row is never reused for a different attempt: re-staging a still-staged
+        semantic fact replaces its payload AND token together, so a proof naming the old
+        token can never authorize the new bytes (or vice versa). If the old token is
+        already in the session's committed proof the old payload is a committed fact and
+        must not be replaced: ``StageBlocked`` (the caller answers 503, the sweeper
+        resolves it). Rows that are already final (ready, delivered, ...) are returned
+        unchanged with ``token=None``; there is nothing to commit for them.
+
+        ``usage_sequence`` is assigned only at ``mark_ready``.
         """
         envelope.validate_identity(identity)
         key = _key(identity)
@@ -71,14 +92,18 @@ class UsageOutbox:
                                 continue  # no stored start to close: nothing truthful to say
                         interval = envelope.interval_id(identity, draft.interval_kind, opening)
                         existing = await conn.fetchrow(
-                            "SELECT event_id, status, usage_sequence FROM usage_evidence_outbox "
+                            "SELECT event_id, status, usage_sequence, stage_token "
+                            "FROM usage_evidence_outbox "
                             "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
                             "= ($1, $2, $3, $4) AND kind = $5 AND interval_id = $6 FOR UPDATE",
                             *key,
                             draft.kind,
                             interval,
                         )
-                        if existing is not None and existing["status"] != "discarded":
+                        if existing is not None and existing["status"] not in (
+                            "staged",
+                            "discarded",
+                        ):
                             out.append(
                                 Staged(
                                     existing["event_id"],
@@ -88,6 +113,13 @@ class UsageOutbox:
                                 )
                             )
                             continue
+                        if (
+                            existing is not None
+                            and existing["status"] == "staged"
+                            and existing["stage_token"] in committed_tokens
+                        ):
+                            raise StageBlocked(existing["event_id"])
+                        token = uuid.uuid4().hex
                         eid, body = envelope.build_body(
                             identity,
                             draft,
@@ -101,9 +133,9 @@ class UsageOutbox:
                                 f"""
                                 INSERT INTO usage_evidence_outbox
                                     (event_id, event_type, {_ID_COLUMNS}, kind, interval_id,
-                                     execution_sequence, applied_sequence,
-                                     occurred_at, body, body_sha256)
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                     execution_sequence, applied_sequence, occurred_at,
+                                     body, body_sha256, stage_token, staged_version)
+                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                                 """,
                                 eid,
                                 envelope.EVENT_TYPE,
@@ -115,6 +147,8 @@ class UsageOutbox:
                                 draft.occurred_at,
                                 body,
                                 sha,
+                                token,
+                                int(version),
                             )
                         else:
                             await conn.execute(
@@ -123,6 +157,7 @@ class UsageOutbox:
                                    SET status = 'staged', usage_sequence = NULL,
                                        execution_sequence = $2, applied_sequence = $3,
                                        occurred_at = $4, body = $5, body_sha256 = $6,
+                                       stage_token = $7, staged_version = $8,
                                        attempts = 0, last_status = NULL, last_error = NULL,
                                        next_attempt_at = NOW(),
                                        created_at = NOW(), updated_at = NOW()
@@ -134,8 +169,10 @@ class UsageOutbox:
                                 draft.occurred_at,
                                 body,
                                 sha,
+                                token,
+                                int(version),
                             )
-                        out.append(Staged(eid, "staged", None, True))
+                        out.append(Staged(eid, "staged", None, True, token, int(version)))
                     return out
 
         return await self._pg._command(run)
@@ -151,31 +188,39 @@ class UsageOutbox:
         )
         return None if seq is None else str(seq)
 
-    async def mark_ready(self, event_ids: Sequence[str]) -> int:
-        """``staged`` -> ``ready``, numbering each row now, in the order given.
+    async def mark_ready(self, items: Sequence[tuple[str, str]]) -> list[str]:
+        """``staged`` -> ``ready`` for the given ``(event_id, stage_token)`` attempts.
 
-        The usage number and the final body bytes are fixed here, atomically, under
-        the per-identity counter lock; the bytes never change afterwards. Rows of one
-        identity get consecutive numbers, so delivery stays gap-free.
+        Numbering is strictly in COMMIT order per identity: a row is numbered only when no
+        other still-staged row of the same identity has a lower ``staged_version`` (such a
+        row may yet turn out committed; this one waits, still ``staged``, for the sweeper).
+        Within one call rows are numbered in ``staged_version`` order, under the
+        per-identity counter lock; the final body bytes are fixed here and never change.
+        A row discarded by a lost race is REVIVED here (the caller holds proof of commit);
+        that is logged as an error. Returns the event_ids that became ready.
         """
-        ids = list(event_ids)
+        pairs = list(items)
+        if not pairs:
+            return []
+        ids = [p[0] for p in pairs]
+        tokens = {p[0]: p[1] for p in pairs}
 
-        async def run() -> int:
+        async def run() -> list[str]:
             async with self._pg._require_pool().acquire() as conn:
                 async with conn.transaction():
-                    rows = {
-                        r["event_id"]: r
-                        for r in await conn.fetch(
-                            f"SELECT event_id, {_ID_COLUMNS}, body FROM usage_evidence_outbox "
-                            "WHERE event_id = ANY($1::text[]) AND status = 'staged' "
-                            "ORDER BY event_id FOR UPDATE",
-                            ids,
-                        )
-                    }
+                    fetched = await conn.fetch(
+                        f"SELECT event_id, status, stage_token, staged_version, body, "
+                        f"{_ID_COLUMNS} FROM usage_evidence_outbox "
+                        "WHERE event_id = ANY($1::text[]) AND status IN ('staged', 'discarded') "
+                        "ORDER BY event_id FOR UPDATE",
+                        ids,
+                    )
+                    rows = [r for r in fetched if r["stage_token"] == tokens[r["event_id"]]]
                     if not rows:
-                        return 0
-                    keys = sorted({tuple(r[c] for c in _ID_NAMES) for r in rows.values()})
+                        return []
+                    keys = sorted({tuple(r[c] for c in _ID_NAMES) for r in rows})
                     last: dict[tuple[str, ...], int] = {}
+                    horizon: dict[tuple[str, ...], int | None] = {}
                     for k in keys:  # sorted: a stable lock order
                         await conn.execute(
                             f"INSERT INTO usage_evidence_sequence ({_ID_COLUMNS}) "
@@ -188,24 +233,37 @@ class UsageOutbox:
                             "= ($1, $2, $3, $4) FOR UPDATE",
                             *k,
                         )
-                    n = 0
-                    for eid in ids:
-                        row = rows.pop(eid, None)
-                        if row is None:
-                            continue
+                        horizon[k] = await conn.fetchval(
+                            "SELECT min(staged_version) FROM usage_evidence_outbox "
+                            "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
+                            "= ($1, $2, $3, $4) AND status = 'staged' "
+                            "AND NOT (event_id = ANY($5::text[]))",
+                            *k,
+                            [r["event_id"] for r in rows],
+                        )
+                    flipped: list[str] = []
+                    for row in sorted(rows, key=lambda r: (r["staged_version"], r["event_id"])):
                         k = tuple(row[c] for c in _ID_NAMES)
+                        limit = horizon[k]
+                        if limit is not None and row["staged_version"] > limit:
+                            continue  # an earlier, unresolved row must be numbered first
+                        if row["status"] == "discarded":
+                            logger.error(
+                                "usage evidence REVIVED a discarded row (proof shows commit) id=%s",
+                                row["event_id"],
+                            )
                         last[k] += 1
                         body = envelope.finalize_body(bytes(row["body"]), last[k])
                         await conn.execute(
                             "UPDATE usage_evidence_outbox SET status = 'ready', usage_sequence = $2, "
                             "body = $3, body_sha256 = $4, next_attempt_at = NOW(), "
                             "updated_at = NOW() WHERE event_id = $1",
-                            eid,
+                            row["event_id"],
                             last[k],
                             body,
                             hashlib.sha256(body).hexdigest(),
                         )
-                        n += 1
+                        flipped.append(row["event_id"])
                     for k, value in last.items():
                         await conn.execute(
                             "UPDATE usage_evidence_sequence SET last_usage_sequence = $5 "
@@ -214,33 +272,68 @@ class UsageOutbox:
                             *k,
                             value,
                         )
-                    return n
+                    return flipped
 
         return await self._pg._command(run)
 
-    async def release(self, event_ids: Sequence[str], *, delete: bool) -> int:
-        """Release staged rows that never became a fact (delete, or tombstone as discarded).
+    async def release(self, items: Sequence[tuple[str, str]], *, delete: bool) -> int:
+        """Release staged ATTEMPTS that never became a fact (delete, or tombstone).
 
-        Staged rows hold no usage number, so releasing one cannot leave a gap.
+        Matches the attempt's ``stage_token``: a newer attempt on the same semantic row is
+        never touched. Staged rows hold no usage number, so this cannot leave a gap.
         """
+        pairs = list(items)
+        if not pairs:
+            return 0
 
         async def run() -> int:
             async with self._pg._require_pool().acquire() as conn:
-                if delete:
-                    sql = (
-                        "DELETE FROM usage_evidence_outbox "
-                        "WHERE event_id = ANY($1::text[]) AND status = 'staged'"
-                    )
-                else:
-                    sql = (
-                        "UPDATE usage_evidence_outbox SET status = 'discarded', "
-                        "usage_sequence = NULL, updated_at = NOW() "
-                        "WHERE event_id = ANY($1::text[]) AND status = 'staged'"
-                    )
-                result = await conn.execute(sql, list(event_ids))
+                verb = (
+                    "DELETE FROM usage_evidence_outbox o USING t"
+                    if delete
+                    else "UPDATE usage_evidence_outbox o SET status = 'discarded', "
+                    "usage_sequence = NULL, updated_at = NOW() FROM t"
+                )
+                result = await conn.execute(
+                    "WITH t AS (SELECT * FROM unnest($1::text[], $2::text[]) AS x(event_id, token)) "
+                    + verb
+                    + " WHERE o.event_id = t.event_id AND o.stage_token = t.token "
+                    "AND o.status = 'staged'",
+                    [p[0] for p in pairs],
+                    [p[1] for p in pairs],
+                )
                 return int(result.rsplit(" ", 1)[-1])
 
         return await self._pg._command(run)
+
+    async def still_staged(self, tokens: Sequence[str]) -> set[str]:
+        """Which of these attempts are still unresolved (their proof must be kept)."""
+        if not tokens:
+            return set()
+
+        async def run() -> list[Any]:
+            async with self._pg._require_pool().acquire() as conn:
+                return await conn.fetch(
+                    "SELECT stage_token FROM usage_evidence_outbox "
+                    "WHERE stage_token = ANY($1::text[]) AND status = 'staged'",
+                    list(tokens),
+                )
+
+        return {r["stage_token"] for r in await self._pg._command(run)}
+
+    async def get_staged(self, event_id: str) -> dict[str, Any] | None:
+        """Re-read one row (under the session lock) before the sweeper decides about it."""
+
+        async def run() -> Any:
+            async with self._pg._require_pool().acquire() as conn:
+                return await conn.fetchrow(
+                    "SELECT event_id, status, stage_token, staged_version "
+                    "FROM usage_evidence_outbox WHERE event_id = $1",
+                    event_id,
+                )
+
+        row = await self._pg._command(run)
+        return None if row is None else dict(row)
 
     async def stale_staged(
         self, older_than_seconds: float, limit: int = 100
@@ -253,7 +346,8 @@ class UsageOutbox:
         async def run() -> list[Any]:
             async with self._pg._require_pool().acquire() as conn:
                 return await conn.fetch(
-                    f"SELECT event_id, {_ID_COLUMNS}, applied_sequence, attempts, "
+                    f"SELECT event_id, {_ID_COLUMNS}, applied_sequence, attempts, stage_token, "
+                    "staged_version, "
                     "EXTRACT(EPOCH FROM (NOW() - created_at))::float8 AS age_seconds "
                     "FROM usage_evidence_outbox "
                     "WHERE status = 'staged' AND created_at <= NOW() - make_interval(secs => $1) "
@@ -422,8 +516,13 @@ class UsageOutbox:
             async with self._pg._require_pool().acquire() as conn:
                 return await conn.fetchrow(
                     "SELECT count(*) AS n, COALESCE(EXTRACT(EPOCH FROM (NOW() - min(created_at))), 0) "
-                    "AS age FROM usage_evidence_outbox WHERE status IN ('staged', 'ready')"
+                    "AS age, count(*) FILTER (WHERE status = 'staged' AND last_error IS NOT NULL) AS parked "
+                    "FROM usage_evidence_outbox WHERE status IN ('staged', 'ready')"
                 )
 
         row = await self._pg._command(run)
-        return {"count": int(row["n"]), "oldest_age_seconds": float(row["age"])}
+        return {
+            "count": int(row["n"]),
+            "oldest_age_seconds": float(row["age"]),
+            "unresolved_parked": int(row["parked"]),  # operator-visible: needs attention
+        }

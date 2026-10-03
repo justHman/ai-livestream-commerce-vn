@@ -84,9 +84,9 @@ async def _stage_usage(
         return []
     try:
         if isinstance(cause, Evidence):
-            staged = await ue.stage_evidence(prior, updated, cause)
+            staged = await ue.stage_evidence(prior, updated, cause, meta)
         else:
-            staged = await ue.stage_command(prior, updated, cause)
+            staged = await ue.stage_command(prior, updated, cause, meta)
         _stamp_usage(d, meta, staged)  # committed by the same atomic save as the state
         return staged
     except UsageEvidenceUnavailable as exc:
@@ -234,6 +234,9 @@ async def request_execution_command(
                 != command.model_dump()
             ):
                 raise HTTPException(status_code=409, detail={"code": "duplicate_command_conflict"})
+            if state.phase == "closing" and session_id not in _closing_tasks:
+                # A transient fault (or a restart) stranded the completion: restart it.
+                _start_closing(d, session_id)
             return {"outcome": original.model_dump(mode="json"), "replayed": True}
         reason = command_rejection(state, command, Capabilities.for_session(meta))
         if reason is None:
@@ -293,7 +296,7 @@ async def request_execution_command(
 
 
 def _start_closing(d: Any, session_id: str) -> None:
-    task = asyncio.create_task(_finish_closing(d, session_id))
+    task = asyncio.create_task(_complete_closing(d, session_id))
     _closing_tasks[session_id] = task
     task.add_done_callback(
         lambda t: (
@@ -358,45 +361,80 @@ async def _apply_rescue_effect(d: Any, session_id: str, command: str) -> None:
 
 
 async def _finish_closing(d: Any, session_id: str) -> None:
-    """Report ``closing -> ending`` once approved closing content is done.
+    """One best-effort completion attempt (the GET recovery path)."""
+    try:
+        await _finish_closing_once(d, session_id)
+    except Exception:
+        logger.exception("closing completion failed session=%s", session_id)
+
+
+async def _finish_closing_once(d: Any, session_id: str) -> None:
+    """Report ``closing -> ending`` once approved closing content is done. Raises on failure.
 
     ponytail: the approved envelope has no closing artifact yet, so closing
     speaks nothing and completes at once. Play approved closing here first
     when authoring provides one.
     """
-    try:
-        async with _locked(d.store, session_id) as fence:
-            meta = await d.store.get(session_id)
-            if not meta or not meta.get("execution_contract"):
-                return
-            state = ExecutionState.model_validate(meta["execution_contract"])
-            if state.phase != "closing":
-                return
-            closing_evidence = Evidence(
-                **state.model_dump(include=set(ExecutionIdentity.model_fields)),
-                sequence=state.sequence + 1,
-                kind="phase_changed",
-                phase="ending",
-                occurred_at=datetime.now(timezone.utc),
-            )
-            prior_state = state
-            state = apply_evidence(state, closing_evidence)
-            meta["execution_contract"] = state.model_dump(mode="json")
-            staged = await _stage_usage(d, meta, prior_state, state, closing_evidence)
-            try:
-                await _save(d.store, session_id, meta, fence)
-            except BaseException as exc:
-                await _settle_usage(d, staged, saved=False, failure=exc)
-                raise
-            await _settle_usage(d, staged, saved=True)
-        d.approved_speech.block(session_id, "ending")
-        if d.hub is not None:
-            await d.hub.emit(
+    async with _locked(d.store, session_id) as fence:
+        meta = await d.store.get(session_id)
+        if not meta or not meta.get("execution_contract"):
+            return
+        meta = copy.deepcopy(meta)  # a failed attempt must not leak into a shared store object
+        state = ExecutionState.model_validate(meta["execution_contract"])
+        if state.phase != "closing":
+            return
+        closing_evidence = Evidence(
+            **state.model_dump(include=set(ExecutionIdentity.model_fields)),
+            sequence=state.sequence + 1,
+            kind="phase_changed",
+            phase="ending",
+            occurred_at=datetime.now(timezone.utc),
+        )
+        prior_state = state
+        state = apply_evidence(state, closing_evidence)
+        meta["execution_contract"] = state.model_dump(mode="json")
+        staged = await _stage_usage(d, meta, prior_state, state, closing_evidence)
+        try:
+            await _save(d.store, session_id, meta, fence)
+        except BaseException as exc:
+            await _settle_usage(d, staged, saved=False, failure=exc)
+            raise
+        await _settle_usage(d, staged, saved=True)
+    d.approved_speech.block(session_id, "ending")
+    if d.hub is not None:
+        await d.hub.emit(
+            session_id,
+            {"type": "execution.phase_changed", "phase": "ending", "sequence": state.sequence},
+        )
+
+
+CLOSING_ATTEMPTS = 8
+CLOSING_BACKOFF = 0.5  # seconds, doubled per attempt, capped at 30
+
+
+async def _complete_closing(d: Any, session_id: str) -> None:
+    """Retry ``closing -> ending`` with backoff; never leave End stranded by a transient fault.
+
+    After ``CLOSING_ATTEMPTS`` failures it logs an ERROR and stops; the session stays
+    ``closing`` and is recovered by the next GET /execution or a replayed End.
+    """
+    for attempt in range(CLOSING_ATTEMPTS):
+        try:
+            await _finish_closing_once(d, session_id)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "closing completion attempt %d/%d failed session=%s",
+                attempt + 1,
+                CLOSING_ATTEMPTS,
                 session_id,
-                {"type": "execution.phase_changed", "phase": "ending", "sequence": state.sequence},
             )
-    except Exception:
-        logger.exception("closing completion failed session=%s", session_id)
+            await asyncio.sleep(min(30.0, CLOSING_BACKOFF * (2**attempt)))
+    logger.error(
+        "closing completion parked after %d attempts session=%s", CLOSING_ATTEMPTS, session_id
+    )
 
 
 async def _request_start(d, session_id, meta, state, command, fence, request):

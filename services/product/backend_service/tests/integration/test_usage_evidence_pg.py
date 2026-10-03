@@ -22,10 +22,15 @@ import pytest
 from backend.application.db.memory_session_store import InMemorySessionStore
 from backend.application.db.postgres_store import PostgresRuntimeStore, schema_sql
 from backend.application.execution_contract import ExecutionIdentity, ExecutionState
-from backend.application.usage_evidence import UsageEvidence, UsageEvidenceSettings, UsageSender
+from backend.application.usage_evidence import (
+    UsageEvidence,
+    UsageEvidenceSettings,
+    UsageEvidenceUnavailable,
+    UsageSender,
+)
 from backend.application.usage_evidence import envelope
 from backend.application.usage_evidence.envelope import Draft
-from backend.application.usage_evidence.outbox import UsageOutbox
+from backend.application.usage_evidence.outbox import StageBlocked, UsageOutbox
 
 URL = os.environ.get("USAGE_EVIDENCE_TEST_DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(
@@ -111,15 +116,21 @@ async def counter(pg, identity) -> int:
 # -- sequence, idempotency, identity ---------------------------------------------------------
 
 
-async def test_a_duplicate_trigger_returns_the_existing_row_with_identical_bytes(pg):
+async def test_a_duplicate_trigger_restages_one_row_with_a_new_attempt_token(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     first = await outbox.stage(ident, [draft()])
     second = await outbox.stage(ident, [draft()])
     stored = await rows(pg, ident)
-    assert len(stored) == 1
-    assert first[0].created and not second[0].created
+    assert len(stored) == 1  # one semantic row ...
     assert first[0].event_id == second[0].event_id == stored[0]["event_id"]
+    assert first[0].token != second[0].token == stored[0]["stage_token"]  # ... one live attempt
     assert hashlib.sha256(bytes(stored[0]["body"])).hexdigest() == stored[0]["body_sha256"]
+    await ready(outbox, first)  # the superseded attempt can never flip the row
+    assert [r["status"] for r in await rows(pg, ident)] == ["staged"]
+    await ready(outbox, second)
+    assert [r["status"] for r in await rows(pg, ident)] == ["ready"]
+    third = await outbox.stage(ident, [draft()])  # a final row is returned, never re-staged
+    assert third[0].token is None and not third[0].created
 
 
 async def test_semantic_identity_is_unique_per_identity_kind_and_interval(pg):
@@ -128,7 +139,7 @@ async def test_semantic_identity_is_unique_per_identity_kind_and_interval(pg):
         ident, [draft(), draft(occurred_at=datetime(2030, 1, 1, tzinfo=timezone.utc))]
     )
     stored = await rows(pg, ident)
-    assert len(stored) == 1 and stored[0]["occurred_at"] == NOW  # the first fact time wins
+    assert len(stored) == 1  # the live attempt (the later draft) owns the single row
 
 
 async def test_usage_sequence_is_gap_free_and_increasing_with_concurrent_writers(pg):
@@ -140,7 +151,7 @@ async def test_usage_sequence_is_gap_free_and_increasing_with_concurrent_writers
         )
     )
     assert all(s[0].usage_sequence is None for s in staged)  # numbered only when ready
-    await asyncio.gather(*(outbox.mark_ready([s[0].event_id]) for s in staged))
+    await asyncio.gather(*(outbox.mark_ready(pair(s)) for s in staged))
     sequences = [r["usage_sequence"] for r in await rows(pg, ident)]
     assert sequences == list(range(1, 21)) and await counter(pg, ident) == 20
 
@@ -178,7 +189,7 @@ async def test_a_discarded_earlier_row_leaves_no_gap_for_a_later_row(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     lost = await outbox.stage(ident, [draft("terminal", "terminal", seq=100)])
     later = await outbox.stage(ident, [draft(seq=5)])
-    await outbox.release([lost[0].event_id], delete=False)
+    await outbox.release(pair(lost), delete=False)
     await ready(outbox, later)
     stored = {r["kind"]: r for r in await rows(pg, ident)}
     assert stored["phase_changed"]["usage_sequence"] == 1  # not 2
@@ -223,24 +234,31 @@ async def test_abort_removes_staged_rows_and_never_consumes_a_number(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     kept = await outbox.stage(ident, [draft()])
     gone = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)])
-    await outbox.mark_ready([kept[0].event_id])
-    await outbox.release([gone[0].event_id], delete=True)
+    await outbox.mark_ready(pair(kept))
+    await outbox.release(pair(gone), delete=True)
     again = await outbox.stage(ident, [draft("unusable_started", "unusable", opening="1")])
     await ready(outbox, again)
     assert [r["usage_sequence"] for r in await rows(pg, ident)] == [1, 2]
 
 
-async def sweeper(pg, store, **env):
+async def sweeper(pg, store, locked=None, **env):
     settings = UsageEvidenceSettings.from_env(FAST | env)
-    return UsageSender(UsageOutbox(pg), settings, session_store=store)
+    return UsageSender(UsageOutbox(pg), settings, session_store=store, session_lock=locked)
 
 
-def meta_at(ident, sequence, committed=()):
+def pair(staged):
+    return [(s.event_id, s.token) for s in staged if s.token]
+
+
+def meta_at(ident, sequence, committed=(), version=None):
     return {
         "execution_contract": ExecutionState(**ident.model_dump(), sequence=sequence).model_dump(
             mode="json"
         ),
-        "usage_evidence_committed": list(committed),
+        "usage_evidence_commits": {
+            "version": version if version is not None else len(committed),
+            "tokens": {c: i + 1 for i, c in enumerate(committed)},
+        },
     }
 
 
@@ -261,7 +279,7 @@ async def test_sweeper_converges_a_crash_after_save_to_ready(pg):
     store = InMemorySessionStore()
     staged = await outbox.stage(ident, [draft(seq=5)])
     # the save happened (state AND the committed-fact proof), the ready flip did not
-    await store.set(ident.runtime_session_id, meta_at(ident, 5, [staged[0].event_id]))
+    await store.set(ident.runtime_session_id, meta_at(ident, 5, [staged[0].token]))
     await asyncio.sleep(0.05)
     await (await sweeper(pg, store)).sweep()
     stored = await rows(pg, ident)
@@ -278,7 +296,7 @@ async def test_a_sequence_that_advanced_with_a_different_fact_does_not_publish_t
     )
     healthy = await outbox.stage(ident, [draft("phase_changed", "phase:selling", seq=5)])
     # only the healthy fact was saved
-    await store.set(ident.runtime_session_id, meta_at(ident, 5, [healthy[0].event_id]))
+    await store.set(ident.runtime_session_id, meta_at(ident, 5, [healthy[0].token]))
     await asyncio.sleep(0.05)
     await (await sweeper(pg, store)).sweep()
     by_kind = {r["kind"]: r["status"] for r in await rows(pg, ident)}
@@ -315,7 +333,7 @@ async def test_unresolvable_rows_cannot_starve_a_recoverable_one(pg):
         await outbox.stage(new_identity(), [draft(seq=5)])  # no session meta: unresolvable
     good = new_identity()
     staged = await outbox.stage(good, [draft(seq=5)])
-    await store.set(good.runtime_session_id, meta_at(good, 5, [staged[0].event_id]))
+    await store.set(good.runtime_session_id, meta_at(good, 5, [staged[0].token]))
     await asyncio.sleep(0.05)
     await (await sweeper(pg, store)).sweep()
     assert [r["status"] for r in await rows(pg, good)] == ["ready"]
@@ -371,7 +389,7 @@ async def test_a_young_staged_row_is_left_alone_by_the_sweeper(pg):
 async def test_a_discarded_row_is_revived_as_staged_and_numbered_only_when_ready(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     first = await outbox.stage(ident, [draft(seq=5)])
-    await outbox.release([first[0].event_id], delete=False)
+    await outbox.release(pair(first), delete=False)
     again = await outbox.stage(ident, [draft(seq=5)])
     assert again[0].event_id == first[0].event_id and again[0].usage_sequence is None
     assert [r["status"] for r in await rows(pg, ident)] == ["staged"]
@@ -383,13 +401,13 @@ async def test_a_discarded_row_is_revived_as_staged_and_numbered_only_when_ready
 
 
 async def ready(outbox, staged):
-    await outbox.mark_ready([s.event_id for s in staged])
+    await outbox.mark_ready(pair(staged))
 
 
 async def test_delivery_is_per_identity_in_usage_sequence_order(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     first = await outbox.stage(ident, [draft()])
-    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)])
+    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)], version=2)
     await ready(outbox, first + second)
     claimed = [r for r in await outbox.claim(50, 60) if r["usage_sequence"] in (1, 2)]
     assert [r["usage_sequence"] for r in claimed] == [1]  # row 2 waits for row 1
@@ -403,18 +421,20 @@ async def test_delivery_is_per_identity_in_usage_sequence_order(pg):
 async def test_a_permanently_rejected_row_does_not_block_a_later_row(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
     first = await outbox.stage(ident, [draft()])
-    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)])
+    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)], version=2)
     await ready(outbox, first + second)
     claimed = [r for r in await outbox.claim(50, 60) if r["usage_sequence"] == 1]
     await outbox.finish(first[0].event_id, claimed[0]["lease_token"], "rejected", http_status=400)
     assert [r for r in await outbox.claim(50, 60) if r["usage_sequence"] == 2]
 
 
-async def test_a_staged_row_has_no_number_so_it_never_blocks_a_ready_row(pg):
+async def test_an_earlier_unresolved_row_holds_back_numbering_until_it_resolves(pg):
     outbox, ident = UsageOutbox(pg), new_identity()
-    await outbox.stage(ident, [draft()])  # stays staged, unnumbered
-    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)])
-    await ready(outbox, second)
+    first = await outbox.stage(ident, [draft()])  # stays staged: unresolved, no number
+    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)], version=2)
+    assert await outbox.mark_ready(pair(second)) == [] and await outbox.claim(50, 60) == []
+    await outbox.release(pair(first), delete=False)  # it provably never committed
+    assert await outbox.mark_ready(pair(second)) == [second[0].event_id]
     assert [r["usage_sequence"] for r in await outbox.claim(50, 60)] == [1]
 
 
@@ -483,7 +503,9 @@ async def drain(sender, receiver, rounds=40):
 
 async def test_an_outage_never_drops_rows_and_recovery_delivers_everything_in_order(pg):
     outbox, ident, receiver = UsageOutbox(pg), new_identity(), Receiver()
-    staged = await outbox.stage(ident, [draft(), draft("terminal", "terminal", seq=9)])
+    staged = await outbox.stage(ident, [draft()]) + await outbox.stage(
+        ident, [draft("terminal", "terminal", seq=9)], version=2
+    )
     await ready(outbox, staged)
     receiver.down = True
     sender = sender_for(pg, receiver)
@@ -526,7 +548,7 @@ async def test_a_replay_of_a_delivered_body_is_a_duplicate_and_creates_no_second
 async def test_a_conflict_is_marked_permanent_and_never_resent_while_later_rows_still_go(pg):
     outbox, ident, receiver = UsageOutbox(pg), new_identity(), Receiver()
     first = await outbox.stage(ident, [draft()])
-    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)])
+    second = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)], version=2)
     await ready(outbox, first + second)
     first_body = bytes((await rows(pg, ident))[0]["body"])
     receiver.seen[first[0].event_id] = "0" * 64  # the receiver holds different bytes for this id
@@ -591,11 +613,11 @@ async def test_vendor_cogs_rides_ai_usage_reported_unordered_and_never_blocks_li
 async def test_the_facade_stages_commits_and_aborts_only_through_the_outbox(pg):
     ident = new_identity()
     service = UsageEvidence(UsageOutbox(pg), UsageEvidenceSettings.from_env(FAST))
-    staged = await service._stage(ExecutionState(**ident.model_dump(), sequence=5), [draft()])
+    staged = await service._stage(ExecutionState(**ident.model_dump(), sequence=5), [draft()], {})
     await service.commit(staged)
     assert [r["status"] for r in await rows(pg, ident)] == ["ready"]
     other = new_identity()
-    staged = await service._stage(ExecutionState(**other.model_dump(), sequence=5), [draft()])
+    staged = await service._stage(ExecutionState(**other.model_dump(), sequence=5), [draft()], {})
     await service.abort(staged)
     assert await rows(pg, other) == []
 
@@ -673,3 +695,201 @@ async def test_the_real_evidence_endpoint_stages_then_readies_the_row_and_reject
         ("phase_changed", "ready", 1),
         ("terminal", "ready", 2),
     ]
+
+
+# -- Codex round 2: attempt tokens, no proof window, locking, commit order -----------------------
+
+
+def terminal(reason, seq):
+    return draft("terminal", "terminal", seq=seq, reason_code=reason)
+
+
+async def test_a_restaged_semantic_fact_is_never_authorized_by_the_old_attempts_token(pg):
+    """P1: stage failed(seq2), lose the write, then commit ended(seq4): same semantic id."""
+    outbox, ident = UsageOutbox(pg), new_identity()
+    store = InMemorySessionStore()
+    failed = await outbox.stage(ident, [terminal("execution_failed", 2)])
+    ended = await outbox.stage(ident, [terminal("normal_end", 4)])
+    assert failed[0].event_id == ended[0].event_id  # the semantic id is shared
+    assert failed[0].token != ended[0].token
+    await store.set(ident.runtime_session_id, meta_at(ident, 4, [ended[0].token]))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store)).sweep()
+    (row,) = await rows(pg, ident)
+    assert row["status"] == "ready"
+    assert json.loads(bytes(row["body"]))["payload"]["reason_code"] == "normal_end"  # NOT failed
+    # and the proof of the OLD attempt does not authorize the new bytes either
+    other = new_identity()
+    a = await outbox.stage(other, [terminal("execution_failed", 2)])
+    b = await outbox.stage(other, [terminal("normal_end", 4)])
+    store2 = InMemorySessionStore()
+    await store2.set(other.runtime_session_id, meta_at(other, 2, [a[0].token]))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store2)).sweep()
+    (row2,) = await rows(pg, other)
+    assert row2["status"] == "discarded" and b[0].token == row2["stage_token"]
+
+
+async def test_a_committed_unresolved_attempt_blocks_a_restage_instead_of_being_replaced(pg):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    first = await outbox.stage(ident, [terminal("execution_failed", 2)])
+    with pytest.raises(StageBlocked):
+        await outbox.stage(ident, [terminal("normal_end", 4)], committed_tokens={first[0].token})
+    (row,) = await rows(pg, ident)
+    assert row["stage_token"] == first[0].token  # the committed payload is untouched
+
+
+async def test_a_delayed_recovery_through_many_later_facts_still_resolves_by_token(pg):
+    """P1: the proof must not evict. 600 later committed facts; the old row is still ready."""
+    outbox, ident = UsageOutbox(pg), new_identity()
+    store = InMemorySessionStore()
+    old = await outbox.stage(ident, [draft("unusable_started", "unusable", opening="1", seq=1)])
+    tokens = [old[0].token]
+    for i in range(2, 602):
+        tokens.append(f"later-{i}")  # later committed facts' tokens (rows already ready)
+    await store.set(ident.runtime_session_id, meta_at(ident, 700, tokens, version=601))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store)).sweep()
+    assert [r["status"] for r in await rows(pg, ident)] == ["ready"]
+
+
+async def test_the_facade_prunes_tokens_only_for_rows_that_are_no_longer_staged(pg):
+    ident = new_identity()
+    outbox = UsageOutbox(pg)
+    service = UsageEvidence(outbox, UsageEvidenceSettings.from_env(FAST))
+    state = ExecutionState(**ident.model_dump(), sequence=5)
+    meta: dict = {}
+    one = await service._stage(state, [draft("unusable_started", "unusable", opening="1")], meta)
+    UsageEvidence.stamp(meta, one)
+    two = await service._stage(state, [draft("unusable_started", "unusable", opening="2")], meta)
+    UsageEvidence.stamp(meta, two)
+    assert set(meta["usage_evidence_commits"]["tokens"]) == {one[0].token, two[0].token}
+    await service.commit(one)  # row one flips ready; row two stays staged (still unresolved)
+    three = await service._stage(state, [draft("unusable_started", "unusable", opening="3")], meta)
+    kept = set(meta["usage_evidence_commits"]["tokens"])
+    assert two[0].token in kept  # unresolved: never dropped
+    assert three and one[0].token not in kept  # ready: pruned
+
+
+async def test_a_full_proof_fails_closed_instead_of_evicting(pg):
+    service = UsageEvidence(UsageOutbox(pg), UsageEvidenceSettings.from_env(FAST))
+    ident = new_identity()
+    state = ExecutionState(**ident.model_dump(), sequence=5)
+    meta = {"usage_evidence_commits": {"version": 9, "tokens": {f"t{i}": i for i in range(512)}}}
+    # none of the 512 tokens has a staged row, so they prune away: staging works
+    await service._stage(state, [draft()], meta)
+    full = new_identity()
+    outbox = UsageOutbox(pg)
+    live = {}
+    for i in range(512):
+        st = await outbox.stage(
+            full, [draft("unusable_started", "unusable", opening=str(i), seq=i)], version=i + 1
+        )
+        live[st[0].token] = i + 1
+    with pytest.raises(UsageEvidenceUnavailable):
+        await service._stage(
+            ExecutionState(**full.model_dump(), sequence=5),
+            [draft("unusable_started", "unusable", opening="x")],
+            {"usage_evidence_commits": {"version": 512, "tokens": live}},
+        )
+
+
+async def test_the_sweeper_waits_for_the_session_lock_and_never_discards_an_inflight_retry(pg):
+    """P1: the unlocked sweeper read Redis before the retry saved, then discarded the row."""
+    from backend.api.v1.execution import _locked
+
+    outbox, ident = UsageOutbox(pg), new_identity()
+    store = InMemorySessionStore()
+    sid = ident.runtime_session_id
+    await store.set(sid, meta_at(ident, 4))  # not yet saved
+    old = await outbox.stage(ident, [draft(seq=5)])
+    await asyncio.sleep(0.05)
+    sweep = await sweeper(pg, store, locked=lambda session: _locked(store, session))
+    async with _locked(store, sid):  # the retry holds the session lock: stage, save, commit
+        retry = await outbox.stage(ident, [draft(seq=5)])
+        await asyncio.sleep(0.05)
+        task = asyncio.create_task(
+            sweep.sweep()
+        )  # the sweeper starts while the retry is mid-flight
+        await asyncio.sleep(0.1)
+        assert not task.done()  # it is blocked on the lock, it did not read stale Redis
+        meta = meta_at(ident, 5, [retry[0].token])
+        await store.set(sid, meta)  # the save lands
+        await outbox.mark_ready(pair(retry))
+    await task
+    (row,) = await rows(pg, ident)
+    assert row["status"] == "ready" and row["stage_token"] == retry[0].token
+    assert old[0].token != retry[0].token
+
+
+async def test_the_sweeper_skips_a_row_that_was_restaged_after_it_selected_it(pg):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    store = InMemorySessionStore()
+    await store.set(ident.runtime_session_id, meta_at(ident, 4))
+    old = await outbox.stage(ident, [draft(seq=5)])
+    await asyncio.sleep(0.05)
+    sw = await sweeper(pg, store)
+    stale = await outbox.stale_staged(0.01)
+    new = await outbox.stage(ident, [draft(seq=5)])  # re-staged after selection
+    assert await sw._resolve(stale) == 0  # compare-and-set on the token: untouched
+    (row,) = await rows(pg, ident)
+    assert row["status"] == "staged" and row["stage_token"] == new[0].token
+    assert old[0].token != new[0].token
+
+
+async def test_mark_ready_revives_a_discarded_row_when_the_proof_shows_commit(pg, caplog):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    st = await outbox.stage(ident, [draft(seq=5)])
+    await outbox.release(pair(st), delete=False)
+    with caplog.at_level("ERROR"):
+        flipped = await outbox.mark_ready(pair(st))
+    assert flipped == [st[0].event_id] and "REVIVED" in caplog.text
+    assert [r["status"] for r in await rows(pg, ident)] == ["ready"]
+
+
+async def test_numbering_follows_commit_order_not_ready_flip_order(pg):
+    """P2: START committed (flip deferred), END committed and flipped, START recovered."""
+    outbox, ident = UsageOutbox(pg), new_identity()
+    store = InMemorySessionStore()
+    start = await outbox.stage(
+        ident, [draft("unusable_started", "unusable", opening="5", seq=5)], version=1
+    )
+    end = await outbox.stage(
+        ident, [draft("unusable_ended", "unusable", opening=None, boundary="end", seq=6)], version=2
+    )
+    assert end  # END's request path tries to flip first: it must wait for the earlier START
+    assert await outbox.mark_ready(pair(end)) == []
+    await store.set(ident.runtime_session_id, meta_at(ident, 6, [start[0].token, end[0].token]))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store)).sweep()
+    by_kind = {r["kind"]: r["usage_sequence"] for r in await rows(pg, ident)}
+    assert by_kind == {"unusable_started": 1, "unusable_ended": 2}
+
+
+async def test_a_lower_version_row_that_never_committed_is_discarded_and_unblocks_the_next(pg):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    store = InMemorySessionStore()
+    lost = await outbox.stage(ident, [draft("terminal", "terminal", seq=9)], version=1)
+    later = await outbox.stage(ident, [draft(seq=5)], version=2)
+    assert await outbox.mark_ready(pair(later)) == []  # waits behind the unresolved earlier row
+    await store.set(ident.runtime_session_id, meta_at(ident, 5, [later[0].token]))
+    await asyncio.sleep(0.05)
+    await (await sweeper(pg, store)).sweep()
+    by_kind = {r["kind"]: (r["status"], r["usage_sequence"]) for r in await rows(pg, ident)}
+    assert by_kind == {"terminal": ("discarded", None), "phase_changed": ("ready", 1)}
+    assert lost
+
+
+async def test_retry_state_is_persisted_the_attempt_counter_survives_a_sender_restart(pg):
+    outbox, ident = UsageOutbox(pg), new_identity()
+    st = await outbox.stage(ident, [draft()])
+    await ready(outbox, st)
+    receiver = Receiver()
+    receiver.status_override = 503
+    await drain(sender_for(pg, receiver), receiver, 4)
+    attempts_before = (await rows(pg, ident))[0]["attempts"]
+    assert attempts_before >= 2
+    again = await outbox.claim(50, 0.01)  # a new process continues from the stored counter
+    assert again and again[0]["attempts"] > attempts_before
+    stored = await rows(pg, ident)
+    assert stored[0]["last_status"] == 503 and stored[0]["last_error"] == "http_503"

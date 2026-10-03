@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS usage_evidence_outbox (
     execution_sequence  BIGINT,
     -- Execution state sequence after the causing fact applied: the sweeper's proof.
     applied_sequence    BIGINT NOT NULL DEFAULT 0,
+    -- One unique token per staging ATTEMPT; the committed proof in the session meta lists
+    -- tokens, so it identifies the exact stored payload that committed.
+    stage_token         TEXT,
+    -- Session commit version this attempt would commit at (commit order for numbering).
+    staged_version      BIGINT NOT NULL DEFAULT 0,
     occurred_at         TIMESTAMPTZ NOT NULL,
     -- Serialized once at insert and resent byte-for-byte on every attempt.
     body                BYTEA NOT NULL CHECK (octet_length(body) <= 1048576),
@@ -50,3 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_evidence_outbox_due
     ON usage_evidence_outbox (next_attempt_at) WHERE status = 'ready';
 CREATE INDEX IF NOT EXISTS idx_usage_evidence_outbox_staged
     ON usage_evidence_outbox (created_at) WHERE status = 'staged';
+
+-- Idempotent upgrade for a database created before these columns existed.
+ALTER TABLE usage_evidence_outbox ADD COLUMN IF NOT EXISTS stage_token TEXT;
+ALTER TABLE usage_evidence_outbox ADD COLUMN IF NOT EXISTS staged_version BIGINT NOT NULL DEFAULT 0;

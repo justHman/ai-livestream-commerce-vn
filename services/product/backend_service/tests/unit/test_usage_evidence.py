@@ -616,13 +616,13 @@ class FakeUsage:
     def __init__(self, fail=False):
         self.fail, self.staged, self.committed, self.aborted = fail, [], [], []
 
-    async def stage_evidence(self, prior, updated, e):
+    async def stage_evidence(self, prior, updated, e, meta):
         if self.fail:
             raise UsageEvidenceUnavailable("down")
         self.staged.append(e.sequence)
-        return [Staged(f"e{e.sequence}", "staged", e.sequence, True)]
+        return [Staged(f"e{e.sequence}", "staged", None, True, f"t{e.sequence}", 1)]
 
-    async def stage_command(self, prior, updated, outcome):
+    async def stage_command(self, prior, updated, outcome, meta):
         return []
 
     @staticmethod
@@ -678,7 +678,7 @@ async def test_an_ambiguous_save_failure_keeps_the_staged_rows_for_the_sweeper()
     assert usage.aborted == [] and usage.committed == []
     meta = await store.get("rt")
     assert meta["execution_contract"]["sequence"] == 1
-    assert meta["usage_evidence_committed"] == ["e1"]  # the proof the sweeper reads
+    assert meta["usage_evidence_commits"] == {"version": 1, "tokens": {"t1": 1}}
 
 
 async def test_a_definite_fence_refusal_aborts_the_staged_rows():
@@ -750,7 +750,7 @@ def test_no_credential_appears_in_repr_or_str_of_settings_sender_or_outbox():
 
 
 class InvalidOutbox:
-    async def stage(self, identity, drafts):
+    async def stage(self, identity, drafts, **kw):
         envelope.validate_identity(identity)
         raise AssertionError("unreachable")
 
@@ -781,12 +781,10 @@ async def test_an_undeliverable_identity_fails_closed_422_and_state_does_not_adv
     assert (await store.get("rt"))["execution_contract"]["sequence"] == 1  # never advanced
 
 
-def test_the_committed_fact_stamp_is_bounded_most_recent_and_deduplicated():
+def test_the_commit_proof_records_every_attempt_token_and_never_evicts():
     meta: dict[str, Any] = {}
-    for i in range(300):
-        UsageEvidence.stamp(meta, [Staged(f"e{i}", "staged", None, True)])
-    UsageEvidence.stamp(meta, [Staged("e299", "staged", None, False)])
-    assert len(meta["usage_evidence_committed"]) == 256
-    assert meta["usage_evidence_committed"][-1] == "e299"
-    assert meta["usage_evidence_committed"].count("e299") == 1
-    assert "e0" not in meta["usage_evidence_committed"]
+    for i in range(1, 700):
+        UsageEvidence.stamp(meta, [Staged(f"e{i}", "staged", None, True, f"t{i}", i)])
+    proof = meta["usage_evidence_commits"]
+    assert proof["version"] == 699 and len(proof["tokens"]) == 699  # no window, no eviction
+    assert proof["tokens"]["t1"] == 1 and proof["tokens"]["t699"] == 699

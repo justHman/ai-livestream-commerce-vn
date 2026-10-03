@@ -196,7 +196,15 @@ async def _start_usage_evidence(container: BootstrapContainer) -> None:
         return
     outbox = UsageOutbox(pg, producer_id=settings.producer_id)
     service = UsageEvidence(outbox, settings)
-    sender = UsageSender(outbox, settings, session_store=container.store, cogs=service.cogs)
+    from backend.api.v1.execution import _locked
+
+    sender = UsageSender(
+        outbox,
+        settings,
+        session_store=container.store,
+        session_lock=lambda session_id: _locked(container.store, session_id),
+        cogs=service.cogs,
+    )
     container.usage_evidence = service
     container.usage_sender = sender
     container.usage_evidence_task = asyncio.create_task(sender.run_loop(), name="usage-evidence")
