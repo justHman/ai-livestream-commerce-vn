@@ -19,7 +19,7 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
-from backend.application.db.session_store import SessionLockTimeout
+from backend.application.db.session_store import SessionLockTimeout, delete_owned
 from backend.application.execution_contract import rescue_switch_on
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
@@ -510,7 +510,7 @@ async def delete_session_meta(d: Any, session_id: str, fence: Any = None) -> Non
             )
             keep_meta = True
     if not keep_meta:
-        await d.store.delete(session_id)
+        await delete_owned(d.store, session_id, fence)  # never under a lost lease
     if d.hub is not None:
         await d.hub.emit(session_id, {"type": "session.stopped"})
     # P4 hardening: drop the per-session lock entry to prevent memory leak.

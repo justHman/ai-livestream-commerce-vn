@@ -24,6 +24,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 
+from backend.application.db.session_store import delete_owned
 from backend.application.execution_contract import ExecutionIdentity, ExecutionState
 from backend.application.terminal_outcomes import backoff_seconds
 
@@ -50,6 +51,27 @@ TRANSIENT_PARK_CAP = 300.0  # seconds; proof_unavailable keeps the 1 h cap
 # sweep/retry; an ERROR is logged when it is within EXPIRY_WARN seconds of expiring anyway.
 EVIDENCE_TTL = 7 * 24 * 3600
 EXPIRY_WARN = 6 * 3600
+# A deferred fact that STILL cannot be staged for a PERMANENT reason (an unresolved attempt owns
+# its row, or the entry is malformed) after this long is given up (ERROR, counter) so it cannot
+# block later facts forever. An outage (connection errors) never counts: those wait for recovery.
+GIVE_UP_AFTER = 24 * 3600
+
+
+def holds_evidence(meta: dict[str, Any] | None) -> bool:
+    """True when this session meta is the only copy of unresolved usage evidence.
+
+    Decided from the meta alone (no database read): deferred facts, the stop-time cleanup
+    marker, 018's unstaged terminal fact, or a commit proof that still lists attempts.
+    """
+    from backend.application.budget_lease import UNSTAGED_KEY as LEASE_UNSTAGED_KEY
+
+    meta = meta or {}
+    return bool(
+        meta.get(UNSTAGED_KEY)
+        or meta.get(CLEANUP_KEY)
+        or meta.get(LEASE_UNSTAGED_KEY)
+        or (meta.get(COMMITS_KEY) or {}).get("tokens")
+    )
 _IDENTITY_KEYS = ("tenant_id", "business_session_id", "runtime_session_id", "generation")
 _SWEEP_LIMIT = 100
 _SWEEP_BATCHES = 10
@@ -118,6 +140,7 @@ class UsageSender:
         self._store = session_store
         self._unstaged: set[str] = unstaged_sessions if unstaged_sessions is not None else set()
         self._discovered = False
+        self.unstageable_facts = 0  # deferred facts given up (health / operator)
         # Must be the SAME lock the request path holds from staging through the save.
         self._session_lock = session_lock or _no_lock
         self._cogs = cogs
@@ -199,6 +222,7 @@ class UsageSender:
         """
         if self._store is None:
             return 0
+        await self.refresh_held()  # FIRST, with no database call: nothing below can skip it
         await self.drain_unstaged()
         resolved = 0
         deadline = time.monotonic() + self._settings.sweep_budget
@@ -216,6 +240,35 @@ class UsageSender:
         except Exception as exc:
             logger.warning("usage evidence retention failed error_type=%s", type(exc).__name__)
         return resolved
+
+    async def refresh_held(self) -> int:
+        """Refresh the TTL of every session meta that holds unresolved evidence.
+
+        Decided from the metas alone, so it works through a FULL database outage. A session
+        that cannot be refreshed now (lock busy, store hiccup) is retried next sweep.
+        ponytail: scans all live sessions each sweep; a tracked-set index if that gets large.
+        """
+        lister = getattr(self._store, "list_session_ids", None)
+        ids = set(self._unstaged)
+        try:
+            ids.update(await lister() if lister else ())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("usage ttl refresh listing failed error_type=%s", type(exc).__name__)
+        done = 0
+        for sid in ids:
+            try:
+                async with self._session_lock(sid) as fence:
+                    meta = await self._store.get(sid)
+                    if holds_evidence(meta):
+                        await self._keep_alive(sid, meta, fence)
+                        done += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("usage ttl refresh deferred error_type=%s", type(exc).__name__)
+        return done
 
     def track(self, session_id: str) -> None:
         """Session meta kept for deferred work (unstaged facts / cleanup marker): sweep it."""
@@ -277,13 +330,14 @@ class UsageSender:
         """Drain one session's deferred facts under its lock (sweeper, and a bounded attempt
         right after a safety command). Keeps the meta alive while anything is unresolved."""
         async with self._session_lock(sid) as fence:
+            held = await self._store.get(sid)
+            if holds_evidence(held):  # FIRST: before any database call (a lost fence aborts)
+                await self._keep_alive(sid, held, fence)
             done = await self._drain_one(sid, fence)
-            await self._cleanup_if_done(sid, await self._store.get(sid))  # Stop kept it
+            await self._cleanup_if_done(sid, await self._store.get(sid), fence)  # Stop kept it
             meta = await self._store.get(sid)
             if meta is None or not (meta.get(UNSTAGED_KEY) or meta.get(CLEANUP_KEY)):
                 self._unstaged.discard(sid)
-            else:
-                await self._keep_alive(sid, meta, fence)
             return done
 
     async def _keep_alive(self, sid: str, meta: dict[str, Any], fence: Any) -> None:
@@ -340,6 +394,8 @@ class UsageSender:
                 raise
             except Exception as exc:  # StageBlocked, database down: keep it for the next pass
                 logger.warning("usage unstaged fact kept error_type=%s", type(exc).__name__)
+                if self._give_up(entry, exc):
+                    continue  # permanently unstageable for hours: later facts go through
                 # Order: a later fact never overtakes an earlier one that could not be staged.
                 remaining.extend(entries[entries.index(entry) :])
                 break
@@ -364,7 +420,28 @@ class UsageSender:
             logger.warning("usage unstaged ready flip deferred error_type=%s", type(exc).__name__)
         return len(entries) - len(remaining)
 
-    async def _cleanup_if_done(self, sid: str, meta: dict[str, Any] | None) -> None:
+    def _give_up(self, entry: dict[str, Any], exc: Exception) -> bool:
+        """True when a deferred fact failed for a PERMANENT reason for more than GIVE_UP_AFTER."""
+        permanent = isinstance(
+            exc, (StageBlocked, envelope.InvalidIdentity, ValueError, KeyError, TypeError)
+        )
+        now = self._clock()
+        first = entry.setdefault("deferred_at", now)  # stamped on first sight if absent
+        if not permanent or now - float(first) < GIVE_UP_AFTER:
+            return False
+        self.unstageable_facts += 1
+        logger.error(
+            "usage evidence fact UNSTAGEABLE for %.0f h, given up so later facts can proceed "
+            "kind=%s error_type=%s",
+            (now - float(first)) / 3600,
+            (entry.get("draft") or {}).get("kind"),
+            type(exc).__name__,
+        )
+        return True
+
+    async def _cleanup_if_done(
+        self, sid: str, meta: dict[str, Any] | None, fence: Any = None
+    ) -> None:
         """Stop kept the meta because rows were unresolved: delete it once none are left."""
         if not (meta or {}).get(CLEANUP_KEY):
             return
@@ -374,7 +451,7 @@ class UsageSender:
 
         if (meta or {}).get(LEASE_UNSTAGED_KEY):  # 018's own terminal fact still owes staging
             return
-        await self._store.delete(sid)
+        await delete_owned(self._store, sid, fence)  # never delete under a lost lease
         self._unstaged.discard(sid)
 
     async def _resolve(self, rows: list[dict[str, Any]], deadline: float) -> int:
@@ -413,9 +490,6 @@ class UsageSender:
     async def _resolve_one(self, row: dict[str, Any], fence: Any = None) -> str | None:
         """Decide one row. Runs under the session lock. Returns an outcome or a park reason."""
         eid, token = row["event_id"], row["stage_token"]
-        fresh = await self._outbox.get_staged(eid)
-        if fresh is None or fresh["status"] != "staged" or fresh["stage_token"] != token:
-            return None  # resolved or replaced meanwhile: that attempt owns its own fate
         reason = None
         meta = None
         try:
@@ -427,15 +501,14 @@ class UsageSender:
         except Exception as exc:
             logger.warning("usage sweep unreadable error_type=%s", type(exc).__name__)
             return "session_unreadable"  # transient: retried with the short backoff cap
-        if meta is not None:  # unresolved row: its commit proof must not expire
-            try:
-                await self._keep_alive(row["runtime_session_id"], meta, fence)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "usage evidence ttl refresh failed error_type=%s", type(exc).__name__
-                )
+        if meta is not None:
+            # An unresolved row: its commit proof must not expire. FIRST, before any database
+            # call. A failed or refused fenced write means the lock is lost: ABORT (the caller
+            # defers the row); nothing below may act on this possibly stale snapshot.
+            await self._keep_alive(row["runtime_session_id"], meta, fence)
+        fresh = await self._outbox.get_staged(eid)
+        if fresh is None or fresh["status"] != "staged" or fresh["stage_token"] != token:
+            return None  # resolved or replaced meanwhile: that attempt owns its own fate
         if state is None and reason is None:
             reason = "session_missing"
         elif state is not None and (
@@ -456,11 +529,13 @@ class UsageSender:
             flipped = await self._outbox.mark_ready([(eid, token)])
             # Committed, but numbering waits (commit order) for an earlier unresolved row.
             if flipped:
-                await self._cleanup_if_done(row["runtime_session_id"], meta)
+                await self._cleanup_if_done(row["runtime_session_id"], meta, fence)
             return "ready" if flipped else "waiting_for_earlier_row"
+        # "Never committed" is decided from this snapshot: prove we still own the lock first.
+        await self._keep_alive(row["runtime_session_id"], meta, fence)
         await self._outbox.release([(eid, token)], delete=False)
         logger.warning("usage evidence discarded a never-committed attempt id=%s", eid)
-        await self._cleanup_if_done(row["runtime_session_id"], meta)
+        await self._cleanup_if_done(row["runtime_session_id"], meta, fence)
         return "discarded"
 
     async def drain_cogs(self) -> int:

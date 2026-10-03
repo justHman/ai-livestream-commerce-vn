@@ -7,6 +7,7 @@ Credits, prices, balances or billable durations (BR-PRICING-001/002).
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -27,6 +28,7 @@ from .sender import (  # noqa: F401
     MAX_PENDING_TOKENS,
     UNSTAGED_KEY,
     UsageSender,
+    holds_evidence,
 )
 from .settings import CogsBuffer, CogsSample, UsageEvidenceSettings
 
@@ -143,7 +145,11 @@ class UsageEvidence:
             envelope.identity_of(updated)
         )  # InvalidIdentity: never reportable
         identity = envelope.identity_of(updated).model_dump()
-        return [{"identity": identity, "draft": envelope.draft_to_dict(d)} for d in drafts]
+        now = time.time()  # the bounded give-up counts from here
+        return [
+            {"identity": identity, "draft": envelope.draft_to_dict(d), "deferred_at": now}
+            for d in drafts
+        ]
 
     @staticmethod
     def stamp(meta: dict[str, Any], staged: Sequence[Staged]) -> None:

@@ -41,6 +41,16 @@ end
 """
 
 
+_LOCK_DELETE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('DEL', KEYS[2])
+  return 1
+else
+  return 0
+end
+"""
+
+
 @dataclass(frozen=True)
 class SessionLockFence:
     """Proof of a held per-session lock, carried to protected writes."""
@@ -149,6 +159,18 @@ class RedisSessionStore(SessionStore):
             yield fence
         finally:
             await self.release_session_lock(session_id, token)
+
+    async def delete_if_owner(self, fence: SessionLockFence) -> bool:
+        """Delete the session meta only while we still hold the lock (one Lua round-trip)."""
+        client = await self._ensure()
+        done = await client.eval(
+            _LOCK_DELETE_SCRIPT,
+            2,
+            self._lock_key(fence.session_id),
+            f"session:{fence.session_id}",
+            fence.token,
+        )
+        return bool(done)
 
     async def commit_if_owner(
         self, fence: SessionLockFence, data: dict, ttl_seconds: Optional[int] = None

@@ -39,11 +39,11 @@ from backend.application.execution_contract import (
 from backend.application import budget_lease
 from backend.application.script_authoring.approved_speech import SpeechRejected
 from backend.application.usage_evidence import (
-    CLEANUP_KEY,
     EVIDENCE_TTL,
     UNSTAGED_KEY,
     UsageEvidenceRejected,
     UsageEvidenceUnavailable,
+    holds_evidence,
 )
 from backend.application.usage_evidence.envelope import InvalidIdentity
 
@@ -74,7 +74,7 @@ async def _save(store: Any, session_id: str, meta: dict[str, Any], fence: Any) -
     # Memory storage must preserve the same commit boundary as serialized Redis.
     meta = copy.deepcopy(meta)
     # A meta that holds unresolved usage evidence is its only copy: it outlives the default TTL.
-    keep = {"ttl_seconds": EVIDENCE_TTL} if _holds_evidence(meta) else {}
+    keep = {"ttl_seconds": EVIDENCE_TTL} if holds_evidence(meta) else {}
     if fence is not None:
         if not await store.commit_if_owner(fence, meta, **keep):
             raise HTTPException(status_code=503, detail={"code": "session_busy"})
@@ -82,10 +82,6 @@ async def _save(store: Any, session_id: str, meta: dict[str, Any], fence: Any) -
         await store.set(session_id, meta, **keep)
 
 
-def _holds_evidence(meta: dict[str, Any]) -> bool:
-    from backend.application.budget_lease import UNSTAGED_KEY as LEASE_UNSTAGED_KEY
-
-    return any(meta.get(k) for k in (UNSTAGED_KEY, CLEANUP_KEY, LEASE_UNSTAGED_KEY))
 
 
 async def _stage_usage(
@@ -155,16 +151,37 @@ def _defer_usage(
 async def _drain_soon(d: Any, session_id: str) -> None:
     """After the stop took effect: try to stage the deferred facts, bounded; never raises."""
     sender = getattr(d, "usage_sender", None)
-    if sender is None:
-        return
-    try:
-        await asyncio.wait_for(sender.drain_session(session_id), DEFER_DRAIN_BUDGET)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # incl. TimeoutError: the sweeper converges
+    if sender is not None:
+        await run_with_deadline(sender.drain_session(session_id), DEFER_DRAIN_BUDGET)
+
+
+def _log_detached(task: "asyncio.Future[Any]") -> None:
+    if not task.cancelled() and task.exception() is not None:
         logger.warning(
-            "usage evidence drain after safety stop deferred error_type=%s", type(exc).__name__
+            "usage evidence attempt after a safety stop deferred error_type=%s",
+            type(task.exception()).__name__,
         )
+
+
+async def run_with_deadline(coro: Any, budget: float) -> bool:
+    """Run ``coro`` for at most ``budget`` seconds as a DETACHED task; True if it finished.
+
+    At the deadline the task is cancelled but its cancellation is NEVER awaited (a stalled
+    database cancel / pool release must not delay the caller past the lock lease). Its result
+    is swallowed by a callback. The task only uses fenced paths (session lock + fenced saves),
+    so once the lease is gone it can no longer write.
+    """
+    task = asyncio.ensure_future(coro)
+    task.add_done_callback(_log_detached)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=budget)
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+    if not done:
+        task.cancel()
+        return False
+    return True
 
 
 def _stamp_usage(d: Any, meta: dict[str, Any], staged: list) -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-__all__ = ["SessionLockTimeout", "SessionStore", "StaleOwnerWriteError"]
+__all__ = ["SessionLockTimeout", "SessionStore", "StaleOwnerWriteError", "delete_owned"]
 
 
 class SessionLockTimeout(Exception):
@@ -32,6 +32,21 @@ class StaleOwnerWriteError(Exception):
     def __init__(self, session_id: str) -> None:
         super().__init__(f"lost session lock ownership: {session_id}")
         self.session_id = session_id
+
+
+async def delete_owned(store: object, session_id: str, fence: object) -> bool:
+    """Delete a session meta only while the caller still owns the lock (``fence``).
+
+    A stale holder whose lease expired must never delete what a newer owner persisted.
+    Without a fence (single-process stores) it is a plain delete. Raises
+    ``StaleOwnerWriteError`` when ownership is lost.
+    """
+    deleter = getattr(store, "delete_if_owner", None)
+    if fence is None or deleter is None:
+        return await store.delete(session_id)  # type: ignore[attr-defined]
+    if not await deleter(fence):
+        raise StaleOwnerWriteError(session_id)
+    return True
 
 
 class SessionStore(ABC):

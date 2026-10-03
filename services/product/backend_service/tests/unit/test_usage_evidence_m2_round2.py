@@ -78,7 +78,7 @@ async def test_a_full_outage_keeps_proofs_deferred_facts_and_cleanup_markers_for
     outbox.fail = set()  # recovery converges everything
     await sender.sweep()
     await sender.sweep()
-    assert {k: v["status"] for k, v in outbox.rows.items()}.values() == {"ready"}
+    assert {v["status"] for v in outbox.rows.values()} == {"ready"}
     assert await store.get("rt-C") is None  # clean: the marked meta is deleted
 
 
@@ -204,7 +204,12 @@ async def test_the_stop_path_deletes_only_under_its_fence():
 
 
 def hanging_cancellation(release):
+    calls = []
+
     async def hook():
+        if calls:  # only the FIRST call stalls; later ones (the completion) fail fast
+            raise ConnectionError("still down")
+        calls.append(1)
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
@@ -231,6 +236,12 @@ async def test_emergency_end_returns_at_the_deadline_even_if_cancellation_cleanu
 async def test_the_lease_expiry_attempt_is_a_hard_deadline_too(case_factory, monkeypatch):
     monkeypatch.setattr(ex, "DEFER_DRAIN_BUDGET", 0.05)
     case = await case_with(case_factory)
+    # A Redis-like lock: it EXPIRES instead of excluding forever, so the stalled detached
+    # attempt cannot deadlock the completion that follows (the memory lock would).
+    leased = OwnedStore()
+    leased._store = case.d.store._store
+    case.d.store = leased
+    case.d.usage_evidence, case.d.usage_sender = wire(leased, case.outbox)
     release = asyncio.Event()
     case.outbox.hook = hanging_cancellation(release)
     rig = Rig(case)

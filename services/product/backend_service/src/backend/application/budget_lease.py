@@ -492,23 +492,24 @@ class BudgetLeaseEnforcer:
 
     async def _settle_inline(self, session_id: str, now: datetime) -> None:
         """Bounded first attempt to stage the terminal fact, AFTER the stop took effect."""
-        from backend.api.v1.execution import DEFER_DRAIN_BUDGET, _locked
+        from backend.api.v1.execution import DEFER_DRAIN_BUDGET, _locked, run_with_deadline
 
         async def attempt() -> None:
             async with _locked(self._d.store, session_id) as fence:
-                await settle_unstaged(self._d, session_id, fence)
+                try:
+                    await settle_unstaged(self._d, session_id, fence)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "lease expiry: usage terminal evidence NOT staged session=%s; the "
+                        "completion retries it",
+                        session_id,
+                        exc_info=True,
+                    )
 
-        try:
-            await asyncio.wait_for(attempt(), DEFER_DRAIN_BUDGET)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.error(
-                "lease expiry: usage terminal evidence NOT staged session=%s; the completion "
-                "retries it",
-                session_id,
-                exc_info=True,
-            )
+        # A hard deadline: the caller never awaits the attempt's cancellation.
+        await run_with_deadline(attempt(), DEFER_DRAIN_BUDGET)
         meta = await self._d.store.get(session_id)
         if meta is not None and meta.get(UNSTAGED_KEY):
             self.unstaged_pending[session_id] = (0, now)
