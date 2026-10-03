@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import AsyncIterator, Any
 
 from fastapi import Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
 from backend.api.health import health_ready
@@ -28,12 +29,14 @@ from backend.application.execution_contract import (
     Evidence,
     ExecutionIdentity,
     ExecutionState,
+    RescueCommandRequest,
     apply_evidence,
     apply_rescue,
     command_rejection,
     rescue_rejection,
     start_command_id,
 )
+from backend.application import budget_lease
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
 from .router import router, viewer_auth
@@ -151,11 +154,82 @@ async def record_execution_evidence(
     return {"state": updated.model_dump(mode="json")}
 
 
+class BudgetLeaseRequest(BaseModel):
+    identity: ExecutionIdentity
+    lease_id: str = Field(min_length=1, max_length=255)
+    sequence: int = Field(ge=1)
+    expires_at: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/sessions/{session_id}/execution/budget-lease")
+async def push_budget_lease(
+    session_id: str, body: BudgetLeaseRequest, request: Request, _: None = Depends(admin_auth)
+) -> dict[str, Any]:
+    """P0-FB-018 S6: store the backend-issued lease. Inert (409) unless enforcement is on."""
+    if not budget_lease.is_active():
+        raise HTTPException(status_code=409, detail={"code": "budget_lease_not_enabled"})
+    d = container_from_request(request)
+    async with _locked(d.store, session_id) as fence:
+        meta, state = await _load(d.store, session_id)
+        try:
+            lease, applied = budget_lease.accept_lease(
+                meta,
+                state,
+                body.identity,
+                body.lease_id,
+                body.sequence,
+                body.expires_at,
+                datetime.now(timezone.utc),
+                budget_lease.LeaseSettings.from_env(),
+            )
+        except budget_lease.LeaseRejection as exc:
+            raise HTTPException(status_code=exc.status, detail={"code": exc.code}) from exc
+        if applied:
+            await _save(d.store, session_id, meta, fence)
+    enforcer = getattr(d, "budget_lease_enforcer", None)
+    if applied and enforcer is not None:
+        enforcer.track(session_id)
+    return {"lease": lease, "applied": applied}
+
+
+async def _checked_reason(d: Any, request: Request, session_id: str, command: Any) -> str | None:
+    """FLAG-018-1: ``reason_code`` only on end/emergency_end, only from system:live-credits
+    over the admin plane, and only ``entitlement_exhausted``. Anything else is a typed
+    4xx and an audited rejection. Absent reason_code is exactly today's behavior."""
+    reason = getattr(command, "reason_code", None)
+    if reason is None:
+        return None
+    why = None
+    if command.command not in ("end", "emergency_end"):
+        why, status = "reason_code_not_allowed", 422
+    else:
+        try:
+            await admin_auth(request)
+            admin = True
+        except HTTPException:
+            admin = False
+        if command.actor_id != budget_lease.SYSTEM_ACTOR or not admin:
+            why, status = "reason_code_forbidden", 403
+        elif reason != budget_lease.EXHAUSTED:
+            why, status = "invalid_reason_code", 422
+    if why is not None:
+        await budget_lease.audit_reason_code_rejected(
+            d, session_id, command.actor_id, command.command, why
+        )
+        raise HTTPException(status_code=status, detail={"code": why})
+    return reason
+
+
 @router.post("/sessions/{session_id}/execution/commands")
 async def request_execution_command(
-    session_id: str, command: CommandRequest, request: Request, _: None = Depends(viewer_auth)
+    session_id: str,
+    wire: RescueCommandRequest,
+    request: Request,
+    _: None = Depends(viewer_auth),
 ) -> dict[str, Any]:
     d = container_from_request(request)
+    end_reason = await _checked_reason(d, request, session_id, wire)
+    command = CommandRequest(**wire.model_dump(exclude={"reason_code"}))
     async with _locked(d.store, session_id) as fence:
         meta, state = await _load(d.store, session_id)
         if command.command == "start":
@@ -170,6 +244,8 @@ async def request_execution_command(
                 != command.model_dump()
             ):
                 raise HTTPException(status_code=409, detail={"code": "duplicate_command_conflict"})
+            if original.end_reason != end_reason:
+                raise HTTPException(status_code=409, detail={"code": "duplicate_command_conflict"})
             return {"outcome": original.model_dump(mode="json"), "replayed": True}
         reason = command_rejection(state, command, Capabilities.for_session(meta))
         if reason is None:
@@ -180,7 +256,11 @@ async def request_execution_command(
         now = datetime.now(timezone.utc)
         if reason is not None:
             outcome = CommandOutcome(
-                **command.model_dump(), status="rejected", reason_code=reason, result_at=now
+                **command.model_dump(),
+                status="rejected",
+                reason_code=reason,
+                result_at=now,
+                end_reason=end_reason,
             )
         else:
             state = apply_rescue(state, command.command, command.command_id, now)
@@ -192,6 +272,7 @@ async def request_execution_command(
                 sequence=state.sequence,
                 effect=RESCUE_EFFECTS[command.command],
                 held=state.hold.held,
+                end_reason=end_reason,
             )
             meta["execution_contract"] = state.model_dump(mode="json")
         meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(

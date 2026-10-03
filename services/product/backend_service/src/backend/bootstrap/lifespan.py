@@ -191,6 +191,36 @@ async def _stop_terminal_outcomes(container: BootstrapContainer) -> None:
             pass
 
 
+def _start_budget_lease(container: BootstrapContainer) -> None:
+    """P0-FB-018 S6: expiry watcher, only when LIVE_CREDIT_LEASE_ENFORCEMENT is on.
+
+    Wiring and advertising are one step: ``budget.lease.v1`` appears only once the
+    watcher task exists, and the route answers 409 until then.
+    """
+    from backend.application import budget_lease
+
+    settings = budget_lease.LeaseSettings.from_env()
+    if not settings.enabled:
+        return
+    enforcer = budget_lease.BudgetLeaseEnforcer(container, settings)
+    container.budget_lease_enforcer = enforcer
+    container.budget_lease_task = asyncio.create_task(enforcer.run_loop(), name="budget-lease")
+    budget_lease.set_active(True)
+
+
+async def _stop_budget_lease(container: BootstrapContainer) -> None:
+    from backend.application import budget_lease
+
+    budget_lease.set_active(False)
+    task = getattr(container, "budget_lease_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 async def _connect_authoring(container: BootstrapContainer) -> None:
     """Connect the Change B authoring repositories with bounded retries.
 
@@ -448,6 +478,8 @@ async def _shutdown(container: BootstrapContainer) -> None:
     # close stages so no owned task races the pool close (HIGH-1).
     await drain_authoring()
     stages = (
+        # First: a stopping process must not turn its own teardown into control_lost.
+        ("budget.lease", lambda: _stop_budget_lease(container)),
         ("terminal.shutdown", lambda: _persist_terminal_on_shutdown(container)),
         ("orchestrators", stop_session_pipeline),
         ("coordinator", stop_coordinator),
@@ -477,6 +509,7 @@ def build_lifespan(container: BootstrapContainer):
             await _recover_authoring(container)
             await _start_terminal_outcomes(container)
             _start_reducer_loop(container)
+            _start_budget_lease(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially
             # initialized resource before the boot error propagates.
