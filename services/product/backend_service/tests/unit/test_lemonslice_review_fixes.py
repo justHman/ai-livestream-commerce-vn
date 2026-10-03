@@ -337,3 +337,150 @@ def test_stop_still_terminates_and_disconnects_with_a_corrupt_attempt_count():
     backend.stop(sid)
     assert [e for _, e in rest.controls] == ["terminate"] and room.disconnected
     backend.stop_all()
+
+
+# ---- round 3: real httpx, cancellable keep-alive with a TOTAL deadline -----------------------
+
+
+class _DripServer:
+    """Loopback server: /sessions answers at once, keep-alives drip bytes past any timeout."""
+
+    def __init__(self) -> None:
+        import json as _json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.log: list[tuple[float, str]] = []
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # silence
+                pass
+
+            def do_POST(self):
+                body = _json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
+                event = body.get("event")
+                if event is None:
+                    data = _json.dumps({"session_id": "ls-1"}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                outer.log.append((time.monotonic(), event))
+                if event == "terminate":
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", "1000")
+                self.end_headers()
+                try:
+                    for _ in range(60):  # one byte per 0.1 s: never trips a per-chunk read timeout
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                        time.sleep(0.1)
+                    outer.log.append((time.monotonic(), "reset-complete"))
+                except OSError:
+                    outer.log.append((time.monotonic(), "reset-closed"))  # client aborted
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def test_real_httpx_keepalive_is_cancelled_before_terminate_and_nothing_follows(
+    monkeypatch, caplog
+):
+    import gc
+
+    from backend.application.clients.avatar.lemonslice import LemonSliceRenderBackend
+
+    from .lemonslice_double import FakeRoom
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    srv = _DripServer()
+    room = FakeRoom()
+    room.avatar_joins()
+    backend = LemonSliceRenderBackend(
+        settings(api_base=srv.url, keepalive_s=0.03, request_timeout_s=0.3),
+        room_factory=lambda: room,
+    )
+    try:
+        backend.start(StartOptions())
+        assert until(lambda: any(e == "reset-idle-timeout" for _, e in srv.log))
+        t0 = time.monotonic()
+        backend.stop_all()
+        elapsed = time.monotonic() - t0
+        time.sleep(0.5)  # a drip server notices an aborted client on its next write
+        events = [e for _, e in srv.log]
+        resets = events.count("reset-idle-timeout")
+        assert elapsed < 2.5 and events.count("terminate") == 1
+        assert "reset-complete" not in events  # none survived to completion
+        assert events.count("reset-closed") == resets  # every request was aborted by the client
+        assert [e for e in events if e == "reset-idle-timeout"] and events.index(
+            "terminate"
+        ) > events.index("reset-idle-timeout")
+        assert events[events.index("terminate") :].count("reset-idle-timeout") == 0
+        gc.collect()
+        assert "pending" not in caplog.text.lower()
+    finally:
+        srv.close()
+
+
+def test_control_deadline_setting_is_validated_and_defaults_to_request_timeout():
+    for bad in (0, -1, float("nan"), float("inf"), True, "x"):
+        with pytest.raises(ValueError, match="control_deadline_s"):
+            settings(control_deadline_s=bad)
+    assert settings().control_deadline_s is None
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "nan", "inf", "fake-secret-xyz"])
+def test_env_control_deadline_must_be_positive(monkeypatch, bad):
+    monkeypatch.setenv("LEMONSLICE_CONTROL_DEADLINE_S", bad)
+    with pytest.raises(ValueError, match="LEMONSLICE_CONTROL_DEADLINE_S") as err:
+        AppConfig.from_env()
+    assert "fake-secret-xyz" not in str(err.value)
+
+
+def test_terminate_waits_for_the_cancelled_keepalive_to_finish_aborting():
+    import asyncio
+
+    from backend.application.clients.avatar.lemonslice import LemonSliceRenderBackend
+
+    from .lemonslice_double import FakeRoom
+
+    order: list[str] = []
+
+    async def post(url, headers, body, timeout):
+        event = body.get("event")
+        if event is None:
+            return 200, {"session_id": "ls-1"}
+        if event == "terminate":
+            order.append("terminate")
+            return 200, {}
+        try:
+            await asyncio.sleep(30)  # a request that never completes
+        finally:
+            await asyncio.sleep(0.3)  # slow to abort
+            order.append("keepalive-aborted")
+        return 200, {}
+
+    room = FakeRoom()
+    room.avatar_joins()
+    backend = LemonSliceRenderBackend(
+        settings(keepalive_s=0.03, control_deadline_s=5.0),
+        room_factory=lambda: room,
+        async_http_post=post,
+        http_post=lambda *a: (200, {"session_id": "ls-1"}),
+    )
+    backend.start(StartOptions())
+    time.sleep(0.2)
+    backend.stop_all()
+    assert order == ["keepalive-aborted", "terminate"]

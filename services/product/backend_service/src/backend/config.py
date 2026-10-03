@@ -47,6 +47,13 @@ def _timer_env(name: str, default: str) -> float:
     return value
 
 
+def _positive_timer_env(name: str, default: str) -> float:
+    value = _timer_env(name, default)
+    if value <= 0:
+        raise ValueError(f"{name} must be a finite, positive number")
+    return value
+
+
 def _int_env(name: str, default: str, minimum: int = 0) -> int:
     """Strict integer from the environment; errors name the variable and never echo the value."""
     try:
@@ -559,6 +566,7 @@ class AppConfig:
     lemonslice_send_livekit_session_id: bool = False
     lemonslice_keepalive_s: float = 20.0
     lemonslice_max_session_s: float = 1500.0
+    lemonslice_control_deadline_s: float = 15.0
     avatar_audio_fallback_publish: bool = False
     avatar_render_offset_ms: int = 0
 
@@ -663,6 +671,9 @@ class AppConfig:
             in ("1", "true", "on", "yes"),
             lemonslice_keepalive_s=_timer_env("LEMONSLICE_KEEPALIVE_S", "20"),
             lemonslice_max_session_s=_timer_env("LEMONSLICE_MAX_SESSION_S", "1500"),
+            lemonslice_control_deadline_s=_positive_timer_env(
+                "LEMONSLICE_CONTROL_DEADLINE_S", "15"
+            ),
             avatar_audio_fallback_publish=os.environ.get(
                 "AVATAR_AUDIO_FALLBACK_PUBLISH", "0"
             ).lower()
@@ -844,6 +855,7 @@ class AppConfig:
                 send_livekit_session_id=self.lemonslice_send_livekit_session_id,
                 keepalive_s=self.lemonslice_keepalive_s,
                 max_session_s=self.lemonslice_max_session_s,
+                control_deadline_s=self.lemonslice_control_deadline_s,
             )
         )
 

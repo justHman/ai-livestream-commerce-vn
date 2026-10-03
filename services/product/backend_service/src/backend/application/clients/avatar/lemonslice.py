@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -87,6 +87,9 @@ class LemonSliceSettings:
     idle_timeout_s: int = 60
     ready_timeout_s: float = 30.0
     request_timeout_s: float = 15.0
+    # TOTAL deadline of one control call (keep-alive / terminate); None = request_timeout_s.
+    # httpx timeouts are per connect/read chunk, not total, so this is enforced by cancellation.
+    control_deadline_s: float | None = None
     avatar_identity: str = "lemonslice-avatar-agent"
     runtime_identity: str = "livento-runtime"
     fallback_publish: bool = False
@@ -126,6 +129,14 @@ class LemonSliceSettings:
                 raise ValueError(f"{name} must be a finite, non-negative number")
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be a finite, non-negative number")
+        cd = self.control_deadline_s
+        if cd is not None and (
+            isinstance(cd, bool)
+            or not isinstance(cd, int | float)
+            or not math.isfinite(cd)
+            or cd <= 0
+        ):
+            raise ValueError("control_deadline_s must be a finite, positive number")
         # counts and sizes: real integers only (no float, NaN, bool), with a lower bound
         for name, low in (
             ("idle_timeout_s", 0),
@@ -192,6 +203,11 @@ class _BoundedSet:
 
 
 HttpPost = Callable[[str, dict[str, str], dict[str, Any], float], tuple[int, dict[str, Any]]]
+
+
+AsyncHttpPost = Callable[
+    [str, dict[str, str], dict[str, Any], float], Awaitable[tuple[int, dict[str, Any]]]
+]
 
 
 def _httpx_post(url: str, headers: dict, body: dict, timeout: float) -> tuple[int, dict]:
@@ -316,6 +332,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         *,
         room_factory: Callable[[], Any] | None = None,
         http_post: HttpPost | None = None,
+        async_http_post: AsyncHttpPost | None = None,
         audio_track_factory: Callable[[Any, int], Any] | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
@@ -324,6 +341,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._s = settings
         self._room_factory = room_factory or self._default_room
         self._post = http_post or _httpx_post
+        # Control calls run cancellably on the loop (real httpx.AsyncClient) unless a sync fake
+        # http_post is injected (then they run in a worker thread, guarded by the control lock).
+        self._async_post = async_http_post or (
+            self._httpx_async_post if http_post is None else None
+        )
+        self._client: Any = None
         self._track_factory = audio_track_factory or self._default_track
         self._clock = clock
         self._sessions: dict[str, _Sess] = {}
@@ -385,6 +408,28 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if not t.done():
                 log.error("lemonslice %s task did not finish within its bound", pool)
                 t.cancel()
+
+    async def _httpx_async_post(
+        self, url: str, headers: dict, body: dict, timeout: float
+    ) -> tuple[int, dict]:
+        import httpx
+
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=timeout)
+        r = await self._client.post(url, headers=headers, json=body, timeout=timeout)
+        try:
+            data = r.json()
+        except ValueError:
+            data = {}
+        return r.status_code, data if isinstance(data, dict) else {}
+
+    async def _close_client(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.aclose(), self._s.io_timeout_s)
+            except Exception as exc:
+                log.warning("lemonslice http client close error_type=%s", type(exc).__name__)
 
     def _shutdown_loop(self) -> None:
         with self._loop_lock:
@@ -774,6 +819,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 self._drain("cleanups")
             )  # a stop() parked in a clear is awaited, not cancelled
             self._run(self._drain("reapers"))  # late REST sessions are ended before exit
+            self._run(self._close_client())
         if self._closing:
             log.error(
                 "lemonslice sessions left without confirmed cleanup count=%d", len(self._closing)
@@ -785,6 +831,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             sess.closing = True  # first: no keep-alive may start from here on
             if sess.keepalive is not None:
                 sess.keepalive.cancel()
+                # cancellable: an async keep-alive aborts its connection; await it before terminate
+                await asyncio.wait({sess.keepalive}, timeout=self._deadline() + 1)
             try:
                 await self._interrupt(sess)
             except Exception:
@@ -818,6 +866,16 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         s = self._s
         rel = path.format(session_id=quote(provider_session_id, safe="")).lstrip("/")
         url = f"{s.api_base.rstrip('/')}/{rel}"
+        if self._async_post is not None:
+            if guard is not None and guard.closing and event != "terminate":
+                raise _SessionClosing()
+            status, _ = await asyncio.wait_for(
+                self._async_post(
+                    url, {"X-API-Key": s.lemonslice_api_key}, {"event": event}, s.request_timeout_s
+                ),
+                self._deadline(),  # TOTAL deadline; cancellation aborts the connection
+            )
+            return status
 
         def send() -> tuple[int, dict]:
             return self._post(
@@ -845,6 +903,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         fut.add_done_callback(lambda f: f.cancelled() or f.exception())  # never "not retrieved"
         status, _ = await asyncio.shield(fut)
         return status
+
+    def _deadline(self) -> float:
+        d = self._s.control_deadline_s
+        return self._s.request_timeout_s if d is None else d
 
     async def _terminate_provider(self, sess: _Sess) -> None:
         s = self._s
