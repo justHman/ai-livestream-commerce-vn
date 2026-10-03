@@ -45,6 +45,19 @@ def rescue(monkeypatch):
     budget_lease.set_active(False)
 
 
+@pytest.fixture(autouse=True)
+def stub_cleanup(request, monkeypatch):
+    """Expiry tests inspect the failed state, so cleanup is down unless a test is named
+    ``test_completion_*`` (those run the real /stop completion)."""
+    if request.node.name.startswith("test_completion_"):
+        return
+
+    async def down(d, session_id):
+        raise RuntimeError("cleanup stubbed down")
+
+    monkeypatch.setattr("backend.api.v1.sessions.stop_session_internal", down)
+
+
 def iso(dt):
     return dt.isoformat().replace("+00:00", "Z")
 
@@ -420,7 +433,8 @@ async def test_forced_end_stages_usage_evidence_exactly_once(case_factory):
 
 
 @pytest.mark.asyncio
-async def test_forced_end_with_unavailable_outbox_is_retried_not_lost(case_factory):
+async def test_forced_end_with_unavailable_outbox_still_terminates(case_factory):
+    """Safety stop: a staging failure never blocks the termination (017 M2 follow-up)."""
     from .test_usage_evidence import FakeUsage
 
     case = await live(case_factory)
@@ -428,11 +442,111 @@ async def test_forced_end_with_unavailable_outbox_is_retried_not_lost(case_facto
     rig = Rig(case)
     await rig.lease(10)
     rig.now = T0 + timedelta(seconds=11)
-    assert await rig.enforcer.sweep() == []  # same behaviour as the 016 end path (TODO 017 M2)
-    assert (await rig.phase())[0].phase == "selling"
-    usage.fail = False
     assert await rig.enforcer.sweep() == [case.sid]
-    assert len(usage.staged) == 1
+    st, meta = await rig.phase()
+    assert st.phase == "failed" and meta["usage_terminal_unstaged"] is True
+    assert usage.staged == [] and usage.committed == []
+
+
+# -- P1-1: lease expiry and Hold are independent restrictions ------------------------------
+
+
+async def expired_rig(case_factory):
+    case = await live(case_factory)
+    rig = Rig(case, speaking=True)
+    await rig.lease(10)
+    rig.now = T0 + timedelta(seconds=11)
+    return case, rig
+
+
+def refuses(case):
+    with pytest.raises(SpeechRejected) as caught:
+        case.d.approved_speech.check_start(case.sid)
+    return str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_renewal_clears_only_the_lease_restriction_never_hold(case_factory):
+    case, rig = await expired_rig(case_factory)
+    speech = case.d.approved_speech
+    speech.block(case.sid, "held")  # merchant Hold
+    await rig.enforcer.sweep()  # expiry on top of Hold
+    await rig.lease(60, sequence=2)  # renewal
+    await rig.enforcer.sweep()
+    assert refuses(case) == "held"
+
+
+@pytest.mark.asyncio
+async def test_resume_clears_only_hold_never_the_expired_lease_even_before_a_sweep(case_factory):
+    case, rig = await expired_rig(case_factory)
+    speech = case.d.approved_speech
+    speech.block(case.sid, "held")
+    await rig.enforcer.sweep()
+    speech.block(case.sid, None)  # Resume, no sweep in between
+    assert refuses(case) == "lease_expired"
+
+
+@pytest.mark.asyncio
+async def test_both_restrictions_clear_independently_in_either_order(case_factory):
+    case, rig = await expired_rig(case_factory)
+    speech = case.d.approved_speech
+    speech.block(case.sid, "held")
+    await rig.enforcer.sweep()
+    await rig.lease(60, sequence=2)
+    await rig.enforcer.sweep()
+    speech.block(case.sid, None)
+    speech.check_start(case.sid)  # both cleared: a turn may start
+    # expiry only, then renewal
+    await rig.lease(10, sequence=3)
+    rig.now = T0 + timedelta(seconds=999)
+    await rig.enforcer.sweep()
+    assert refuses(case) == "lease_expired"
+
+
+# -- P1-3: control loss completes cleanup and the durable terminal record ------------------
+
+
+async def terminal_rig(case_factory, fail_with=None):
+    from backend.application.terminal_outcomes import TerminalOutcomes
+
+    from .test_terminal_outcomes import FakePg
+
+    case = await live(case_factory)
+    pg = FakePg(fail_with=fail_with)
+    case.d.terminal_outcomes = TerminalOutcomes(pg)
+    rig = Rig(case)
+    await rig.lease(10)
+    rig.now = T0 + timedelta(seconds=11)
+    return case, rig, pg
+
+
+@pytest.mark.asyncio
+async def test_completion_control_lost_writes_one_terminal_record_and_cleans_up(case_factory):
+    case, rig, pg = await terminal_rig(case_factory)
+    assert await rig.enforcer.sweep() == [case.sid]
+    assert pg.calls == ["persist"] and len(pg.stored) == 1
+    (record,) = pg.stored.values()
+    assert (record.terminal_phase, record.failure_class) == ("failed", "control_lost")
+    assert await case.d.store.get(case.sid) is None  # the /stop completion deleted it
+    assert await rig.enforcer.sweep() == []  # repeated sweeps: nothing more
+    late = await case.client.post(f"/api/v1/sessions/{case.sid}/stop", headers=ADMIN)
+    assert late.status_code in (404, 409)
+    assert pg.calls == ["persist"]
+
+
+@pytest.mark.asyncio
+async def test_completion_retries_after_a_failing_persist_without_a_double_record(case_factory):
+    from backend.application.terminal_outcomes import TerminalPersistError
+
+    case, rig, pg = await terminal_rig(case_factory, fail_with=TerminalPersistError("db"))
+    assert await rig.enforcer.sweep() == [case.sid]  # failed is saved, completion pending
+    meta = await case.d.store.get(case.sid)
+    assert meta["execution_lease_termination"] == "pending" and pg.stored == {}
+    pg.fail_with = None  # the store recovers
+    await rig.enforcer.sweep()  # a later sweep retries the completion
+    assert len(pg.stored) == 1 and await case.d.store.get(case.sid) is None
+    await rig.enforcer.sweep()
+    assert len(pg.stored) == 1
 
 
 @pytest.mark.asyncio

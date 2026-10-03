@@ -403,6 +403,11 @@ async def sessions_stop(
     # header the viewer plane cannot supply) may use it.
     if await use_execution_command(d, session_id) and not _internal_cleanup(request):
         raise HTTPException(status_code=409, detail={"code": "use_execution_command"})
+    return await stop_session_internal(d, session_id)
+
+
+async def stop_session_internal(d: Any, session_id: str) -> dict[str, Any]:
+    """The whole /stop effect, shared with lease-expiry completion. Idempotent."""
     d.approved_speech.cancel(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):

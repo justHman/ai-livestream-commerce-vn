@@ -135,6 +135,10 @@ class ApprovedSpeech:
         # P0-FB-016 start fence: "held", "closing" or "ending". Unlike the
         # epoch it never cancels the current utterance; it refuses new turns.
         self._blocked: dict[str, str] = {}
+        # P0-FB-018: an INDEPENDENT restriction (budget lease expired). It is OR-ed with
+        # ``_blocked`` at check time, so Hold/Resume and lease expiry/renewal never
+        # overwrite each other.
+        self._lease_expired: set[str] = set()
 
     def cancel(self, session_id: str) -> None:
         self._epochs[session_id] = self._epochs.get(session_id, 0) + 1
@@ -145,11 +149,20 @@ class ApprovedSpeech:
         else:
             self._blocked[session_id] = reason
 
+    def lease_gate(self, session_id: str, expired: bool) -> None:
+        if expired:
+            self._lease_expired.add(session_id)
+        else:
+            self._lease_expired.discard(session_id)
+
     def blocked(self, session_id: str) -> str | None:
-        return self._blocked.get(session_id)
+        reason = self._blocked.get(session_id)
+        if reason is None and session_id in self._lease_expired:
+            return "lease_expired"
+        return reason
 
     def check_start(self, session_id: str) -> None:
-        reason = self._blocked.get(session_id)
+        reason = self.blocked(session_id)
         if reason is not None:
             raise SpeechRejected(reason)
 
