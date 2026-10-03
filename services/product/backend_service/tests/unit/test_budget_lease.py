@@ -444,7 +444,9 @@ async def test_forced_end_with_unavailable_outbox_still_terminates(case_factory)
     rig.now = T0 + timedelta(seconds=11)
     assert await rig.enforcer.sweep() == [case.sid]
     st, meta = await rig.phase()
-    assert st.phase == "failed" and meta["usage_terminal_unstaged"] is True
+    assert (
+        st.phase == "failed" and meta["usage_terminal_unstaged"]["evidence"]["kind"] == "terminal"
+    )
     assert usage.staged == [] and usage.committed == []
 
 
@@ -637,3 +639,109 @@ async def test_commands_without_reason_code_work_with_either_token_and_401_other
     await command(case, "resume", headers=ADMIN)  # admin without reason_code == viewer
     for headers in ({}, {"Authorization": "Bearer nope"}):
         await command(case, "hold", status=401, headers=headers, command_id="h2")
+
+
+# -- round 2 ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_completion_keeps_the_session_until_the_unstaged_terminal_fact_is_staged(
+    case_factory,
+):
+    from .test_usage_evidence import FakeUsage
+
+    case, rig, pg = await terminal_rig(case_factory)
+    usage = case.d.usage_evidence = FakeUsage(fail=True)
+    assert await rig.enforcer.sweep() == [case.sid]  # failed is saved regardless
+    meta = await case.d.store.get(case.sid)
+    assert meta["usage_terminal_unstaged"] and pg.stored == {}  # NOT cleaned up yet
+    assert len(rig.enforcer.unstaged_pending) == 1  # backlog / health counter
+    await rig.enforcer.sweep()  # inside the backoff window: no hammering
+    assert usage.staged == [] and await case.d.store.get(case.sid) is not None
+    usage.fail = False
+    rig.now += timedelta(seconds=60)  # injected clock past the backoff
+    await rig.enforcer.sweep()
+    assert len(usage.staged) == 1 and usage.committed == [f"e{usage.staged[0]}"]
+    assert len(pg.stored) == 1 and await case.d.store.get(case.sid) is None
+    assert rig.enforcer.unstaged_pending == {}
+    await rig.enforcer.sweep()
+    assert len(usage.staged) == 1 and len(pg.stored) == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_survives_an_unknown_backend_session_and_persists_one_record(
+    case_factory,
+):
+    import asyncio
+
+    from backend.application.terminal_outcomes import TerminalPersistError
+
+    case, rig, pg = await terminal_rig(case_factory, fail_with=TerminalPersistError("db"))
+    await asyncio.to_thread(case.d.backend.stop, case.sid)  # released before the restart
+    await rig.enforcer.sweep()  # failed saved; completion hits KeyError, then persist fails
+    meta = await case.d.store.get(case.sid)
+    assert meta["execution_lease_termination"] == "pending" and pg.stored == {}
+    pg.fail_with = None
+    await rig.enforcer.sweep()
+    assert len(pg.stored) == 1 and await case.d.store.get(case.sid) is None
+    await rig.enforcer.sweep()
+    assert len(pg.stored) == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_unknown_session_without_a_pending_marker_is_still_404(case_factory):
+    case = await live(case_factory)
+    r = await case.client.post("/api/v1/sessions/nope/stop", headers=ADMIN)
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_failed_hold_restores_only_hold_state_not_the_expired_lease(
+    case_factory, monkeypatch
+):
+    from fastapi import HTTPException
+
+    case, rig = await expired_rig(case_factory)  # speaking: gate holds, no end yet
+    await rig.enforcer.sweep()
+    real = case.d.store.set
+
+    async def refusing(key, value):
+        if value.get("execution_contract", {}).get("hold", {}).get("held"):
+            raise HTTPException(status_code=503, detail={"code": "session_busy"})
+        await real(key, value)
+
+    monkeypatch.setattr(case.d.store, "set", refusing)
+    await command(case, "hold", status=503)
+    monkeypatch.setattr(case.d.store, "set", real)
+    assert case.d.approved_speech.held_reason(case.sid) is None
+    await rig.lease(60, sequence=2)  # renewal
+    await rig.enforcer.sweep()
+    case.d.approved_speech.check_start(case.sid)  # allowed
+
+
+@pytest.mark.asyncio
+async def test_expired_persisted_lease_refuses_the_first_turn_without_any_sweep(case_factory):
+    case = await live(case_factory)
+    rig = Rig(case)
+    await rig.lease(10)
+    speech = case.d.approved_speech
+    speech.set_lease_expiry(case.sid, None)  # a fresh process: nothing in memory
+    rig.now = T0 + timedelta(seconds=11)
+    speech.check_start(case.sid)  # before rehydrate the service knows nothing
+    await rig.make().rehydrate()  # lifespan start, before traffic
+    assert refuses(case) == "lease_expired"  # no sweep ran
+    await rig.lease(60, sequence=2)
+    await rig.enforcer.sweep()  # renewal re-allows
+    speech.check_start(case.sid)
+
+
+@pytest.mark.asyncio
+async def test_the_admission_gate_flips_exactly_at_the_expiry_instant(case_factory):
+    case = await live(case_factory)
+    rig = Rig(case)
+    speech = case.d.approved_speech
+    speech.set_lease_expiry(case.sid, T0 + timedelta(seconds=10))
+    rig.now = T0 + timedelta(seconds=10) - timedelta(microseconds=1)
+    speech.check_start(case.sid)
+    rig.now = T0 + timedelta(seconds=10)
+    assert refuses(case) == "lease_expired"

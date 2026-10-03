@@ -135,10 +135,12 @@ class ApprovedSpeech:
         # P0-FB-016 start fence: "held", "closing" or "ending". Unlike the
         # epoch it never cancels the current utterance; it refuses new turns.
         self._blocked: dict[str, str] = {}
-        # P0-FB-018: an INDEPENDENT restriction (budget lease expired). It is OR-ed with
-        # ``_blocked`` at check time, so Hold/Resume and lease expiry/renewal never
-        # overwrite each other.
-        self._lease_expired: set[str] = set()
+        # P0-FB-018: an INDEPENDENT restriction. The lease expiry is kept per session and
+        # compared with the clock at CHECK time (synchronously, no sweep needed); it is
+        # OR-ed with ``_blocked`` so Hold/Resume and lease expiry/renewal never overwrite
+        # each other.
+        self._lease_expiry: dict[str, datetime] = {}
+        self.lease_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     def cancel(self, session_id: str) -> None:
         self._epochs[session_id] = self._epochs.get(session_id, 0) + 1
@@ -149,16 +151,23 @@ class ApprovedSpeech:
         else:
             self._blocked[session_id] = reason
 
-    def lease_gate(self, session_id: str, expired: bool) -> None:
-        if expired:
-            self._lease_expired.add(session_id)
+    def set_lease_expiry(self, session_id: str, expiry: datetime | None) -> None:
+        """Set (accept / renewal / rehydrate) or clear the session's lease expiry."""
+        if expiry is None:
+            self._lease_expiry.pop(session_id, None)
         else:
-            self._lease_expired.discard(session_id)
+            self._lease_expiry[session_id] = expiry
+
+    def held_reason(self, session_id: str) -> str | None:
+        """Only the Hold/closing/ending fence (never the lease restriction)."""
+        return self._blocked.get(session_id)
 
     def blocked(self, session_id: str) -> str | None:
         reason = self._blocked.get(session_id)
-        if reason is None and session_id in self._lease_expired:
-            return "lease_expired"
+        if reason is None:
+            expiry = self._lease_expiry.get(session_id)
+            if expiry is not None and self.lease_clock() >= expiry:
+                return "lease_expired"
         return reason
 
     def check_start(self, session_id: str) -> None:

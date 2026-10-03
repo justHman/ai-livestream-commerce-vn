@@ -261,7 +261,7 @@ async def _stop_terminal_outcomes(container: BootstrapContainer) -> None:
             pass
 
 
-def _start_budget_lease(container: BootstrapContainer) -> None:
+async def _start_budget_lease(container: BootstrapContainer) -> None:
     """P0-FB-018 S6: expiry watcher, only when LIVE_CREDIT_LEASE_ENFORCEMENT is on.
 
     Wiring and advertising are one step: ``budget.lease.v1`` appears only once the
@@ -274,6 +274,7 @@ def _start_budget_lease(container: BootstrapContainer) -> None:
         return
     enforcer = budget_lease.BudgetLeaseEnforcer(container, settings)
     container.budget_lease_enforcer = enforcer
+    await enforcer.rehydrate()  # persisted expiries gate admission before any traffic
     container.budget_lease_task = asyncio.create_task(enforcer.run_loop(), name="budget-lease")
     budget_lease.set_active(True)
 
@@ -581,7 +582,7 @@ def build_lifespan(container: BootstrapContainer):
             await _start_terminal_outcomes(container)
             await _start_usage_evidence(container)
             _start_reducer_loop(container)
-            _start_budget_lease(container)
+            await _start_budget_lease(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially
             # initialized resource before the boot error propagates.

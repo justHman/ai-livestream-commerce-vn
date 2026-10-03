@@ -198,6 +198,42 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def termination_pending(d: Any, session_id: str) -> bool:
+    """True while a lease-expiry failure still owes cleanup / its terminal record."""
+    meta = await d.store.get(session_id)
+    return bool(meta and meta.get(TERMINATION_KEY) == "pending")
+
+
+async def settle_unstaged(d: Any, session_id: str, fence: Any = None) -> None:
+    """Stage the terminal usage fact that could not be staged when the lease failed.
+
+    Caller holds the session lock. Idempotent by the fact's semantic event id (normal
+    017 stage -> save -> commit path). While it cannot be staged this raises 503 so the
+    session meta (the only record of the fact) is NOT deleted; the watcher retries.
+    """
+    from backend.api.v1.execution import _save, _settle_usage, _stage_usage
+
+    meta = await d.store.get(session_id)
+    fact = (meta or {}).get(UNSTAGED_KEY)
+    if not fact:
+        return
+    meta = copy.deepcopy(meta)
+    meta.pop(UNSTAGED_KEY, None)
+    if getattr(d, "usage_evidence", None) is not None:
+        prior = ExecutionState.model_validate(fact["prior"])
+        evidence = Evidence.model_validate(fact["evidence"])
+        updated = ExecutionState.model_validate(meta["execution_contract"])
+        staged = await _stage_usage(d, meta, prior, updated, evidence)  # raises 503 / 422
+        try:
+            await _save(d.store, session_id, meta, fence)
+        except BaseException as exc:
+            await _settle_usage(d, staged, saved=False, failure=exc)
+            raise
+        await _settle_usage(d, staged, saved=True)
+    else:  # the service was switched off since: nothing can be staged any more
+        await _save(d.store, session_id, meta, fence)
+
+
 class BudgetLeaseEnforcer:
     """Expiry watcher. ``sweep`` is one deterministic pass; ``run_loop`` just repeats it."""
 
@@ -216,6 +252,11 @@ class BudgetLeaseEnforcer:
         self._candidates = candidates or self._default_candidates
         self._is_speaking = is_speaking or (lambda sid: sid in self._d.orchestrators)
         self.tracked: set[str] = set()
+        # Sessions whose terminal usage fact is still unstaged (health / backlog counter),
+        # with the per-session retry backoff (attempts, not-before).
+        self.unstaged_pending: dict[str, tuple[int, datetime]] = {}
+        # The speech gate compares THIS clock with the expiry at check time.
+        container.approved_speech.lease_clock = clock
         self._gate_started: dict[str, datetime] = {}
 
     def track(self, session_id: str) -> None:
@@ -237,6 +278,30 @@ class BudgetLeaseEnforcer:
                 logger.warning("lease candidates unreadable error_type=%s", type(exc).__name__)
         return ids
 
+    async def rehydrate(self) -> None:
+        """At startup, before traffic: load every persisted lease expiry into the speech gate."""
+        ids = self._candidates()
+        if asyncio.iscoroutine(ids):
+            ids = await ids
+        for session_id in ids:
+            try:
+                self._sync_expiry(session_id, await self._d.store.get(session_id))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("lease rehydrate failed session=%s", session_id)
+            self.tracked.add(session_id)
+
+    def _sync_expiry(self, session_id: str, meta: Mapping[str, Any] | None) -> None:
+        expiry = None
+        lease = (meta or {}).get(LEASE_KEY)
+        if lease and meta.get("execution_contract"):
+            try:
+                expiry = parse_expiry(lease["expires_at"])
+            except (LeaseRejection, KeyError, TypeError):
+                expiry = None
+        self._d.approved_speech.set_lease_expiry(session_id, expiry)
+
     async def sweep(self) -> list[str]:
         """Enforce expiry once. Returns the sessions ended by this pass."""
         ids = self._candidates()
@@ -254,7 +319,7 @@ class BudgetLeaseEnforcer:
         return ended
 
     async def _check(self, session_id: str) -> bool:
-        d, speech = self._d, self._d.approved_speech
+        d = self._d
         meta = await d.store.get(session_id)
         if not meta or not meta.get("execution_contract"):
             self._release(session_id)
@@ -267,13 +332,11 @@ class BudgetLeaseEnforcer:
             self._release(session_id)
             return False
         now = self._clock()
+        self._sync_expiry(session_id, meta)  # renewal / rehydrate; the gate itself is clock-based
         if not lease_expired(meta, now):
             self._gate_started.pop(session_id, None)  # renewed inside the wait window
-            speech.lease_gate(session_id, False)  # clears ONLY the lease restriction
             return False
         started = self._gate_started.setdefault(session_id, now)
-        # Re-asserted every pass; independent of Hold/Resume (OR-ed at check time).
-        speech.lease_gate(session_id, True)
         timed_out = (now - started).total_seconds() >= self._settings.safe_boundary_wait
         if self._is_speaking(session_id) and not timed_out:
             return False
@@ -282,7 +345,7 @@ class BudgetLeaseEnforcer:
     def _release(self, session_id: str) -> None:
         self._gate_started.pop(session_id, None)
         self.tracked.discard(session_id)
-        self._d.approved_speech.lease_gate(session_id, False)
+        self._d.approved_speech.set_lease_expiry(session_id, None)
 
     async def _end_control_lost(self, session_id: str, *, hard: bool) -> bool:
         """failed(execution_failed, control_lost), idempotent under the session lock."""
@@ -327,7 +390,12 @@ class BudgetLeaseEnforcer:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                meta[UNSTAGED_KEY] = True  # recorded atomically with the state
+                # Recorded atomically with the state. The session meta is kept (completion
+                # retries the staging) until the fact is staged; see settle_unstaged.
+                meta[UNSTAGED_KEY] = {
+                    "prior": prior_state.model_dump(mode="json"),
+                    "evidence": forced.model_dump(mode="json"),
+                }
                 logger.error(
                     "lease expiry: usage terminal evidence NOT staged session=%s (017 M2 follow-up)",
                     session_id,
@@ -339,6 +407,8 @@ class BudgetLeaseEnforcer:
                 await _settle_usage(d, staged, saved=False, failure=exc)
                 raise
             await _settle_usage(d, staged, saved=True)
+        if UNSTAGED_KEY in meta:
+            self.unstaged_pending[session_id] = (0, now)
         speech.block(session_id, "ending")
         if hard:
             try:
@@ -364,18 +434,31 @@ class BudgetLeaseEnforcer:
         """
         from backend.api.v1.sessions import stop_session_internal
 
+        now = self._clock()
+        attempts, not_before = self.unstaged_pending.get(session_id, (0, now))
+        if now < not_before:
+            return False  # backing off a failing staging; the marker stays durable
         try:
             await stop_session_internal(self._d, session_id)
         except asyncio.CancelledError:
             raise
         except Exception:
+            meta = await self._d.store.get(session_id)
+            if meta and meta.get(UNSTAGED_KEY):
+                attempts += 1
+                self.unstaged_pending[session_id] = (
+                    attempts,
+                    now + timedelta(seconds=min(30.0, 0.5 * (2**attempts))),
+                )
             logger.error(
-                "lease termination completion failed, will retry session=%s",
+                "lease termination completion failed, will retry session=%s unstaged_pending=%d",
                 session_id,
+                len(self.unstaged_pending),
                 exc_info=True,
             )
             self.tracked.add(session_id)
             return False
+        self.unstaged_pending.pop(session_id, None)
         self._release(session_id)
         return True
 

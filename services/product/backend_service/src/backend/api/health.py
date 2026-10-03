@@ -135,6 +135,9 @@ async def health_ready(request: Request) -> JSONResponse:
     usage = getattr(container, "usage_evidence", None)
     if usage is not None:
         resp["usage_evidence"] = await usage.health()  # informational; never gates readiness
+    lease = getattr(container, "budget_lease_enforcer", None)
+    if lease is not None:  # informational: terminal usage facts still waiting to be staged
+        resp["budget_lease_unstaged_terminal_facts"] = len(lease.unstaged_pending)
     pg = container.pg_store
     if pg is not None and getattr(pg, "enabled", False):
         try:

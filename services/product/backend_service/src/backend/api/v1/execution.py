@@ -250,6 +250,9 @@ async def push_budget_lease(
             raise HTTPException(status_code=exc.status, detail={"code": exc.code}) from exc
         if applied:
             await _save(d.store, session_id, meta, fence)
+            d.approved_speech.set_lease_expiry(
+                session_id, budget_lease.parse_expiry(lease["expires_at"])
+            )
     enforcer = getattr(d, "budget_lease_enforcer", None)
     if applied and enforcer is not None:
         enforcer.track(session_id)
@@ -355,7 +358,7 @@ async def request_execution_command(
         # persisted `held` and the block; a failed save restores it.
         hold_fenced = outcome.status == "applied" and command.command == "hold"
         if hold_fenced:
-            prior_block = d.approved_speech.blocked(session_id)
+            prior_block = d.approved_speech.held_reason(session_id)  # Hold-owned state only
             d.approved_speech.block(session_id, "held")
         try:
             await _save(d.store, session_id, meta, fence)

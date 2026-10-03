@@ -428,11 +428,11 @@ async def stop_session_internal(d: Any, session_id: str) -> dict[str, Any]:
     # receipt writes so a late save cannot resurrect deleted session metadata.
     from .execution import _locked
 
-    async with _locked(d.store, session_id):
-        return await _stop_cancelled_session(d, session_id)
+    async with _locked(d.store, session_id) as fence:
+        return await _stop_cancelled_session(d, session_id, fence)
 
 
-async def _stop_cancelled_session(d: Any, session_id: str) -> dict[str, Any]:
+async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) -> dict[str, Any]:
     entry = d.orchestrators.get(session_id)
     if entry is not None:
         orchestrator = entry["orchestrator"]
@@ -440,8 +440,18 @@ async def _stop_cancelled_session(d: Any, session_id: str) -> dict[str, Any]:
     try:
         await asyncio.to_thread(d.backend.stop, session_id)
     except KeyError:
-        if not await terminal_retry_pending(d, session_id):
+        # An unknown / already released backend session is "already cleaned" only when a
+        # previous teardown is mid-flight: 019's retry flag OR the lease termination marker.
+        from backend.application.budget_lease import termination_pending
+
+        if not await terminal_retry_pending(d, session_id) and not await termination_pending(
+            d, session_id
+        ):
             raise HTTPException(status_code=404, detail="unknown session_id")
+    from backend.application.budget_lease import settle_unstaged
+
+    # A terminal usage fact that could not be staged is NOT dropped with the session meta.
+    await settle_unstaged(d, session_id, fence)
     await teardown_then_persist(d, session_id)
     sender = getattr(d, "usage_sender", None)
     if sender is not None:
