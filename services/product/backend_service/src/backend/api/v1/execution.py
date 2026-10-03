@@ -38,7 +38,11 @@ from backend.application.execution_contract import (
 )
 from backend.application import budget_lease
 from backend.application.script_authoring.approved_speech import SpeechRejected
-from backend.application.usage_evidence import UsageEvidenceRejected, UsageEvidenceUnavailable
+from backend.application.usage_evidence import (
+    UNSTAGED_KEY,
+    UsageEvidenceRejected,
+    UsageEvidenceUnavailable,
+)
 
 from .router import router, viewer_auth
 from .auth import admin_auth, viewer_or_admin_auth
@@ -98,6 +102,38 @@ async def _stage_usage(
         raise HTTPException(
             status_code=422, detail={"code": "usage_evidence_invalid_identity"}
         ) from exc
+
+
+async def _stage_or_defer(
+    d: Any,
+    meta: dict[str, Any],
+    prior: ExecutionState,
+    updated: ExecutionState,
+    cause: Any,
+    session_id: str,
+) -> list:
+    """Like ``_stage_usage`` but for SAFETY commands (Emergency End): never refuse the command.
+
+    If the outbox is unavailable the fact is written into the session meta (UNSTAGED_KEY), in
+    the same atomic save as the state, and the sweeper stages it when the outbox recovers.
+    """
+    try:
+        return await _stage_usage(d, meta, prior, updated, cause)
+    except HTTPException as exc:
+        ue = d.usage_evidence
+        if exc.status_code != 503:  # never reportable (invalid identity): do not block a stop
+            logger.error("usage evidence skipped for a safety command session=%s", session_id)
+            return []
+        entries = ue.defer_entries(prior, updated, cause)
+        kept = ((meta.get(UNSTAGED_KEY) or []) + entries)[-64:]
+        meta[UNSTAGED_KEY] = kept
+        ue.unstaged_sessions.add(session_id)
+        logger.error(
+            "usage evidence DEFERRED for a safety command session=%s facts=%d: outbox unavailable",
+            session_id,
+            len(entries),
+        )
+        return []
 
 
 def _stamp_usage(d: Any, meta: dict[str, Any], staged: list) -> None:
@@ -349,7 +385,10 @@ async def request_execution_command(
                 end_reason=end_reason,
             )
             meta["execution_contract"] = state.model_dump(mode="json")
-            staged = await _stage_usage(d, meta, prior_state, state, outcome)
+            if command.command == "emergency_end":
+                staged = await _stage_or_defer(d, meta, prior_state, state, outcome, session_id)
+            else:
+                staged = await _stage_usage(d, meta, prior_state, state, outcome)
         meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(
             mode="json"
         )
@@ -494,7 +533,7 @@ async def _finish_closing_once(d: Any, session_id: str) -> None:
         )
 
 
-CLOSING_ATTEMPTS = 8
+CLOSING_ATTEMPTS = 12  # ~3 min of backoff: outlasts the sweeper's resolve window
 CLOSING_BACKOFF = 0.5  # seconds, doubled per attempt, capped at 30
 
 

@@ -20,7 +20,7 @@ from backend.application.execution_contract import (
 
 from . import envelope
 from .outbox import Staged, StageBlocked, UsageOutbox
-from .sender import COMMITS_KEY, MAX_PENDING_TOKENS, UsageSender
+from .sender import COMMITS_KEY, MAX_PENDING_TOKENS, UNSTAGED_KEY, UsageSender  # noqa: F401
 from .settings import CogsBuffer, CogsSample, UsageEvidenceSettings
 
 __all__ = [
@@ -50,6 +50,8 @@ class UsageEvidence:
         self.settings = settings
         self.cogs = CogsBuffer(settings.cogs_buffer)
         self.rejected_invalid_identity = 0
+        # Sessions whose meta holds deferred (unstaged) evidence; drained by the sender.
+        self.unstaged_sessions: set[str] = set()
 
     @staticmethod
     def _proof(meta: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +123,17 @@ class UsageEvidence:
             logger.warning(
                 "usage evidence ready flip deferred to sweeper error_type=%s", type(exc).__name__
             )
+
+    def defer_entries(
+        self, prior: ExecutionState, updated: ExecutionState, cause: Any
+    ) -> list[dict[str, Any]]:
+        """Serializable facts for a safety command that could not be staged (see UNSTAGED_KEY)."""
+        if isinstance(cause, Evidence):
+            drafts = envelope.derive_from_evidence(prior, updated, cause, self.settings.gates)
+        else:
+            drafts = envelope.derive_from_command(prior, updated, cause, self.settings.gates)
+        identity = envelope.identity_of(updated).model_dump()
+        return [{"identity": identity, "draft": envelope.draft_to_dict(d)} for d in drafts]
 
     @staticmethod
     def stamp(meta: dict[str, Any], staged: Sequence[Staged]) -> None:

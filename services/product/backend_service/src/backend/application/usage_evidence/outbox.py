@@ -406,7 +406,9 @@ class UsageOutbox:
 
         return [dict(r) for r in await self._pg._command(run)]
 
-    async def park(self, event_ids: Sequence[str], *, reason: str, retry_in: float) -> int:
+    async def park(
+        self, event_ids: Sequence[str], *, reason: str, retry_in: float, cap: float = 3600.0
+    ) -> int:
         """Leave staged rows unresolved: back off, count the attempt, record why."""
 
         async def run() -> int:
@@ -414,11 +416,12 @@ class UsageOutbox:
                 result = await conn.execute(
                     "UPDATE usage_evidence_outbox SET attempts = attempts + 1, last_error = $2, "
                     "next_attempt_at = NOW() + make_interval(secs => LEAST($3::float8 * "
-                    "power(2, LEAST(attempts, 16)), 3600)), updated_at = NOW() "
+                    "power(2, LEAST(attempts, 16)), $4::float8)), updated_at = NOW() "
                     "WHERE event_id = ANY($1::text[]) AND status = 'staged'",
                     list(event_ids),
                     reason,
                     float(retry_in),
+                    float(cap),
                 )
                 return int(result.rsplit(" ", 1)[-1])
 
@@ -430,7 +433,9 @@ class UsageOutbox:
         async def run() -> int:
             async with self._pg._require_pool().acquire() as conn:
                 result = await conn.execute(
-                    "DELETE FROM usage_evidence_outbox WHERE event_id IN ("
+                    "DELETE FROM usage_evidence_outbox "
+                    "WHERE status IN ('delivered', 'conflict', 'rejected', 'discarded') "
+                    "AND event_id IN ("
                     "SELECT event_id FROM usage_evidence_outbox "
                     "WHERE status IN ('delivered', 'conflict', 'rejected', 'discarded') "
                     "AND updated_at < NOW() - make_interval(secs => $1) "
