@@ -6,6 +6,7 @@ facts are recorded in the meta with the state and staged later. A database outag
 by an outbox proxy; a clock is never slept on (``SWEEP_AGE`` is ~0, gates are explicit).
 """
 
+# ruff: noqa: F811  (imported pytest fixtures are redefined as test arguments)
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +24,7 @@ from backend.application.usage_evidence import UsageEvidence, UsageEvidenceSetti
 from backend.application.usage_evidence.outbox import UsageOutbox
 
 from unit.test_budget_lease import Rig, T0
-from unit.test_rescue_commands import live, send, state as read_state
+from unit.test_rescue_commands import live, send
 
 from .test_usage_evidence_pg import (  # noqa: F401  (pg is a fixture)
     FAST,
@@ -223,7 +224,9 @@ async def test_emergency_end_with_postgres_down_is_applied_and_its_evidence_appe
     assert len(await usage_rows(pg, case)) == 1  # still exactly one
 
 
-async def test_a_restarted_sender_discovers_deferred_facts_through_list_session_ids(case_factory, pg):
+async def test_a_restarted_sender_discovers_deferred_facts_through_list_session_ids(
+    case_factory, pg
+):
     case = await pg_case(case_factory, pg)
     case.outbox.fail = {"*"}
     await send(case, "emergency_end", "ee-2", tenant_id=TENANT)
@@ -277,7 +280,9 @@ async def test_emergency_end_then_stop_before_recovery_keeps_the_meta_until_it_i
 # -- the 018 forced control_lost path and this mechanism never double-stage -------------------
 
 
-async def test_completion_forced_control_lost_and_the_deferred_drain_stage_one_row(case_factory, pg):
+async def test_completion_forced_control_lost_and_the_deferred_drain_stage_one_row(
+    case_factory, pg
+):
     case = await pg_case(case_factory, pg)
     rig = Rig(case)
     meta = await case.d.store.get(case.sid)
@@ -301,9 +306,7 @@ async def test_completion_forced_control_lost_and_the_deferred_drain_stage_one_r
     await rig.enforcer.sweep()
     await case.d.usage_sender.sweep()
     await rig.enforcer.sweep()
-    assert [(r["kind"], r["status"]) for r in await usage_rows(pg, case)] == [
-        ("terminal", "ready")
-    ]
+    assert [(r["kind"], r["status"]) for r in await usage_rows(pg, case)] == [("terminal", "ready")]
     assert await case.d.store.get(case.sid) is None
 
 
@@ -329,9 +332,7 @@ async def test_park_caps_transient_reasons_at_300s_and_proof_unavailable_at_one_
 
     store.get = flaky
     due = [
-        r
-        for i in (ident_a, ident_b)
-        for r in await outbox.staged_for_session(i.runtime_session_id)
+        r for i in (ident_a, ident_b) for r in await outbox.staged_for_session(i.runtime_session_id)
     ]
     import time as _t
 

@@ -394,7 +394,9 @@ def test_the_purge_outer_delete_repeats_the_status_guard():
         Path(sessions.__file__).parents[2] / "application" / "usage_evidence" / "outbox.py"
     ).read_text("utf-8")
     start = src.index('"DELETE FROM usage_evidence_outbox "')
-    assert "status IN ('delivered', 'conflict', 'rejected', 'discarded') " in src[start : start + 160]
+    assert (
+        "status IN ('delivered', 'conflict', 'rejected', 'discarded') " in src[start : start + 160]
+    )
 
 
 @pytest.mark.asyncio
