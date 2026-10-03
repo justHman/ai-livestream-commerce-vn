@@ -3,6 +3,8 @@
 A fake ``rtc.Room`` plus a fake avatar participant. It records every data-stream
 write, RPC and track event with timestamps, and implements the avatar side of
 ``lk.playback_started`` / ``lk.playback_finished`` / ``lk.clear_buffer``.
+``FakeLemonSlice`` also serves the control endpoint (``controls``: terminate and
+reset-idle-timeout events; ``control_status`` / ``control_raise`` inject failures).
 Modes: ``normal`` | ``video_only`` (the avatar publishes no audio) | ``never``
 (the avatar never joins) | ``silent`` (never sends playback_finished).
 
@@ -218,6 +220,10 @@ class FakeLemonSlice:
         self.room, self.status, self.calls = room, status, []
         self.parked = threading.Event()
         self._hold: threading.Event | None = None
+        self.controls: list[tuple[str, str]] = []  # (url, event) of every control POST
+        self.control_status = 200
+        self.control_raise: BaseException | None = None  # raised by every control POST
+        self.session_id = "ls-1"  # what the REST create call answers
 
     def hold(self) -> threading.Event:
         """Park the next REST call until the returned event is set (REST creation delay)."""
@@ -226,9 +232,14 @@ class FakeLemonSlice:
 
     def __call__(self, url, headers, body, timeout):
         self.calls.append((url, headers, body))
+        if "event" in body:  # control endpoint: terminate | reset-idle-timeout
+            self.controls.append((url, body["event"]))
+            if self.control_raise is not None:
+                raise self.control_raise
+            return self.control_status, {}
         if self._hold is not None and body.get("properties"):
             self.parked.set()
             self._hold.wait(10)
         if self.status < 300 and body.get("properties"):
             self.room.avatar_joins()
-        return self.status, {"session_id": "ls-1"} if self.status < 300 else {}
+        return self.status, {"session_id": self.session_id} if self.status < 300 else {}

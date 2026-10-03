@@ -172,6 +172,13 @@ class AvatarAudioChannel:
         self._by_id: dict[str, _Play] = {}
         self._acks: deque[_Ack] = deque()  # FIFO, one per clear; abandoned ones absorb late acks
         self._clear_seq = 0
+        # Set when the history cap evicted an UNRESOLVED record: an id-less event can no longer be
+        # attributed to the oldest unresolved record (the true owner is gone), so none is credited
+        # until a clear ack resolves everything cancelled before it.
+        self._ambiguous = False
+        # Audio was dispatched and nothing proves it is gone from the avatar. Eviction never
+        # resets it: only a clear ack, or the finish of ALL dispatched audio, does.
+        self._unflushed_audio = False
         self._detached: set[asyncio.Future] = set()
         self.playback_started_at: OrderedDict[str, float] = OrderedDict()
         lp = room.local_participant
@@ -203,6 +210,8 @@ class AvatarAudioChannel:
             rec = self._by_id.get(str(wire_id))
             return rec if rec is not None and ok(rec) else None
         # id-less: only the OLDEST unresolved record may take it; a newer utterance never does
+        if self._ambiguous:
+            return None
         oldest = next((r for r in self._plays if not r.finished), None)
         return oldest if oldest is not None and ok(oldest) else None
 
@@ -232,12 +241,16 @@ class AvatarAudioChannel:
                 ack = self._acks.popleft()
                 if not ack.abandoned:
                     ack.event.set()
+                    self._ambiguous = False  # the avatar flushed everything written before it
+                    self._unflushed_audio = False
                 for rec in [r for r in self._plays if r.cancelled and r.cancel_seq <= ack.seq]:
                     self._retire(rec)
             return "ok"
         rec = self._match(payload, lambda r: r.closed or (r.cancelled and r.wrote))
         if rec is not None:
             rec.finished = True
+            if not self._ambiguous and not any(r.wrote and not r.finished for r in self._plays):
+                self._unflushed_audio = False  # every dispatched utterance provably finished
             if rec.cancelled or rec.timed_out:
                 self._retire(rec)
             else:
@@ -362,6 +375,8 @@ class AvatarAudioChannel:
             self._plays.append(rec)
             self._by_id[utterance_id] = rec
             while len(self._plays) > self._history:  # cap on insert (count, not time)
+                if not self._plays[0].finished:
+                    self._ambiguous = True  # its own events may still arrive, unattributable
                 self._retire(self._plays[0])
             self._utterance = utterance_id
             self._src_rate = src_rate
@@ -401,6 +416,7 @@ class AvatarAudioChannel:
             if self._fenced(epoch) or stream is None or stream.dead:
                 await self._abort()
                 return None
+            self._unflushed_audio = True
             rec = self._by_id.get(utterance_id)
             if rec is not None:
                 rec.wrote = True  # dispatched: the avatar may report started before write returns
@@ -471,6 +487,8 @@ class AvatarAudioChannel:
         """
         budget = self._budget if timeout_s is None else timeout_s
         end = time.monotonic() + budget
+        # Audio may be buffered at the avatar (survives record eviction, unlike the records).
+        needs_clear = self._stream is not None or self._unflushed_audio
         self.epoch += 1  # synchronous: every suspended send is now stale
         self._clear_seq += 1
         seq = self._clear_seq
@@ -492,7 +510,9 @@ class AvatarAudioChannel:
             remaining = max(0.05, end - time.monotonic())
             try:
                 await self._bounded(
-                    self._rpc_and_ack(ack, remaining), "clear", limit=remaining + 0.25
+                    self._rpc_and_ack(ack, remaining, needs_clear),
+                    "clear",
+                    limit=remaining + 0.25,
                 )
             except Exception as exc:  # bounded; interrupt must never raise into the coordinator
                 log.warning("avatar clear_buffer not confirmed error_type=%s", type(exc).__name__)
@@ -526,12 +546,21 @@ class AvatarAudioChannel:
 
         acq.add_done_callback(release_if_won)
 
-    async def _rpc_and_ack(self, ack: _Ack, remaining: float) -> None:
+    async def _rpc_and_ack(self, ack: _Ack, remaining: float, needs_clear: bool = True) -> None:
         start = time.monotonic()
-        await self._room.local_participant.perform_rpc(
-            destination_identity=self._dest,
-            method=RPC_CLEAR_BUFFER,
-            payload=json.dumps({}),
-            response_timeout=remaining,
-        )
+        try:
+            await self._room.local_participant.perform_rpc(
+                destination_identity=self._dest,
+                method=RPC_CLEAR_BUFFER,
+                payload=json.dumps({}),
+                response_timeout=remaining,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Buffered speech may still be playing: fail closed, new audio would overlap it.
+            # Benign only when nothing had been dispatched to the avatar.
+            if needs_clear:
+                self._break(f"clear_buffer RPC failed error_type={type(exc).__name__}")
+            raise
         await asyncio.wait_for(ack.event.wait(), max(0.05, remaining - (time.monotonic() - start)))
