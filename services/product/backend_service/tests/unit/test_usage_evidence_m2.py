@@ -5,6 +5,7 @@ the real ``_stop_cancelled_session``; only the outbox is a controlled double. No
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import time
 import uuid
@@ -20,6 +21,7 @@ from backend.application import budget_lease
 from backend.application.db.memory_session_store import InMemorySessionStore
 from backend.application.execution_contract import RESCUE_SWITCH, ExecutionIdentity
 from backend.application.usage_evidence import UsageEvidence, UsageEvidenceSettings, UsageSender
+from backend.application.usage_evidence import envelope
 from backend.application.usage_evidence.outbox import Staged, StageBlocked
 
 from . import test_approved_speech_active as speech_tests
@@ -83,8 +85,14 @@ class MemOutbox:
 
     async def stage(self, identity, drafts, *, version=1, committed_tokens=frozenset()):
         await self._check("stage")
+        envelope.validate_identity(identity)  # InvalidIdentity: a non-UUID tenant is never stored
         out, writes = [], {}
         for d in drafts:
+            if d.opening_ref is None:  # the closing of an unusable interval: COMMITTED start only
+                opening = self._committed_opening(identity, committed_tokens)
+                if opening is None:
+                    continue  # no stored start to close: nothing truthful to say
+                d = dataclasses.replace(d, opening_ref=opening)
             key = self._key(identity, d)
             eid = hashlib.sha256(repr(key).encode()).hexdigest()[:24]
             row = self.rows.get(eid)
@@ -106,10 +114,25 @@ class MemOutbox:
                 "attempts": 0,
                 "age_seconds": 0.0,
                 "kind": d.kind,
+                "execution_sequence": d.execution_sequence,
             }
             out.append(Staged(eid, "staged", None, True, token, int(version)))
         self.rows.update(writes)  # all or nothing
         return out
+
+    def _committed_opening(self, identity, committed_tokens):
+        k = tuple(getattr(identity, c) for c in self.ID)
+        seqs = [
+            r["execution_sequence"]
+            for r in self.rows.values()
+            if self._idk(r) == k
+            and r["kind"] == "unusable_started"
+            and (
+                r["status"] in ("ready", "delivered", "conflict", "rejected")
+                or (r["status"] == "staged" and r["stage_token"] in committed_tokens)
+            )
+        ]
+        return str(max(seqs)) if seqs else None
 
     def _idk(self, row):
         return tuple(row[k] for k in self.ID)
@@ -198,7 +221,7 @@ class MemOutbox:
         )
 
 
-def wire(store, outbox, **env):
+def wire(store, outbox, clock=None, **env):
     settings = UsageEvidenceSettings.from_env(ENV | env)
     service = UsageEvidence(outbox, settings)
     sender = UsageSender(
@@ -207,6 +230,7 @@ def wire(store, outbox, **env):
         session_store=store,
         session_lock=lambda sid: ex._locked(store, sid),
         unstaged_sessions=service.unstaged_sessions,
+        **({"clock": clock} if clock is not None else {}),
     )
     return service, sender
 
