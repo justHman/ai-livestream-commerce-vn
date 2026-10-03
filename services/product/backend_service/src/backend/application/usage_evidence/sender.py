@@ -72,6 +72,8 @@ def holds_evidence(meta: dict[str, Any] | None) -> bool:
         or meta.get(LEASE_UNSTAGED_KEY)
         or (meta.get(COMMITS_KEY) or {}).get("tokens")
     )
+
+
 _IDENTITY_KEYS = ("tenant_id", "business_session_id", "runtime_session_id", "generation")
 _SWEEP_LIMIT = 100
 _SWEEP_BATCHES = 10

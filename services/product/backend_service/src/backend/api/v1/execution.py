@@ -82,8 +82,6 @@ async def _save(store: Any, session_id: str, meta: dict[str, Any], fence: Any) -
         await store.set(session_id, meta, **keep)
 
 
-
-
 async def _stage_usage(
     d: Any, meta: dict[str, Any], prior: ExecutionState, updated: ExecutionState, cause: Any
 ) -> list:

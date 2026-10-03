@@ -667,7 +667,7 @@ async def test_an_ambiguous_save_failure_keeps_the_staged_rows_for_the_sweeper()
     usage = FakeUsage()
 
     class LostReply(InMemorySessionStore):
-        async def set(self, key, value):
+        async def set(self, key, value, ttl_seconds=None):
             await super().set(key, value)  # the write LANDED ...
             if key == "rt" and value.get("execution_contract", {}).get("sequence") == 1:
                 raise RuntimeError("reply lost")  # ... but the caller sees an error
@@ -685,7 +685,7 @@ async def test_a_definite_fence_refusal_aborts_the_staged_rows():
     usage = FakeUsage()
 
     class Refusing(InMemorySessionStore):
-        async def set(self, key, value):
+        async def set(self, key, value, ttl_seconds=None):
             if value.get("execution_contract", {}).get("sequence") == 1:
                 raise HTTPException(status_code=503, detail={"code": "session_busy"})
             await super().set(key, value)
