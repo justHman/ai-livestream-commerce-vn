@@ -1,0 +1,1 @@
+﻿Progress: P1-1,P1-2,P2-3, fake fidelity done+tested; PG suites 62 pass; integration full run: test_unresolvable_rows_cannot_starve_a_recoverable_one failed once (investigate, maybe sweep_age/park interplay); not pushed to PR branch; PR body not updated; no hosted CI.
