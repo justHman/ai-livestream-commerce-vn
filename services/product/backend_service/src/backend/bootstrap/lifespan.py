@@ -165,6 +165,76 @@ async def _start_terminal_outcomes(container: BootstrapContainer) -> None:
     set_terminal_advertised(True)
 
 
+async def _start_usage_evidence(container: BootstrapContainer) -> None:
+    """P0-FB-017: wire the durable signed usage-evidence outbox and background sender.
+
+    Fail closed: inert unless USAGE_EVIDENCE_ENABLED AND a connected Postgres store, the
+    exact receiver URL and a secret exist. Only then is ``usage.evidence.v1`` advertised;
+    any failure leaves it absent and no row is ever written.
+    """
+    from backend.application.execution_contract import set_usage_evidence_capabilities
+    from backend.application.usage_evidence import UsageEvidence, UsageSender
+    from backend.application.usage_evidence.outbox import UsageOutbox
+    from backend.application.usage_evidence.settings import UsageEvidenceSettings
+
+    settings = UsageEvidenceSettings.from_env()
+    if not settings.enabled:
+        return
+    pg = container.pg_store
+    if not settings.configured or pg is None or not getattr(pg, "enabled", False):
+        logger.error("Usage evidence enabled but not configured; capability stays absent")
+        return
+    try:
+        await pg.apply_usage_evidence_schema()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Usage evidence schema failed error_type=%s; capability stays absent",
+            type(exc).__name__,
+        )
+        return
+    outbox = UsageOutbox(pg, producer_id=settings.producer_id)
+    service = UsageEvidence(outbox, settings)
+    from backend.api.v1.execution import _locked
+
+    sender = UsageSender(
+        outbox,
+        settings,
+        session_store=container.store,
+        session_lock=lambda session_id: _locked(container.store, session_id),
+        cogs=service.cogs,
+    )
+    container.usage_evidence = service
+    container.usage_sender = sender
+    container.usage_evidence_task = asyncio.create_task(sender.run_loop(), name="usage-evidence")
+    set_usage_evidence_capabilities(settings.capabilities())
+
+
+async def _stop_usage_evidence(container: BootstrapContainer) -> None:
+    """Stop after the coordinator and before Postgres closes, with a bounded final flush."""
+    from backend.application.execution_contract import set_usage_evidence_capabilities
+
+    set_usage_evidence_capabilities(())
+    task = getattr(container, "usage_evidence_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    sender = getattr(container, "usage_sender", None)
+    if sender is not None:
+        service = getattr(container, "usage_evidence", None)
+        timeout = service.settings.flush_timeout if service is not None else 5.0
+        try:
+            await sender.flush(timeout)
+        finally:
+            await sender.close()
+    # The service object stays: a request during shutdown still stages durably, and
+    # the rows are delivered by the next process.
+
+
 async def _persist_terminal_on_shutdown(container: BootstrapContainer) -> None:
     """P0-FB-019: before any component stops, give every unterminated P0 execution a
     durable record (or an explicit audited deferral). No-op while disabled."""
@@ -453,6 +523,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
         ("coordinator", stop_coordinator),
         ("reducer", lambda: _stop_reducer_loop(container)),
         ("terminal.outbox", lambda: _stop_terminal_outcomes(container)),
+        ("usage.evidence", lambda: _stop_usage_evidence(container)),
         ("livekit.stop_all", stop_livekit),
         ("render.stop_all", stop_backend),
         ("clients.close", close_clients),
@@ -476,6 +547,7 @@ def build_lifespan(container: BootstrapContainer):
             await _connect_authoring(container)
             await _recover_authoring(container)
             await _start_terminal_outcomes(container)
+            await _start_usage_evidence(container)
             _start_reducer_loop(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially

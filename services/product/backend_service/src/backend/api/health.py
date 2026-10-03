@@ -132,6 +132,9 @@ async def health_ready(request: Request) -> JSONResponse:
         resp["llm_load_error"] = llm_load_error
     if tts_load_error:
         resp["tts_load_error"] = tts_load_error
+    usage = getattr(container, "usage_evidence", None)
+    if usage is not None:
+        resp["usage_evidence"] = await usage.health()  # informational; never gates readiness
     pg = container.pg_store
     if pg is not None and getattr(pg, "enabled", False):
         try:

@@ -1,0 +1,9 @@
+{
+  "note": "Golden signed fixture produced by the Runtime signer (P0-FB-017). The API receiver test verifies it unchanged.",
+  "secret": "golden-fixture-secret-not-a-credential",
+  "timestamp": "1790910245",
+  "event_id": "ue:6ab2202f3cc5ea2bb0fb6f40fa1e2c543eaa49ad29192f55e23d1f6207f19490",
+  "body": "{\"ai_session_id\":\"rt-session-1\",\"event_id\":\"ue:6ab2202f3cc5ea2bb0fb6f40fa1e2c543eaa49ad29192f55e23d1f6207f19490\",\"event_type\":\"ai.execution.usage_evidence\",\"event_version\":\"1.0\",\"payload\":{\"execution_contract_version\":\"p0.execution.v1\",\"execution_sequence\":9,\"health_source\":\"runtime\",\"identity\":{\"business_session_id\":\"biz-session-1\",\"generation\":\"g1\",\"runtime_session_id\":\"rt-session-1\",\"tenant_id\":\"11111111-2222-4333-8444-555555555555\"},\"interval\":{\"boundary\":\"point\",\"interval_id\":\"ui:8e3c723f4159ba3bc0bd04689da43680bf2d8b463c81403cdc0a8661b145d9af\",\"interval_kind\":\"terminal\"},\"kind\":\"terminal\",\"occurred_at\":\"2026-10-02T03:04:05.678901Z\",\"phase\":\"ended\",\"producer_id\":\"runtime\",\"reason_code\":\"normal_end\",\"schema\":\"p0.usage_evidence.v1\",\"usage_sequence\":3},\"request_id\":\"start:4c1aeeb6a062740ba761c878ed4ae2e12e1354ce0c8001e8d61d18dd1cbc0b4c\",\"stream_id\":\"biz-session-1\",\"tenant_id\":\"11111111-2222-4333-8444-555555555555\",\"timestamp\":\"2026-10-02T03:04:05.678901Z\"}",
+  "body_sha256": "05766d539d68bf2e18a73071b00328e75c7c34c911362345e106bef03f98946b",
+  "signature": "df598b19bcddb731436a2a92ba43e9c6ff483154df1463a86cdb925e629f333a"
+}
