@@ -79,6 +79,13 @@ class BootstrapContainer:
     budget_lease_enforcer: Any = None
     budget_lease_task: Any = None  # asyncio.Task or None (set by the lifespan)
 
+    # -- P0-FB-017 durable signed usage evidence (default OFF, fail closed) --
+    # UsageEvidence or None. Set by the lifespan only when USAGE_EVIDENCE_ENABLED and a
+    # connected Postgres store, the exact receiver URL and a secret all exist.
+    usage_evidence: Any = None
+    usage_sender: Any = None  # UsageSender or None
+    usage_evidence_task: Any = None  # asyncio.Task or None (set by the lifespan)
+
     # -- Canonical multi-platform event ingress (multi-platform change) --
     # PlatformEventIngestionService or None. When None, the /events endpoint
     # returns 501 (legacy test containers that do not wire it).

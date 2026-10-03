@@ -396,3 +396,58 @@ def test_runtime_computes_no_credits_balances_or_billable_time():
             if isinstance(name, str) and any(b in name.lower() for b in banned):
                 offenders.append((path.name, name))
     assert offenders == []
+
+
+# -- P0-FB-017 interplay: the forced end stages usage evidence like the 016 end path ------
+
+
+@pytest.mark.asyncio
+async def test_forced_end_stages_usage_evidence_exactly_once(case_factory):
+    from .test_usage_evidence import FakeUsage
+
+    case = await live(case_factory)
+    usage = case.d.usage_evidence = FakeUsage()
+    rig = Rig(case)
+    await rig.lease(10)
+    rig.now = T0 + timedelta(seconds=11)
+    assert await rig.enforcer.sweep() == [case.sid]
+    st, meta = await rig.phase()
+    assert st.phase == "failed" and len(usage.staged) == 1
+    assert usage.staged == [st.sequence] and usage.committed == [f"e{st.sequence}"]
+    assert meta["usage_evidence_commits"]["tokens"] == {f"t{st.sequence}": 1}
+    assert await rig.enforcer.sweep() == []  # idempotent: nothing staged twice
+    assert len(usage.staged) == 1
+
+
+@pytest.mark.asyncio
+async def test_forced_end_with_unavailable_outbox_is_retried_not_lost(case_factory):
+    from .test_usage_evidence import FakeUsage
+
+    case = await live(case_factory)
+    usage = case.d.usage_evidence = FakeUsage(fail=True)
+    rig = Rig(case)
+    await rig.lease(10)
+    rig.now = T0 + timedelta(seconds=11)
+    assert await rig.enforcer.sweep() == []  # same behaviour as the 016 end path (TODO 017 M2)
+    assert (await rig.phase())[0].phase == "selling"
+    usage.fail = False
+    assert await rig.enforcer.sweep() == [case.sid]
+    assert len(usage.staged) == 1
+
+
+@pytest.mark.asyncio
+async def test_reason_code_end_stages_command_evidence_once(case_factory, direct_say_guard_off):
+    from .test_usage_evidence import FakeUsage
+
+    class Usage(FakeUsage):
+        calls: list = []
+
+        async def stage_command(self, prior, updated, outcome, meta):
+            self.calls.append((outcome.command, outcome.end_reason))
+            return []
+
+    case = await live(case_factory)
+    usage = case.d.usage_evidence = Usage()
+    usage.calls = []
+    await command(case, "end", actor_id=SYSTEM, reason_code="entitlement_exhausted")
+    assert usage.calls == [("end", "entitlement_exhausted")]

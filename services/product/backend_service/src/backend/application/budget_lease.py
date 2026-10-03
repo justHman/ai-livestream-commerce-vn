@@ -23,6 +23,7 @@ session ends anyway. This is never ``entitlement_exhausted``: entitlement is unk
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 from dataclasses import dataclass
@@ -280,7 +281,14 @@ class BudgetLeaseEnforcer:
 
     async def _end_control_lost(self, session_id: str, *, hard: bool) -> bool:
         """failed(execution_failed, control_lost), idempotent under the session lock."""
-        from backend.api.v1.execution import _load, _locked, _save, hard_cancel
+        from backend.api.v1.execution import (
+            _load,
+            _locked,
+            _save,
+            _settle_usage,
+            _stage_usage,
+            hard_cancel,
+        )
 
         d, speech = self._d, self._d.approved_speech
         async with _locked(d.store, session_id) as fence:
@@ -288,24 +296,32 @@ class BudgetLeaseEnforcer:
                 meta, state = await _load(d.store, session_id)
             except Exception:
                 return False
+            meta = copy.deepcopy(meta)  # a failed attempt must not leak into a shared store object
             now = self._clock()
             # Re-check under the lock: renewed, already ending or already terminal => no-op.
             if state.phase not in _ENFORCED_PHASES or not lease_expired(meta, now):
                 return False
-            state = apply_evidence(
-                state,
-                Evidence(
-                    **state.model_dump(include=set(ExecutionIdentity.model_fields)),
-                    sequence=state.sequence + 1,
-                    kind="terminal",
-                    phase="failed",
-                    reason_code="execution_failed",
-                    occurred_at=now,
-                ),
+            prior_state = state
+            forced = Evidence(
+                **state.model_dump(include=set(ExecutionIdentity.model_fields)),
+                sequence=state.sequence + 1,
+                kind="terminal",
+                phase="failed",
+                reason_code="execution_failed",
+                occurred_at=now,
             )
+            state = apply_evidence(state, forced)
             meta["execution_contract"] = state.model_dump(mode="json")
             meta[FAILURE_KEY] = "control_lost"
-            await _save(d.store, session_id, meta, fence)
+            # 017: same stage -> save -> ready/abort sequence as the 016 end path.
+            # TODO(017 M2): must never be refused by a staging failure; here identical to 016.
+            staged = await _stage_usage(d, meta, prior_state, state, forced)
+            try:
+                await _save(d.store, session_id, meta, fence)
+            except BaseException as exc:
+                await _settle_usage(d, staged, saved=False, failure=exc)
+                raise
+            await _settle_usage(d, staged, saved=True)
         speech.block(session_id, "ending")
         if hard:
             try:

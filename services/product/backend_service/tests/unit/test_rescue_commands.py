@@ -557,3 +557,65 @@ async def test_empty_admin_token_never_accepts_cleanup_header(case_factory, env)
         )
         assert r.status_code == 409, r.text
     assert await case.d.store.get(case.sid) is not None
+
+
+class FlakyUsage:
+    """Usage-evidence double whose staging of the closing->ending evidence fails N times."""
+
+    def __init__(self, failures):
+        self.failures = failures
+        self.calls = 0
+
+    async def stage_command(self, prior, updated, outcome, meta):
+        return []
+
+    async def stage_evidence(self, prior, updated, ev, meta):
+        self.calls += 1
+        if self.calls <= self.failures:
+            from backend.application.usage_evidence import UsageEvidenceUnavailable
+
+            raise UsageEvidenceUnavailable("outbox down")
+        return []
+
+    @staticmethod
+    def stamp(meta, staged):
+        return None
+
+    async def commit(self, staged):
+        return None
+
+    async def abort(self, staged):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_closing_completion_retries_a_transient_staging_failure_until_it_succeeds(
+    case_factory, rescue, monkeypatch
+):
+    monkeypatch.setattr(execution_module, "CLOSING_BACKOFF", 0.01)
+    case = await live(case_factory)
+    case.d.usage_evidence = FlakyUsage(failures=2)
+    applied(await send(case, "end"), "end")
+    await until(lambda: any(e.get("type") == "execution.phase_changed" for e in case.events))
+    assert (await state(case))["state"]["phase"] == "ending"  # End did not stay in closing
+    assert case.d.usage_evidence.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_end_restarts_a_parked_closing_completion(
+    case_factory, rescue, monkeypatch
+):
+    monkeypatch.setattr(execution_module, "CLOSING_BACKOFF", 0.01)
+    monkeypatch.setattr(execution_module, "CLOSING_ATTEMPTS", 2)
+    case = await live(case_factory)
+    usage = case.d.usage_evidence = FlakyUsage(failures=10**6)
+    applied(await send(case, "end"), "end")
+    await until(lambda: execution_module._closing_tasks.get(case.sid) is None)
+    meta = await case.d.store.get(case.sid)
+    assert meta["execution_contract"]["phase"] == "closing"  # parked after the bounded attempts
+    usage.failures = 0  # the outbox recovers
+    replay = await send(case, "end")  # the same command id, replayed
+    assert replay["replayed"] is True
+    await until(lambda: any(e.get("type") == "execution.phase_changed" for e in case.events))
+    meta = await case.d.store.get(case.sid)
+    assert meta["execution_contract"]["phase"] == "ending"
