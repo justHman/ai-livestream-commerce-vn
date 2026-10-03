@@ -45,6 +45,11 @@ MAX_UNSTAGED = 64
 # sweeper deletes it once the session has no unresolved row left.
 CLEANUP_KEY = "usage_evidence_cleanup"
 TRANSIENT_PARK_CAP = 300.0  # seconds; proof_unavailable keeps the 1 h cap
+# A session meta that holds unresolved evidence (deferred facts, cleanup marker, commit proof of
+# a staged row) is the only copy of it: it outlives the 24 h default and is refreshed on every
+# sweep/retry; an ERROR is logged when it is within EXPIRY_WARN seconds of expiring anyway.
+EVIDENCE_TTL = 7 * 24 * 3600
+EXPIRY_WARN = 6 * 3600
 _IDENTITY_KEYS = ("tenant_id", "business_session_id", "runtime_session_id", "generation")
 _SWEEP_LIMIT = 100
 _SWEEP_BATCHES = 10
@@ -227,7 +232,7 @@ class UsageSender:
         rows = await self._outbox.staged_for_session(runtime_session_id)
         remaining = 0
         for row in sorted(rows, key=lambda r: int(r["staged_version"])):
-            outcome = await self._resolve_one(row)
+            outcome = await self._resolve_one(row, fence)
             if outcome not in ("ready", "discarded"):
                 remaining += 1
                 logger.error(
@@ -261,17 +266,50 @@ class UsageSender:
         done = 0
         for sid in list(self._unstaged):
             try:
-                async with self._session_lock(sid) as fence:
-                    done += await self._drain_one(sid, fence)
-                    meta = await self._store.get(sid)
-                    await self._cleanup_if_done(sid, meta)  # Stop kept it: delete once clean
-                    if meta is None or not (meta.get(UNSTAGED_KEY) or meta.get(CLEANUP_KEY)):
-                        self._unstaged.discard(sid)
+                done += await self.drain_session(sid)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("usage unstaged drain deferred error_type=%s", type(exc).__name__)
         return done
+
+    async def drain_session(self, sid: str) -> int:
+        """Drain one session's deferred facts under its lock (sweeper, and a bounded attempt
+        right after a safety command). Keeps the meta alive while anything is unresolved."""
+        async with self._session_lock(sid) as fence:
+            done = await self._drain_one(sid, fence)
+            await self._cleanup_if_done(sid, await self._store.get(sid))  # Stop kept it
+            meta = await self._store.get(sid)
+            if meta is None or not (meta.get(UNSTAGED_KEY) or meta.get(CLEANUP_KEY)):
+                self._unstaged.discard(sid)
+            else:
+                await self._keep_alive(sid, meta, fence)
+            return done
+
+    async def _keep_alive(self, sid: str, meta: dict[str, Any], fence: Any) -> None:
+        """Refresh the TTL of a meta that holds unresolved evidence (caller holds the lock)."""
+        ttl_left = getattr(self._store, "ttl_remaining", None)
+        if ttl_left is not None:
+            try:
+                left = await ttl_left(sid)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                left = None
+            if left is not None and 0 <= left < EXPIRY_WARN:
+                logger.error(
+                    "session with UNRESOLVED usage evidence is %.0f s from expiry session=%s",
+                    left,
+                    sid,
+                )
+        await self._write(sid, meta, fence)
+
+    async def _write(self, sid: str, meta: dict[str, Any], fence: Any) -> None:
+        if fence is not None and hasattr(self._store, "commit_if_owner"):
+            if not await self._store.commit_if_owner(fence, meta, ttl_seconds=EVIDENCE_TTL):
+                raise RuntimeError("session lock lost while writing usage evidence meta")
+        else:
+            await self._store.set(sid, meta, ttl_seconds=EVIDENCE_TTL)
 
     async def _drain_one(self, sid: str, fence: Any) -> int:
         """Stage one session's deferred facts. Runs under the session lock.
@@ -302,8 +340,9 @@ class UsageSender:
                 raise
             except Exception as exc:  # StageBlocked, database down: keep it for the next pass
                 logger.warning("usage unstaged fact kept error_type=%s", type(exc).__name__)
-                remaining.append(entry)
-                continue
+                # Order: a later fact never overtakes an earlier one that could not be staged.
+                remaining.extend(entries[entries.index(entry) :])
+                break
             for st in staged:
                 if st.token:
                     version += 1
@@ -316,11 +355,7 @@ class UsageSender:
             meta[UNSTAGED_KEY] = remaining
         else:
             meta.pop(UNSTAGED_KEY, None)
-        if fence is not None and hasattr(self._store, "commit_if_owner"):
-            if not await self._store.commit_if_owner(fence, meta):
-                raise RuntimeError("session lock lost while recording deferred usage evidence")
-        else:
-            await self._store.set(sid, meta)
+        await self._write(sid, meta, fence)
         try:
             await self._outbox.mark_ready(flips)
         except asyncio.CancelledError:
@@ -354,8 +389,8 @@ class UsageSender:
             if time.monotonic() >= deadline:
                 break  # the remaining rows stay due and are picked up by the next sweep
             try:
-                async with self._session_lock(row["runtime_session_id"]):
-                    outcome = await self._resolve_one(row)
+                async with self._session_lock(row["runtime_session_id"]) as fence:
+                    outcome = await self._resolve_one(row, fence)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # lock busy/timeout, store or DB hiccup
@@ -375,7 +410,7 @@ class UsageSender:
             await self._outbox.park(ids, reason=reason, retry_in=self._settings.sweep_age, cap=cap)
         return done
 
-    async def _resolve_one(self, row: dict[str, Any]) -> str | None:
+    async def _resolve_one(self, row: dict[str, Any], fence: Any = None) -> str | None:
         """Decide one row. Runs under the session lock. Returns an outcome or a park reason."""
         eid, token = row["event_id"], row["stage_token"]
         fresh = await self._outbox.get_staged(eid)
@@ -392,6 +427,15 @@ class UsageSender:
         except Exception as exc:
             logger.warning("usage sweep unreadable error_type=%s", type(exc).__name__)
             return "session_unreadable"  # transient: retried with the short backoff cap
+        if meta is not None:  # unresolved row: its commit proof must not expire
+            try:
+                await self._keep_alive(row["runtime_session_id"], meta, fence)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "usage evidence ttl refresh failed error_type=%s", type(exc).__name__
+                )
         if state is None and reason is None:
             reason = "session_missing"
         elif state is not None and (

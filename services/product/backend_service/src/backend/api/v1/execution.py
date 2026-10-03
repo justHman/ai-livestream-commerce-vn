@@ -39,10 +39,13 @@ from backend.application.execution_contract import (
 from backend.application import budget_lease
 from backend.application.script_authoring.approved_speech import SpeechRejected
 from backend.application.usage_evidence import (
+    CLEANUP_KEY,
+    EVIDENCE_TTL,
     UNSTAGED_KEY,
     UsageEvidenceRejected,
     UsageEvidenceUnavailable,
 )
+from backend.application.usage_evidence.envelope import InvalidIdentity
 
 from .router import router, viewer_auth
 from .auth import admin_auth, viewer_or_admin_auth
@@ -70,11 +73,19 @@ async def _locked(store: Any, session_id: str) -> AsyncIterator[Any]:
 async def _save(store: Any, session_id: str, meta: dict[str, Any], fence: Any) -> None:
     # Memory storage must preserve the same commit boundary as serialized Redis.
     meta = copy.deepcopy(meta)
+    # A meta that holds unresolved usage evidence is its only copy: it outlives the default TTL.
+    keep = {"ttl_seconds": EVIDENCE_TTL} if _holds_evidence(meta) else {}
     if fence is not None:
-        if not await store.commit_if_owner(fence, meta):
+        if not await store.commit_if_owner(fence, meta, **keep):
             raise HTTPException(status_code=503, detail={"code": "session_busy"})
     else:
-        await store.set(session_id, meta)
+        await store.set(session_id, meta, **keep)
+
+
+def _holds_evidence(meta: dict[str, Any]) -> bool:
+    from backend.application.budget_lease import UNSTAGED_KEY as LEASE_UNSTAGED_KEY
+
+    return any(meta.get(k) for k in (UNSTAGED_KEY, CLEANUP_KEY, LEASE_UNSTAGED_KEY))
 
 
 async def _stage_usage(
@@ -89,6 +100,10 @@ async def _stage_usage(
     ue = getattr(d, "usage_evidence", None)
     if ue is None:
         return []
+    if meta.get(UNSTAGED_KEY):
+        # Order: earlier facts of this session are still deferred; a later one must not be
+        # staged (and numbered) ahead of them. The caller retries once the sweeper drained.
+        raise HTTPException(status_code=503, detail={"code": "usage_evidence_unavailable"})
     try:
         if isinstance(cause, Evidence):
             staged = await ue.stage_evidence(prior, updated, cause, meta)
@@ -104,36 +119,52 @@ async def _stage_usage(
         ) from exc
 
 
-async def _stage_or_defer(
+DEFER_DRAIN_BUDGET = 3.0  # seconds: the bounded staging attempt after a safety stop took effect
+
+
+def _defer_usage(
     d: Any,
     meta: dict[str, Any],
     prior: ExecutionState,
     updated: ExecutionState,
     cause: Any,
     session_id: str,
-) -> list:
-    """Like ``_stage_usage`` but for SAFETY commands (Emergency End): never refuse the command.
+) -> None:
+    """SAFETY commands (Emergency End): the stop never depends on a database call.
 
-    If the outbox is unavailable the fact is written into the session meta (UNSTAGED_KEY), in
-    the same atomic save as the state, and the sweeper stages it when the outbox recovers.
+    The facts are only RECORDED in the session meta, which the caller saves in the same
+    atomic write as the state. They are staged afterwards (``_drain_soon`` on a bounded budget,
+    then the sweeper), so a slow or dead outbox can neither refuse nor delay the stop.
     """
+    ue = getattr(d, "usage_evidence", None)
+    if ue is None:
+        return
     try:
-        return await _stage_usage(d, meta, prior, updated, cause)
-    except HTTPException as exc:
-        ue = d.usage_evidence
-        if exc.status_code != 503:  # never reportable (invalid identity): do not block a stop
-            logger.error("usage evidence skipped for a safety command session=%s", session_id)
-            return []
         entries = ue.defer_entries(prior, updated, cause)
-        kept = ((meta.get(UNSTAGED_KEY) or []) + entries)[-64:]
-        meta[UNSTAGED_KEY] = kept
-        ue.unstaged_sessions.add(session_id)
-        logger.error(
-            "usage evidence DEFERRED for a safety command session=%s facts=%d: outbox unavailable",
-            session_id,
-            len(entries),
+    except InvalidIdentity:  # never reportable: do not block a stop
+        logger.error("usage evidence skipped for a safety command session=%s", session_id)
+        return
+    if not entries:
+        return
+    # A later fact is appended: the drain stages them strictly in this order.
+    # (Unreachable cap today: Emergency End applies once and emits one fact.)
+    meta[UNSTAGED_KEY] = ((meta.get(UNSTAGED_KEY) or []) + entries)[-64:]
+    ue.unstaged_sessions.add(session_id)
+
+
+async def _drain_soon(d: Any, session_id: str) -> None:
+    """After the stop took effect: try to stage the deferred facts, bounded; never raises."""
+    sender = getattr(d, "usage_sender", None)
+    if sender is None:
+        return
+    try:
+        await asyncio.wait_for(sender.drain_session(session_id), DEFER_DRAIN_BUDGET)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # incl. TimeoutError: the sweeper converges
+        logger.warning(
+            "usage evidence drain after safety stop deferred error_type=%s", type(exc).__name__
         )
-        return []
 
 
 def _stamp_usage(d: Any, meta: dict[str, Any], staged: list) -> None:
@@ -393,7 +424,7 @@ async def request_execution_command(
             )
             meta["execution_contract"] = state.model_dump(mode="json")
             if command.command == "emergency_end":
-                staged = await _stage_or_defer(d, meta, prior_state, state, outcome, session_id)
+                _defer_usage(d, meta, prior_state, state, outcome, session_id)
             else:
                 staged = await _stage_usage(d, meta, prior_state, state, outcome)
         meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(
@@ -424,6 +455,8 @@ async def request_execution_command(
             )
         if command.command == "end":
             _start_closing(d, session_id)
+        if command.command == "emergency_end" and UNSTAGED_KEY in meta:
+            await _drain_soon(d, session_id)
     return {"outcome": outcome.model_dump(mode="json"), "replayed": False}
 
 

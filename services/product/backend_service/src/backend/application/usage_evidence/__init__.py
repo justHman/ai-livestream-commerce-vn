@@ -20,7 +20,14 @@ from backend.application.execution_contract import (
 
 from . import envelope
 from .outbox import Staged, StageBlocked, UsageOutbox
-from .sender import COMMITS_KEY, MAX_PENDING_TOKENS, UNSTAGED_KEY, UsageSender  # noqa: F401
+from .sender import (  # noqa: F401
+    CLEANUP_KEY,
+    COMMITS_KEY,
+    EVIDENCE_TTL,
+    MAX_PENDING_TOKENS,
+    UNSTAGED_KEY,
+    UsageSender,
+)
 from .settings import CogsBuffer, CogsSample, UsageEvidenceSettings
 
 __all__ = [
@@ -132,6 +139,9 @@ class UsageEvidence:
             drafts = envelope.derive_from_evidence(prior, updated, cause, self.settings.gates)
         else:
             drafts = envelope.derive_from_command(prior, updated, cause, self.settings.gates)
+        envelope.validate_identity(
+            envelope.identity_of(updated)
+        )  # InvalidIdentity: never reportable
         identity = envelope.identity_of(updated).model_dump()
         return [{"identity": identity, "draft": envelope.draft_to_dict(d)} for d in drafts]
 

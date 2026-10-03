@@ -74,6 +74,12 @@ class RedisSessionStore(SessionStore):
         client = await self._ensure()
         await client.set(f"session:{session_id}", json.dumps(data), ex=ttl_seconds or self._ttl)
 
+    async def ttl_remaining(self, session_id: str) -> Optional[float]:
+        """Seconds until the session meta expires (None: unknown or no expiry)."""
+        client = await self._ensure()
+        left = await client.ttl(f"session:{session_id}")
+        return float(left) if left is not None and left >= 0 else None
+
     async def delete(self, session_id: str) -> bool:
         client = await self._ensure()
         return (await client.delete(f"session:{session_id}")) > 0

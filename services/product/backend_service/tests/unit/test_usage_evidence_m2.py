@@ -46,69 +46,113 @@ def rescue(monkeypatch):
 
 
 class MemOutbox:
-    """Just enough of UsageOutbox: semantic ids, staged -> ready, parking, failure switches."""
+    """UsageOutbox semantics copied from the Postgres implementation (outbox.py):
+
+    - one row per semantic key (identity, kind, interval); an existing STAGED row is never
+      replaced (StageBlocked), a DISCARDED tombstone is revived with a fresh token, any other
+      status is final and returned unchanged (token None); a call is all-or-nothing;
+    - ``mark_ready`` matches the attempt token on staged/discarded rows (a discarded one is
+      revived) and numbers rows per identity in ``staged_version`` order, but a row waits while
+      another still-staged row of the identity has a LOWER ``staged_version``.
+    """
+
+    ID = ("tenant_id", "business_session_id", "runtime_session_id", "generation")
 
     def __init__(self):
         self.rows: dict[str, dict] = {}
+        self.counters: dict[tuple, int] = {}
         self.fail: set[str] = set()
         self.parks: list[tuple[list[str], str, float]] = []
-        self.next_seq = 0
         self.tokens = 0
+        self.hook = None  # awaited at the start of stage/still_staged (slow-database tests)
 
-    def _check(self, name):
+    async def _check(self, name):
+        if self.hook is not None and name in ("stage", "still_staged"):
+            await self.hook()
         if name in self.fail or "*" in self.fail:
             raise ConnectionError("postgres is down")
 
-    async def stage(self, identity, drafts, *, version=0, committed_tokens=frozenset()):
-        self._check("stage")
-        out = []
+    @staticmethod
+    def _key(identity, d):
+        return (
+            *(getattr(identity, k) for k in MemOutbox.ID),
+            d.kind,
+            d.interval_kind,
+            d.opening_ref,
+        )
+
+    async def stage(self, identity, drafts, *, version=1, committed_tokens=frozenset()):
+        await self._check("stage")
+        out, writes = [], {}
         for d in drafts:
-            eid = hashlib.sha256(
-                f"{identity.runtime_session_id}|{d.kind}|{d.interval_kind}|{d.boundary}|"
-                f"{d.opening_ref}|{d.applied_sequence}".encode()
-            ).hexdigest()[:24]
+            key = self._key(identity, d)
+            eid = hashlib.sha256(repr(key).encode()).hexdigest()[:24]
             row = self.rows.get(eid)
-            if row is not None and row["status"] != "staged":
-                out.append(Staged(eid, row["status"], row["seq"], False))
+            if row is not None and row["status"] not in ("staged", "discarded"):
+                out.append(Staged(eid, row["status"], row["usage_sequence"], False))
                 continue
-            if row is not None and row["stage_token"] in committed_tokens:
-                raise StageBlocked("committed attempt unresolved")
+            if row is not None and row["status"] == "staged":
+                raise StageBlocked(eid)
             self.tokens += 1
             token = f"tok{self.tokens}"
-            self.rows[eid] = {
+            writes[eid] = {
                 "event_id": eid,
                 **identity.model_dump(),
                 "applied_sequence": d.applied_sequence,
                 "status": "staged",
                 "stage_token": token,
-                "staged_version": version,
-                "seq": None,
+                "staged_version": int(version),
+                "usage_sequence": None,
                 "attempts": 0,
                 "age_seconds": 0.0,
                 "kind": d.kind,
             }
-            out.append(Staged(eid, "staged", None, True, token, version))
+            out.append(Staged(eid, "staged", None, True, token, int(version)))
+        self.rows.update(writes)  # all or nothing
         return out
 
+    def _idk(self, row):
+        return tuple(row[k] for k in self.ID)
+
     async def mark_ready(self, items):
-        self._check("mark_ready")
-        done = []
-        for eid, token in items:
-            row = self.rows.get(eid)
-            if row and row["status"] == "staged" and row["stage_token"] == token:
-                self.next_seq += 1
-                row.update(status="ready", seq=self.next_seq)
-                done.append(eid)
-        return done
+        await self._check("mark_ready")
+        tokens = dict(items)
+        rows = [
+            r
+            for r in self.rows.values()
+            if r["event_id"] in tokens
+            and r["status"] in ("staged", "discarded")
+            and r["stage_token"] == tokens[r["event_id"]]
+        ]
+        flipped = []
+        horizon = {}
+        for r in rows:
+            k = self._idk(r)
+            others = [
+                o["staged_version"]
+                for o in self.rows.values()
+                if self._idk(o) == k
+                and o["status"] == "staged"
+                and o["event_id"] not in {x["event_id"] for x in rows}
+            ]
+            horizon[k] = min(others) if others else None
+        for r in sorted(rows, key=lambda r: (r["staged_version"], r["event_id"])):
+            k = self._idk(r)
+            if horizon[k] is not None and r["staged_version"] > horizon[k]:
+                continue  # an earlier unresolved row must be numbered first
+            self.counters[k] = self.counters.get(k, 0) + 1
+            r.update(status="ready", usage_sequence=self.counters[k])
+            flipped.append(r["event_id"])
+        return flipped
 
     async def still_staged(self, tokens):
-        self._check("still_staged")
+        await self._check("still_staged")
         return {r["stage_token"] for r in self.rows.values() if r["status"] == "staged"} & set(
             tokens
         )
 
     async def staged_for_session(self, sid):
-        self._check("staged_for_session")
+        await self._check("staged_for_session")
         return [
             dict(r)
             for r in sorted(self.rows.values(), key=lambda r: r["staged_version"])
@@ -116,19 +160,23 @@ class MemOutbox:
         ]
 
     async def get_staged(self, eid):
-        self._check("get_staged")
+        await self._check("get_staged")
         row = self.rows.get(eid)
         return dict(row) if row else None
 
     async def release(self, items, *, delete):
-        self._check("release")
+        await self._check("release")
+        n = 0
         for eid, token in items:
-            if self.rows[eid]["stage_token"] == token:
-                self.rows[eid]["status"] = "discarded"
-        return len(items)
+            row = self.rows[eid]
+            if row["stage_token"] == token and row["status"] == "staged":
+                row["status"] = "discarded"
+                row["usage_sequence"] = None
+                n += 1
+        return n
 
     async def stale_staged(self, age, limit=100):
-        self._check("stale_staged")
+        await self._check("stale_staged")
         return [dict(r) for r in self.rows.values() if r["status"] == "staged"][:limit]
 
     async def park(self, ids, *, reason, retry_in, cap=3600.0):
@@ -143,6 +191,11 @@ class MemOutbox:
 
     def statuses(self):
         return sorted((r["kind"], r["status"]) for r in self.rows.values())
+
+    def numbered(self):
+        return sorted(
+            (r["usage_sequence"], r["kind"]) for r in self.rows.values() if r["status"] == "ready"
+        )
 
 
 def wire(store, outbox, **env):
