@@ -24,6 +24,7 @@ async def fixture():
         usage_evidence=None,
         usage_sender=None,
         approved_speech=SimpleNamespace(
+            set_runtime_failed=lambda *args: None,
             block=lambda sid, reason: blocked.update({sid: reason}),
             cancel=cancelled.append,
             set_lease_expiry=lambda *args: None,
@@ -253,3 +254,75 @@ async def test_real_completion_retains_ordered_usage_facts_during_outage(monkeyp
     await d.usage_sender.sweep()
     assert await d.store.get("A") is None and await d.store.get("B") is None
     assert len(outbox.rows) == 2 and all(row["status"] == "ready" for row in outbox.rows.values())
+
+
+async def test_revision_change_after_accepted_fault_cannot_erase_failed_outcome():
+    d, service, owners, blocked, cancelled, invalidated = await fixture()
+    service.fail("A", RuntimeError(), "initial")
+    owners["A"].generation_token += "rescue-interrupt"
+    await service._record("A", service.pending["A"])
+    assert (await d.store.get("A"))["execution_contract"]["phase"] == "failed"
+
+
+async def test_hanging_discovery_row_cannot_block_tracked_cleanup(monkeypatch):
+    d, service, owners, blocked, cancelled, invalidated = await fixture()
+    service.fail("A", RuntimeError(), "initial")
+    await service._record("A", service.pending.pop("A"))
+    original = d.store.get
+    completions = []
+    release = asyncio.Event()
+    tasks = set()
+
+    async def get(sid):
+        if sid == "B":
+            tasks.add(asyncio.current_task())
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                raise
+        return await original(sid)
+
+    async def complete(sid):
+        completions.append(sid)
+        return False
+
+    monkeypatch.setattr(d.store, "get", get)
+    monkeypatch.setattr(service.completion, "_complete", complete)
+    try:
+        await asyncio.wait_for(service.sweep(), 0.2)
+        assert completions == ["A"]
+        assert service.health()["attempt_errors"] == 1
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def test_runtime_failure_fence_survives_resume_and_closing_admission():
+    import pytest
+    from backend.application.script_authoring.approved_speech import ApprovedSpeech, SpeechRejected
+
+    speech = ApprovedSpeech(None, lambda: None)
+    speech.set_runtime_failed("A", True)
+    speech.block("A", None)  # Resume cannot erase independent fatal fence.
+    with pytest.raises(SpeechRejected, match="runtime_failed"):
+        speech.check_start("A")
+    # Director/closing speech bypasses check_start; dispatch checks the fatal fence too.
+    candidate = SimpleNamespace(envelope=SimpleNamespace(session_id="A"), epoch=0)
+    with pytest.raises(SpeechRejected, match="runtime_failed"):
+        speech.check_live(candidate, lambda: True)
+
+
+def test_classification_uses_typed_faults_and_never_provider_text():
+    from backend.application.runtime_failures import failure_class
+    from backend.application.script_authoring.generation.batch import TransportError, ContentFailure
+    from backend.application.publishing.datastream import AvatarStreamError
+
+    assert (
+        failure_class(TransportError("safety_failed media_failed token=hidden")) == "runtime_error"
+    )
+    assert failure_class(ContentFailure("hidden")) == "safety_failed"
+    assert failure_class(AvatarStreamError("hidden")) == "media_failed"
+    wrapped = RuntimeError("hidden")
+    wrapped.__cause__ = AvatarStreamError("hidden")
+    assert failure_class(wrapped) == "media_failed"
