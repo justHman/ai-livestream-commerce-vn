@@ -79,6 +79,10 @@ class BootstrapContainer:
     budget_lease_enforcer: Any = None
     budget_lease_task: Any = None  # asyncio.Task or None (set by the lifespan)
 
+    # P0-FB-020 R1 (default off): no capability or readiness gate.
+    runtime_failures: Any = None
+    runtime_failures_task: Any = None
+
     # -- P0-FB-017 durable signed usage evidence (default OFF, fail closed) --
     # UsageEvidence or None. Set by the lifespan only when USAGE_EVIDENCE_ENABLED and a
     # connected Postgres store, the exact receiver URL and a secret all exist.

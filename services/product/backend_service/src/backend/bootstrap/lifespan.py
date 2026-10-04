@@ -293,6 +293,41 @@ async def _stop_budget_lease(container: BootstrapContainer) -> None:
             pass
 
 
+async def _start_runtime_failures(container: BootstrapContainer) -> None:
+    from backend.application.runtime_failures import FailureSettings, RuntimeFailures
+
+    settings = FailureSettings.from_env()
+    if not settings.enabled:
+        return
+    if container.coordinator is None or container.approved_speech is None:
+        raise RuntimeError("runtime failure detection requires coordinator and speech gate")
+    if container.terminal_outcomes is None:
+        raise RuntimeError("runtime failure detection requires durable terminal outcomes")
+    service = RuntimeFailures(container, settings)
+    container.runtime_failures = service
+    container.coordinator.runtime_failures = service
+    container.runtime_failures_task = asyncio.create_task(
+        service.run_loop(), name="runtime-failures"
+    )
+
+
+async def _stop_runtime_failures(container: BootstrapContainer) -> None:
+    service = getattr(container, "runtime_failures", None)
+    if service is None:
+        return
+    container.coordinator.runtime_failures = None
+    task = container.runtime_failures_task
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    for flush in tuple(service.flush_tasks):
+        flush.cancel()
+    await asyncio.gather(*tuple(service.flush_tasks), return_exceptions=True)
+
+
 async def _connect_authoring(container: BootstrapContainer) -> None:
     """Connect the Change B authoring repositories with bounded retries.
 
@@ -550,6 +585,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
     # close stages so no owned task races the pool close (HIGH-1).
     await drain_authoring()
     stages = (
+        ("runtime.failures", lambda: _stop_runtime_failures(container)),
         # First: a stopping process must not turn its own teardown into control_lost.
         ("budget.lease", lambda: _stop_budget_lease(container)),
         ("terminal.shutdown", lambda: _persist_terminal_on_shutdown(container)),
@@ -584,6 +620,7 @@ def build_lifespan(container: BootstrapContainer):
             await _start_usage_evidence(container)
             _start_reducer_loop(container)
             await _start_budget_lease(container)
+            await _start_runtime_failures(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially
             # initialized resource before the boot error propagates.

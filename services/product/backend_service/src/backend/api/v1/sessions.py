@@ -86,6 +86,9 @@ async def sessions_start(
             meta["p0_rescue"] = True
     await d.store.set(result.session_id, meta)
     await register_terminal_execution(d, result.session_id, meta)
+    failures = getattr(d, "runtime_failures", None)
+    if failures is not None:
+        failures.register(result.session_id, meta)
     if d.livekit_publishers is not None:
         d.livekit_publishers.activate(result.session_id)
     if d.pg_store is not None and getattr(d.pg_store, "enabled", False):

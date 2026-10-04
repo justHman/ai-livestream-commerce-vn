@@ -677,6 +677,9 @@ async def _request_start(d, session_id, meta, state, command, fence, request):
     ).model_dump(mode="json")
     await _save(d.store, session_id, meta, fence)
     # This synchronous effect queues preparation, never waits for speech/media.
+    failures = getattr(d, "runtime_failures", None)
+    if failures is not None:
+        failures.register(session_id, meta)
     # Existing stop() removes the coordinator; activation checks it again.
     try:
         d.coordinator.activate_approved(session_id, opening, envelope)

@@ -136,6 +136,9 @@ async def health_ready(request: Request) -> JSONResponse:
     if usage is not None:
         resp["usage_evidence"] = await usage.health()  # informational; never gates readiness
     lease = getattr(container, "budget_lease_enforcer", None)
+    failures = getattr(container, "runtime_failures", None)
+    if failures is not None:
+        resp["runtime_failures"] = failures.health()  # informational only
     if lease is not None:  # informational: terminal usage facts still waiting to be staged
         resp["budget_lease_unstaged_terminal_facts"] = len(lease.unstaged_pending)
         resp["budget_lease_unstageable_terminal_facts"] = len(lease.unstageable)
