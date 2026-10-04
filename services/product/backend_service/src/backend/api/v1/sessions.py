@@ -9,6 +9,7 @@ Dependencies come from the typed ``BootstrapContainer`` via
 from __future__ import annotations
 
 import asyncio
+import copy
 from datetime import datetime, timezone
 import os
 
@@ -18,7 +19,7 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
-from backend.application.db.session_store import SessionLockTimeout
+from backend.application.db.session_store import SessionLockTimeout, delete_owned
 from backend.application.execution_contract import rescue_switch_on
 from backend.application.script_authoring.approved_speech import SpeechRejected
 
@@ -456,17 +457,60 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
     await teardown_then_persist(d, session_id)
     if await keep_for_unstaged(d, session_id, fence):
         return {"ok": True, "stopped": session_id}
-    await delete_session_meta(d, session_id)
+    await delete_session_meta(d, session_id, fence)
     return {"ok": True, "stopped": session_id}
 
 
-async def delete_session_meta(d: Any, session_id: str) -> None:
+async def _update_meta(d: Any, session_id: str, **fields: Any) -> None:
+    """Merge fields into the session meta under the session lock (re-read inside it).
+
+    EVERY writer of the session meta holds the session lock: the usage-evidence commit proof,
+    the deferred facts and the execution state live in that one record, and an unlocked
+    read-modify-write could rewind them.
+    """
+    from .execution import _load_meta, _locked, _save
+
+    async with _locked(d.store, session_id) as fence:
+        meta = await _load_meta(d.store, session_id)
+        meta.update(fields)
+        await _save(d.store, session_id, meta, fence)
+
+
+async def delete_session_meta(d: Any, session_id: str, fence: Any = None) -> None:
+    from backend.application.usage_evidence.sender import CLEANUP_KEY
+
+    from .execution import _save
+
     sender = getattr(d, "usage_sender", None)
+    keep_meta = False
     if sender is not None:
         # The session meta holds the only commit proof of unresolved usage evidence rows:
-        # resolve them (we hold the session lock) BEFORE it is deleted.
-        await sender.resolve_session(session_id)
-    await d.store.delete(session_id)
+        # resolve them (we hold the session lock) BEFORE it is deleted. If any remain (or
+        # the outbox errors) KEEP the meta; the sweeper deletes it once they are resolved.
+        try:
+            unresolved = await sender.resolve_session(session_id, fence)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("usage evidence resolve failed at stop session=%s", session_id)
+            unresolved = 1
+        if unresolved:
+            try:
+                meta = copy.deepcopy(await d.store.get(session_id))
+                if meta is not None:
+                    meta[CLEANUP_KEY] = True
+                    await _save(d.store, session_id, meta, fence)
+                    sender.track(session_id)
+            except Exception:
+                logger.error("usage evidence cleanup marker failed session=%s", session_id)
+            logger.error(
+                "session meta KEPT at stop: %d unresolved usage evidence rows session=%s",
+                unresolved,
+                session_id,
+            )
+            keep_meta = True
+    if not keep_meta:
+        await delete_owned(d.store, session_id, fence)  # never under a lost lease
     if d.hub is not None:
         await d.hub.emit(session_id, {"type": "session.stopped"})
     # P4 hardening: drop the per-session lock entry to prevent memory leak.
@@ -530,9 +574,7 @@ async def sessions_attach(
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if binding is not None:
-        meta = dict(await d.store.get(session_id) or {})
-        meta["platform_event_binding"] = binding
-        await d.store.set(session_id, meta)
+        await _update_meta(d, session_id, platform_event_binding=binding)
     # M3: freeze the product snapshot into the runtime DB (fire-and-forget).
     # The snapshot stores the entity document JSON so persisted rows and the
     # accepted snapshot share one shape (id/name/price columns + full payload).
@@ -658,9 +700,7 @@ async def sessions_plan_create(
     body = req or router.PlanCreateReq()
     plan = router.build_run_plan(body.products, persona=body.persona)
     plan_dict = plan.model_dump()
-    meta = dict(meta)
-    meta["run_plan"] = plan_dict
-    await d.store.set(session_id, meta)
+    await _update_meta(d, session_id, run_plan=plan_dict)
 
     # If director runtime has the session, attach plan + reset cursor.
     if d.director is not None and d.director.has(session_id):
@@ -897,9 +937,7 @@ async def sessions_bind_script_set(
         if entry is not None:
             entries.append(entry)
     snapshot = build_binding_snapshot(script_set_id=req.script_set_id, entries=entries)
-    meta = dict(meta)
-    meta["script_set_binding"] = snapshot.as_dict()
-    await d.store.set(session_id, meta)
+    await _update_meta(d, session_id, script_set_binding=snapshot.as_dict())
     d.approved_speech.rebind(session_id)
     if d.coordinator is not None and d.coordinator.has(session_id):
         await d.coordinator.interrupt(session_id)

@@ -436,14 +436,7 @@ class BudgetLeaseEnforcer:
 
     async def _end_control_lost(self, session_id: str, *, hard: bool) -> bool:
         """failed(execution_failed, control_lost), idempotent under the session lock."""
-        from backend.api.v1.execution import (
-            _load,
-            _locked,
-            _save,
-            _settle_usage,
-            _stage_usage,
-            hard_cancel,
-        )
+        from backend.api.v1.execution import _load, _locked, _save, hard_cancel
 
         d, speech = self._d, self._d.approved_speech
         async with _locked(d.store, session_id) as fence:
@@ -469,39 +462,23 @@ class BudgetLeaseEnforcer:
             meta["execution_contract"] = state.model_dump(mode="json")
             meta[FAILURE_KEY] = "control_lost"
             meta[TERMINATION_KEY] = "pending"
-            # 017: same stage -> save -> commit/abort sequence as the other terminal paths.
-            # A SAFETY stop: a staging failure must never block the termination.
-            staged: list = []
-            try:
-                staged = await _stage_usage(d, meta, prior_state, state, forced)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Recorded atomically with the state. The session meta is kept (completion
-                # retries the staging) until the fact is staged; see settle_unstaged.
+            # 017: a SAFETY stop never depends on a database call. The terminal fact is only
+            # RECORDED here, in the same atomic save as the state; staging runs after the stop
+            # took effect (bounded, see _settle_inline) and is retried by the completion.
+            if getattr(d, "usage_evidence", None) is not None:
                 meta[UNSTAGED_KEY] = {
                     "prior": prior_state.model_dump(mode="json"),
                     "evidence": forced.model_dump(mode="json"),
                 }
-                logger.error(
-                    "lease expiry: usage terminal evidence NOT staged session=%s (017 M2 follow-up)",
-                    session_id,
-                    exc_info=True,
-                )
-            try:
-                await _save(d.store, session_id, meta, fence)
-            except BaseException as exc:
-                await _settle_usage(d, staged, saved=False, failure=exc)
-                raise
-            await _settle_usage(d, staged, saved=True)
-        if UNSTAGED_KEY in meta:
-            self.unstaged_pending[session_id] = (0, now)
+            await _save(d.store, session_id, meta, fence)
         speech.block(session_id, "ending")
         if hard:
             try:
                 await hard_cancel(d, session_id)
             except Exception:
                 logger.warning("lease expiry provider flush failed session=%s", session_id)
+        if UNSTAGED_KEY in meta:
+            await self._settle_inline(session_id, now)
         logger.warning(
             "audit_event=budget_lease_expired failure_class=control_lost session=%s", session_id
         )
@@ -513,20 +490,67 @@ class BudgetLeaseEnforcer:
         await self._complete(session_id)
         return True
 
+    async def _settle_inline(self, session_id: str, now: datetime) -> None:
+        """Bounded first attempt to stage the terminal fact, AFTER the stop took effect."""
+        from backend.api.v1.execution import DEFER_DRAIN_BUDGET, _locked, run_with_deadline
+
+        async def attempt() -> None:
+            async with _locked(self._d.store, session_id) as fence:
+                try:
+                    await settle_unstaged(self._d, session_id, fence)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "lease expiry: usage terminal evidence NOT staged session=%s; the "
+                        "completion retries it",
+                        session_id,
+                        exc_info=True,
+                    )
+
+        # A hard deadline: the caller never awaits the attempt's cancellation.
+        await run_with_deadline(attempt(), DEFER_DRAIN_BUDGET)
+        meta = await self._d.store.get(session_id)
+        if meta is not None and meta.get(UNSTAGED_KEY):
+            self.unstaged_pending[session_id] = (0, now)
+
     async def _complete(self, session_id: str) -> bool:
         """Cleanup + durable terminal record through the SAME path as POST /stop.
 
         Idempotent: success deletes the session meta (nothing left to retry); a failure
         leaves the ``pending`` marker so the next sweep retries. Never raises.
         """
+        from backend.api.v1.execution import DEFER_DRAIN_BUDGET, run_with_deadline
         from backend.api.v1.sessions import stop_session_internal
 
         now = self._clock()
         attempts, not_before = self.unstaged_pending.get(session_id, (0, now))
         if now < not_before:
             return False  # backing off a failing staging; the marker stays durable
+        completed = False
+        failure = None
+
+        async def attempt() -> None:
+            nonlocal completed, failure
+            try:
+                await stop_session_internal(self._d, session_id)
+                completed = True
+            except Exception as exc:
+                failure = exc
+
         try:
-            await stop_session_internal(self._d, session_id)
+            await run_with_deadline(attempt(), DEFER_DRAIN_BUDGET)
+            if failure is not None:
+                raise failure
+            if not completed:
+                # Completion can encounter the same hanging DB as the first staging
+                # attempt. Keep its durable pending marker and advance to other leases.
+                self.tracked.add(session_id)
+                self.unstaged_pending[session_id] = (
+                    attempts + 1,
+                    now + timedelta(seconds=min(30.0, 0.5 * (2 ** min(attempts + 1, 6)))),
+                )
+                return False
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -562,19 +586,29 @@ class BudgetLeaseEnforcer:
 
     async def _settle(self, session_id: str) -> bool:
         """Cleanup and the 019 record are done: retry ONLY the unstaged usage fact."""
-        from backend.api.v1.execution import _locked
+        from backend.api.v1.execution import DEFER_DRAIN_BUDGET, _locked, run_with_deadline
         from backend.api.v1.sessions import delete_session_meta
 
         now = self._clock()
         if now < self.unstaged_pending.get(session_id, (0, now))[1]:
             return False
-        async with _locked(self._d.store, session_id) as fence:
-            if await keep_for_unstaged(self._d, session_id, fence):
-                meta = await self._d.store.get(session_id)
-                if meta is not None:
-                    self._note_unstaged(session_id, meta, now)
-                return False
-            await delete_session_meta(self._d, session_id)
+        settled = False
+
+        async def attempt() -> None:
+            nonlocal settled
+            # The detached attempt owns its lock, including release/cancellation.
+            async with _locked(self._d.store, session_id) as fence:
+                if await keep_for_unstaged(self._d, session_id, fence):
+                    return
+                await delete_session_meta(self._d, session_id, fence)
+                settled = True
+
+        await run_with_deadline(attempt(), DEFER_DRAIN_BUDGET)
+        if not settled:
+            meta = await self._d.store.get(session_id)
+            if meta is not None and meta.get(UNSTAGED_KEY):
+                self._note_unstaged(session_id, meta, now)
+            return False
         self.unstaged_pending.pop(session_id, None)
         self.unstageable.discard(session_id)
         self._release(session_id)

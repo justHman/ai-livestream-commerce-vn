@@ -204,6 +204,7 @@ async def _start_usage_evidence(container: BootstrapContainer) -> None:
         session_store=container.store,
         session_lock=lambda session_id: _locked(container.store, session_id),
         cogs=service.cogs,
+        unstaged_sessions=service.unstaged_sessions,
     )
     container.usage_evidence = service
     container.usage_sender = sender

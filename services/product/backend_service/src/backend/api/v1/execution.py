@@ -38,7 +38,14 @@ from backend.application.execution_contract import (
 )
 from backend.application import budget_lease
 from backend.application.script_authoring.approved_speech import SpeechRejected
-from backend.application.usage_evidence import UsageEvidenceRejected, UsageEvidenceUnavailable
+from backend.application.usage_evidence import (
+    EVIDENCE_TTL,
+    UNSTAGED_KEY,
+    UsageEvidenceRejected,
+    UsageEvidenceUnavailable,
+    holds_evidence,
+)
+from backend.application.usage_evidence.envelope import InvalidIdentity
 
 from .router import router, viewer_auth
 from .auth import admin_auth, viewer_or_admin_auth
@@ -66,11 +73,13 @@ async def _locked(store: Any, session_id: str) -> AsyncIterator[Any]:
 async def _save(store: Any, session_id: str, meta: dict[str, Any], fence: Any) -> None:
     # Memory storage must preserve the same commit boundary as serialized Redis.
     meta = copy.deepcopy(meta)
+    # A meta that holds unresolved usage evidence is its only copy: it outlives the default TTL.
+    keep = {"ttl_seconds": EVIDENCE_TTL} if holds_evidence(meta) else {}
     if fence is not None:
-        if not await store.commit_if_owner(fence, meta):
+        if not await store.commit_if_owner(fence, meta, **keep):
             raise HTTPException(status_code=503, detail={"code": "session_busy"})
     else:
-        await store.set(session_id, meta)
+        await store.set(session_id, meta, **keep)
 
 
 async def _stage_usage(
@@ -85,6 +94,10 @@ async def _stage_usage(
     ue = getattr(d, "usage_evidence", None)
     if ue is None:
         return []
+    if meta.get(UNSTAGED_KEY):
+        # Order: earlier facts of this session are still deferred; a later one must not be
+        # staged (and numbered) ahead of them. The caller retries once the sweeper drained.
+        raise HTTPException(status_code=503, detail={"code": "usage_evidence_unavailable"})
     try:
         if isinstance(cause, Evidence):
             staged = await ue.stage_evidence(prior, updated, cause, meta)
@@ -98,6 +111,75 @@ async def _stage_usage(
         raise HTTPException(
             status_code=422, detail={"code": "usage_evidence_invalid_identity"}
         ) from exc
+
+
+DEFER_DRAIN_BUDGET = 3.0  # seconds: the bounded staging attempt after a safety stop took effect
+
+
+def _defer_usage(
+    d: Any,
+    meta: dict[str, Any],
+    prior: ExecutionState,
+    updated: ExecutionState,
+    cause: Any,
+    session_id: str,
+) -> None:
+    """SAFETY commands (Emergency End): the stop never depends on a database call.
+
+    The facts are only RECORDED in the session meta, which the caller saves in the same
+    atomic write as the state. They are staged afterwards (``_drain_soon`` on a bounded budget,
+    then the sweeper), so a slow or dead outbox can neither refuse nor delay the stop.
+    """
+    ue = getattr(d, "usage_evidence", None)
+    if ue is None:
+        return
+    try:
+        entries = ue.defer_entries(prior, updated, cause)
+    except InvalidIdentity:  # never reportable: do not block a stop
+        logger.error("usage evidence skipped for a safety command session=%s", session_id)
+        return
+    if not entries:
+        return
+    # A later fact is appended: the drain stages them strictly in this order.
+    # (Unreachable cap today: Emergency End applies once and emits one fact.)
+    meta[UNSTAGED_KEY] = ((meta.get(UNSTAGED_KEY) or []) + entries)[-64:]
+    ue.unstaged_sessions.add(session_id)
+
+
+async def _drain_soon(d: Any, session_id: str) -> None:
+    """After the stop took effect: try to stage the deferred facts, bounded; never raises."""
+    sender = getattr(d, "usage_sender", None)
+    if sender is not None:
+        await run_with_deadline(sender.drain_session(session_id), DEFER_DRAIN_BUDGET)
+
+
+def _log_detached(task: "asyncio.Future[Any]") -> None:
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning(
+            "usage evidence attempt after a safety stop deferred error_type=%s",
+            type(task.exception()).__name__,
+        )
+
+
+async def run_with_deadline(coro: Any, budget: float) -> bool:
+    """Run ``coro`` for at most ``budget`` seconds as a DETACHED task; True if it finished.
+
+    At the deadline the task is cancelled but its cancellation is NEVER awaited (a stalled
+    database cancel / pool release must not delay the caller past the lock lease). Its result
+    is swallowed by a callback. The task only uses fenced paths (session lock + fenced saves),
+    so once the lease is gone it can no longer write.
+    """
+    task = asyncio.ensure_future(coro)
+    task.add_done_callback(_log_detached)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=budget)
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+    if not done:
+        task.cancel()
+        return False
+    return True
 
 
 def _stamp_usage(d: Any, meta: dict[str, Any], staged: list) -> None:
@@ -128,6 +210,13 @@ async def _settle_usage(
             await ue.commit(staged)
         elif failure is not None and _write_not_landed(failure):
             await ue.abort(staged)
+
+
+async def _load_meta(store: Any, session_id: str) -> dict[str, Any]:
+    meta = await store.get(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="unknown session_id")
+    return copy.deepcopy(meta)
 
 
 async def _load(store: Any, session_id: str) -> tuple[dict[str, Any], ExecutionState]:
@@ -349,7 +438,10 @@ async def request_execution_command(
                 end_reason=end_reason,
             )
             meta["execution_contract"] = state.model_dump(mode="json")
-            staged = await _stage_usage(d, meta, prior_state, state, outcome)
+            if command.command == "emergency_end":
+                _defer_usage(d, meta, prior_state, state, outcome, session_id)
+            else:
+                staged = await _stage_usage(d, meta, prior_state, state, outcome)
         meta.setdefault("execution_command_outcomes", {})[command.command_id] = outcome.model_dump(
             mode="json"
         )
@@ -378,6 +470,8 @@ async def request_execution_command(
             )
         if command.command == "end":
             _start_closing(d, session_id)
+        if command.command == "emergency_end" and UNSTAGED_KEY in meta:
+            await _drain_soon(d, session_id)
     return {"outcome": outcome.model_dump(mode="json"), "replayed": False}
 
 
@@ -494,7 +588,7 @@ async def _finish_closing_once(d: Any, session_id: str) -> None:
         )
 
 
-CLOSING_ATTEMPTS = 8
+CLOSING_ATTEMPTS = 12  # ~3 min of backoff: outlasts the sweeper's resolve window
 CLOSING_BACKOFF = 0.5  # seconds, doubled per attempt, capped at 30
 
 
