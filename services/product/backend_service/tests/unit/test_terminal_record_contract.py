@@ -92,3 +92,42 @@ def test_terminal_capability_is_absent_by_default_and_only_advertised_when_set()
     finally:
         set_terminal_advertised(False)
     assert TERMINAL_CAPABILITY not in Capabilities().available
+
+
+@pytest.mark.parametrize("status", ["pending", "retrying", "succeeded", "failed"])
+def test_cleanup_final_refs_fill_without_replacing_prior_evidence(status):
+    existing = Cleanup(
+        status=status, attempts=2, last_error_class="cleanup_retry", refs={"media": "runtime-owned"}
+    )
+    incoming = Cleanup(
+        status=status, attempts=2, refs={"media": "replacement", "egress": "stopped"}
+    )
+    merged, changed = reduce_cleanup(existing, incoming)
+    assert changed
+    assert merged.refs.media == "runtime-owned" and merged.refs.egress == "stopped"
+    assert merged.last_error_class == "cleanup_retry"
+    assert reduce_cleanup(merged, incoming) == (merged, False)
+    assert existing.refs.egress is None
+
+
+def test_cleanup_late_failure_amends_success_but_never_reopens_failure():
+    existing = Cleanup(status="succeeded", attempts=3, last_error_class="cleanup_retry")
+    failed, changed = reduce_cleanup(
+        existing, Cleanup(status="failed", attempts=4, last_error_class="cleanup_failed")
+    )
+    assert changed and failed.status == "failed" and failed.attempts == 4
+    assert failed.last_error_class == "cleanup_failed"
+    assert reduce_cleanup(
+        failed, Cleanup(status="succeeded", attempts=99, last_error_class="overwrite")
+    ) == (failed, False)
+
+
+def test_cleanup_stale_attempt_cannot_fill_refs_or_replace_error():
+    existing = Cleanup(status="retrying", attempts=3, last_error_class="first_error")
+    assert reduce_cleanup(
+        existing, Cleanup(status="failed", attempts=2, refs={"egress": "stopped"})
+    ) == (existing, False)
+    merged, changed = reduce_cleanup(
+        existing, Cleanup(status="retrying", attempts=4, last_error_class="replacement")
+    )
+    assert changed and merged.attempts == 4 and merged.last_error_class == "first_error"

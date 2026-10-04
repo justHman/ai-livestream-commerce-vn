@@ -414,3 +414,32 @@ async def test_registered_executions_without_a_record_are_listed_and_a_deferral_
         assert n == 1
     finally:
         await store.close()
+
+
+async def test_final_cleanup_late_failure_and_refs_keep_core_and_outbox_idempotent():
+    store = await open_store()
+    try:
+        rec = record(
+            cleanup=Cleanup(status="succeeded", attempts=2, refs=CleanupRefs(media="runtime-owned"))
+        )
+        await store.persist_terminal(rec)
+        late = Cleanup(
+            status="failed",
+            attempts=3,
+            last_error_class="cleanup_failed",
+            refs=CleanupRefs(media="replacement", egress="stopped"),
+        )
+        assert await store.update_terminal_cleanup(rec.terminal_record_id, late)
+        assert not await store.update_terminal_cleanup(rec.terminal_record_id, late)
+        async with store._require_pool().acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT body, status, attempts FROM terminal_outbox WHERE terminal_record_id = $1",
+                rec.terminal_record_id,
+            )
+        body = TerminalRecord.model_validate_json(row["body"])
+        assert body.record_hash == rec.record_hash and body.terminal_phase == "ended"
+        assert body.cleanup.status == "failed" and body.cleanup.last_error_class == "cleanup_failed"
+        assert body.cleanup.refs.media == "runtime-owned" and body.cleanup.refs.egress == "stopped"
+        assert (row["status"], row["attempts"]) == ("pending", 0)
+    finally:
+        await store.close()

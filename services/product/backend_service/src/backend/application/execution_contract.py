@@ -557,25 +557,37 @@ def _fill(existing: str | None, incoming: str | None) -> str | None:
 
 
 def reduce_cleanup(existing: Cleanup, incoming: Cleanup) -> tuple[Cleanup, bool]:
-    """Monotonic merge: a final status is never reopened, attempts never decrease, refs only fill."""
-    if existing.status in ("succeeded", "failed"):
+    """Fill-only cleanup evidence; final failure stays final, late failure amends success."""
+    if incoming.attempts < existing.attempts:
         return existing, False
-    rank = {"pending": 0, "retrying": 1}
-    newer = incoming.attempts > existing.attempts or (
-        incoming.attempts == existing.attempts
-        and rank.get(incoming.status, 2) > rank.get(existing.status, 2)
-    )
-    if not newer:
-        return existing, False
+    status, attempts, last_error = existing.status, existing.attempts, existing.last_error_class
+    rank = {"pending": 0, "retrying": 1, "succeeded": 2, "failed": 2}
+    if existing.status != "failed" and (
+        existing.status != "succeeded" or incoming.status in ("succeeded", "failed")
+    ):
+        attempts = max(existing.attempts, incoming.attempts)
+        if rank.get(incoming.status, 2) > rank.get(existing.status, 2) or (
+            existing.status == "succeeded" and incoming.status == "failed"
+        ):
+            status = incoming.status
+        if last_error is None or (status == "failed" and existing.status != "failed"):
+            if incoming.last_error_class is not None:
+                last_error = incoming.last_error_class
     refs = CleanupRefs(
         media=_fill(existing.refs.media, incoming.refs.media),
         livekit_room=_fill(existing.refs.livekit_room, incoming.refs.livekit_room),
         egress=_fill(existing.refs.egress, incoming.refs.egress),
         platform_live=_fill(existing.refs.platform_live, incoming.refs.platform_live),
     )
-    # The error class is append-only: a later report without one keeps the earlier class.
-    last_error = incoming.last_error_class or existing.last_error_class
-    return incoming.model_copy(update={"refs": refs, "last_error_class": last_error}), True
+    merged = existing.model_copy(
+        update={
+            "status": status,
+            "attempts": attempts,
+            "last_error_class": last_error,
+            "refs": refs,
+        }
+    )
+    return merged, merged != existing
 
 
 def rescue_rejection(state: ExecutionState, command: str) -> str | None:
