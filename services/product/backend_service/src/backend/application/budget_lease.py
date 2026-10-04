@@ -372,7 +372,13 @@ class BudgetLeaseEnforcer:
         """Re-track lease work that registry discovery cannot see (e.g. an execution that
         already has a 019 terminal record is excluded from list_unterminated_executions)."""
         for session_id in await self._stored_ids():
-            meta = await self._d.store.get(session_id)
+            try:
+                meta = await self._d.store.get(session_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("lease pending scan deferred error_type=%s", type(exc).__name__)
+                continue
             if meta and (
                 meta.get(TERMINATION_KEY) in ("pending", "settling") or meta.get(UNSTAGED_KEY)
             ):
