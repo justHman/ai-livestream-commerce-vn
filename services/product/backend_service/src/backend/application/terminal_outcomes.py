@@ -378,7 +378,11 @@ class TerminalOutcomes:
         return result.record
 
     async def persist_active_on_shutdown(
-        self, session_store: Any, extra_session_ids: tuple[str, ...] = ()
+        self,
+        session_store: Any,
+        extra_session_ids: tuple[str, ...] = (),
+        *,
+        deferred_session_ids: frozenset[str] = frozenset(),
     ) -> int:
         """Before components stop: give every unterminated execution a durable record.
 
@@ -409,6 +413,12 @@ class TerminalOutcomes:
                 known[session_id] = identity
         stored = 0
         for session_id, identity in known.items():
+            if session_id in deferred_session_ids:
+                logger.error(
+                    "shutdown terminal deferred session=%s error_type=UnsavedRuntimeFailure",
+                    session_id,
+                )
+                continue
             try:
                 if await self._pg.terminal_exists(identity):
                     continue

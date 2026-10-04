@@ -43,6 +43,33 @@ async def test_accepted_failure_wins_before_command_or_stop(case_factory, monkey
     assert len(pg.stored) == 1
 
 
+@pytest.mark.parametrize("mode", ["error", "timeout"])
+async def test_shutdown_defers_unsaved_fault_without_success(case_factory, monkeypatch, mode):
+    import asyncio
+    from backend.api.v1 import execution
+    from backend.bootstrap.lifespan import _persist_terminal_on_shutdown
+
+    case = await live(case_factory)
+    monitor, pg = await enable(case, monkeypatch)
+    await send(case, "emergency_end")
+    monitor.fail(case.sid, RuntimeError())
+    monitor.settings = FailureSettings(enabled=True, attempt_timeout=0.01)
+
+    async def unavailable(*args):
+        if mode == "timeout":
+            await asyncio.Event().wait()
+        raise ConnectionError()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(execution, "_save", unavailable)
+        await _persist_terminal_on_shutdown(case.d)
+    assert pg.stored == {}
+    assert case.sid in monitor.pending
+    assert await case.d.store.get(case.sid) is not None
+    await _persist_terminal_on_shutdown(case.d)
+    assert next(iter(pg.stored.values())).business_outcome == "FAILED"
+
+
 async def test_earlier_durable_end_is_not_rewritten(case_factory, monkeypatch):
     case = await live(case_factory)
     monitor, pg = await enable(case, monkeypatch)
