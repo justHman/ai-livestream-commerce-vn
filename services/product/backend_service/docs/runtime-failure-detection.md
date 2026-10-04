@@ -35,3 +35,6 @@ closure. Do not delete unresolved metadata or outbox evidence.
 
 Validation here uses local doubles; LemonSlice, LiveKit and Facebook behavior
 remain unverified until task 023 is explicitly approved and run.
+
+Accepted fatal work participates in the locked rescue command and Stop decision before successful terminal persistence or metadata deletion. A failed promotion save keeps pending work and aborts Stop. Shutdown likewise attempts bounded promotion before its 019 terminal pass; an already durable terminal remains immutable.
+

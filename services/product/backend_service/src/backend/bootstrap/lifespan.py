@@ -336,7 +336,8 @@ async def _stop_runtime_failures(container: BootstrapContainer) -> None:
     service = getattr(container, "runtime_failures", None)
     if service is None:
         return
-    container.coordinator.runtime_failures = None
+    if container.coordinator is not None:
+        container.coordinator.runtime_failures = None
     task = container.runtime_failures_task
     if task is not None:
         task.cancel()

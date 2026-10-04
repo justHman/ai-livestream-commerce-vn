@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     # The hub is only used through its async ``emit(session_id, event)``
     # method, so the import stays lazy (TYPE_CHECKING) to avoid cycles.
     from backend.api.v1.hub import ControlHub
+    from backend.application.runtime_failures import RuntimeFailures
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,7 @@ class DirectorCoordinator:
         self.comment_consumed = None
         # The app composition root installs the same boundary used by /say.
         self.approved_speech = None
-        self.runtime_failures = None  # wired by default-off 020 lifespan
+        self.runtime_failures: RuntimeFailures | None = None  # wired by default-off 020 lifespan
         # The bounded FastReducer (P0-FB-014). One instance serves all sessions;
         # it is consulted ONLY for sessions in reducer mode, so a legacy session
         # is byte-for-byte unchanged.

@@ -13,7 +13,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from backend.application import budget_lease as bl
 from backend.application.execution_contract import (
@@ -74,7 +74,7 @@ def failure_class(error: Exception) -> str:
 @dataclass
 class Pending:
     identity: dict[str, Any]
-    kind: str
+    kind: Literal["health", "terminal"]
     occurred_at: datetime
     healthy: bool | None = None
     fault: str | None = None
