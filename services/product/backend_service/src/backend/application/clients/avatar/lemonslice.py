@@ -807,24 +807,30 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             self._closing.pop(session_id, None)
 
     def stop_all(self) -> None:
-        if self._loop is not None:
-            self._run(self._drain("startups"))  # cancelled startups clean up inside their task
-        for sid in list(self._sessions):
+        try:
+            if self._loop is not None:
+                self._run(self._drain("startups"))  # cancelled startups clean up inside their task
+            for sid in list(self._sessions):
+                try:
+                    self.stop(sid)
+                except Exception as exc:
+                    log.warning("lemonslice stop_all error_type=%s", type(exc).__name__)
+            if self._loop is not None:
+                self._run(self._drain("cleanups"))  # a stop parked in a clear is awaited
+                self._run(self._drain("reapers"))  # late REST sessions are ended before exit
+            if self._closing:
+                log.error(
+                    "lemonslice sessions left without confirmed cleanup count=%d",
+                    len(self._closing),
+                )
+        finally:
             try:
-                self.stop(sid)
+                if self._loop is not None:
+                    self._run(self._close_client())
             except Exception as exc:
-                log.warning("lemonslice stop_all error_type=%s", type(exc).__name__)
-        if self._loop is not None:
-            self._run(
-                self._drain("cleanups")
-            )  # a stop() parked in a clear is awaited, not cancelled
-            self._run(self._drain("reapers"))  # late REST sessions are ended before exit
-            self._run(self._close_client())
-        if self._closing:
-            log.error(
-                "lemonslice sessions left without confirmed cleanup count=%d", len(self._closing)
-            )
-        self._shutdown_loop()
+                log.warning("lemonslice client close error_type=%s", type(exc).__name__)
+            finally:
+                self._shutdown_loop()
 
     async def _teardown(self, room_name: str, sess: _Sess | None, room: Any) -> None:
         if sess is not None:
