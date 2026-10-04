@@ -1477,6 +1477,18 @@ class DirectorCoordinator:
         except Exception as exc:
             if self.runtime_failures is not None:
                 current = self._runtime._sessions.get(session_id)
+                if isinstance(exc, SpeechRejected):
+                    st.skips += 1
+                    self._record_cancelled(session_id, decision, exc.code)
+                    await self._emit(
+                        session_id,
+                        {
+                            "type": "speech.content_rejected",
+                            "turn_id": decision.turn_id,
+                            "reason": exc.code,
+                        },
+                    )
+                    return True
                 if current is None or (
                     decision.revision_token and current.generation_token != decision.revision_token
                 ):

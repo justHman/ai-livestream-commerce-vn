@@ -264,6 +264,14 @@ async def test_revision_change_after_accepted_fault_cannot_erase_failed_outcome(
     assert (await d.store.get("A"))["execution_contract"]["phase"] == "failed"
 
 
+async def test_detach_after_accepted_fault_does_not_erase_current_execution_fact():
+    d, service, owners, blocked, cancelled, invalidated = await fixture()
+    service.fail("A", RuntimeError(), "initial")
+    owners.pop("A")
+    await service._record("A", service.pending["A"])
+    assert (await d.store.get("A"))["execution_contract"]["phase"] == "failed"
+
+
 async def test_hanging_discovery_row_cannot_block_tracked_cleanup(monkeypatch):
     d, service, owners, blocked, cancelled, invalidated = await fixture()
     service.fail("A", RuntimeError(), "initial")
@@ -295,7 +303,7 @@ async def test_hanging_discovery_row_cannot_block_tracked_cleanup(monkeypatch):
         assert sweep in done, "discovery stalled readable tracked completion"
         sweep.result()
         assert completions == ["A"]
-        assert service.health()["attempt_errors"] == 1
+        assert service.health()["attempt_errors"] >= 1
     finally:
         release.set()
         sweep.cancel()
@@ -331,3 +339,58 @@ def test_classification_uses_typed_faults_and_never_provider_text():
     wrapped = RuntimeError("hidden")
     wrapped.__cause__ = AvatarStreamError("hidden")
     assert failure_class(wrapped) == "media_failed"
+
+
+async def test_real_terminal_completion_never_logs_provider_error_text(caplog):
+    from dataclasses import replace
+
+    d, service, owners, blocked, cancelled, invalidated = await fixture()
+    service.settings = replace(service.settings, attempt_timeout=1)
+    d.coordinator.has = lambda sid: False
+
+    def stop(sid):
+        raise RuntimeError("PROVIDER_PRIVATE_TOKEN_SENTINEL")
+
+    d.backend.stop = stop
+    service.fail("A", RuntimeError(), "initial")
+    await service.sweep()
+    assert "PROVIDER_PRIVATE_TOKEN_SENTINEL" not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "A" in service.completion.tracked
+
+
+async def test_expected_content_expiry_during_dispatch_does_not_fail_healthy_execution():
+    from backend.application.director.coordinator import DirectorCoordinator
+    from backend.application.director.decision import Decision
+    from backend.application.script_authoring.approved_speech import SpeechRejected
+
+    owner = SimpleNamespace(
+        generation_token="initial",
+        director=SimpleNamespace(cfg=SimpleNamespace(transient_retry_count=0)),
+    )
+    runtime = SimpleNamespace(
+        _sessions={"A": owner}, prompt_layers=lambda *args: {}, has=lambda sid: True
+    )
+    coordinator = DirectorCoordinator(runtime, None, None, SimpleNamespace())
+    coordinator._stats["A"] = SimpleNamespace(skips=0)
+    calls, failures = [], []
+
+    async def revalidate(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 2:
+            raise SpeechRejected("expired_facts")
+
+    coordinator.approved_speech = SimpleNamespace(
+        revalidate=revalidate,
+        blocked=lambda sid: None,
+        guarded_tts=lambda *a, **k: None,
+        guarded_audio=lambda *a, **k: None,
+    )
+    coordinator.runtime_failures = SimpleNamespace(fail=lambda *a: failures.append(a))
+    speech = SimpleNamespace(text="approved", evidence=lambda: {})
+    decision = Decision(
+        "speak_hook", prepared_script="approved", approved_speech=speech, revision_token="initial"
+    )
+    assert await coordinator._maybe_speak("A", decision)
+    assert decision.is_cancelled and not failures
+    assert len(calls) == 2

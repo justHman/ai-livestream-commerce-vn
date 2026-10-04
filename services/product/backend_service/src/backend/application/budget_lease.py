@@ -243,13 +243,19 @@ async def keep_for_unstaged(d: Any, session_id: str, fence: Any = None) -> bool:
                     "usage terminal fact UNSTAGEABLE, parked for an operator session=%s",
                     session_id,
                 )
-        logger.error("usage terminal fact still unstaged session=%s", session_id, exc_info=True)
+        logger.error(
+            "usage terminal fact still unstaged session=%s class=%s", session_id, type(exc).__name__
+        )
         try:
             await _save(d.store, session_id, meta, fence)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.error("could not persist unstaged marker session=%s", session_id, exc_info=True)
+        except Exception as save_error:
+            logger.error(
+                "could not persist unstaged marker session=%s class=%s",
+                session_id,
+                type(save_error).__name__,
+            )
         return True
 
 
@@ -358,8 +364,8 @@ class BudgetLeaseEnforcer:
             return list(await lister())
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.warning("lease scan: session ids unreadable", exc_info=True)
+        except Exception as exc:
+            logger.warning("lease scan: session ids unreadable class=%s", type(exc).__name__)
             return []
 
     async def _scan_pending(self) -> None:
@@ -553,12 +559,12 @@ class BudgetLeaseEnforcer:
                 return False
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.error(
-                "lease termination completion failed, will retry session=%s unstaged_pending=%d",
+                "lease termination completion failed, will retry session=%s unstaged_pending=%d class=%s",
                 session_id,
                 len(self.unstaged_pending),
-                exc_info=True,
+                type(exc).__name__,
             )
             self.tracked.add(session_id)
             return False

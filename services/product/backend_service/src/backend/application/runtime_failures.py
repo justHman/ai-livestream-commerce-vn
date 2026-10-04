@@ -92,6 +92,7 @@ class RuntimeFailures:
         self.consecutive: dict[str, int] = {}
         self.flush_tasks: set[asyncio.Task] = set()
         self.discovery_backoff: dict[str, tuple[int, float]] = {}
+        self.cleanup_backoff: dict[str, tuple[int, float]] = {}
         self.counters = {
             "tick_errors": 0,
             "provider_failures": 0,
@@ -196,7 +197,8 @@ class RuntimeFailures:
         """Flush provider buffers immediately, independently of durable I/O."""
         from backend.api.v1.execution import run_with_deadline
 
-        if not self._current(session_id, pending):
+        owner = self.d.coordinator._runtime._sessions.get(session_id)
+        if owner is not pending.owner or self.identities.get(session_id) != pending.identity:
             return
 
         async def interrupt():
@@ -223,9 +225,9 @@ class RuntimeFailures:
         # A validated fatal fault is execution-scoped: subsequent Interrupt or
         # config revisions in that same execution cannot erase it. Health
         # observations still refer only to the revision actually tested.
-        return owner is pending.owner and (
-            pending.kind == "terminal" or owner.generation_token == pending.token
-        )
+        return pending.kind == "terminal" or (
+            owner is pending.owner and owner.generation_token == pending.token
+        )  # terminal identity is checked against the locked durable state
 
     async def _record(self, session_id: str, pending: Pending) -> bool:
         from backend.api.v1.execution import _load, _locked, _save, _stage_usage, _settle_usage
@@ -335,11 +337,18 @@ class RuntimeFailures:
                     now + min(300, 2 ** min(attempts + 1, 9)),
                 )
         for session_id in tuple(self.completion.tracked):
+            attempts, next_at = self.cleanup_backoff.get(session_id, (0, 0))
+            if now < next_at:
+                continue
             result = {"completed": False}
 
             async def complete(sid=session_id, outcome=result):
                 meta = await self.d.store.get(sid)
-                if not meta or not meta.get(ORIGIN_KEY):
+                if (
+                    not meta
+                    or not meta.get(ORIGIN_KEY)
+                    or meta.get("execution_contract", {}).get("phase") != "failed"
+                ):
                     self.completion.tracked.discard(sid)
                     return
                 if meta.get(bl.TERMINATION_KEY) == "settling":
@@ -363,8 +372,15 @@ class RuntimeFailures:
             except Exception as exc:
                 logger.warning("runtime failure completion retry class=%s", type(exc).__name__)
             if result["completed"]:
+                self.cleanup_backoff.pop(session_id, None)
                 self.identities.pop(session_id, None)
                 self.consecutive.pop(session_id, None)
+            else:
+                self.counters["attempt_errors"] += 1
+                self.cleanup_backoff[session_id] = (
+                    attempts + 1,
+                    now + min(300, 2 ** min(attempts + 1, 9)),
+                )
 
     def health(self) -> dict[str, int]:
         return {
