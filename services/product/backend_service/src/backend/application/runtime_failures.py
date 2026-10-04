@@ -58,7 +58,14 @@ def failure_class(error: Exception) -> str:
         module = type(current).__module__
         if any(part in module for part in ("avatar", "publishing", "livekit")):
             return "media_failed"
-        if "script_authoring" in module:
+        if (
+            module.endswith("script_authoring.approved_speech")
+            or ".script_authoring.gate." in module
+            or (
+                module.endswith("script_authoring.generation.batch")
+                and type(current).__name__ == "ContentFailure"
+            )
+        ):
             return "safety_failed"
         current = current.__cause__
     return "runtime_error"
@@ -84,9 +91,11 @@ class RuntimeFailures:
         self.pending: dict[str, Pending] = {}
         self.consecutive: dict[str, int] = {}
         self.flush_tasks: set[asyncio.Task] = set()
+        self.discovery_backoff: dict[str, tuple[int, float]] = {}
         self.counters = {
             "tick_errors": 0,
             "provider_failures": 0,
+            "terminal_tick_failures": 0,
             "failures_saved": 0,
             "attempt_errors": 0,
             "stale_reports": 0,
@@ -104,6 +113,7 @@ class RuntimeFailures:
         if self.identities.get(session_id) != identity:
             self.pending.pop(session_id, None)
             self.consecutive.pop(session_id, None)
+            self.d.approved_speech.set_runtime_failed(session_id, False)
         self.identities[session_id] = identity
 
     def tick(self, session_id: str, error: Exception | None) -> None:
@@ -122,7 +132,7 @@ class RuntimeFailures:
         count = previous + 1
         self.consecutive[session_id] = count
         if count >= self.settings.terminal_ticks:
-            self.fail(session_id, error)
+            self.fail(session_id, error, from_tick=True)
         elif count == self.settings.unhealthy_ticks:
             self._health(session_id, False)
 
@@ -140,7 +150,14 @@ class RuntimeFailures:
             token=owner.generation_token,
         )
 
-    def fail(self, session_id: str, error: Exception, token: str | None = None) -> None:
+    def fail(
+        self,
+        session_id: str,
+        error: Exception,
+        token: str | None = None,
+        *,
+        from_tick: bool = False,
+    ) -> None:
         if session_id not in self.identities:
             return
         old = self.pending.get(session_id)
@@ -151,10 +168,11 @@ class RuntimeFailures:
         if owner is None or (token and owner.generation_token != token):
             self.counters["stale_reports"] += 1
             return
-        self.counters["provider_failures"] += 1
+        self.counters["terminal_tick_failures" if from_tick else "provider_failures"] += 1
         # Synchronous fence: neither Redis nor Postgres/provider cancellation
         # can delay refusal of late/in-flight output or new decisions.
         self.d.approved_speech.block(session_id, "ending")
+        self.d.approved_speech.set_runtime_failed(session_id, True)
         self.d.approved_speech.cancel(session_id)
         coordinator._activated.discard(session_id)
         coordinator._invalidate_queued(session_id, "runtime_failure")
@@ -163,11 +181,13 @@ class RuntimeFailures:
             self.identities[session_id],
             "terminal",
             datetime.now(timezone.utc),
-            fault=failure_class(error),
+            fault="runtime_error" if from_tick else failure_class(error),
             owner=owner,
             token=owner.generation_token,
         )
-        logger.error("audit=runtime_failure session=%s class=%s", session_id, failure_class(error))
+        logger.error(
+            "audit=runtime_failure session=%s class=%s", session_id, self.pending[session_id].fault
+        )
         task = asyncio.create_task(self._flush(session_id, self.pending[session_id]))
         self.flush_tasks.add(task)
         task.add_done_callback(self.flush_tasks.discard)
@@ -200,7 +220,12 @@ class RuntimeFailures:
 
     def _current(self, session_id: str, pending: Pending) -> bool:
         owner = self.d.coordinator._runtime._sessions.get(session_id)
-        return owner is pending.owner and owner.generation_token == pending.token
+        # A validated fatal fault is execution-scoped: subsequent Interrupt or
+        # config revisions in that same execution cannot erase it. Health
+        # observations still refer only to the revision actually tested.
+        return owner is pending.owner and (
+            pending.kind == "terminal" or owner.generation_token == pending.token
+        )
 
     async def _record(self, session_id: str, pending: Pending) -> bool:
         from backend.api.v1.execution import _load, _locked, _save, _stage_usage, _settle_usage
@@ -286,12 +311,29 @@ class RuntimeFailures:
         await run_with_deadline(discover(), self.settings.attempt_timeout)
         # Restart-safe discovery of R1 terminal saves, including writer crashes.
         for session_id in discovered["ids"]:
-            try:
-                meta = await self.d.store.get(session_id)
-                if meta and meta.get(ORIGIN_KEY):
-                    self.completion.tracked.add(session_id)
-            except Exception as exc:
-                logger.warning("runtime failure discovery retry class=%s", type(exc).__name__)
+            attempts, next_at = self.discovery_backoff.get(session_id, (0, 0))
+            if now < next_at:
+                continue
+            result = {"read": False}
+
+            async def read(sid=session_id, outcome=result):
+                try:
+                    meta = await self.d.store.get(sid)
+                    if meta and meta.get(ORIGIN_KEY):
+                        self.completion.tracked.add(sid)
+                    outcome["read"] = True
+                except Exception as exc:
+                    logger.warning("runtime failure discovery retry class=%s", type(exc).__name__)
+
+            await run_with_deadline(read(), self.settings.attempt_timeout)
+            if result["read"]:
+                self.discovery_backoff.pop(session_id, None)
+            else:
+                self.counters["attempt_errors"] += 1
+                self.discovery_backoff[session_id] = (
+                    attempts + 1,
+                    now + min(300, 2 ** min(attempts + 1, 9)),
+                )
         for session_id in tuple(self.completion.tracked):
             result = {"completed": False}
 

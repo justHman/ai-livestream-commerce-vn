@@ -289,12 +289,17 @@ async def test_hanging_discovery_row_cannot_block_tracked_cleanup(monkeypatch):
 
     monkeypatch.setattr(d.store, "get", get)
     monkeypatch.setattr(service.completion, "_complete", complete)
+    sweep = asyncio.create_task(service.sweep())
     try:
-        await asyncio.wait_for(service.sweep(), 0.2)
+        done, _ = await asyncio.wait({sweep}, timeout=0.2)
+        assert sweep in done, "discovery stalled readable tracked completion"
+        sweep.result()
         assert completions == ["A"]
         assert service.health()["attempt_errors"] == 1
     finally:
         release.set()
+        sweep.cancel()
+        await asyncio.gather(sweep, return_exceptions=True)
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
