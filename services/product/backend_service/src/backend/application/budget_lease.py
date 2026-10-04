@@ -520,14 +520,37 @@ class BudgetLeaseEnforcer:
         Idempotent: success deletes the session meta (nothing left to retry); a failure
         leaves the ``pending`` marker so the next sweep retries. Never raises.
         """
+        from backend.api.v1.execution import DEFER_DRAIN_BUDGET, run_with_deadline
         from backend.api.v1.sessions import stop_session_internal
 
         now = self._clock()
         attempts, not_before = self.unstaged_pending.get(session_id, (0, now))
         if now < not_before:
             return False  # backing off a failing staging; the marker stays durable
+        completed = False
+        failure = None
+
+        async def attempt() -> None:
+            nonlocal completed, failure
+            try:
+                await stop_session_internal(self._d, session_id)
+                completed = True
+            except Exception as exc:
+                failure = exc
+
         try:
-            await stop_session_internal(self._d, session_id)
+            await run_with_deadline(attempt(), DEFER_DRAIN_BUDGET)
+            if failure is not None:
+                raise failure
+            if not completed:
+                # Completion can encounter the same hanging DB as the first staging
+                # attempt. Keep its durable pending marker and advance to other leases.
+                self.tracked.add(session_id)
+                self.unstaged_pending[session_id] = (
+                    attempts + 1,
+                    now + timedelta(seconds=min(30.0, 0.5 * (2 ** min(attempts + 1, 6)))),
+                )
+                return False
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -563,19 +586,29 @@ class BudgetLeaseEnforcer:
 
     async def _settle(self, session_id: str) -> bool:
         """Cleanup and the 019 record are done: retry ONLY the unstaged usage fact."""
-        from backend.api.v1.execution import _locked
+        from backend.api.v1.execution import DEFER_DRAIN_BUDGET, _locked, run_with_deadline
         from backend.api.v1.sessions import delete_session_meta
 
         now = self._clock()
         if now < self.unstaged_pending.get(session_id, (0, now))[1]:
             return False
-        async with _locked(self._d.store, session_id) as fence:
-            if await keep_for_unstaged(self._d, session_id, fence):
-                meta = await self._d.store.get(session_id)
-                if meta is not None:
-                    self._note_unstaged(session_id, meta, now)
-                return False
-            await delete_session_meta(self._d, session_id, fence)
+        settled = False
+
+        async def attempt() -> None:
+            nonlocal settled
+            # The detached attempt owns its lock, including release/cancellation.
+            async with _locked(self._d.store, session_id) as fence:
+                if await keep_for_unstaged(self._d, session_id, fence):
+                    return
+                await delete_session_meta(self._d, session_id, fence)
+                settled = True
+
+        await run_with_deadline(attempt(), DEFER_DRAIN_BUDGET)
+        if not settled:
+            meta = await self._d.store.get(session_id)
+            if meta is not None and meta.get(UNSTAGED_KEY):
+                self._note_unstaged(session_id, meta, now)
+            return False
         self.unstaged_pending.pop(session_id, None)
         self.unstageable.discard(session_id)
         self._release(session_id)

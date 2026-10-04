@@ -263,6 +263,10 @@ class UsageSender:
             try:
                 async with self._session_lock(sid) as fence:
                     meta = await self._store.get(sid)
+                    if (meta or {}).get(UNSTAGED_KEY) or (meta or {}).get(CLEANUP_KEY):
+                        # Another replica may crash after saving a fact but before track().
+                        # Discover its durable work on every scan, not only at startup.
+                        self.track(sid)
                     if holds_evidence(meta):
                         await self._keep_alive(sid, meta, fence)
                         done += 1
