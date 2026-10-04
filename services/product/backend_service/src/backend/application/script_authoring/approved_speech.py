@@ -135,6 +135,7 @@ class ApprovedSpeech:
         # P0-FB-016 start fence: "held", "closing" or "ending". Unlike the
         # epoch it never cancels the current utterance; it refuses new turns.
         self._blocked: dict[str, str] = {}
+        self._runtime_failed: set[str] = set()  # 020 independent fatal fence, default inert
         # P0-FB-018: an INDEPENDENT restriction. The lease expiry is kept per session and
         # compared with the clock at CHECK time (synchronously, no sweep needed); it is
         # OR-ed with ``_blocked`` so Hold/Resume and lease expiry/renewal never overwrite
@@ -158,11 +159,19 @@ class ApprovedSpeech:
         else:
             self._lease_expiry[session_id] = expiry
 
+    def set_runtime_failed(self, session_id: str, failed: bool) -> None:
+        if failed:
+            self._runtime_failed.add(session_id)
+        else:
+            self._runtime_failed.discard(session_id)
+
     def held_reason(self, session_id: str) -> str | None:
         """Only the Hold/closing/ending fence (never the lease restriction)."""
         return self._blocked.get(session_id)
 
     def blocked(self, session_id: str) -> str | None:
+        if session_id in self._runtime_failed:
+            return "runtime_failed"
         reason = self._blocked.get(session_id)
         if reason is None:
             expiry = self._lease_expiry.get(session_id)
@@ -359,6 +368,8 @@ class ApprovedSpeech:
         return speech
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
+        if speech.envelope.session_id in self._runtime_failed:
+            raise SpeechRejected("runtime_failed")
         if speech.epoch != self._epochs.get(speech.envelope.session_id, 0) or not live():
             raise SpeechRejected("cancelled_speech")
         speech.envelope.check_time()

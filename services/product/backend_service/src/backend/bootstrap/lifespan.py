@@ -241,10 +241,40 @@ async def _persist_terminal_on_shutdown(container: BootstrapContainer) -> None:
     durable record (or an explicit audited deferral). No-op while disabled."""
     terminal = getattr(container, "terminal_outcomes", None)
     if terminal is not None:
+        deferred = set()
+        monitor = getattr(container, "runtime_failures", None)
+        if monitor is not None:
+            from backend.api.v1.execution import run_with_deadline
+
+            # The worker has stopped, but an accepted fault must still precede
+            # shutdown's durable terminal decision. Every attempt is bounded.
+            for sid, pending in tuple(monitor.pending.items()):
+                if pending.kind != "terminal":
+                    continue
+                result = {"saved": False}
+
+                async def promote(session_id=sid, item=pending, outcome=result):
+                    try:
+                        outcome["saved"] = await monitor._record(session_id, item)
+                    except Exception as exc:
+                        logger.warning(
+                            "shutdown failure evidence retry session=%s class=%s",
+                            session_id,
+                            type(exc).__name__,
+                        )
+
+                await run_with_deadline(promote(), monitor.settings.attempt_timeout)
+                if not result["saved"]:
+                    deferred.add(sid)
         extra = set(getattr(container, "orchestrators", {}) or {})
         publishers = getattr(container, "livekit_publishers", None)
         extra.update(getattr(publishers, "session_ids", ()) or ())
-        await terminal.persist_active_on_shutdown(container.store, tuple(extra))
+        if deferred:
+            await terminal.persist_active_on_shutdown(
+                container.store, tuple(extra), deferred_session_ids=frozenset(deferred)
+            )
+        else:
+            await terminal.persist_active_on_shutdown(container.store, tuple(extra))
 
 
 async def _stop_terminal_outcomes(container: BootstrapContainer) -> None:
@@ -291,6 +321,42 @@ async def _stop_budget_lease(container: BootstrapContainer) -> None:
             await task
         except asyncio.CancelledError:
             pass
+
+
+async def _start_runtime_failures(container: BootstrapContainer) -> None:
+    from backend.application.runtime_failures import FailureSettings, RuntimeFailures
+
+    settings = FailureSettings.from_env()
+    if not settings.enabled:
+        return
+    if container.coordinator is None or container.approved_speech is None:
+        raise RuntimeError("runtime failure detection requires coordinator and speech gate")
+    if container.terminal_outcomes is None:
+        raise RuntimeError("runtime failure detection requires durable terminal outcomes")
+    service = RuntimeFailures(container, settings)
+    container.runtime_failures = service
+    container.coordinator.runtime_failures = service
+    container.runtime_failures_task = asyncio.create_task(
+        service.run_loop(), name="runtime-failures"
+    )
+
+
+async def _stop_runtime_failures(container: BootstrapContainer) -> None:
+    service = getattr(container, "runtime_failures", None)
+    if service is None:
+        return
+    if container.coordinator is not None:
+        container.coordinator.runtime_failures = None
+    task = container.runtime_failures_task
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    for flush in tuple(service.flush_tasks):
+        flush.cancel()
+    await asyncio.gather(*tuple(service.flush_tasks), return_exceptions=True)
 
 
 async def _connect_authoring(container: BootstrapContainer) -> None:
@@ -550,6 +616,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
     # close stages so no owned task races the pool close (HIGH-1).
     await drain_authoring()
     stages = (
+        ("runtime.failures", lambda: _stop_runtime_failures(container)),
         # First: a stopping process must not turn its own teardown into control_lost.
         ("budget.lease", lambda: _stop_budget_lease(container)),
         ("terminal.shutdown", lambda: _persist_terminal_on_shutdown(container)),
@@ -584,6 +651,7 @@ def build_lifespan(container: BootstrapContainer):
             await _start_usage_evidence(container)
             _start_reducer_loop(container)
             await _start_budget_lease(container)
+            await _start_runtime_failures(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially
             # initialized resource before the boot error propagates.

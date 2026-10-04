@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     # The hub is only used through its async ``emit(session_id, event)``
     # method, so the import stays lazy (TYPE_CHECKING) to avoid cycles.
     from backend.api.v1.hub import ControlHub
+    from backend.application.runtime_failures import RuntimeFailures
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,7 @@ class DirectorCoordinator:
         self.comment_consumed = None
         # The app composition root installs the same boundary used by /say.
         self.approved_speech = None
+        self.runtime_failures: RuntimeFailures | None = None  # wired by default-off 020 lifespan
         # The bounded FastReducer (P0-FB-014). One instance serves all sessions;
         # it is consulted ONLY for sessions in reducer mode, so a legacy session
         # is byte-for-byte unchanged.
@@ -828,13 +830,22 @@ class DirectorCoordinator:
                 await asyncio.sleep(tick_sec)
                 try:
                     await self._tick_once(session_id)
+                    if self.runtime_failures is not None:
+                        self.runtime_failures.tick(session_id, None)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    logger.exception(
-                        "coordinator tick error for session %s (continuing)",
-                        session_id,
-                    )
+                except Exception as exc:
+                    if self.runtime_failures is not None:
+                        logger.error(
+                            "coordinator tick error session=%s class=%s",
+                            session_id,
+                            type(exc).__name__,
+                        )
+                        self.runtime_failures.tick(session_id, exc)
+                    else:
+                        logger.exception(
+                            "coordinator tick error for session %s (continuing)", session_id
+                        )
         except asyncio.CancelledError:
             logger.debug("coordinator tick loop cancelled for %s", session_id)
 
@@ -1117,6 +1128,14 @@ class DirectorCoordinator:
                 },
             )
         except Exception as exc:
+            if self.runtime_failures is not None:
+                current = self._runtime._sessions.get(session_id)
+                if current is None or (
+                    decision.revision_token and current.generation_token != decision.revision_token
+                ):
+                    self._record_cancelled(session_id, decision, "generation_revision")
+                    return
+                self.runtime_failures.fail(session_id, exc, decision.revision_token)
             decision.is_cancelled = False
             failed = {
                 **self._speech_item(decision, "failed"),
@@ -1134,7 +1153,12 @@ class DirectorCoordinator:
                     pass
             self._activated.discard(session_id)
             self._invalidate_queued(session_id, reason="terminal_preparation_failure")
-            logger.exception("turn preparation failed session=%s", session_id)
+            if self.runtime_failures is not None:
+                logger.error(
+                    "turn preparation failed session=%s class=%s", session_id, type(exc).__name__
+                )
+            else:
+                logger.exception("turn preparation failed session=%s", session_id)
             await self._emit(
                 session_id,
                 {
@@ -1452,9 +1476,36 @@ class DirectorCoordinator:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception(
-                "speech pipeline failed session=%s turn=%s", session_id, decision.turn_id
-            )
+            if self.runtime_failures is not None:
+                current = self._runtime._sessions.get(session_id)
+                if isinstance(exc, SpeechRejected):
+                    st.skips += 1
+                    self._record_cancelled(session_id, decision, exc.code)
+                    await self._emit(
+                        session_id,
+                        {
+                            "type": "speech.content_rejected",
+                            "turn_id": decision.turn_id,
+                            "reason": exc.code,
+                        },
+                    )
+                    return True
+                if current is None or (
+                    decision.revision_token and current.generation_token != decision.revision_token
+                ):
+                    self._record_cancelled(session_id, decision, "generation_revision")
+                    return True
+                self.runtime_failures.fail(session_id, exc, decision.revision_token)
+                logger.error(
+                    "speech pipeline failed session=%s turn=%s class=%s",
+                    session_id,
+                    decision.turn_id,
+                    type(exc).__name__,
+                )
+            else:
+                logger.exception(
+                    "speech pipeline failed session=%s turn=%s", session_id, decision.turn_id
+                )
             failure_state = "playback_timeout" if isinstance(exc, TimeoutError) else "failed"
             await self._emit(
                 session_id,
