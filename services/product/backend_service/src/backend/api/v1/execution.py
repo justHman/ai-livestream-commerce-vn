@@ -390,6 +390,11 @@ async def request_execution_command(
     command = CommandRequest(**wire.model_dump(exclude={"reason_code"}))
     async with _locked(d.store, session_id) as fence:
         meta, state = await _load(d.store, session_id)
+        failure_monitor = getattr(d, "runtime_failures", None)
+        if failure_monitor is not None:
+            meta, state = await failure_monitor.persist_pending_locked(
+                session_id, meta, state, fence
+            )
         if command.command == "start":
             return await _request_start(d, session_id, meta, state, command, fence, request)
         prior = meta.get("execution_command_outcomes", {}).get(command.command_id)

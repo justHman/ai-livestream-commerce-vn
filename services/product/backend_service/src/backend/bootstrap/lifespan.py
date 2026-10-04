@@ -241,6 +241,27 @@ async def _persist_terminal_on_shutdown(container: BootstrapContainer) -> None:
     durable record (or an explicit audited deferral). No-op while disabled."""
     terminal = getattr(container, "terminal_outcomes", None)
     if terminal is not None:
+        monitor = getattr(container, "runtime_failures", None)
+        if monitor is not None:
+            from backend.api.v1.execution import run_with_deadline
+
+            # The worker has stopped, but an accepted fault must still precede
+            # shutdown's durable terminal decision. Every attempt is bounded.
+            for sid, pending in tuple(monitor.pending.items()):
+                if pending.kind != "terminal":
+                    continue
+
+                async def promote(session_id=sid, item=pending):
+                    try:
+                        await monitor._record(session_id, item)
+                    except Exception as exc:
+                        logger.warning(
+                            "shutdown failure evidence retry session=%s class=%s",
+                            session_id,
+                            type(exc).__name__,
+                        )
+
+                await run_with_deadline(promote(), monitor.settings.attempt_timeout)
         extra = set(getattr(container, "orchestrators", {}) or {})
         publishers = getattr(container, "livekit_publishers", None)
         extra.update(getattr(publishers, "session_ids", ()) or ())

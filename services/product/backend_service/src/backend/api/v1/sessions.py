@@ -437,6 +437,12 @@ async def stop_session_internal(d: Any, session_id: str) -> dict[str, Any]:
 
 
 async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) -> dict[str, Any]:
+    failure_monitor = getattr(d, "runtime_failures", None)
+    if failure_monitor is not None and session_id in failure_monitor.pending:
+        from .execution import _load
+
+        meta, state = await _load(d.store, session_id)
+        await failure_monitor.persist_pending_locked(session_id, meta, state, fence)
     entry = d.orchestrators.get(session_id)
     if entry is not None:
         orchestrator = entry["orchestrator"]

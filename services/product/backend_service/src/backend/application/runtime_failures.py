@@ -229,49 +229,79 @@ class RuntimeFailures:
             owner is pending.owner and owner.generation_token == pending.token
         )  # terminal identity is checked against the locked durable state
 
+    async def persist_pending_locked(
+        self, session_id: str, meta: dict[str, Any], state: ExecutionState, fence: Any
+    ) -> tuple[dict[str, Any], ExecutionState]:
+        """Promote an accepted fatal fault before a command/Stop decides terminal.
+
+        The caller already owns the session lock. A failed save aborts that
+        operation; it must not persist success or delete unsaved failure work.
+        """
+        pending = self.pending.get(session_id)
+        if pending is None or pending.kind != "terminal":
+            return meta, state
+        await self._record_locked(session_id, pending, meta, state, fence)
+        if self.pending.get(session_id) is pending:
+            self.pending.pop(session_id, None)
+        from backend.api.v1.execution import _load
+
+        return await _load(self.d.store, session_id)
+
     async def _record(self, session_id: str, pending: Pending) -> bool:
-        from backend.api.v1.execution import _load, _locked, _save, _stage_usage, _settle_usage
+        from backend.api.v1.execution import _load, _locked
 
         async with _locked(self.d.store, session_id) as fence:
             meta, state = await _load(self.d.store, session_id)
-            if (
-                state.model_dump(include=set(ExecutionIdentity.model_fields)) != pending.identity
-                or not self._current(session_id, pending)
-                or state.phase in ("ended", "failed")
-            ):
-                self.counters["stale_reports"] += 1
-                return True
-            meta = copy.deepcopy(meta)
-            evidence = Evidence(
-                **pending.identity,
-                sequence=state.sequence + 1,
-                kind=pending.kind,
-                phase="failed" if pending.kind == "terminal" else state.phase,
-                reason_code="execution_failed" if pending.kind == "terminal" else None,
-                healthy=pending.healthy,
-                occurred_at=pending.occurred_at,
-            )
-            updated = apply_evidence(state, evidence)
-            meta["execution_contract"] = updated.model_dump(mode="json")
-            staged = []
-            if pending.kind == "terminal":
-                meta[bl.FAILURE_KEY] = pending.fault
-                # Shared safety-stop completion marker has a historical lease
-                # name. Its existing pending/settling meaning is unchanged.
-                meta[bl.TERMINATION_KEY] = "pending"
-                meta[ORIGIN_KEY] = True
-                if getattr(self.d, "usage_evidence", None) is not None:
-                    from backend.api.v1.execution import _defer_usage
+            return await self._record_locked(session_id, pending, meta, state, fence)
 
-                    _defer_usage(self.d, meta, state, updated, evidence, session_id)
-            else:
-                staged = await _stage_usage(self.d, meta, state, updated, evidence)
-            try:
-                await _save(self.d.store, session_id, meta, fence)
-            except BaseException as exc:
-                await _settle_usage(self.d, staged, saved=False, failure=exc)
-                raise
-            await _settle_usage(self.d, staged, saved=True)
+    async def _record_locked(
+        self,
+        session_id: str,
+        pending: Pending,
+        meta: dict[str, Any],
+        state: ExecutionState,
+        fence: Any,
+    ) -> bool:
+        from backend.api.v1.execution import _save, _stage_usage, _settle_usage
+
+        if (
+            state.model_dump(include=set(ExecutionIdentity.model_fields)) != pending.identity
+            or not self._current(session_id, pending)
+            or state.phase in ("ended", "failed")
+        ):
+            self.counters["stale_reports"] += 1
+            return True
+        meta = copy.deepcopy(meta)
+        evidence = Evidence(
+            **pending.identity,
+            sequence=state.sequence + 1,
+            kind=pending.kind,
+            phase="failed" if pending.kind == "terminal" else state.phase,
+            reason_code="execution_failed" if pending.kind == "terminal" else None,
+            healthy=pending.healthy,
+            occurred_at=pending.occurred_at,
+        )
+        updated = apply_evidence(state, evidence)
+        meta["execution_contract"] = updated.model_dump(mode="json")
+        staged = []
+        if pending.kind == "terminal":
+            meta[bl.FAILURE_KEY] = pending.fault
+            # Shared safety-stop completion marker has a historical lease
+            # name. Its existing pending/settling meaning is unchanged.
+            meta[bl.TERMINATION_KEY] = "pending"
+            meta[ORIGIN_KEY] = True
+            if getattr(self.d, "usage_evidence", None) is not None:
+                from backend.api.v1.execution import _defer_usage
+
+                _defer_usage(self.d, meta, state, updated, evidence, session_id)
+        else:
+            staged = await _stage_usage(self.d, meta, state, updated, evidence)
+        try:
+            await _save(self.d.store, session_id, meta, fence)
+        except BaseException as exc:
+            await _settle_usage(self.d, staged, saved=False, failure=exc)
+            raise
+        await _settle_usage(self.d, staged, saved=True)
         if pending.kind == "terminal":
             self.counters["failures_saved"] += 1
             self.completion.tracked.add(session_id)
