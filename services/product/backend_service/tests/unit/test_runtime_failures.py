@@ -280,13 +280,17 @@ async def test_hanging_discovery_row_cannot_block_tracked_cleanup(monkeypatch):
     completions = []
     release = asyncio.Event()
     tasks = set()
+    entered = asyncio.Event()
+    cancellation_seen = asyncio.Event()
 
     async def get(sid):
         if sid == "B":
             tasks.add(asyncio.current_task())
+            entered.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
+                cancellation_seen.set()
                 await release.wait()
                 raise
         return await original(sid)
@@ -299,10 +303,17 @@ async def test_hanging_discovery_row_cannot_block_tracked_cleanup(monkeypatch):
     monkeypatch.setattr(service.completion, "_complete", complete)
     sweep = asyncio.create_task(service.sweep())
     try:
-        done, _ = await asyncio.wait({sweep}, timeout=0.2)
+        # Synchronize on the actual stalled read. The outer guard is a test
+        # deadlock bound, not a production latency SLA; loaded CI can pause
+        # the event loop longer than 200 ms. Completion must still precede
+        # release of cancellation-resistant discovery.
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        done, _ = await asyncio.wait({sweep}, timeout=2)
         assert sweep in done, "discovery stalled readable tracked completion"
         sweep.result()
         assert completions == ["A"]
+        assert cancellation_seen.is_set() and not release.is_set()
+        assert any(not task.done() for task in tasks)
         assert service.health()["attempt_errors"] >= 1
     finally:
         release.set()
