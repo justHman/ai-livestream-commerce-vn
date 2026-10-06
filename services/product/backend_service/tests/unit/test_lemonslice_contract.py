@@ -14,7 +14,7 @@ from backend.application.clients.avatar.lemonslice import (
 )
 from backend.application.render.engines_base import StartOptions
 
-from .lemonslice_double import FakeLemonSlice, FakeRoom, FakeStatusError
+from .lemonslice_double import FakeLemonSlice, FakeRoom, FakeStatusError, fake_plugin_modules
 from .test_lemonslice_backend import LS_KEY, make, settings, win
 from .test_lemonslice_races import until
 
@@ -141,50 +141,42 @@ def test_age_guard_disabled_with_zero():
 # ---- P0-FB-010c: session start goes through the plugin API client (library only) ------------
 
 
-def _fake_plugin_modules(monkeypatch, made: list):
-    import sys
-    import types
-
-    class Opts:
-        def __init__(self, max_retry=3, timeout=10.0):
-            self.max_retry, self.timeout = max_retry, timeout
-
-    class Api:
-        def __init__(self, **kw):
-            made.append(kw)
-
-    agents = types.ModuleType("livekit.agents")
-    setattr(agents, "APIConnectOptions", Opts)
-    api = types.ModuleType("livekit.plugins.lemonslice.api")
-    setattr(api, "LemonSliceAPI", Api)
-    monkeypatch.setitem(sys.modules, "livekit.agents", agents)
-    monkeypatch.setitem(sys.modules, "livekit.plugins.lemonslice.api", api)
-
-
 def test_default_client_is_the_plugin_api_client_with_retries_disabled(monkeypatch):
-    from backend.application.clients.avatar.lemonslice import _plugin_client_factory
+    from backend.application.clients.avatar.lemonslice import _load_plugin, _plugin_client_factory
 
     made: list = []
-    _fake_plugin_modules(monkeypatch, made)
-    _plugin_client_factory(settings(request_timeout_s=7.0))()
+    fake_plugin_modules(monkeypatch, made)
+    _plugin_client_factory(settings(request_timeout_s=7.0), _load_plugin())()
     kw = made[0]
     assert kw["api_url"] == f"{BASE}/sessions" and kw["api_key"] == LS_KEY
     # a retried POST could start a second billable session
     assert kw["conn_options"].max_retry == 0 and kw["conn_options"].timeout == 7.0
 
 
-def test_missing_plugin_is_a_typed_start_error_not_a_raw_rest_fallback(monkeypatch):
+def test_missing_plugin_fails_fast_at_construction_with_a_typed_error(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "livekit.plugins.lemonslice.api", None)  # ImportError
-    room = FakeRoom()
-    rest = FakeLemonSlice(room)
-    backend = LemonSliceRenderBackend(settings(), room_factory=lambda: room, http_post=rest)
     with pytest.raises(LemonSliceError) as err:
-        backend.start(StartOptions())
+        LemonSliceRenderBackend(settings(), room_factory=lambda: FakeRoom())
     assert err.value.code == "plugin_not_installed" and err.value.__context__ is None
-    assert rest.calls == [] and room.disconnected
-    backend.stop_all()
+
+
+def test_plugin_init_failure_fails_fast_with_a_typed_error(monkeypatch):
+    import sys
+    import types
+
+    fake_plugin_modules(monkeypatch, [])  # livekit.agents importable even without the extra
+
+    class Boom(types.ModuleType):
+        def __getattr__(self, name):
+            raise RuntimeError("Plugins must be registered on the main thread")
+
+    monkeypatch.setitem(sys.modules, "livekit.plugins.lemonslice.api", Boom("x"))
+    with pytest.raises(LemonSliceError) as err:
+        LemonSliceRenderBackend(settings(), room_factory=lambda: FakeRoom())
+    assert err.value.code == "plugin_init_failed" and "RuntimeError" in str(err.value)
+    assert err.value.__context__ is None and "main thread" not in str(err.value)
 
 
 @pytest.mark.parametrize(
@@ -210,11 +202,13 @@ def test_plugin_client_failure_is_redacted_typed_and_leaves_the_room(exc, expect
 
 def test_slow_plugin_start_hits_the_request_deadline():
     backend, room, rest = make(request_timeout_s=0.2, ready_timeout_s=2.0)
-    rest.hold()
+    release = rest.hold()
     with pytest.raises(LemonSliceError) as err:
         backend.start(StartOptions())
     assert err.value.code == "session_request_failed" and "TimeoutError" in str(err.value)
     assert room.disconnected
+    release.set()  # the late session lands: the reaper ends it
+    assert until(lambda: [e for _, e in rest.controls] == ["terminate"], 5)
     backend.stop_all()
 
 

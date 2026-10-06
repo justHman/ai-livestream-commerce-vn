@@ -219,25 +219,64 @@ AsyncHttpPost = Callable[
 
 SessionClientFactory = Callable[[], Any]  # -> async context manager with start_agent_session
 
+_PLUGIN_LOGGER = "livekit.plugins.lemonslice"
+# A started provider session lives until it is terminated: bound the creation task by the
+# plugin's own total request timeout (60 s) plus a margin, never by the caller's deadline.
+_CREATE_HARD_BOUND_S = 70.0
+_STD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
+    "message",
+    "asctime",
+    "taskName",
+}
 
-def _plugin_client_factory(s: LemonSliceSettings) -> SessionClientFactory:
+
+class _PluginLogRedactor(logging.Filter):
+    """The plugin logs provider bodies as record extras and exceptions with tracebacks (which
+    embed the provider URL). Strip all of that before any handler sees the record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.exc_info = record.exc_text = record.stack_info = None
+        for key in [k for k in vars(record) if k not in _STD_RECORD_ATTRS and k != "status_code"]:
+            delattr(record, key)
+        if record.args:  # formatted values may carry provider text: keep the static template
+            record.msg, record.args = str(record.msg).split("%", 1)[0] or "redacted", ()
+        return True
+
+
+def _load_plugin() -> tuple[Any, Any]:
+    """Import the plugin on the CALLING thread (its package registers itself at import and
+    requires the main thread) and fence its logger. Typed, redacted errors; no exception chain."""
+    error: LemonSliceError | None = None
+    found: tuple[Any, Any] | None = None
+    try:
+        from livekit.agents import APIConnectOptions  # type: ignore
+        from livekit.plugins.lemonslice.api import LemonSliceAPI  # type: ignore
+
+        found = (APIConnectOptions, LemonSliceAPI)
+    except ImportError:
+        error = LemonSliceError(
+            "plugin_not_installed",
+            "livekit-plugins-lemonslice is not installed (install the 'lemonslice' extra)",
+        )
+    except Exception as exc:  # e.g. RuntimeError: plugins must be registered on the main thread
+        error = LemonSliceError(
+            "plugin_init_failed",
+            f"livekit-plugins-lemonslice failed to initialize error_type={type(exc).__name__}",
+        )
+    if error is not None:
+        raise error
+    plugin_log = logging.getLogger(_PLUGIN_LOGGER)
+    if not any(isinstance(f, _PluginLogRedactor) for f in plugin_log.filters):
+        plugin_log.addFilter(_PluginLogRedactor())
+    assert found is not None
+    return found
+
+
+def _plugin_client_factory(s: LemonSliceSettings, plugin: tuple[Any, Any]) -> SessionClientFactory:
     """Real client: the LemonSlice LiveKit Agents plugin API client, used as a library only."""
+    connect_options, api_cls = plugin
 
     def factory() -> Any:
-        found: tuple[Any, Any] | None = None
-        try:
-            from livekit.agents import APIConnectOptions  # type: ignore
-            from livekit.plugins.lemonslice.api import LemonSliceAPI  # type: ignore
-
-            found = (APIConnectOptions, LemonSliceAPI)
-        except ImportError:
-            pass
-        if found is None:  # raised outside the except block: no __context__
-            raise LemonSliceError(
-                "plugin_not_installed",
-                "livekit-plugins-lemonslice is not installed (install the 'lemonslice' extra)",
-            )
-        connect_options, api_cls = found
         return api_cls(
             api_key=s.lemonslice_api_key,
             api_url=f"{s.api_base.rstrip('/')}/sessions",
@@ -379,7 +418,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._mono = monotonic
         self._s = settings
         self._room_factory = room_factory or self._default_room
-        self._session_client = session_client_factory or _plugin_client_factory(settings)
+        self._session_client = session_client_factory or _plugin_client_factory(
+            settings, _load_plugin()
+        )
         self._post = http_post or _httpx_post  # control endpoint only (terminate, keep-alive)
         # Control calls run cancellably on the loop (real httpx.AsyncClient) unless a sync fake
         # http_post is injected (then they run in a worker thread, guarded by the control lock).
@@ -443,7 +484,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             for t in pending:
                 t.cancel()
         if pending:
-            await asyncio.wait(pending, timeout=self._s.request_timeout_s * 3 + 5)
+            bound = (
+                _CREATE_HARD_BOUND_S + 5 if pool == "reapers" else self._s.request_timeout_s * 3 + 5
+            )
+            await asyncio.wait(pending, timeout=bound)
         for t in pending:
             if not t.done():
                 log.error("lemonslice %s task did not finish within its bound", pool)
@@ -586,7 +630,18 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             post_task = asyncio.ensure_future(
                 self._request_session(agent_id, avatar_token, await self._room_sid(room, room_name))
             )
-            sid = await asyncio.shield(post_task)
+            # The creation is an owned task: the caller's deadline stops WAITING for it, never
+            # the request itself (a cancelled request loses the session id of a billable session).
+            timed_out = False
+            try:
+                sid = await asyncio.wait_for(asyncio.shield(post_task), s.request_timeout_s)
+            except TimeoutError:
+                timed_out = True
+            if timed_out:  # post_task stays set: the failure path hands it to the reaper
+                raise LemonSliceError(
+                    "session_request_failed",
+                    "LemonSlice session request failed error_type=TimeoutError",
+                )
             post_task = None
             if not isinstance(sid, str) or not _SAFE_SESSION_ID.fullmatch(sid):
                 # never interpolate a foreign value into a URL carrying the API key
@@ -650,15 +705,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         failure: Exception | None = None
         try:
             async with self._session_client() as client:
-                return await asyncio.wait_for(
-                    client.start_agent_session(
-                        livekit_url=s.livekit_url,
-                        livekit_token=avatar_token,
-                        livekit_session_id=room_sid,
-                        agent_id=agent_id,
-                        idle_timeout=s.idle_timeout_s,
-                    ),
-                    s.request_timeout_s,
+                return await client.start_agent_session(
+                    livekit_url=s.livekit_url,
+                    livekit_token=avatar_token,
+                    livekit_session_id=room_sid,
+                    agent_id=agent_id,
+                    idle_timeout=s.idle_timeout_s,
                 )
         except (asyncio.CancelledError, LemonSliceError):
             raise
@@ -738,8 +790,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     async def _reap_late_session(self, post_task: asyncio.Future) -> None:
         """End a provider session whose creation outlived its caller."""
         try:
-            sid = await asyncio.wait_for(asyncio.shield(post_task), self._s.request_timeout_s * 3)
+            sid = await asyncio.wait_for(asyncio.shield(post_task), _CREATE_HARD_BOUND_S)
         except BaseException as exc:
+            post_task.cancel()  # hard bound reached (or shutdown): the request must not linger
             log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
             return
         if isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):

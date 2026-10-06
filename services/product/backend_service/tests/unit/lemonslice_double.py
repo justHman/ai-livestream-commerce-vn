@@ -289,3 +289,23 @@ class FakeLemonSlice:
         if self.control_raise is not None:
             raise self.control_raise
         return self.control_status, {}
+
+
+def fake_plugin_modules(monkeypatch, made: list):
+    import sys
+    import types
+
+    class Opts:
+        def __init__(self, max_retry=3, timeout=10.0):
+            self.max_retry, self.timeout = max_retry, timeout
+
+    class Api:
+        def __init__(self, **kw):
+            made.append(kw)
+
+    agents = types.ModuleType("livekit.agents")
+    setattr(agents, "APIConnectOptions", Opts)
+    api = types.ModuleType("livekit.plugins.lemonslice.api")
+    setattr(api, "LemonSliceAPI", Api)
+    monkeypatch.setitem(sys.modules, "livekit.agents", agents)
+    monkeypatch.setitem(sys.modules, "livekit.plugins.lemonslice.api", api)

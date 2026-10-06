@@ -26,7 +26,7 @@ from backend.config import AppConfig
 
 from . import test_approved_speech_active as speech_tests
 from . import test_autonomous_start as start_tests
-from .lemonslice_double import AVATAR, FakeLemonSlice, FakeRoom
+from .lemonslice_double import fake_plugin_modules, AVATAR, FakeLemonSlice, FakeRoom
 
 case_factory = speech_tests.case_factory
 
@@ -308,6 +308,7 @@ def _cfg(monkeypatch, **env):
 
 
 def test_config_builds_lemonslice_backend(monkeypatch):
+    fake_plugin_modules(monkeypatch, [])  # the plugin is an optional extra
     assert _cfg(monkeypatch).build_render_backend().name == "cloud_lemonslice"
 
 
