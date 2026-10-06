@@ -220,26 +220,31 @@ AsyncHttpPost = Callable[
 SessionClientFactory = Callable[[], Any]  # -> async context manager with start_agent_session
 
 _PLUGIN_LOGGER = "livekit.plugins.lemonslice"
-# A started provider session lives until it is terminated: bound the creation task by the
-# plugin's own total request timeout (60 s) plus a margin, never by the caller's deadline.
-_CREATE_HARD_BOUND_S = 70.0
 _STD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
     "message",
     "asctime",
     "taskName",
 }
+# A started provider session lives until it is terminated: bound the creation task by the
+# plugin's own total request timeout (60 s) plus a margin, never by the caller's deadline.
+_CREATE_HARD_BOUND_S = 70.0
 
 
 class _PluginLogRedactor(logging.Filter):
-    """The plugin logs provider bodies as record extras and exceptions with tracebacks (which
-    embed the provider URL). Strip all of that before any handler sees the record."""
+    """Replace EVERY plugin record by a static message. The plugin formats provider data into
+    its messages (f-strings, extras, tracebacks with the provider URL), so dynamic text is never
+    sanitized, only dropped. An int ``status_code`` extra is the one allowlisted field."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        status = record.__dict__.get("status_code")
+        keep = status if isinstance(status, int) and not isinstance(status, bool) else None
+        record.msg = f"lemonslice plugin event level={record.levelname} logger={record.name}"
+        record.args = ()
         record.exc_info = record.exc_text = record.stack_info = None
-        for key in [k for k in vars(record) if k not in _STD_RECORD_ATTRS and k != "status_code"]:
+        for key in [k for k in vars(record) if k not in _STD_RECORD_ATTRS]:
             delattr(record, key)
-        if record.args:  # formatted values may carry provider text: keep the static template
-            record.msg, record.args = str(record.msg).split("%", 1)[0] or "redacted", ()
+        if keep is not None:
+            record.status_code = keep
         return True
 
 
@@ -265,9 +270,14 @@ def _load_plugin() -> tuple[Any, Any]:
         )
     if error is not None:
         raise error
-    plugin_log = logging.getLogger(_PLUGIN_LOGGER)
-    if not any(isinstance(f, _PluginLogRedactor) for f in plugin_log.filters):
-        plugin_log.addFilter(_PluginLogRedactor())
+    # a logger filter does not see records of child loggers: fence every plugin logger
+    names = [_PLUGIN_LOGGER] + [
+        n for n in list(logging.root.manager.loggerDict) if n.startswith(_PLUGIN_LOGGER + ".")
+    ]
+    for name in names:
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, _PluginLogRedactor) for f in lg.filters):
+            lg.addFilter(_PluginLogRedactor())
     assert found is not None
     return found
 
@@ -473,6 +483,17 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         fut.cancel()  # never leave the coroutine running after the caller gave up
         raise LemonSliceError("timeout", "LemonSlice backend call timed out")
 
+    def _drain_budget(self, pool: str) -> float:
+        """Shutdown wait per pool, from the configured timers (never a fixed constant): a
+        teardown is one keep-alive wait + the clear/leave I/O + ``terminate_attempts`` control
+        calls of ``control_deadline_s`` each (+ the pause between attempts); a late-session
+        reaper first waits out the creation bound, then runs that same terminate policy."""
+        s = self._s
+        attempts = s.terminate_attempts if isinstance(s.terminate_attempts, int) else 2
+        terminate = max(1, attempts) * (self._deadline() + 0.5)
+        teardown = self._deadline() + 1 + s.clear_budget_s + 2 * s.io_timeout_s + terminate + 5
+        return teardown + (_CREATE_HARD_BOUND_S if pool == "reapers" else 0.0)
+
     async def _drain(self, pool: str) -> None:
         """startups: cancel + await (their cleanup runs inside). cleanups/reapers: await only."""
         me = asyncio.current_task()
@@ -484,10 +505,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             for t in pending:
                 t.cancel()
         if pending:
-            bound = (
-                _CREATE_HARD_BOUND_S + 5 if pool == "reapers" else self._s.request_timeout_s * 3 + 5
-            )
-            await asyncio.wait(pending, timeout=bound)
+            await asyncio.wait(pending, timeout=self._drain_budget(pool))
         for t in pending:
             if not t.done():
                 log.error("lemonslice %s task did not finish within its bound", pool)
@@ -916,6 +934,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         try:
             if self._loop is not None:
                 self._run(self._drain("startups"))  # cancelled startups clean up inside their task
+            # Order is explicit: startups are cancelled, then every session is stopped
+            # (provider terminate BEFORE the room is left), then cleanups and late-session
+            # reapers finish their own terminate retries within their budget.
             for sid in list(self._sessions):
                 try:
                     self.stop(sid)

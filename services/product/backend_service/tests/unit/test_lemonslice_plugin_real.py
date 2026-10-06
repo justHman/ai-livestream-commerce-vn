@@ -85,7 +85,12 @@ class _Provider:
                     self.end_headers()
                     self.wfile.write(data)
                     return
-                data = json.dumps({"session_id": "ls-slow-1"}).encode()
+                sid = (
+                    "https://provider.invalid/private-response-body"
+                    if outer.mode == "bad_id"
+                    else "ls-slow-1"
+                )
+                data = json.dumps({"session_id": sid}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
@@ -154,3 +159,21 @@ def test_plugin_failure_logs_contain_no_provider_url_body_or_traceback(provider,
         text = rec.getMessage() + " " + json.dumps(rec.__dict__, default=str)
         assert p.url not in text and "127.0.0.1" not in text and LS_KEY not in text
         assert not rec.exc_info and not rec.exc_text
+
+
+def test_provider_text_in_a_malformed_session_id_never_reaches_any_log_record(provider, caplog):
+    p = provider("bad_id")
+    backend, room = _backend(p)
+    with caplog.at_level(logging.DEBUG, logger="livekit.plugins.lemonslice"):
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(LemonSliceError):
+                backend.start(StartOptions())
+    backend.stop_all()
+    assert p.creates and not p.terminates  # an unusable id is never interpolated into a URL
+    plugin_records = [r for r in caplog.records if r.name.startswith("livekit.plugins.lemonslice")]
+    assert plugin_records  # the plugin did log; every record is the static replacement
+    for rec in plugin_records:
+        assert rec.getMessage().startswith("lemonslice plugin event level=")
+        assert not rec.args and not rec.exc_info
+    for fragment in ("provider.invalid", "private-response-body", "https://"):
+        assert fragment not in caplog.text
