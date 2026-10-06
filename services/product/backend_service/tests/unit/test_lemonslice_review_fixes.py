@@ -402,7 +402,7 @@ def test_real_httpx_keepalive_is_cancelled_before_terminate_and_nothing_follows(
 
     from backend.application.clients.avatar.lemonslice import LemonSliceRenderBackend
 
-    from .lemonslice_double import FakeRoom
+    from .lemonslice_double import FakeLemonSlice, FakeRoom
 
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     srv = _DripServer()
@@ -411,6 +411,7 @@ def test_real_httpx_keepalive_is_cancelled_before_terminate_and_nothing_follows(
     backend = LemonSliceRenderBackend(
         settings(api_base=srv.url, keepalive_s=0.03, request_timeout_s=0.3),
         room_factory=lambda: room,
+        session_client_factory=FakeLemonSlice(room).client_factory,
     )
     try:
         backend.start(StartOptions())
@@ -454,14 +455,12 @@ def test_terminate_waits_for_the_cancelled_keepalive_to_finish_aborting():
 
     from backend.application.clients.avatar.lemonslice import LemonSliceRenderBackend
 
-    from .lemonslice_double import FakeRoom
+    from .lemonslice_double import FakeLemonSlice, FakeRoom
 
     order: list[str] = []
 
     async def post(url, headers, body, timeout):
         event = body.get("event")
-        if event is None:
-            return 200, {"session_id": "ls-1"}
         if event == "terminate":
             order.append("terminate")
             return 200, {}
@@ -477,8 +476,9 @@ def test_terminate_waits_for_the_cancelled_keepalive_to_finish_aborting():
     backend = LemonSliceRenderBackend(
         settings(keepalive_s=0.03, control_deadline_s=5.0),
         room_factory=lambda: room,
+        session_client_factory=FakeLemonSlice(room).client_factory,
         async_http_post=post,
-        http_post=lambda *a: (200, {"session_id": "ls-1"}),
+        http_post=lambda *a: (200, {}),
     )
     backend.start(StartOptions())
     time.sleep(0.2)

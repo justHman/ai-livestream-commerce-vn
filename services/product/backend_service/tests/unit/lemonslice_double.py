@@ -3,7 +3,7 @@
 A fake ``rtc.Room`` plus a fake avatar participant. It records every data-stream
 write, RPC and track event with timestamps, and implements the avatar side of
 ``lk.playback_started`` / ``lk.playback_finished`` / ``lk.clear_buffer``.
-``FakeLemonSlice`` also serves the control endpoint (``controls``: terminate and
+``FakeLemonSlice`` is the plugin-client double (session start) and also serves the control endpoint (``controls``: terminate and
 reset-idle-timeout events; ``control_status`` / ``control_raise`` inject failures).
 Modes: ``normal`` | ``video_only`` (the avatar publishes no audio) | ``never``
 (the avatar never joins) | ``silent`` (never sends playback_finished).
@@ -120,6 +120,7 @@ class FakeRoom:
         self.fail: dict[str, BaseException] = {}  # raise this at the named gate, once
         self.hits: dict[str, threading.Event] = {}
         self.queue_cleared = 0
+        self.room_sid = "RM_fake"
 
     # -- deterministic gates (thread-safe: the test thread controls the loop thread)
     def hold(self, name: str, *, resistant: bool = False) -> None:
@@ -175,6 +176,13 @@ class FakeRoom:
     def times(self, kind):
         return [e.at for e in self.events if e.kind == kind]
 
+    @property
+    def sid(self):  # rtc.Room.sid is awaitable
+        async def get():
+            return self.room_sid
+
+        return get()
+
     async def connect(self, url, token):
         self.loop = asyncio.get_running_loop()
         self.connected_token = jwt.decode(token, options={"verify_signature": False})
@@ -213,33 +221,91 @@ class FakeRoom:
         )
 
 
+class FakeStatusError(Exception):
+    """Like the plugin's APIStatusError: carries ``status_code`` and a provider ``body``."""
+
+    def __init__(self, status_code: int, body: str = "") -> None:
+        super().__init__(f"LemonSlice Server returned an error {body}")
+        self.status_code, self.body = status_code, body
+
+
+class _PluginClient:
+    """Double of ``LemonSliceAPI`` (async context manager + ``start_agent_session``)."""
+
+    def __init__(self, fake: "FakeLemonSlice") -> None:
+        self.fake = fake
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+    async def start_agent_session(self, **kw) -> str:
+        f = self.fake
+        f.starts.append(kw)
+        if f._hold is not None:
+            f.parked.set()
+            while not f._hold.is_set():
+                await asyncio.sleep(0.005)
+        if f.start_raise is not None:
+            raise f.start_raise
+        if f.status >= 300:
+            raise FakeStatusError(f.status, "provider says no")
+        f.room.avatar_joins()
+        return f.session_id
+
+
 class FakeLemonSlice:
-    """Fake REST endpoint; launching a session makes the avatar join the room."""
+    """Fake plugin client (session start) plus the control endpoint (``__call__``).
+
+    Launching a session makes the avatar join the room.
+    """
 
     def __init__(self, room: FakeRoom, status: int = 200) -> None:
         self.room, self.status, self.calls = room, status, []
         self.parked = threading.Event()
         self._hold: threading.Event | None = None
+        self.starts: list[dict] = []  # kwargs of every plugin start_agent_session call
+        self.start_raise: BaseException | None = None
         self.controls: list[tuple[str, str]] = []  # (url, event) of every control POST
         self.control_status = 200
         self.control_raise: BaseException | None = None  # raised by every control POST
-        self.session_id = "ls-1"  # what the REST create call answers
+        self.session_id = "ls-1"  # what the plugin client answers
+
+    def client_factory(self) -> _PluginClient:
+        return _PluginClient(self)
 
     def hold(self) -> threading.Event:
-        """Park the next REST call until the returned event is set (REST creation delay)."""
+        """Park the next session start until the returned event is set (creation delay)."""
         self._hold = threading.Event()
         return self._hold
 
     def __call__(self, url, headers, body, timeout):
+        """Control endpoint only: terminate | reset-idle-timeout."""
         self.calls.append((url, headers, body))
-        if "event" in body:  # control endpoint: terminate | reset-idle-timeout
-            self.controls.append((url, body["event"]))
-            if self.control_raise is not None:
-                raise self.control_raise
-            return self.control_status, {}
-        if self._hold is not None and body.get("properties"):
-            self.parked.set()
-            self._hold.wait(10)
-        if self.status < 300 and body.get("properties"):
-            self.room.avatar_joins()
-        return self.status, {"session_id": self.session_id} if self.status < 300 else {}
+        assert "event" in body, "session start must go through the plugin client, not raw REST"
+        self.controls.append((url, body["event"]))
+        if self.control_raise is not None:
+            raise self.control_raise
+        return self.control_status, {}
+
+
+def fake_plugin_modules(monkeypatch, made: list):
+    import sys
+    import types
+
+    class Opts:
+        def __init__(self, max_retry=3, timeout=10.0):
+            self.max_retry, self.timeout = max_retry, timeout
+
+    class Api:
+        def __init__(self, **kw):
+            made.append(kw)
+
+    agents = types.ModuleType("livekit.agents")
+    setattr(agents, "APIConnectOptions", Opts)
+    api = types.ModuleType("livekit.plugins.lemonslice.api")
+    setattr(api, "LemonSliceAPI", Api)
+    monkeypatch.setitem(sys.modules, "livekit.agents", agents)
+    monkeypatch.setitem(sys.modules, "livekit.plugins.lemonslice.api", api)

@@ -1,9 +1,16 @@
-"""``cloud_lemonslice`` render backend (P0-FB-010, DR-MEDIA-001 Option B1).
+"""``cloud_lemonslice`` render backend (P0-FB-010 / 010c, DR-MEDIA-001 Option B2).
 
 The LemonSlice avatar joins a Livento-owned LiveKit room (room name = runtime
 session id). The Runtime stays the single speaker: guarded TTS PCM is
 resampled and sent over the LiveKit avatar data-stream protocol to the avatar
 participant only. LemonSlice's own LLM/TTS is never enabled.
+
+Session creation goes through LemonSlice's LiveKit Agents plugin API client
+(``livekit.plugins.lemonslice.api.LemonSliceAPI.start_agent_session``), imported as a
+library only: no ``AgentSession``, no Agents worker, no LemonSlice LLM/TTS (support
+answer, Report 87: the raw ``POST /liveai/sessions`` is plugin-only). The plugin client has
+NO control methods, so terminate and keep-alive stay on the documented, separate
+control-session endpoint (``POST .../sessions/{id}/control``).
 
 The seam is sync; ``livekit-rtc`` runs on one backend-owned event-loop thread.
 ``stream_audio`` yields no VideoWindow (the provider renders in the room).
@@ -12,12 +19,12 @@ UNVERIFIED ASSUMPTIONS (gate external proof 023, not local implementation).
 Items tagged DOC-via-assistant come from LemonSlice's own docs assistant: documented but
 NOT verified by a human or against the real service. Behaviour stays configurable and
 fails safe.
-  LS1  ``POST {api_base}/sessions`` (header ``X-API-Key``), body ``transport_type=livekit``
-       and ``properties{livekit_url, livekit_token}``; response ``session_id``.
-       DOC-via-assistant: the schema has NO ``livekit_session_id``; we send it only when
-       ``LEMONSLICE_SEND_LIVEKIT_SESSION_ID`` is on. RISK: the docs advise against using the
-       raw livekit transport directly (prefer the LiveKit/Pipecat SDK); this backend does.
-  LS1t Terminate. DOC-via-assistant: ``POST {api_base}/sessions/{id}/control`` with
+  LS1  Session start = plugin ``LemonSliceAPI(api_url={api_base}/sessions).start_agent_session``
+       (``livekit_url``, agent token, room sid, ``agent_id``, ``idle_timeout``; response
+       ``session_id``). UNVERIFIED: that library-only use without ``AgentSession`` is accepted
+       by LemonSlice (Report 87 action 2). The plugin's own retries are disabled (a retried
+       POST could start a second billable session).
+  LS1t Terminate (not in the plugin client). Documented control endpoint: ``POST {api_base}/sessions/{id}/control`` with
        ``{"event":"terminate"}``; default of ``LEMONSLICE_TERMINATE_PATH`` (``{session_id}``
        placeholder, relative to the API base).
   LS2  the avatar publishes video (and audio); ``lk.audio_stream`` accepts 16 kHz
@@ -38,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import inspect
 import logging
 import math
 import re
@@ -95,7 +103,6 @@ class LemonSliceSettings:
     fallback_publish: bool = False
     render_offset_ms: int = 0
     terminate_path: str = _CONTROL_PATH
-    send_livekit_session_id: bool = False  # not in the documented schema: opt-in only
     keepalive_s: float = 20.0  # reset-idle-timeout period while the avatar is silent; 0 = off
     max_session_s: float = 1500.0  # age guard below the documented 30 min cap; 0 = off
     keepalive_fail_log_after: int = 3
@@ -208,6 +215,86 @@ HttpPost = Callable[[str, dict[str, str], dict[str, Any], float], tuple[int, dic
 AsyncHttpPost = Callable[
     [str, dict[str, str], dict[str, Any], float], Awaitable[tuple[int, dict[str, Any]]]
 ]
+
+
+SessionClientFactory = Callable[[], Any]  # -> async context manager with start_agent_session
+
+_PLUGIN_LOGGER = "livekit.plugins.lemonslice"
+_STD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
+    "message",
+    "asctime",
+    "taskName",
+}
+# A started provider session lives until it is terminated: bound the creation task by the
+# plugin's own total request timeout (60 s) plus a margin, never by the caller's deadline.
+_CREATE_HARD_BOUND_S = 70.0
+
+
+class _PluginLogRedactor(logging.Filter):
+    """Replace EVERY plugin record by a static message. The plugin formats provider data into
+    its messages (f-strings, extras, tracebacks with the provider URL), so dynamic text is never
+    sanitized, only dropped. An int ``status_code`` extra is the one allowlisted field."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        status = record.__dict__.get("status_code")
+        keep = status if isinstance(status, int) and not isinstance(status, bool) else None
+        record.msg = f"lemonslice plugin event level={record.levelname} logger={record.name}"
+        record.args = ()
+        record.exc_info = record.exc_text = record.stack_info = None
+        for key in [k for k in vars(record) if k not in _STD_RECORD_ATTRS]:
+            delattr(record, key)
+        if keep is not None:
+            record.status_code = keep
+        return True
+
+
+def _load_plugin() -> tuple[Any, Any]:
+    """Import the plugin on the CALLING thread (its package registers itself at import and
+    requires the main thread) and fence its logger. Typed, redacted errors; no exception chain."""
+    error: LemonSliceError | None = None
+    found: tuple[Any, Any] | None = None
+    try:
+        from livekit.agents import APIConnectOptions  # type: ignore
+        from livekit.plugins.lemonslice.api import LemonSliceAPI  # type: ignore
+
+        found = (APIConnectOptions, LemonSliceAPI)
+    except ImportError:
+        error = LemonSliceError(
+            "plugin_not_installed",
+            "livekit-plugins-lemonslice is not installed (install the 'lemonslice' extra)",
+        )
+    except Exception as exc:  # e.g. RuntimeError: plugins must be registered on the main thread
+        error = LemonSliceError(
+            "plugin_init_failed",
+            f"livekit-plugins-lemonslice failed to initialize error_type={type(exc).__name__}",
+        )
+    if error is not None:
+        raise error
+    # a logger filter does not see records of child loggers: fence every plugin logger
+    names = [_PLUGIN_LOGGER] + [
+        n for n in list(logging.root.manager.loggerDict) if n.startswith(_PLUGIN_LOGGER + ".")
+    ]
+    for name in names:
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, _PluginLogRedactor) for f in lg.filters):
+            lg.addFilter(_PluginLogRedactor())
+    assert found is not None
+    return found
+
+
+def _plugin_client_factory(s: LemonSliceSettings, plugin: tuple[Any, Any]) -> SessionClientFactory:
+    """Real client: the LemonSlice LiveKit Agents plugin API client, used as a library only."""
+    connect_options, api_cls = plugin
+
+    def factory() -> Any:
+        return api_cls(
+            api_key=s.lemonslice_api_key,
+            api_url=f"{s.api_base.rstrip('/')}/sessions",
+            # max_retry=0: a retried POST could create a second billable provider session
+            conn_options=connect_options(max_retry=0, timeout=s.request_timeout_s),
+        )
+
+    return factory
 
 
 def _httpx_post(url: str, headers: dict, body: dict, timeout: float) -> tuple[int, dict]:
@@ -331,6 +418,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         settings: LemonSliceSettings,
         *,
         room_factory: Callable[[], Any] | None = None,
+        session_client_factory: SessionClientFactory | None = None,
         http_post: HttpPost | None = None,
         async_http_post: AsyncHttpPost | None = None,
         audio_track_factory: Callable[[Any, int], Any] | None = None,
@@ -340,7 +428,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._mono = monotonic
         self._s = settings
         self._room_factory = room_factory or self._default_room
-        self._post = http_post or _httpx_post
+        self._session_client = session_client_factory or _plugin_client_factory(
+            settings, _load_plugin()
+        )
+        self._post = http_post or _httpx_post  # control endpoint only (terminate, keep-alive)
         # Control calls run cancellably on the loop (real httpx.AsyncClient) unless a sync fake
         # http_post is injected (then they run in a worker thread, guarded by the control lock).
         self._async_post = async_http_post or (
@@ -392,6 +483,17 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         fut.cancel()  # never leave the coroutine running after the caller gave up
         raise LemonSliceError("timeout", "LemonSlice backend call timed out")
 
+    def _drain_budget(self, pool: str) -> float:
+        """Shutdown wait per pool, from the configured timers (never a fixed constant): a
+        teardown is one keep-alive wait + the clear/leave I/O + ``terminate_attempts`` control
+        calls of ``control_deadline_s`` each (+ the pause between attempts); a late-session
+        reaper first waits out the creation bound, then runs that same terminate policy."""
+        s = self._s
+        attempts = s.terminate_attempts if isinstance(s.terminate_attempts, int) else 2
+        terminate = max(1, attempts) * (self._deadline() + 0.5)
+        teardown = self._deadline() + 1 + s.clear_budget_s + 2 * s.io_timeout_s + terminate + 5
+        return teardown + (_CREATE_HARD_BOUND_S if pool == "reapers" else 0.0)
+
     async def _drain(self, pool: str) -> None:
         """startups: cancel + await (their cleanup runs inside). cleanups/reapers: await only."""
         me = asyncio.current_task()
@@ -403,7 +505,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             for t in pending:
                 t.cancel()
         if pending:
-            await asyncio.wait(pending, timeout=self._s.request_timeout_s * 3 + 5)
+            await asyncio.wait(pending, timeout=self._drain_budget(pool))
         for t in pending:
             if not t.done():
                 log.error("lemonslice %s task did not finish within its bound", pool)
@@ -543,33 +645,22 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             sess.cleared = _BoundedSet(s.history)
             sess.unconfirmed = _BoundedSet(s.history)
             # Single-speaker: no agent_prompt / LLM / TTS fields are ever sent.
-            body = {
-                "transport_type": "livekit",
-                "agent_id": agent_id,
-                "idle_timeout": s.idle_timeout_s,
-                "properties": {
-                    "livekit_url": s.livekit_url,
-                    "livekit_token": avatar_token,
-                },
-            }
-            if s.send_livekit_session_id:  # undocumented field: opt-in
-                body["properties"]["livekit_session_id"] = room_name
             post_task = asyncio.ensure_future(
-                asyncio.to_thread(
-                    self._post,
-                    f"{s.api_base.rstrip('/')}/sessions",
-                    {"X-API-Key": s.lemonslice_api_key},
-                    body,
-                    s.request_timeout_s,
-                )
+                self._request_session(agent_id, avatar_token, await self._room_sid(room, room_name))
             )
-            status, data = await asyncio.shield(post_task)
-            post_task = None
-            if status >= 300:
+            # The creation is an owned task: the caller's deadline stops WAITING for it, never
+            # the request itself (a cancelled request loses the session id of a billable session).
+            timed_out = False
+            try:
+                sid = await asyncio.wait_for(asyncio.shield(post_task), s.request_timeout_s)
+            except TimeoutError:
+                timed_out = True
+            if timed_out:  # post_task stays set: the failure path hands it to the reaper
                 raise LemonSliceError(
-                    "session_request_failed", f"LemonSlice session request failed status={status}"
+                    "session_request_failed",
+                    "LemonSlice session request failed error_type=TimeoutError",
                 )
-            sid = data.get("session_id")
+            post_task = None
             if not isinstance(sid, str) or not _SAFE_SESSION_ID.fullmatch(sid):
                 # never interpolate a foreign value into a URL carrying the API key
                 raise LemonSliceError(
@@ -617,6 +708,41 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             livekit_url=s.livekit_url,
             livekit_client_token=client_token,
             mode="LEMONSLICE",
+        )
+
+    @staticmethod
+    async def _room_sid(room: Any, room_name: str) -> str:
+        sid = getattr(room, "sid", None)  # rtc.Room.sid is awaitable
+        if inspect.isawaitable(sid):
+            sid = await sid
+        return sid if isinstance(sid, str) and sid else room_name
+
+    async def _request_session(self, agent_id: str, avatar_token: str, room_sid: str) -> Any:
+        """Start the provider session through the plugin client; errors carry no body/URL/key."""
+        s = self._s
+        failure: Exception | None = None
+        try:
+            async with self._session_client() as client:
+                return await client.start_agent_session(
+                    livekit_url=s.livekit_url,
+                    livekit_token=avatar_token,
+                    livekit_session_id=room_sid,
+                    agent_id=agent_id,
+                    idle_timeout=s.idle_timeout_s,
+                )
+        except (asyncio.CancelledError, LemonSliceError):
+            raise
+        except Exception as exc:
+            failure = exc
+        # raised outside the except block: no __context__/__cause__, never the original message
+        status = getattr(failure, "status_code", None)
+        detail = (
+            f"status={status}"
+            if isinstance(status, int)
+            else f"error_type={type(failure).__name__}"
+        )
+        raise LemonSliceError(
+            "session_request_failed", f"LemonSlice session request failed {detail}"
         )
 
     def _new_fallback(self, sess: _Sess, capture: Any, extra: list[Any]) -> _FallbackAudioTrack:
@@ -682,13 +808,11 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     async def _reap_late_session(self, post_task: asyncio.Future) -> None:
         """End a provider session whose creation outlived its caller."""
         try:
-            status, data = await asyncio.wait_for(
-                asyncio.shield(post_task), self._s.request_timeout_s * 3
-            )
+            sid = await asyncio.wait_for(asyncio.shield(post_task), _CREATE_HARD_BOUND_S)
         except BaseException as exc:
+            post_task.cancel()  # hard bound reached (or shutdown): the request must not linger
             log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
             return
-        sid = data.get("session_id") if status < 300 else None
         if isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):
             await self._terminate_provider(SimpleNamespace(provider_session_id=sid))
 
@@ -810,6 +934,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         try:
             if self._loop is not None:
                 self._run(self._drain("startups"))  # cancelled startups clean up inside their task
+            # Order is explicit: startups are cancelled, then every session is stopped
+            # (provider terminate BEFORE the room is left), then cleanups and late-session
+            # reapers finish their own terminate retries within their budget.
             for sid in list(self._sessions):
                 try:
                     self.stop(sid)

@@ -563,7 +563,6 @@ class AppConfig:
     lemonslice_ready_timeout_s: float = 30.0
     lemonslice_avatar_identity: str = "lemonslice-avatar-agent"
     lemonslice_terminate_path: str = "sessions/{session_id}/control"
-    lemonslice_send_livekit_session_id: bool = False
     lemonslice_keepalive_s: float = 20.0
     lemonslice_max_session_s: float = 1500.0
     lemonslice_control_deadline_s: float = 15.0
@@ -665,10 +664,6 @@ class AppConfig:
             or "lemonslice-avatar-agent",
             lemonslice_terminate_path=os.environ.get("LEMONSLICE_TERMINATE_PATH")
             or "sessions/{session_id}/control",
-            lemonslice_send_livekit_session_id=os.environ.get(
-                "LEMONSLICE_SEND_LIVEKIT_SESSION_ID", "0"
-            ).lower()
-            in ("1", "true", "on", "yes"),
             lemonslice_keepalive_s=_timer_env("LEMONSLICE_KEEPALIVE_S", "20"),
             lemonslice_max_session_s=_timer_env("LEMONSLICE_MAX_SESSION_S", "1500"),
             lemonslice_control_deadline_s=_positive_timer_env(
@@ -852,7 +847,6 @@ class AppConfig:
                 fallback_publish=self.avatar_audio_fallback_publish,
                 render_offset_ms=self.avatar_render_offset_ms,
                 terminate_path=self.lemonslice_terminate_path,
-                send_livekit_session_id=self.lemonslice_send_livekit_session_id,
                 keepalive_s=self.lemonslice_keepalive_s,
                 max_session_s=self.lemonslice_max_session_s,
                 control_deadline_s=self.lemonslice_control_deadline_s,

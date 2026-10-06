@@ -26,7 +26,7 @@ from backend.config import AppConfig
 
 from . import test_approved_speech_active as speech_tests
 from . import test_autonomous_start as start_tests
-from .lemonslice_double import AVATAR, FakeLemonSlice, FakeRoom
+from .lemonslice_double import fake_plugin_modules, AVATAR, FakeLemonSlice, FakeRoom
 
 case_factory = speech_tests.case_factory
 
@@ -63,7 +63,11 @@ def make(mode="normal", status=200, play_delay=0.05, **kw):
         return publish, capture
 
     backend = LemonSliceRenderBackend(
-        settings(**kw), room_factory=lambda: room, http_post=rest, audio_track_factory=track_factory
+        settings(**kw),
+        room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
+        http_post=rest,
+        audio_track_factory=track_factory,
     )
     return backend, room, rest
 
@@ -91,16 +95,24 @@ def started():
 
 def test_start_posts_single_speaker_body_and_scopes_avatar_token(started):
     backend, room, rest, res = started
-    url, headers, body = rest.calls[0]
-    assert url == "https://lemonslice.com/api/liveai/sessions"
-    assert headers == {"X-API-Key": LS_KEY}
-    assert set(body) == {"transport_type", "agent_id", "idle_timeout", "properties"}
-    assert body["transport_type"] == "livekit" and body["agent_id"] == "agent-preset"
-    avatar = jwt.decode(body["properties"]["livekit_token"], options={"verify_signature": False})
+    (call,) = rest.starts
+    # exactly the plugin client's single-speaker arguments: no prompt / LLM / TTS / image fields
+    assert set(call) == {
+        "livekit_url",
+        "livekit_token",
+        "livekit_session_id",
+        "agent_id",
+        "idle_timeout",
+    }
+    assert call["agent_id"] == "agent-preset" and call["idle_timeout"] == 60
+    assert (
+        call["livekit_url"] == "wss://lk.example.test" and call["livekit_session_id"] == "RM_fake"
+    )
+    assert rest.calls == []  # no raw REST call: start never bypasses the plugin client
+    avatar = jwt.decode(call["livekit_token"], options={"verify_signature": False})
     assert avatar["kind"] == "agent" and avatar["sub"] == AVATAR
     assert avatar["attributes"] == {"lk.publish_on_behalf": "livento-runtime"}
     assert avatar["video"]["room"] == res.session_id
-    assert set(body["properties"]) == {"livekit_url", "livekit_token"}
     assert avatar["exp"] - avatar["nbf"] <= 300
     assert res.mode == "LEMONSLICE"
 
@@ -296,6 +308,7 @@ def _cfg(monkeypatch, **env):
 
 
 def test_config_builds_lemonslice_backend(monkeypatch):
+    fake_plugin_modules(monkeypatch, [])  # the plugin is an optional extra
     assert _cfg(monkeypatch).build_render_backend().name == "cloud_lemonslice"
 
 
