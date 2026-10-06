@@ -176,6 +176,7 @@ class DirectorCoordinator:
         self._autonomous_openings: dict[str, str] = {}
         # (session, "close" | "answer:<cluster>") -> (consecutive rejections, monotonic not-before)
         self._backoff: dict[tuple[str, str], tuple[int, float]] = {}
+        self._backoff_members: dict[tuple[str, str], tuple[str, ...]] = {}
         self._monotonic = time.monotonic
         self._opening_media: dict[str, dict] = {}
         # Optional Postgres runtime store (durable rows). None/disabled -> no
@@ -400,6 +401,7 @@ class DirectorCoordinator:
         self._autonomous_openings.pop(session_id, None)
         for key in [k for k in self._backoff if k[0] == session_id]:
             del self._backoff[key]
+            self._backoff_members.pop(key, None)
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
@@ -455,8 +457,14 @@ class DirectorCoordinator:
         if key is None:
             return
         count = self._backoff.get((session_id, key), (0, 0.0))[0] + 1
-        delay = min(CLOSE_REJECT_BACKOFF_SEC * 2 ** (count - 1), CLOSE_REJECT_BACKOFF_MAX_SEC)
+        delay = CLOSE_REJECT_BACKOFF_SEC
+        for _ in range(count - 1):
+            delay = min(delay * 2, CLOSE_REJECT_BACKOFF_MAX_SEC)
+            if delay == CLOSE_REJECT_BACKOFF_MAX_SEC:
+                break
         self._backoff[(session_id, key)] = (count, self._monotonic() + delay)
+        if decision.cluster_member_ids and decision.source_cluster_id is None:
+            self._backoff_members[(session_id, key)] = decision.cluster_member_ids
 
     def _record_cancelled(self, session_id: str, decision: Decision, reason: str) -> None:
         if decision.is_cancelled:
@@ -1019,6 +1027,16 @@ class DirectorCoordinator:
                 else lambda cid: self._reducer.provenance_for(session_id, cid)
             ),
         )
+        # Exclude only this rejected cluster BEFORE ranking. Breaking after the
+        # winner is selected would starve lower-ranked questions and sales turns.
+        selections = [
+            selection
+            for selection in selections
+            if self._monotonic()
+            >= self._backoff.get((session_id, f"answer:{selection.envelope.cluster_id}"), (0, 0.0))[
+                1
+            ]
+        ]
         high_value_ids = projection.high_value_cluster_ids(selections)
         return projection.decide_from_reducer(
             selections, now, high_value_ids=high_value_ids.__contains__
@@ -1037,6 +1055,21 @@ class DirectorCoordinator:
             projection.mark_spoken(decision)
         for decision in self._speech_queue.get(session_id, ()):
             projection.mark_spoken(decision)
+        # Legacy selectors cluster rolling comments themselves. Remove rejected
+        # members from this disposable projection only: never mark the real
+        # Director/reducer state answered or delete comments that were not spoken.
+        blocked_members = {
+            member
+            for key, members in self._backoff_members.items()
+            if key[0] == session_id and self._monotonic() < self._backoff.get(key, (0, 0.0))[1]
+            for member in members
+        }
+        if blocked_members:
+            projection.state.rolling_comments = [
+                comment
+                for comment in projection.state.rolling_comments
+                if comment.id not in blocked_members
+            ]
         return projection
 
     async def _fill_prepared(self, session_id: str) -> None:
@@ -1660,6 +1693,7 @@ class DirectorCoordinator:
         key = self._backoff_key(decision)
         if key is not None:
             self._backoff.pop((session_id, key), None)
+            self._backoff_members.pop((session_id, key), None)
         # Advance cursor only for proactive (non-reactive) actions.
         if decision.action in (
             "speak_hook",
