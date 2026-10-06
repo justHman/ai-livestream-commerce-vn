@@ -63,6 +63,7 @@ def make(mode="normal", http_post=None, **kw):
     backend = LemonSliceRenderBackend(
         settings(**kw),
         room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
         http_post=http_post or rest,
         audio_track_factory=track_factory,
     )
@@ -669,7 +670,7 @@ def test_start_timeout_cancels_startup_and_ends_a_session_created_late():
     assert err.value.code == "timeout" and err.value.__context__ is None
     assert rest.parked.is_set()
     threading.Timer(0.1, release.set).start()  # the lost REST response finally lands
-    assert until(lambda: rest.calls[-1][0].endswith("/sessions/ls-1/terminate"), 8)
+    assert until(lambda: any(u.endswith("/sessions/ls-1/terminate") for u, _ in rest.controls), 8)
     assert until(lambda: room.disconnected, 5)
     assert backend._sessions == {}
     backend.stop_all()
@@ -742,19 +743,14 @@ def test_stuck_disconnect_does_not_hang_stop():
 
 def test_terminate_failure_is_retried_and_logged_by_class_only(caplog):
     calls = []
-    room_ref = [None]
 
     def post(url, headers, body, timeout):
         calls.append(url)
-        if "terminate" in url:
-            raise ConnectionError(f"{url} X-API-Key={LS_KEY}")
-        room_ref[0].avatar_joins()
-        return 200, {"session_id": "ls-9"}
+        raise ConnectionError(f"{url} X-API-Key={LS_KEY}")
 
     backend, room, _ = make(
         http_post=post, terminate_path="/sessions/{session_id}/terminate", terminate_attempts=2
     )
-    room_ref[0] = room
     sid = backend.start(StartOptions()).session_id
     with caplog.at_level(logging.WARNING):
         backend.stop(sid)
