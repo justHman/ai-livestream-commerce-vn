@@ -64,6 +64,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A rejected `close` (no approved closing at P0) leaves the Director in CLOSING with nothing
+# spoken, so every tick would re-issue the same close decision. After a rejection, suppress
+# `close` for this long, doubling per consecutive rejection.
+CLOSE_REJECT_BACKOFF_SEC = 5.0
+CLOSE_REJECT_BACKOFF_MAX_SEC = 60.0
+
 
 def _decision_to_event(decision: Decision) -> dict:
     """Delegate to the canonical events module (OpenSpec 1.21)."""
@@ -166,6 +172,9 @@ class DirectorCoordinator:
         self._completed_history_size = completed_history_size
         self._activated: set[str] = set()
         self._autonomous_openings: dict[str, str] = {}
+        # session -> (consecutive rejected closes, monotonic not-before)
+        self._close_backoff: dict[str, tuple[int, float]] = {}
+        self._monotonic = time.monotonic
         self._opening_media: dict[str, dict] = {}
         # Optional Postgres runtime store (durable rows). None/disabled -> no
         # persistence. Fire-and-forget: a failure must never break the speak loop.
@@ -387,6 +396,7 @@ class DirectorCoordinator:
         self._resume_count.pop(session_id, None)
         self._activated.discard(session_id)
         self._autonomous_openings.pop(session_id, None)
+        self._close_backoff.pop(session_id, None)
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
@@ -421,6 +431,14 @@ class DirectorCoordinator:
         result = self._runtime.update_runtime_config(session_id, values)
         self._invalidate_queued(session_id, reason="config_revision")
         return result
+
+    def _note_rejected(self, session_id: str, decision: Decision) -> None:
+        """Back off after a rejected `close` so the Director does not re-issue it every tick."""
+        if decision.action != "close":
+            return
+        count = self._close_backoff.get(session_id, (0, 0.0))[0] + 1
+        delay = min(CLOSE_REJECT_BACKOFF_SEC * 2 ** (count - 1), CLOSE_REJECT_BACKOFF_MAX_SEC)
+        self._close_backoff[session_id] = (count, self._monotonic() + delay)
 
     def _record_cancelled(self, session_id: str, decision: Decision, reason: str) -> None:
         if decision.is_cancelled:
@@ -1040,6 +1058,12 @@ class DirectorCoordinator:
                 if decision.action in ("idle", "skip"):
                     self._stats[session_id].skips += 1
                     break
+                if (
+                    decision.action == "close"
+                    and self._monotonic() < self._close_backoff.get(session_id, (0, 0.0))[1]
+                ):
+                    self._stats[session_id].skips += 1  # a recent close was rejected
+                    break
                 decision.revision_token = self._runtime.current_generation_token(session_id)
                 decision.latency_spans["decision"] = {
                     "start": time.monotonic(),
@@ -1118,6 +1142,7 @@ class DirectorCoordinator:
             self._record_cancelled(session_id, decision, "preparation_cancelled")
             raise
         except SpeechRejected as exc:
+            self._note_rejected(session_id, decision)
             self._record_cancelled(session_id, decision, exc.code)
             await self._emit(
                 session_id,
@@ -1257,6 +1282,7 @@ class DirectorCoordinator:
                 await self.approved_speech.revalidate(speech, live=live)
             except SpeechRejected as exc:
                 st.skips += 1
+                self._note_rejected(session_id, decision)
                 self._record_cancelled(session_id, decision, exc.code)
                 await self._emit(
                     session_id,
@@ -1480,6 +1506,7 @@ class DirectorCoordinator:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):
                     st.skips += 1
+                    self._note_rejected(session_id, decision)
                     self._record_cancelled(session_id, decision, exc.code)
                     await self._emit(
                         session_id,
@@ -1615,6 +1642,8 @@ class DirectorCoordinator:
             except Exception:
                 logger.debug("coverage update failed", exc_info=True)
         self._mark_reducer_lifecycle(session_id, decision, time.time())
+        if decision.action == "close":
+            self._close_backoff.pop(session_id, None)
         # Advance cursor only for proactive (non-reactive) actions.
         if decision.action in (
             "speak_hook",
