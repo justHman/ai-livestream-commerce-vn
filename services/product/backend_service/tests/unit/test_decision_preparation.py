@@ -562,6 +562,148 @@ async def test_playback_loop_requeues_turn_while_manual_speech_holds_lock() -> N
     assert list(coordinator._speech_queue[session_id]) == [decision]
 
 
+class _RejectingSpeech:
+    """Approved-speech stand-in that refuses every turn (P0 has no approved closing)."""
+
+    def blocked(self, session_id: str) -> None:
+        return None
+
+    async def prepare(self, *args: object, **kwargs: object) -> object:
+        from backend.application.script_authoring.approved_speech import SpeechRejected
+
+        raise SpeechRejected("no_approved_script")
+
+
+@pytest.mark.asyncio
+async def test_rejected_close_is_not_reissued_every_tick_and_backs_off_boundedly() -> None:
+    from backend.api.v1.router import build_run_plan
+    from backend.application.director.config import StreamConfig
+    from backend.application.director.state import Phase
+
+    backend = _RecordingCloudBackend()
+    runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
+    hub = _RecordingHub()
+    coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend, hub=hub)
+    coordinator.approved_speech = _RejectingSpeech()
+    clock = [1000.0]
+    coordinator._monotonic = lambda: clock[0]
+    session_id = "rejected-close"
+    product = _product(features=["ấm"])
+    runtime.attach(
+        session_id,
+        [product.to_entity()],
+        cfg=StreamConfig(prepared_turn_depth=1),
+        run_plan=build_run_plan([product]),
+    )
+    session = runtime.get_session(session_id)
+    session.director.state.phase = Phase.SELLING
+    current = session.director.state.products[0]
+    current.is_introduced = True
+    current.stage_turn_index = len(session.director._sales_tasks("P004"))
+    coordinator._stats[session_id] = _SessionStats()
+    coordinator._decision_queue[session_id] = __import__("collections").deque()
+    coordinator._speech_queue[session_id] = __import__("collections").deque()
+    coordinator._prepare_tasks[session_id] = set()
+    coordinator._decision_locks[session_id] = asyncio.Lock()
+    coordinator._playback_events[session_id] = asyncio.Event()
+    coordinator._completed_history[session_id] = __import__("collections").deque(maxlen=3)
+
+    async def tick() -> int:
+        await coordinator._fill_prepared(session_id)
+        await asyncio.gather(*coordinator._prepare_tasks[session_id])
+        return sum(
+            e["type"] == "director.decision" and e.get("action") == "close" for e in hub.events
+        )
+
+    assert await tick() == 1  # the first close is issued and rejected
+    for _ in range(50):  # 50 more ticks inside the back-off window: no new close decision
+        assert await tick() == 1
+    clock[0] += 5.1  # first back-off (5 s) elapsed: one more attempt, then 10 s
+    assert await tick() == 2
+    clock[0] += 5.1
+    assert await tick() == 2
+    clock[0] += 5.0
+    assert await tick() == 3
+    for _ in range(10):  # the delay doubles but is capped at CLOSE_REJECT_BACKOFF_MAX_SEC
+        clock[0] += 61.0
+        await tick()
+    assert coordinator._backoff[(session_id, "close")][1] - clock[0] <= 60.0
+
+
+class _ScriptedProjection:
+    """Stands in for the projected Director: returns the next scripted decision on every tick."""
+
+    def __init__(self, state: object, decisions: list) -> None:
+        self.state = state
+        self._decisions = decisions
+
+    def decide(self, comments: object, now: float = 0.0) -> Decision:
+        return self._decisions[0]
+
+    def mark_spoken(self, decision: Decision) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_rejected_answer_is_not_redecided_every_tick_and_is_keyed_per_cluster() -> None:
+    from backend.api.v1.router import build_run_plan
+    from backend.application.director.config import StreamConfig
+
+    backend = _RecordingCloudBackend()
+    runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
+    hub = _RecordingHub()
+    coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend, hub=hub)
+    coordinator.approved_speech = _RejectingSpeech()
+    clock = [2000.0]
+    coordinator._monotonic = lambda: clock[0]
+    session_id = "rejected-answer"
+    product = _product(features=["ấm"])
+    runtime.attach(
+        session_id,
+        [product.to_entity()],
+        cfg=StreamConfig(prepared_turn_depth=1),
+        run_plan=build_run_plan([product]),
+    )
+    session = runtime.get_session(session_id)
+    first = Decision(action="answer_cluster", prompt="p", cluster_member_ids=("c1",), reason="a")
+    other = Decision(action="answer_cluster", prompt="p", cluster_member_ids=("c2",), reason="b")
+    decisions = [first]
+    coordinator._projected_director = lambda sid: _ScriptedProjection(
+        session.director.state, decisions
+    )
+    coordinator._stats[session_id] = _SessionStats()
+    coordinator._decision_queue[session_id] = __import__("collections").deque()
+    coordinator._speech_queue[session_id] = __import__("collections").deque()
+    coordinator._prepare_tasks[session_id] = set()
+    coordinator._decision_locks[session_id] = asyncio.Lock()
+    coordinator._playback_events[session_id] = asyncio.Event()
+    coordinator._completed_history[session_id] = __import__("collections").deque(maxlen=3)
+
+    async def tick() -> int:
+        await coordinator._fill_prepared(session_id)
+        await asyncio.gather(*coordinator._prepare_tasks[session_id])
+        return sum(
+            e["type"] == "director.decision" and str(e.get("action", "")).startswith("answer")
+            for e in hub.events
+        )
+
+    assert await tick() == 1  # first attempt is decided and rejected
+    for _ in range(50):  # same cluster inside the back-off window: not re-decided (no LLM call)
+        assert await tick() == 1
+    decisions[0] = other  # a DIFFERENT cluster is not suppressed by the first one's back-off
+    assert await tick() == 2
+    decisions[0] = first
+    clock[0] += 5.1  # first cluster's back-off elapsed: one more attempt
+    assert await tick() == 3
+    for _ in range(10):  # doubles but capped
+        clock[0] += 61.0
+        await tick()
+    assert coordinator._backoff[(session_id, "answer:c1")][1] - clock[0] <= 60.0
+    # a spoken answer clears the back-off of that cluster
+    coordinator._after_speak(session_id, first, "x")
+    assert (session_id, "answer:c1") not in coordinator._backoff
+
+
 @pytest.mark.asyncio
 async def test_completed_close_commits_real_closing_phase() -> None:
     from backend.api.v1.router import build_run_plan

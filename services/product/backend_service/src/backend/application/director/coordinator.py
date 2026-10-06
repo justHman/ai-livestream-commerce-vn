@@ -64,6 +64,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A rejected `close` (no approved closing at P0) leaves the Director in CLOSING with nothing
+# spoken, so every tick would re-issue the same close decision; a rejected answer likewise leaves
+# its cluster selectable, so it is re-decided every tick and every retry calls the LLM. After a
+# rejection, suppress the same `close` / the same answer cluster for this long, doubling per
+# consecutive rejection.
+CLOSE_REJECT_BACKOFF_SEC = 5.0
+CLOSE_REJECT_BACKOFF_MAX_SEC = 60.0
+
 
 def _decision_to_event(decision: Decision) -> dict:
     """Delegate to the canonical events module (OpenSpec 1.21)."""
@@ -166,6 +174,10 @@ class DirectorCoordinator:
         self._completed_history_size = completed_history_size
         self._activated: set[str] = set()
         self._autonomous_openings: dict[str, str] = {}
+        # (session, "close" | "answer:<cluster>") -> (consecutive rejections, monotonic not-before)
+        self._backoff: dict[tuple[str, str], tuple[int, float]] = {}
+        self._backoff_members: dict[tuple[str, str], tuple[str, ...]] = {}
+        self._monotonic = time.monotonic
         self._opening_media: dict[str, dict] = {}
         # Optional Postgres runtime store (durable rows). None/disabled -> no
         # persistence. Fire-and-forget: a failure must never break the speak loop.
@@ -387,6 +399,9 @@ class DirectorCoordinator:
         self._resume_count.pop(session_id, None)
         self._activated.discard(session_id)
         self._autonomous_openings.pop(session_id, None)
+        for key in [k for k in self._backoff if k[0] == session_id]:
+            del self._backoff[key]
+            self._backoff_members.pop(key, None)
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
@@ -421,6 +436,35 @@ class DirectorCoordinator:
         result = self._runtime.update_runtime_config(session_id, values)
         self._invalidate_queued(session_id, reason="config_revision")
         return result
+
+    @staticmethod
+    def _backoff_key(decision: Decision) -> str | None:
+        if decision.action == "close":
+            return "close"
+        if decision.action in ("answer_cluster", "answer_fact"):
+            ident = decision.source_cluster_id or "|".join(decision.cluster_member_ids)
+            return f"answer:{ident}" if ident else None
+        return None
+
+    def _backed_off(self, session_id: str, decision: Decision) -> bool:
+        key = self._backoff_key(decision)
+        until = self._backoff.get((session_id, key or ""), (0, 0.0))[1]
+        return key is not None and self._monotonic() < until
+
+    def _note_rejected(self, session_id: str, decision: Decision) -> None:
+        """Back off after a rejected `close` / answer: not re-decided (and re-prompted) every tick."""
+        key = self._backoff_key(decision)
+        if key is None:
+            return
+        count = self._backoff.get((session_id, key), (0, 0.0))[0] + 1
+        delay = CLOSE_REJECT_BACKOFF_SEC
+        for _ in range(count - 1):
+            delay = min(delay * 2, CLOSE_REJECT_BACKOFF_MAX_SEC)
+            if delay == CLOSE_REJECT_BACKOFF_MAX_SEC:
+                break
+        self._backoff[(session_id, key)] = (count, self._monotonic() + delay)
+        if decision.cluster_member_ids and decision.source_cluster_id is None:
+            self._backoff_members[(session_id, key)] = decision.cluster_member_ids
 
     def _record_cancelled(self, session_id: str, decision: Decision, reason: str) -> None:
         if decision.is_cancelled:
@@ -983,6 +1027,16 @@ class DirectorCoordinator:
                 else lambda cid: self._reducer.provenance_for(session_id, cid)
             ),
         )
+        # Exclude only this rejected cluster BEFORE ranking. Breaking after the
+        # winner is selected would starve lower-ranked questions and sales turns.
+        selections = [
+            selection
+            for selection in selections
+            if self._monotonic()
+            >= self._backoff.get((session_id, f"answer:{selection.envelope.cluster_id}"), (0, 0.0))[
+                1
+            ]
+        ]
         high_value_ids = projection.high_value_cluster_ids(selections)
         return projection.decide_from_reducer(
             selections, now, high_value_ids=high_value_ids.__contains__
@@ -1001,6 +1055,21 @@ class DirectorCoordinator:
             projection.mark_spoken(decision)
         for decision in self._speech_queue.get(session_id, ()):
             projection.mark_spoken(decision)
+        # Legacy selectors cluster rolling comments themselves. Remove rejected
+        # members from this disposable projection only: never mark the real
+        # Director/reducer state answered or delete comments that were not spoken.
+        blocked_members = {
+            member
+            for key, members in self._backoff_members.items()
+            if key[0] == session_id and self._monotonic() < self._backoff.get(key, (0, 0.0))[1]
+            for member in members
+        }
+        if blocked_members:
+            projection.state.rolling_comments = [
+                comment
+                for comment in projection.state.rolling_comments
+                if comment.id not in blocked_members
+            ]
         return projection
 
     async def _fill_prepared(self, session_id: str) -> None:
@@ -1039,6 +1108,9 @@ class DirectorCoordinator:
                 self._stats[session_id].director_cycles += 1
                 if decision.action in ("idle", "skip"):
                     self._stats[session_id].skips += 1
+                    break
+                if self._backed_off(session_id, decision):
+                    self._stats[session_id].skips += 1  # a recent close / this answer was rejected
                     break
                 decision.revision_token = self._runtime.current_generation_token(session_id)
                 decision.latency_spans["decision"] = {
@@ -1118,6 +1190,7 @@ class DirectorCoordinator:
             self._record_cancelled(session_id, decision, "preparation_cancelled")
             raise
         except SpeechRejected as exc:
+            self._note_rejected(session_id, decision)
             self._record_cancelled(session_id, decision, exc.code)
             await self._emit(
                 session_id,
@@ -1257,6 +1330,7 @@ class DirectorCoordinator:
                 await self.approved_speech.revalidate(speech, live=live)
             except SpeechRejected as exc:
                 st.skips += 1
+                self._note_rejected(session_id, decision)
                 self._record_cancelled(session_id, decision, exc.code)
                 await self._emit(
                     session_id,
@@ -1480,6 +1554,7 @@ class DirectorCoordinator:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):
                     st.skips += 1
+                    self._note_rejected(session_id, decision)
                     self._record_cancelled(session_id, decision, exc.code)
                     await self._emit(
                         session_id,
@@ -1615,6 +1690,10 @@ class DirectorCoordinator:
             except Exception:
                 logger.debug("coverage update failed", exc_info=True)
         self._mark_reducer_lifecycle(session_id, decision, time.time())
+        key = self._backoff_key(decision)
+        if key is not None:
+            self._backoff.pop((session_id, key), None)
+            self._backoff_members.pop((session_id, key), None)
         # Advance cursor only for proactive (non-reactive) actions.
         if decision.action in (
             "speak_hook",
