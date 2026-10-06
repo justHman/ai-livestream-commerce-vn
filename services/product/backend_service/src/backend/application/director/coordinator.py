@@ -65,8 +65,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # A rejected `close` (no approved closing at P0) leaves the Director in CLOSING with nothing
-# spoken, so every tick would re-issue the same close decision. After a rejection, suppress
-# `close` for this long, doubling per consecutive rejection.
+# spoken, so every tick would re-issue the same close decision; a rejected answer likewise leaves
+# its cluster selectable, so it is re-decided every tick and every retry calls the LLM. After a
+# rejection, suppress the same `close` / the same answer cluster for this long, doubling per
+# consecutive rejection.
 CLOSE_REJECT_BACKOFF_SEC = 5.0
 CLOSE_REJECT_BACKOFF_MAX_SEC = 60.0
 
@@ -172,8 +174,8 @@ class DirectorCoordinator:
         self._completed_history_size = completed_history_size
         self._activated: set[str] = set()
         self._autonomous_openings: dict[str, str] = {}
-        # session -> (consecutive rejected closes, monotonic not-before)
-        self._close_backoff: dict[str, tuple[int, float]] = {}
+        # (session, "close" | "answer:<cluster>") -> (consecutive rejections, monotonic not-before)
+        self._backoff: dict[tuple[str, str], tuple[int, float]] = {}
         self._monotonic = time.monotonic
         self._opening_media: dict[str, dict] = {}
         # Optional Postgres runtime store (durable rows). None/disabled -> no
@@ -396,7 +398,8 @@ class DirectorCoordinator:
         self._resume_count.pop(session_id, None)
         self._activated.discard(session_id)
         self._autonomous_openings.pop(session_id, None)
-        self._close_backoff.pop(session_id, None)
+        for key in [k for k in self._backoff if k[0] == session_id]:
+            del self._backoff[key]
         self._opening_media.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
@@ -432,13 +435,28 @@ class DirectorCoordinator:
         self._invalidate_queued(session_id, reason="config_revision")
         return result
 
+    @staticmethod
+    def _backoff_key(decision: Decision) -> str | None:
+        if decision.action == "close":
+            return "close"
+        if decision.action in ("answer_cluster", "answer_fact"):
+            ident = decision.source_cluster_id or "|".join(decision.cluster_member_ids)
+            return f"answer:{ident}" if ident else None
+        return None
+
+    def _backed_off(self, session_id: str, decision: Decision) -> bool:
+        key = self._backoff_key(decision)
+        until = self._backoff.get((session_id, key or ""), (0, 0.0))[1]
+        return key is not None and self._monotonic() < until
+
     def _note_rejected(self, session_id: str, decision: Decision) -> None:
-        """Back off after a rejected `close` so the Director does not re-issue it every tick."""
-        if decision.action != "close":
+        """Back off after a rejected `close` / answer: not re-decided (and re-prompted) every tick."""
+        key = self._backoff_key(decision)
+        if key is None:
             return
-        count = self._close_backoff.get(session_id, (0, 0.0))[0] + 1
+        count = self._backoff.get((session_id, key), (0, 0.0))[0] + 1
         delay = min(CLOSE_REJECT_BACKOFF_SEC * 2 ** (count - 1), CLOSE_REJECT_BACKOFF_MAX_SEC)
-        self._close_backoff[session_id] = (count, self._monotonic() + delay)
+        self._backoff[(session_id, key)] = (count, self._monotonic() + delay)
 
     def _record_cancelled(self, session_id: str, decision: Decision, reason: str) -> None:
         if decision.is_cancelled:
@@ -1058,11 +1076,8 @@ class DirectorCoordinator:
                 if decision.action in ("idle", "skip"):
                     self._stats[session_id].skips += 1
                     break
-                if (
-                    decision.action == "close"
-                    and self._monotonic() < self._close_backoff.get(session_id, (0, 0.0))[1]
-                ):
-                    self._stats[session_id].skips += 1  # a recent close was rejected
+                if self._backed_off(session_id, decision):
+                    self._stats[session_id].skips += 1  # a recent close / this answer was rejected
                     break
                 decision.revision_token = self._runtime.current_generation_token(session_id)
                 decision.latency_spans["decision"] = {
@@ -1642,8 +1657,9 @@ class DirectorCoordinator:
             except Exception:
                 logger.debug("coverage update failed", exc_info=True)
         self._mark_reducer_lifecycle(session_id, decision, time.time())
-        if decision.action == "close":
-            self._close_backoff.pop(session_id, None)
+        key = self._backoff_key(decision)
+        if key is not None:
+            self._backoff.pop((session_id, key), None)
         # Advance cursor only for proactive (non-reactive) actions.
         if decision.action in (
             "speak_hook",
