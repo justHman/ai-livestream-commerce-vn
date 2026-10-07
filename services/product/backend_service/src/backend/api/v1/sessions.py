@@ -447,6 +447,7 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
     if entry is not None:
         orchestrator = entry["orchestrator"]
         await orchestrator.cancel(session_id)
+    backend_error: str | None = None
     try:
         await asyncio.to_thread(d.backend.stop, session_id)
     except KeyError:
@@ -458,12 +459,16 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
             d, session_id
         ):
             raise HTTPException(status_code=404, detail="unknown session_id")
+    except Exception as exc:
+        if getattr(d, "terminal_outcomes", None) is None:
+            raise
+        backend_error = type(exc).__name__
     from backend.application.budget_lease import keep_for_unstaged
 
     # Media cleanup and the 019 terminal record come FIRST and are never blocked by usage
     # evidence. A terminal usage fact that could not be staged keeps ONLY the meta (the
     # watcher retries it); everything else is released as before.
-    await teardown_then_persist(d, session_id)
+    await teardown_then_persist(d, session_id, fence, backend_error)
     if await keep_for_unstaged(d, session_id, fence):
         return {"ok": True, "stopped": session_id}
     await delete_session_meta(d, session_id, fence)

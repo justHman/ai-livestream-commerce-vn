@@ -21,6 +21,7 @@ from backend.application.clients.avatar.lemonslice import (
     AvatarAudioFallbackRefused,
     LemonSliceError,
     LemonSliceRenderBackend,
+    ProviderCleanupIncomplete,
     _FallbackAudioTrack,
 )
 from backend.application.publishing.datastream import (
@@ -753,7 +754,8 @@ def test_terminate_failure_is_retried_and_logged_by_class_only(caplog):
     )
     sid = backend.start(StartOptions()).session_id
     with caplog.at_level(logging.WARNING):
-        backend.stop(sid)
+        with pytest.raises(ProviderCleanupIncomplete):
+            backend.stop(sid)
     assert sum("terminate" in c for c in calls) == 2
     text = caplog.text
     assert "ConnectionError" in text and LS_KEY not in text and "lemonslice.com" not in text

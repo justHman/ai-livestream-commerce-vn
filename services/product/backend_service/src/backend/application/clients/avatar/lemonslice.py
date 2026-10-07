@@ -80,6 +80,7 @@ _CAP_WARN_FRACTION = 0.8
 _SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _TERMINAL_STATUS = frozenset({404, 410})  # the provider session is gone
 _AUTH_STATUS = frozenset({401, 403})  # terminal only when repeated
+_MAX_OWNED_SESSIONS = 128  # retain every unresolved provider id; refuse starts at capacity
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,13 @@ class LemonSliceError(RuntimeError):
     def __init__(self, code: str, message: str | None = None) -> None:
         super().__init__(message or code)
         self.code = code
+
+
+class ProviderCleanupIncomplete(LemonSliceError):
+    def __init__(self) -> None:
+        super().__init__(
+            "provider_cleanup_incomplete", "LemonSlice provider cleanup is not confirmed"
+        )
 
 
 class AvatarAudioFallbackRefused(LemonSliceError):
@@ -446,6 +454,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._startups: set[asyncio.Task] = set()  # start() in flight: cancelled by stop_all
         self._cleanups: set[asyncio.Task] = set()  # stop()/teardown in flight: NEVER cancelled
         self._closing: dict[str, _Sess] = {}  # popped for teardown, not yet fully cleaned up
+        self._pending_terminate: dict[str, str] = {}  # retry identity only, no room/audio objects
+        self._stop_tasks: dict[str, asyncio.Task] = {}  # repeated stop waits for the same teardown
         self._reapers: set[asyncio.Task] = set()  # late-REST-session cleanups (loop thread)
         self._loop_lock = threading.Lock()
 
@@ -490,7 +500,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         reaper first waits out the creation bound, then runs that same terminate policy."""
         s = self._s
         attempts = s.terminate_attempts if isinstance(s.terminate_attempts, int) else 2
-        terminate = max(1, attempts) * (self._deadline() + 0.5)
+        lock_wait = s.request_timeout_s + 1 if self._async_post is None else 0
+        terminate = max(1, attempts) * (self._deadline() + lock_wait + 0.5)
         teardown = self._deadline() + 1 + s.clear_budget_s + 2 * s.io_timeout_s + terminate + 5
         return teardown + (_CREATE_HARD_BOUND_S if pool == "reapers" else 0.0)
 
@@ -597,6 +608,17 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         return self._s.agent_id
 
     async def _start(self, agent_id: str) -> StartResult:
+        # The tracked current startup already occupies one slot. Never evict an unpaid
+        # cleanup identity to admit another billable provider session.
+        if (
+            len(self._sessions)
+            + len(self._closing)
+            + len(self._pending_terminate)
+            + len(self._startups)
+            + len(self._reapers)
+            > _MAX_OWNED_SESSIONS
+        ):
+            raise LemonSliceError("cleanup_capacity", "LemonSlice cleanup capacity reached")
         s = self._s
         room_name = f"rt_{uuid.uuid4().hex}"
         room = self._room_factory()
@@ -684,7 +706,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if post_task is not None:
                 # The caller gave up while the REST call was in flight: a reaper owned by the
                 # backend ends the session if that call lands (stop_all awaits it).
-                self._spawn_reaper(post_task)
+                self._spawn_reaper(post_task, room_name)
             await self._teardown(room_name, sess, room)
             if isinstance(failure, asyncio.CancelledError | LemonSliceError):
                 raise failure
@@ -802,10 +824,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 log.warning("fallback unpublish failed error_type=%s", type(exc).__name__)
         log.error("avatar publishes audio: fallback track stopped, session fails closed")
 
-    def _spawn_reaper(self, post_task: asyncio.Future) -> None:
-        self._tasks_add(asyncio.ensure_future(self._reap_late_session(post_task)))
+    def _spawn_reaper(self, post_task: asyncio.Future, session_id: str) -> None:
+        self._tasks_add(asyncio.ensure_future(self._reap_late_session(post_task, session_id)))
 
-    async def _reap_late_session(self, post_task: asyncio.Future) -> None:
+    async def _reap_late_session(self, post_task: asyncio.Future, session_id: str) -> None:
         """End a provider session whose creation outlived its caller."""
         try:
             sid = await asyncio.wait_for(asyncio.shield(post_task), _CREATE_HARD_BOUND_S)
@@ -814,7 +836,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
             return
         if isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):
-            await self._terminate_provider(SimpleNamespace(provider_session_id=sid))
+            try:
+                await self._terminate_and_retain(
+                    session_id, SimpleNamespace(provider_session_id=sid)
+                )
+            except ProviderCleanupIncomplete:
+                log.error("lemonslice late session cleanup is pending")
 
     async def _wait_avatar_video(self, room: Any) -> None:
         try:
@@ -918,11 +945,44 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         await sess.channel.clear_buffer()  # bumps the epoch fence first
 
     def stop(self, session_id: str) -> None:
-        sess = self._sessions.pop(session_id, None)
-        if sess is None:  # idempotent: a repeated stop is a no-op
+        self._run(self._stop(session_id), pool="cleanup")
+
+    async def _stop(self, session_id: str) -> None:
+        pending = self._stop_tasks.get(session_id)
+        if pending is not None:
+            await asyncio.shield(pending)
             return
-        self._closing[session_id] = sess  # tracked until disconnect + terminate finished
-        self._run(self._close_session(session_id, sess), pool="cleanup")
+        sess = self._sessions.pop(session_id, None)
+        provider_id = self._pending_terminate.get(session_id)
+        if sess is None and provider_id is None:  # only confirmed cleanup is a no-op
+            return
+        if sess is not None:
+            self._closing[session_id] = sess
+            cleanup = self._close_session(session_id, sess)
+        else:
+            cleanup = self._terminate_and_retain(
+                session_id, SimpleNamespace(provider_session_id=provider_id)
+            )
+        task = asyncio.ensure_future(cleanup)
+        self._stop_tasks[session_id] = task
+        self._cleanups.add(task)
+
+        def finished(done: asyncio.Task) -> None:
+            self._stop_tasks.pop(session_id, None)
+            self._cleanups.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+        await asyncio.shield(task)
+
+    async def _terminate_and_retain(self, session_id: str, sess: Any) -> None:
+        if not sess.provider_session_id:
+            return
+        # Record before awaiting: cancellation/shutdown cannot lose an owned provider id.
+        self._pending_terminate[session_id] = sess.provider_session_id
+        await self._terminate_provider(sess)
+        self._pending_terminate.pop(session_id, None)
 
     async def _close_session(self, session_id: str, sess: _Sess) -> None:
         try:
@@ -937,7 +997,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             # Order is explicit: startups are cancelled, then every session is stopped
             # (provider terminate BEFORE the room is left), then cleanups and late-session
             # reapers finish their own terminate retries within their budget.
-            for sid in list(self._sessions):
+            for sid in list(set(self._sessions) | set(self._pending_terminate)):
                 try:
                     self.stop(sid)
                 except Exception as exc:
@@ -945,10 +1005,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if self._loop is not None:
                 self._run(self._drain("cleanups"))  # a stop parked in a clear is awaited
                 self._run(self._drain("reapers"))  # late REST sessions are ended before exit
-            if self._closing:
+            if self._closing or self._pending_terminate:
                 log.error(
                     "lemonslice sessions left without confirmed cleanup count=%d",
-                    len(self._closing),
+                    len(set(self._closing) | set(self._pending_terminate)),
                 )
         finally:
             try:
@@ -960,6 +1020,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 self._shutdown_loop()
 
     async def _teardown(self, room_name: str, sess: _Sess | None, room: Any) -> None:
+        cleanup_failed = False
         if sess is not None:
             sess.closing = True  # first: no keep-alive may start from here on
             if sess.keepalive is not None:
@@ -979,13 +1040,16 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             except Exception as exc:
                 log.warning("channel shutdown error_type=%s", type(exc).__name__)
             try:
-                await self._terminate_provider(sess)
+                await self._terminate_and_retain(room_name, sess)
             except Exception as exc:  # the room must still be left
+                cleanup_failed = True
                 log.error("lemonslice terminate error_type=%s", type(exc).__name__)
         try:
             await asyncio.wait_for(room.disconnect(), self._s.io_timeout_s)
         except Exception as exc:
             log.warning("lemonslice room leave failed error_type=%s", type(exc).__name__)
+        if cleanup_failed:
+            raise ProviderCleanupIncomplete()
 
     async def _control(
         self, provider_session_id: str, event: str, path: str, guard: _Sess | None = None
@@ -1041,7 +1105,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         d = self._s.control_deadline_s
         return self._s.request_timeout_s if d is None else d
 
-    async def _terminate_provider(self, sess: _Sess) -> None:
+    async def _terminate_provider(self, sess: Any) -> None:
         s = self._s
         if not sess.provider_session_id:
             return
@@ -1049,15 +1113,17 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             log.warning(
                 "lemonslice session not terminated (no terminate path); idle_timeout applies"
             )
-            return
+            raise ProviderCleanupIncomplete()
         attempts = s.terminate_attempts if isinstance(s.terminate_attempts, int) else 2
         guard = sess if isinstance(sess, _Sess) else None
         for attempt in range(max(1, attempts)):
             try:
-                status = await self._control(
-                    sess.provider_session_id, "terminate", s.terminate_path, guard
+                status = await asyncio.wait_for(
+                    self._control(sess.provider_session_id, "terminate", s.terminate_path, guard),
+                    self._deadline()
+                    + (s.request_timeout_s + 1 if self._async_post is None and guard else 0),
                 )
-                if status < 300:
+                if 200 <= status < 300 or status in _TERMINAL_STATUS:
                     return
                 err = f"status={status}"
             except Exception as exc:
@@ -1065,6 +1131,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             log.warning("lemonslice terminate failed attempt=%d %s", attempt + 1, err)
             await asyncio.sleep(0.2)
         log.error("lemonslice session NOT terminated after retries; idle_timeout applies")
+        raise ProviderCleanupIncomplete()
 
     async def _keepalive(self, sess: _Sess) -> None:
         """Send reset-idle-timeout while the avatar is silent. Never touches the speech path:
