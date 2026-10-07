@@ -23,7 +23,9 @@ async def register_terminal_execution(d: Any, session_id: str, meta: Mapping[str
         await terminal.register(session_id, meta)
 
 
-async def teardown_then_persist(d: Any, session_id: str) -> None:
+async def teardown_then_persist(
+    d: Any, session_id: str, fence: Any = None, backend_error: str | None = None
+) -> None:
     """LiveKit stop + director detach, then the durable terminal record.
 
     Disabled: exactly the legacy two steps, errors propagating unchanged.
@@ -33,31 +35,37 @@ async def teardown_then_persist(d: Any, session_id: str) -> None:
     stored also keeps hot state with 503 ending/retry.
     """
     terminal = getattr(d, "terminal_outcomes", None)
-    error: str | None = None
+    error: str | None = backend_error
     try:
         if d.livekit_publishers is not None:
             # Enabled only: the retry-preserving stop. Disabled keeps the original stop.
             retryable = getattr(d.livekit_publishers, "stop_retryable", None) if terminal else None
             await (retryable or d.livekit_publishers.stop)(session_id)
-        if d.director is not None:
-            d.director.detach(session_id)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         if terminal is None:
             raise
-        error = type(exc).__name__
+        error = error or type(exc).__name__
+    # A failed publisher/provider cleanup must still stop the local director.
+    try:
+        if d.director is not None:
+            d.director.detach(session_id)
+    except Exception as exc:
+        if terminal is None:
+            raise
+        error = error or type(exc).__name__
     if terminal is None:
         return
     try:
-        cleanup = await terminal.settle_cleanup(d.store, session_id, error)
+        cleanup = await terminal.settle_cleanup(d.store, session_id, error, fence)
     except TerminalCleanupRetry as exc:
         raise HTTPException(
             status_code=503,
             detail={"code": "terminal_cleanup_retry", "phase": "ending", "retry": True},
         ) from exc
     try:
-        await terminal.persist_before_delete(d.store, session_id, cleanup)
+        await terminal.persist_before_delete(d.store, session_id, cleanup, fence)
     except TerminalPersistError as exc:
         raise HTTPException(
             status_code=503,

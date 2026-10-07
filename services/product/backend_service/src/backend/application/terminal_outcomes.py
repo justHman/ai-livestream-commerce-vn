@@ -308,7 +308,7 @@ class TerminalOutcomes:
         self.pending_registration.discard(session_id)
 
     async def settle_cleanup(
-        self, session_store: Any, session_id: str, error: str | None
+        self, session_store: Any, session_id: str, error: str | None, fence: Any = None
     ) -> Cleanup:
         """Turn the observed teardown result into the cleanup to record.
 
@@ -321,8 +321,8 @@ class TerminalOutcomes:
             return Cleanup(status="succeeded", attempts=attempts)
         if meta is not None and attempts < CLEANUP_MAX_ATTEMPTS:
             try:
-                await session_store.set(
-                    session_id, {**meta, ATTEMPTS_KEY: attempts, PENDING_FLAG: True}
+                await self._write_marker(
+                    session_store, session_id, {ATTEMPTS_KEY: attempts, PENDING_FLAG: True}, fence
                 )
             except asyncio.CancelledError:
                 raise
@@ -332,7 +332,7 @@ class TerminalOutcomes:
         return Cleanup(status="failed", attempts=attempts, last_error_class=error[:64])
 
     async def persist_before_delete(
-        self, session_store: Any, session_id: str, cleanup: Cleanup
+        self, session_store: Any, session_id: str, cleanup: Cleanup, fence: Any = None
     ) -> TerminalRecord | None:
         """Durably store the terminal record + outbox row. None for a legacy session.
 
@@ -363,7 +363,7 @@ class TerminalOutcomes:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await self._mark_pending(session_store, session_id, meta)
+            await self._mark_pending(session_store, session_id, fence)
             logger.warning(
                 "terminal persist failed session=%s error_type=%s", session_id, type(exc).__name__
             )
@@ -458,17 +458,35 @@ class TerminalOutcomes:
         return bool(meta and meta.get(PENDING_FLAG))
 
     @staticmethod
-    async def _mark_pending(
-        session_store: Any, session_id: str, meta: Mapping[str, Any] | None
-    ) -> None:
-        if not meta:
-            return
+    async def _mark_pending(session_store: Any, session_id: str, fence: Any = None) -> None:
         try:
-            await session_store.set(session_id, {**meta, PENDING_FLAG: True})
+            await TerminalOutcomes._write_marker(
+                session_store, session_id, {PENDING_FLAG: True}, fence
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # best effort: the stop still reports ending/retry
             logger.warning("terminal pending marker not stored session=%s", session_id)
+
+    @staticmethod
+    async def _write_marker(
+        session_store: Any, session_id: str, fields: dict[str, Any], fence: Any
+    ) -> None:
+        from backend.application.db.session_store import StaleOwnerWriteError
+        from backend.application.usage_evidence import EVIDENCE_TTL, holds_evidence
+
+        # Re-read current state, never restore a snapshot cached across external I/O.
+        meta = await session_store.get(session_id)
+        if meta is None:
+            return  # a marker must not resurrect deleted metadata
+        meta = {**meta, **fields}
+        keep = {"ttl_seconds": EVIDENCE_TTL} if holds_evidence(meta) else {}
+        commit = getattr(session_store, "commit_if_owner", None)
+        if commit is not None:
+            if fence is None or not await commit(fence, meta, **keep):
+                raise StaleOwnerWriteError(session_id)
+        else:
+            await session_store.set(session_id, meta, **keep)
 
 
 PostFn = Callable[[str, bytes, Mapping[str, str]], Awaitable[tuple[int, Any]]]
