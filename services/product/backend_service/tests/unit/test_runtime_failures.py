@@ -236,7 +236,7 @@ async def test_real_completion_retains_ordered_usage_facts_during_outage(monkeyp
     d.locks = SimpleNamespace(drop=lambda sid: None)
     persisted = []
 
-    async def persist(container, sid):
+    async def persist(container, sid, *_fence):
         persisted.append(sid)  # isolate 019, exercise the real 017 stop/retain path
 
     monkeypatch.setattr(sessions, "teardown_then_persist", persist)
