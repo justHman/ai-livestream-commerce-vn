@@ -39,7 +39,7 @@ COPY services/product/tts_service/pyproject.toml services/product/tts_service/uv
 COPY services/product/tts_service/src/tts/ /tts_service/src/tts/
 COPY services/product/avatar_service/pyproject.toml services/product/avatar_service/uv.lock services/product/avatar_service/README.md /avatar_service/
 COPY services/product/avatar_service/src/avatar/ /avatar_service/src/avatar/
-RUN uv sync --frozen --no-dev --extra director --extra livekit --extra postgres
+RUN uv sync --frozen --no-dev --extra director --extra livekit --extra lemonslice --extra postgres
 
 # ── runtime ───────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim AS runtime
