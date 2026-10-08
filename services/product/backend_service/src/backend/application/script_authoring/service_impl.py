@@ -132,6 +132,10 @@ from backend.config import ScriptAuthoringConfig
 __all__ = ["ScriptAuthoringServiceImpl"]
 
 
+# Floor for one product's own script (the owner approves the text); only rejects trivial lines.
+_PRODUCT_SCRIPT_MIN_SECONDS = 3.0
+
+
 class _SyncPersistBridge:
     """Thread-safe sink for the FSM's synchronous ``persist`` hook.
 
@@ -550,6 +554,9 @@ class ScriptAuthoringServiceImpl:
         context = ScriptGateContext(
             transition_policy=brief.transition_policy,
             facts=self._product_facts(brief, item.product_id),
+            # One product's script is a part of the show: the 300s total minimum is for the
+            # compiled show. A single short product line (name + a claim) is valid here.
+            total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
         )
 
         def segment_gate(text: str, target_duration_s: float | None = None) -> GateRunResult:
@@ -1650,6 +1657,7 @@ class ScriptAuthoringServiceImpl:
         context = ScriptGateContext(
             transition_policy=script_set.brief.transition_policy,
             facts=self._product_facts(script_set.brief, product_id),
+            total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,  # same per-product floor as submit
         )
         result = self._gate.run_full_script([version.spoken_text], context)  # exactly once
         run = GateRun(
@@ -2495,7 +2503,9 @@ class ScriptAuthoringServiceImpl:
             ordered = list(segments)
             ordered[segment_index] = new_segment
             context = ScriptGateContext(
-                transition_policy=script_set.brief.transition_policy, facts=ProductFacts()
+                transition_policy=script_set.brief.transition_policy,
+                facts=ProductFacts(),
+                total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
             )
             result = self._gate.run_full_script([s.spoken_text for s in ordered], context)
             run = GateRun(
