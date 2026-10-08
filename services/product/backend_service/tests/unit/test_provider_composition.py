@@ -46,6 +46,10 @@ _PROVIDER_VARS = (
     "ELEVENLABS_API_KEY",
     "TTS_API_KEY",
     "TTS_PRESET_ID",
+    "TTS_SAMPLE_RATE",
+    "TTS_API_STYLE",
+    "TTS_VOICE_ID",
+    "TTS_MODEL_ID",
 )
 
 
@@ -180,6 +184,59 @@ def test_remote_http_synthesize_maps_pcm16_bytes_and_sample_rate():
     assert chunk.sample_rate == 16000
     expected = np.frombuffer(b"\x01\x00\xff\x7f", dtype="<i2").astype(np.float32) / 32767.0
     np.testing.assert_allclose(chunk.pcm, expected)
+
+
+def test_remote_http_engine_sample_rate_matches_cfg(monkeypatch):
+    """`from_config` must advertise the configured rate (48 kHz VieNeu preset)."""
+    monkeypatch.setenv("TTS_ADAPTER", "self_hosted")
+    monkeypatch.setenv("TTS_BASE_URL", "http://fake")
+    monkeypatch.setenv("TTS_SAMPLE_RATE", "48000")
+    composition = _composition()
+
+    cfg = AppConfig.from_env().tts.to_engine_cfg()
+    engine = load_tts_engine(cfg)
+
+    assert isinstance(engine, composition.RemoteHttpTTSEngine)
+    assert engine.sample_rate == 48_000 == cfg["sample_rate"]
+
+
+def test_remote_http_openai_audio_speech_style_end_to_end(monkeypatch):
+    """Opt-in VieNeu contract: engine seam -> client -> GPU server contract."""
+    monkeypatch.setenv("TTS_ADAPTER", "self_hosted")
+    monkeypatch.setenv("TTS_BASE_URL", "http://gpu:8080")
+    monkeypatch.setenv("TTS_SAMPLE_RATE", "48000")
+    monkeypatch.setenv("TTS_API_STYLE", "openai_audio_speech")
+    monkeypatch.setenv("TTS_VOICE_ID", "Hải Đăng")
+    monkeypatch.setenv("TTS_AUTH_TOKEN", "gpu-token")
+    composition = _composition()
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=b"\x00\x00" * 48_000)  # 1.0 s @ 48 kHz
+
+    cfg = AppConfig.from_env().tts.to_engine_cfg()
+    assert cfg["sample_rate"] == 48_000
+    client = SelfHostedTTSClient(
+        base_url=cfg["base_url"],
+        api_key=cfg.get("api_key", ""),
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    engine = composition.RemoteHttpTTSEngine(client, sample_rate=cfg["sample_rate"])
+
+    chunk = engine.synthesize(TTSRequest(text="xin chao", voice=""))
+
+    assert seen["path"] == "/v1/audio/speech"
+    assert seen["auth"] == "Bearer gpu-token"
+    assert seen["body"]["model"] == "vieneu-v3-turbo"
+    assert seen["body"]["voice"] == "Hải Đăng"
+    assert seen["body"]["input"] == "xin chao"
+    assert seen["body"]["sample_rate"] == 48_000
+    assert engine.sample_rate == chunk.sample_rate == 48_000
+    assert chunk.pcm.size == 48_000
 
 
 # ---------- 3. TTS_ADAPTER=elevenlabs ----------
