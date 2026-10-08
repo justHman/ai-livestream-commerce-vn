@@ -86,7 +86,13 @@ class OpenAICompatLLMEngine(LLMEngine):
 
 
 class RemoteHttpTTSEngine(TTSEngine):
-    """TTSEngine seam over the self-host TTS service client."""
+    """TTSEngine seam over the self-host TTS service client.
+
+    ``sample_rate`` always mirrors ``cfg["sample_rate"]`` so the engine
+    advertises the rate the deployment asked for (e.g. 48 kHz when
+    ``TTS_SAMPLE_RATE=48000`` alongside ``TTS_API_STYLE=openai_audio_speech``),
+    while ``synthesize`` propagates the rate the client actually got back.
+    """
 
     def __init__(self, client: SelfHostedTTSClient, sample_rate: int = 24_000) -> None:
         self._client = client
@@ -94,7 +100,7 @@ class RemoteHttpTTSEngine(TTSEngine):
 
     @classmethod
     def from_config(cls, cfg: dict) -> "RemoteHttpTTSEngine":
-        rate = int(cfg.get("sample_rate", 24_000))
+        rate = int(cfg.get("sample_rate") or 24_000)
         client = SelfHostedTTSClient(
             base_url=cfg.get("base_url", ""), api_key=cfg.get("api_key", "")
         )
