@@ -550,6 +550,9 @@ class ScriptAuthoringServiceImpl:
         context = ScriptGateContext(
             transition_policy=brief.transition_policy,
             facts=self._product_facts(brief, item.product_id),
+            # One product's script is a part of the show, not the whole show: the 300s
+            # total minimum is for the compiled show, so here it is the segment floor.
+            total_min_seconds=ScriptGateContext.target_min_seconds,
         )
 
         def segment_gate(text: str, target_duration_s: float | None = None) -> GateRunResult:

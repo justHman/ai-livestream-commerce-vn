@@ -1165,3 +1165,21 @@ async def test_recover_orchestrator_rebuilds_from_state() -> None:
     assert persist_queue is not None
     assert bridge is not None
     assert "b1" in service._active_orchestrators
+
+
+@pytest.mark.asyncio
+async def test_one_product_script_is_not_held_to_the_whole_show_minimum() -> None:
+    gate = _FakeGate(_pass_result())
+    service = _make_service(gate)
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    await service.save_draft(
+        set_id=created["id"],
+        product_id="P1",
+        display_text="Kem tốt",
+        spoken_text="Kem tốt",
+        revision=None,
+    )
+    await service.submit_for_gate(set_id=created["id"], product_id="P1")
+    assert gate.contexts[-1].total_min_seconds == gate.contexts[-1].target_min_seconds
