@@ -1182,4 +1182,30 @@ async def test_one_product_script_is_not_held_to_the_whole_show_minimum() -> Non
         revision=None,
     )
     await service.submit_for_gate(set_id=created["id"], product_id="P1")
-    assert gate.contexts[-1].total_min_seconds == gate.contexts[-1].target_min_seconds
+    assert gate.contexts[-1].total_min_seconds < 10
+
+
+@pytest.mark.asyncio
+async def test_short_product_script_passes_submit_and_approval_with_the_real_gate() -> None:
+    service = _make_service(_FakeGate(_pass_result()))
+    real = service._default_gate()
+    service._gate = real
+    created = await service.create_script_set(
+        name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
+    )
+    text = "Quần kaki. Có nhiều size, chất vải thoáng mát. Đổi size trong 7 ngày."
+    await service.save_draft(
+        set_id=created["id"], product_id="P1", display_text=text, spoken_text=text, revision=None
+    )
+    submitted = await service.submit_for_gate(set_id=created["id"], product_id="P1")
+    assert submitted["state"] == "REVIEWABLE", submitted
+    version_id = (await service._repos.items.get_by_product(created["id"], "P1")).current_version_id
+    approved = await service.approve_product(
+        set_id=created["id"],
+        product_id="P1",
+        version_id=version_id,
+        actor="admin",
+        is_human=True,
+        authorized=True,
+    )
+    assert approved["state"] == "APPROVED"
