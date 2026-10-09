@@ -44,20 +44,62 @@ BRIEF = {
 
 # Distinct, gate-clean Vietnamese per role/product (no phrase shared by 4+ units).
 TEXT = {
-    ("P2", "opening"): "Chào cả nhà, chào mừng mọi người đã ghé buổi live của Shop A hôm nay, mình rất vui được gặp lại mọi người.",
-    ("P2", "intro"): "Đầu tiên mình xin giới thiệu Kem ABC, món quen thuộc của chị em yêu thích việc chăm sóc mái tóc mỗi ngày.",
-    ("P2", "benefit0"): "Kem dưỡng ẩm sâu cho tóc khô, thoa lên là thấy sợi tóc mềm mượt ngay sau vài phút sử dụng.",
-    ("P2", "benefit1"): "Thiết kế gọn nhẹ dễ mang theo, bỏ vào túi xách đi đâu cũng thấy thật tiện cho các bạn.",
-    ("P2", "offer"): "Hôm nay Kem ABC có giá chỉ 299.000đ cho mỗi hộp, một mức giá mình thấy rất dễ chịu.",
-    ("P2", "trust"): "Mình trấn an cả nhà nhé, shop kiểm hàng thật kỹ trước khi đóng gói gửi đến tận tay mọi người.",
-    ("P2", "cta"): "Bạn nào ưng ý thì bấm đặt hàng giúp mình nhé, sau đó mình sẽ sang món tiếp theo ngay đây.",
-    ("P1", "intro"): "Nào, chuyển sang món kế tiếp là Gel XYZ, một lựa chọn nhẹ nhàng cho những ngày bạn muốn thư giãn.",
-    ("P1", "benefit0"): "Gel làm sạch nhẹ nhàng mỗi ngày, rửa xong vẫn thoáng và không bị căng rát khó chịu.",
-    ("P1", "benefit1"): "Chai nhỏ gọn dùng được lâu, một chai đủ cho cả tháng chăm sóc đều đặn của bạn.",
-    ("P1", "offer"): "Gel XYZ đang có giá 150.000đ thôi, ai cũng có thể thêm vào giỏ hôm nay một cách thoải mái.",
-    ("P1", "trust"): "Cả nhà cứ yên tâm, shop luôn đồng hành hỗ trợ đổi trả nếu bạn chưa hài lòng với món này.",
-    ("P1", "cta"): "Nếu hợp thì chốt đơn ngay trong lúc livestream để nhận hàng sớm cùng quà nhỏ từ shop nhé.",
-    ("P1", "closing"): "Cảm ơn mọi người đã theo dõi suốt buổi, hẹn gặp lại cả nhà ở những buổi live thật vui sau này.",
+    (
+        "P2",
+        "opening",
+    ): "Chào cả nhà, chào mừng mọi người đã ghé buổi live của Shop A hôm nay, mình rất vui được gặp lại mọi người.",
+    (
+        "P2",
+        "intro",
+    ): "Đầu tiên mình xin giới thiệu Kem ABC, món quen thuộc của chị em yêu thích việc chăm sóc mái tóc mỗi ngày.",
+    (
+        "P2",
+        "benefit0",
+    ): "Kem dưỡng ẩm sâu cho tóc khô, thoa lên là thấy sợi tóc mềm mượt ngay sau vài phút sử dụng.",
+    (
+        "P2",
+        "benefit1",
+    ): "Thiết kế gọn nhẹ dễ mang theo, bỏ vào túi xách đi đâu cũng thấy thật tiện cho các bạn.",
+    (
+        "P2",
+        "offer",
+    ): "Hôm nay Kem ABC có giá chỉ 299.000đ cho mỗi hộp, một mức giá mình thấy rất dễ chịu.",
+    (
+        "P2",
+        "trust",
+    ): "Mình trấn an cả nhà nhé, shop kiểm hàng thật kỹ trước khi đóng gói gửi đến tận tay mọi người.",
+    (
+        "P2",
+        "cta",
+    ): "Bạn nào ưng ý thì bấm đặt hàng giúp mình nhé, sau đó mình sẽ sang món tiếp theo ngay đây.",
+    (
+        "P1",
+        "intro",
+    ): "Nào, chuyển sang món kế tiếp là Gel XYZ, một lựa chọn nhẹ nhàng cho những ngày bạn muốn thư giãn.",
+    (
+        "P1",
+        "benefit0",
+    ): "Gel làm sạch nhẹ nhàng mỗi ngày, rửa xong vẫn thoáng và không bị căng rát khó chịu.",
+    (
+        "P1",
+        "benefit1",
+    ): "Chai nhỏ gọn dùng được lâu, một chai đủ cho cả tháng chăm sóc đều đặn của bạn.",
+    (
+        "P1",
+        "offer",
+    ): "Gel XYZ đang có giá 150.000đ thôi, ai cũng có thể thêm vào giỏ hôm nay một cách thoải mái.",
+    (
+        "P1",
+        "trust",
+    ): "Cả nhà cứ yên tâm, shop luôn đồng hành hỗ trợ đổi trả nếu bạn chưa hài lòng với món này.",
+    (
+        "P1",
+        "cta",
+    ): "Nếu hợp thì chốt đơn ngay trong lúc livestream để nhận hàng sớm cùng quà nhỏ từ shop nhé.",
+    (
+        "P1",
+        "closing",
+    ): "Cảm ơn mọi người đã theo dõi suốt buổi, hẹn gặp lại cả nhà ở những buổi live thật vui sau này.",
 }
 
 
@@ -88,7 +130,12 @@ class FakeLLM:
         }[title]
         if role == "benefit":
             # the prompt carries exactly one allowed claim: pick the matching text
-            role = "benefit0" if "Thông tin được phép nói: " + BRIEF["product_facts"][pid]["allowed_claims"][0] in prompt else "benefit1"
+            role = (
+                "benefit0"
+                if "Thông tin được phép nói: " + BRIEF["product_facts"][pid]["allowed_claims"][0]
+                in prompt
+                else "benefit1"
+            )
         if (pid, role) in self.empty_for:
             return ""
         return TEXT[(pid, role)]
@@ -148,8 +195,14 @@ async def test_set_is_written_as_ordered_units_in_owner_order() -> None:
     assert first.state is ScriptState.REVIEWABLE and last.state is ScriptState.REVIEWABLE
     units_first, units_last = split_units(v_first.spoken_text), split_units(v_last.spoken_text)
     # opening only in the FIRST product, closing only in the LAST, one claim per selling point
-    assert units_first == tuple(TEXT[("P2", r)] for r in ("opening", "intro", "benefit0", "benefit1", "offer", "trust", "cta"))
-    assert units_last == tuple(TEXT[("P1", r)] for r in ("intro", "benefit0", "benefit1", "offer", "trust", "cta", "closing"))
+    assert units_first == tuple(
+        TEXT[("P2", r)]
+        for r in ("opening", "intro", "benefit0", "benefit1", "offer", "trust", "cta")
+    )
+    assert units_last == tuple(
+        TEXT[("P1", r)]
+        for r in ("intro", "benefit0", "benefit1", "offer", "trust", "cta", "closing")
+    )
     # facts reach the prompts; the bridge names the neighbours only for an ORDER_AWARE set
     by_role = {p: p for p in llm.prompts}
     assert any("299.000đ" in p for p in by_role)
@@ -184,7 +237,9 @@ async def test_failed_unit_keeps_the_other_units_and_blocks_approval() -> None:
     assert len(units) == 7 and units[3] == TEXT[("P1", "offer")]
     assert units[4].startswith("<Phần này chưa soạn được")  # visible, gate-failing placeholder
     kept = [u for i, u in enumerate(units) if i != 4]
-    assert kept == [TEXT[("P1", r)] for r in ("intro", "benefit0", "benefit1", "offer", "cta", "closing")]
+    assert kept == [
+        TEXT[("P1", r)] for r in ("intro", "benefit0", "benefit1", "offer", "cta", "closing")
+    ]
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     statuses = {p["product_id"]: p for p in snapshot["products"]}
     assert snapshot["outcome"] == "partial"
@@ -243,7 +298,11 @@ async def test_idempotency_key_rejects_a_different_request_and_foreign_batches()
     other_set = await _new_set(service)
     batch_id = await _run(service, repos, set_id, key="same")
     again = await service.start_batch_generation(
-        set_id=set_id, product_ids=[], target_duration_s=600, idempotency_key="same", ordered_units=True
+        set_id=set_id,
+        product_ids=[],
+        target_duration_s=600,
+        idempotency_key="same",
+        ordered_units=True,
     )
     assert again["batch_id"] == batch_id and again["idempotent"] is True
     with pytest.raises(ScriptAuthoringError) as conflict:
@@ -264,10 +323,23 @@ async def test_idempotency_key_rejects_a_different_request_and_foreign_batches()
 
 def test_roles_are_fixed_by_position_and_claims() -> None:
     assert plan_roles(first=True, last=False, claim_count=2) == [
-        "opening", "intro", "benefit", "benefit", "offer", "trust", "cta",
+        "opening",
+        "intro",
+        "benefit",
+        "benefit",
+        "offer",
+        "trust",
+        "cta",
     ]
     assert plan_roles(first=False, last=True, claim_count=5) == [
-        "intro", "benefit", "benefit", "benefit", "offer", "trust", "cta", "closing",
+        "intro",
+        "benefit",
+        "benefit",
+        "benefit",
+        "offer",
+        "trust",
+        "cta",
+        "closing",
     ]
     assert plan_roles(first=True, last=True, claim_count=0).count("benefit") == 1
 

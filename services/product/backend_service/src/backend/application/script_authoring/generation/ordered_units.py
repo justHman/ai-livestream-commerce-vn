@@ -158,7 +158,9 @@ def _facts_block(product: ProductBrief, role: str, benefit_no: int) -> str:
         claim = product.claims[pick % len(product.claims)]
         lines.append(f"Thông tin được phép nói: {claim}")
     elif role in ("benefit", "trust"):
-        lines.append("Không có thông tin cụ thể: chỉ nói chung chung, KHÔNG nêu tính năng hay số liệu.")
+        lines.append(
+            "Không có thông tin cụ thể: chỉ nói chung chung, KHÔNG nêu tính năng hay số liệu."
+        )
     return "\n".join(lines)
 
 
@@ -198,7 +200,9 @@ def build_unit_prompt(
     ]
     if session.notes:
         parts.append(f"Ghi chú của chủ shop: {session.notes}")
-    parts.append(f"Vai trò của phần này ({index + 1}/{len(roles)}): {role_title(role)}. {_GUIDE[role]}")
+    parts.append(
+        f"Vai trò của phần này ({index + 1}/{len(roles)}): {role_title(role)}. {_GUIDE[role]}"
+    )
     bridge = _bridge_line(product, role, first_product, last_product)
     if bridge:
         parts.append(bridge)
