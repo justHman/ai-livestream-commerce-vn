@@ -21,7 +21,8 @@ from avatar.engines.base import FullPipelineBackend, StartResult
 from avatar.engines.mock import MockRenderBackend
 from avatar.engines.windows import AudioWindow
 from backend.application.director.decision import Decision
-from approved_speech_helpers import CLAIM, TEXT, Source
+from approved_speech_helpers import CLAIM, TEXT, MultiSource, Source
+from backend.application.script_authoring.approved_speech import SpeechRejected
 from backend.bootstrap import app_factory
 from backend.config import AppConfig
 
@@ -98,8 +99,8 @@ async def case_factory(monkeypatch):
     monkeypatch.setenv("TEXT_CHUNK_POLICY", "fixed")
     monkeypatch.setenv("LIVEKIT_PUBLISH", "false")
 
-    async def create(*, cloud=False, bind=True):
-        source, llm, events = Source(), LLM(), []
+    async def create(*, cloud=False, bind=True, source=None):
+        source, llm, events = source or Source(), LLM(), []
         tts = TTS(events)
         backend = Cloud(events) if cloud else MockRenderBackend()
         monkeypatch.setattr(AppConfig, "build_render_backend", lambda _: backend)
@@ -165,7 +166,7 @@ async def case_factory(monkeypatch):
                 },
             )
             assert attached.status_code == 200, attached.text
-            assert attached.json()["products"] == ["product-1"]
+            assert attached.json()["products"] == list(source.set.product_ids)
             assert sid not in d.coordinator._activated
             assert d.director.get_session(sid).approved_envelope is not None
             # Drive the real dispatch deterministically, without its scheduler.
@@ -451,3 +452,109 @@ async def test_default_adaptive_chunker_preserves_locked_script(
     assert response.status_code == 200, response.text
     assert response.json()["reply"] == TEXT
     assert case.tts.calls
+
+
+# -- ordered units: the owner's script is played part by part, in owner order ----
+
+B_UNITS = ["B mở đầu phiên live.", "B giới thiệu.", "B điểm nổi bật. " + CLAIM, "B chốt đơn."]
+A_UNITS = ["A cầu nối từ B sang A.", "A điểm nổi bật.", "A chốt đơn.", "Lời kết phiên live."]
+
+
+def spoken(case):
+    history = case.d.coordinator._completed_history[case.sid]
+    return [h["script"] for h in history if h["state"] == "completed"]
+
+
+async def play_next(case):
+    """Decide exactly as the coordinator does (on a projection), then speak for real."""
+    co, d = case.d.coordinator, case.d
+    projection = co._projected_director(case.sid)
+    turn = projection.decide([], now=d.director.get_session(case.sid).now())
+    turn.revision_token = d.director.current_generation_token(case.sid)
+    await prepare(case, turn)
+    co._speech_queue[case.sid].clear()
+    assert await co._maybe_speak(case.sid, turn)
+    return turn
+
+
+async def open_session(case):
+    co = case.d.coordinator
+    envelope = await case.d.approved_speech.resolve(case.sid)
+    co.activate_approved(case.sid, "opening-1", envelope)
+    for _ in range(100):
+        if co._speech_queue[case.sid]:
+            break
+        await asyncio.sleep(0.01)
+    turn = co._speech_queue[case.sid].popleft()
+    assert await co._maybe_speak(case.sid, turn)
+
+
+@pytest.mark.asyncio
+async def test_ordered_units_play_in_owner_order_with_qa_interruption(case_factory):
+    # product-b sorts AFTER product-a lexically, but the owner put it first
+    case = await case_factory(source=MultiSource({"product-b": B_UNITS, "product-a": A_UNITS}))
+    await open_session(case)
+    for _ in range(2):
+        await play_next(case)
+    # a viewer question interrupts the middle of product-b; it is an approved answer
+    qa = decision(case, generated=True)
+    qa.product_id = "product-b"
+    await prepare(case, qa)
+    case.d.coordinator._speech_queue[case.sid].clear()
+    assert await case.d.coordinator._maybe_speak(case.sid, qa)
+    for _ in range(5):
+        await play_next(case)
+    assert spoken(case) == [
+        B_UNITS[0],
+        B_UNITS[1],
+        B_UNITS[2],
+        CLAIM,
+        B_UNITS[3],
+        *A_UNITS,
+    ]
+    assert " ".join(c.strip() for c in case.tts.calls) == " ".join(spoken(case))
+    # everything is spoken: nothing left that could repeat or be skipped
+    assert spoken(case)[-1] == A_UNITS[-1]
+    projection = case.d.coordinator._projected_director(case.sid)
+    assert projection.decide([], now=999.0).action == "idle"
+
+
+@pytest.mark.asyncio
+async def test_legacy_single_paragraph_is_spoken_once_then_moves_on(case_factory):
+    case = await case_factory()
+    await open_session(case)
+    director = case.d.director.get_session(case.sid).director
+    assert director.state.products[0].units == (TEXT,)
+    assert spoken(case) == [TEXT]
+    again = director.decide([], now=1.0)
+    assert again.text != TEXT and again.prepared_script != TEXT
+
+
+@pytest.mark.asyncio
+async def test_prepared_units_ahead_do_not_repeat(case_factory):
+    case = await case_factory(source=MultiSource({"product-b": B_UNITS, "product-a": A_UNITS}))
+    await open_session(case)
+    await case.d.coordinator._fill_prepared(case.sid)
+    await asyncio.sleep(0.2)
+    queued = [t.prepared_script for t in case.d.coordinator._speech_queue[case.sid]]
+    assert queued == B_UNITS[1:4]
+
+
+@pytest.mark.asyncio
+async def test_altered_unit_or_changed_approval_speaks_nothing(case_factory):
+    case = await case_factory(source=MultiSource({"product-b": B_UNITS, "product-a": A_UNITS}))
+    for text in (B_UNITS[1] + " Thêm một câu.", "B giới thiệu khác."):
+        with pytest.raises(SpeechRejected):
+            await case.d.approved_speech.prepare(
+                case.sid, text, product_id="product-b", route="director"
+            )
+    good = await case.d.approved_speech.prepare(
+        case.sid, B_UNITS[1], product_id="product-b", route="director"
+    )
+    # the owner edits the approved text after preparation: the stale unit is refused
+    case.source.versions["product-b"] = case.source.versions["product-b"].model_copy(
+        update={"spoken_text": B_UNITS[1]}
+    )
+    with pytest.raises(SpeechRejected):
+        await case.d.approved_speech.revalidate(good)
+    assert not case.tts.calls
