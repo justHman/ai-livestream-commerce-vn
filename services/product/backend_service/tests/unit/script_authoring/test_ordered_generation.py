@@ -475,3 +475,31 @@ async def test_non_blank_spoken_text_still_wins_verbatim() -> None:
         revision=None,
     )
     assert (await _text(repos, set_id, "P2"))[1].spoken_text == "Giá chốt riêng của chủ shop."
+
+
+def test_typed_claims_never_add_facts_beyond_the_flat_list() -> None:
+    brief = ProductBrief(
+        product_id="p",
+        name="N",
+        claims=("Chất liệu cotton.",),
+        claims_by_type=(("feature", ("Chất liệu cotton.", "Có size XL.")),),
+    )
+    units = plan_units(brief, first=False, last=False)
+    spoken = [c for u in units for c in (*u.claims, *u.promos)]
+    assert spoken == ["Chất liệu cotton."]
+
+
+def test_crlf_blank_lines_are_unit_boundaries() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    text = "Đoạn đầu.\r\n\r\nĐoạn sau."
+    assert split_units(text) == ("Đoạn đầu.", "Đoạn sau.")
+    assert split_units(compile_spoken_text(text).spoken_text) == ("Đoạn đầu.", "Đoạn sau.")
+
+
+def test_missing_data_phrase_allowed_only_when_an_approved_statement_says_it() -> None:
+    sentence = "Lưu ý là không có khuyến mãi cho đơn dưới 200k nhé cả nhà."
+    approved = ("Không có khuyến mãi cho đơn dưới 200k.",)
+    assert clean_unit_text(sentence) is None
+    assert clean_unit_text(sentence, approved=approved) is not None
+    assert clean_unit_text("Hiện chưa có khuyến mãi nhé cả nhà.", approved=approved) is None

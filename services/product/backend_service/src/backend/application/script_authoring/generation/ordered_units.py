@@ -97,7 +97,8 @@ _FENCE_RE = re.compile(r"```[a-z]*|^[#>*\-\s]+(?=\S)", re.MULTILINE)
 # A letter-spaced size ("X L", "X X L") is one token.
 _SPLIT_SIZE_RE = re.compile(r"\b((?:X\s+){1,3})(?=[SL]\b)")
 _MISSING_INFO_RE = re.compile(
-    r"chưa có (?:thông tin|khuyến mãi|ưu đãi|giá|dữ liệu)|không có (?:thông tin|khuyến mãi)"
+    r"chưa có (?:thông tin|khuyến mãi|ưu đãi|giá|dữ liệu)"
+    r"|không có (?:thông tin|khuyến mãi|ưu đãi)"
     r"|hiện (?:tại )?chưa có|chưa (?:rõ|được cung cấp|cập nhật)|thiếu thông tin",
     re.IGNORECASE,
 )
@@ -210,7 +211,8 @@ def _cluster_claims(product: ProductBrief) -> tuple[list[str], list[str], list[s
     assurances: list[str] = []
     promos: list[str] = []
     seen: set[str] = set()
-    for claim in (*product.claims, *typed, *product.discounts):
+    # claims_by_type only CLASSIFIES flat claims; a typed entry not in the flat list is ignored.
+    for claim in (*product.claims, *product.discounts):
         if claim in seen:
             continue
         seen.add(claim)
@@ -263,8 +265,22 @@ def plan_units(
     return units
 
 
+def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
+    """A "missing data" phrase is fine only when an approved statement itself says it
+    (e.g. the restriction "Không có khuyến mãi cho đơn dưới 200k.")."""
+    statements = [a.lower() for a in approved]
+    return any(
+        not any(m.group().lower() in statement for statement in statements)
+        for m in _MISSING_INFO_RE.finditer(text)
+    )
+
+
 def clean_unit_text(
-    raw: str | None, *, prices: tuple[str, ...] = (), allow_bridge: bool = False
+    raw: str | None,
+    *,
+    prices: tuple[str, ...] = (),
+    allow_bridge: bool = False,
+    approved: tuple[str, ...] = (),
 ) -> str | None:
     """One paragraph of plain speech, or ``None`` when the output is unusable.
 
@@ -280,7 +296,7 @@ def clean_unit_text(
     text = _speak_approved_prices(text, prices)
     if len(text) < 6 or len(text) > _MAX_UNIT_CHARS or not re.search(r"[^\W\d_]{2}", text):
         return None
-    if _MISSING_INFO_RE.search(text) or _HARD_SELL_RE.search(text):
+    if _states_missing_data(text, approved) or _HARD_SELL_RE.search(text):
         return None
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None

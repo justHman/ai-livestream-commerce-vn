@@ -254,6 +254,7 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
     """
     if denomination not in ("đồng", "VND", "đô"):
         raise ValueError(f"unsupported denomination {denomination!r}")
+    display_text = display_text.replace("\r\n", "\n").replace("\r", "\n")
     paragraphs = [p for p in re.split(r"\n[ \t]*\n", display_text) if p.strip()]
     if len(paragraphs) > 1:
         # Blank-line paragraphs are the script's units: compile each, keep the boundaries.

@@ -1333,7 +1333,12 @@ class ScriptAuthoringServiceImpl:
                     return SegmentStepOutcome(
                         index=index, state=continuity, error=f"llm_failed:{type(exc).__name__}"
                     )
-                text = clean_unit_text(raw, prices=product.prices, allow_bridge=roles[index].bridge)
+                text = clean_unit_text(
+                    raw,
+                    prices=product.prices,
+                    allow_bridge=roles[index].bridge,
+                    approved=(*product.claims, *product.discounts),
+                )
                 if text is not None:
                     words = text.split()
                     return SegmentStepOutcome(
