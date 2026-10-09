@@ -85,3 +85,77 @@ def test_qa_between_units_does_not_move_the_cursor() -> None:
         Decision(action="answer_fact", product_id="P1", stage="qa", cluster_member_ids=("c1",))
     )
     assert d.decide([], now=2.0).prepared_script == P1[1]
+
+
+def _hot_director(order_locked: bool) -> Director:
+    import os
+
+    os.environ["DIRECTOR_EMBEDDER"] = "hash"
+    from backend.application.director.config import StreamConfig
+
+    products = [
+        ProductState(
+            product_id="P004",
+            name="A",
+            units=tuple(P1),
+            next_unit=2,
+            is_introduced=True,
+            stage_turn_index=2,
+        ),
+        ProductState(product_id="P002", name="B", units=tuple(P2)),
+    ]
+    state = StreamState(phase=Phase.SELLING, products=products)
+    state.cursor.opening_completed = True
+    director = Director(
+        state, cfg=StreamConfig(product_time_budget_sec=999, engagement_decay_sec=999)
+    )
+    director.order_locked = order_locked
+    return director
+
+
+def test_order_locked_set_answers_other_product_without_leaving_owner_order() -> None:
+    from .test_director_decisions import _routed_comments
+
+    hot = _routed_comments("P002", 8) + _routed_comments("P004", 4)
+    free = _hot_director(False).decide(hot, now=11.0)
+    assert free.pivot is True  # ORDER_AGNOSTIC behaviour is unchanged
+
+    d = _hot_director(True)
+    answer = d.decide(hot, now=11.0)
+    assert (answer.product_id, answer.pivot, answer.excursion) == ("P002", False, True)
+    answer.prepared_script = "Câu trả lời đã duyệt."
+    d.mark_spoken(answer)
+    assert d.state.current_product().product_id == "P004"
+    assert d.state.cursor.pivot_active is False
+    assert _play(d) == [P1[2], P1[3], *P2]  # owner order: P1 to its end, then P2
+
+
+def test_rejected_unit_is_not_skipped_by_a_later_completion() -> None:
+    d = _director(P1, P2)
+    skipped = d.decide([], now=0.0)  # unit 0 is rejected downstream: never marked
+    later = Decision(
+        action="sell_product", product_id="P1", stage="benefit", unit_index=1, prepared_script="x"
+    )
+    d.mark_spoken(later)
+    assert d.state.products[0].next_unit == 0
+    assert d.decide([], now=1.0).prepared_script == skipped.prepared_script
+
+
+def test_binding_an_order_aware_envelope_locks_the_director_order() -> None:
+    import json
+    from types import SimpleNamespace
+
+    from backend.application.director.session_context import DirectorSession
+
+    def bind(policy):
+        director = _director(P1, P2)
+        session = DirectorSession(director=director, embedder=None)
+        envelope = SimpleNamespace(
+            brief_json=json.dumps({"transition_policy": policy}),
+            products=[SimpleNamespace(product_id="P1", units=tuple(P1))],
+        )
+        session.bind_envelope(envelope)
+        return director.order_locked
+
+    assert bind("ORDER_AWARE") is True
+    assert bind("ORDER_AGNOSTIC") is False

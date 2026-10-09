@@ -29,11 +29,14 @@ __all__ = [
 # Compact Vietnamese price forms: "299.000đ", "299.000 đ", "299,000đ",
 # "299k", "2.99 triệu", "2 triệu". The group separator is "." or "," (both
 # appear in Vietnamese commerce text); "k" and "triệu" are unit suffixes.
+_UNIT = r"(?:k\s?[đ₫]|₫|đồng|đ|(?i:vnđ|vnd)|nghìn|ngàn|triệu|tr|k|K)"
 _PRICE_RE = re.compile(
     # grouped number with an optional unit (so "299.000k" is read whole, not as 299.000),
     # or any number followed by a currency/multiplier unit.
-    r"\d{1,3}(?:[.,]\d{3})+(?:\s*(?:đồng|đ|(?i:vnđ|vnd)|nghìn|ngàn|triệu|tr|k|K)(?!\w))?"
-    r"|\d+(?:[.,]\d+)?\s*(?:đồng|đ|(?i:vnđ|vnd)|nghìn|ngàn|triệu|tr|k|K)",
+    # Attached/spaced suffix variants ("kđ", "k đ", "k₫", "₫") belong to the token so a
+    # multiplier can never be dropped and the remainder compared as a plain price.
+    r"\d{1,3}(?:[.,]\d{3})+(?:\s*" + _UNIT + r"(?!\w))?"
+    r"|\d+(?:[.,]\d+)?\s*" + _UNIT + r"(?!\w)",
     re.UNICODE,
 )
 
@@ -176,7 +179,7 @@ def _span_of(match: re.Match[str]) -> TextSpan:
 _UNIT_X1000 = ("k", "nghìn", "ngàn")
 _UNIT_X1M = ("triệu", "tr")
 _AMOUNT_RE = re.compile(
-    r"(\d+(?:[.,]\d+)*)\s*(đồng|đ|vnđ|vnd|nghìn|ngàn|triệu|tr|k)?", re.IGNORECASE
+    r"(\d+(?:[.,]\d+)*)\s*(k\s?[đ₫]|₫|đồng|đ|vnđ|vnd|nghìn|ngàn|triệu|tr|k)?", re.IGNORECASE
 )
 
 
@@ -191,7 +194,9 @@ def _vnd_amount(value: str) -> int | None:
     match = _AMOUNT_RE.fullmatch(value.strip())
     if match is None:
         return None
-    number, unit = match.group(1), (match.group(2) or "").lower()
+    number, unit = match.group(1), re.sub(r"\s", "", (match.group(2) or "").lower())
+    if unit in ("kđ", "k₫"):
+        unit = "k"
     grouped = re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", number) is not None
     plain = number.isdigit()
     if unit in _UNIT_X1000:
@@ -305,6 +310,82 @@ def check_identity_claims(text: str, context) -> list[RuleViolation]:
     return violations
 
 
+# Units that make a number a product claim (warranty, size, duration, strength...).
+_CLAIM_UNITS = (
+    "năm|tháng|ngày|tuần|giờ|phút|giây|%|cm|mm|kg|mg|ml|mah|lít|inch|size|watt|"
+    "w|v|g|m|l|lần|tuổi|ngàn|vòng|trọn"
+)
+_NUM_RE = re.compile(
+    r"(?:(?P<pre>size|số)\s*)?(?P<num>\d+(?:[.,]\d+)*)\s*(?P<unit>(?:"
+    + _CLAIM_UNITS
+    + r")(?!\w))?",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _num_key(number: str) -> str:
+    """Canonical value: "1,5" -> "1.5"; a thousands group ("299.000") -> "299000"."""
+    if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", number):
+        return re.sub(r"[.,]", "", number)
+    return number.replace(",", ".")
+
+
+def _numbers(text: str) -> list[tuple[str, str, int, int]]:
+    """(value, unit, start, end) of every number in ``text``; unit may be empty."""
+    found = []
+    for m in _NUM_RE.finditer(text):
+        unit = (m.group("unit") or m.group("pre") or "").lower()
+        found.append((_num_key(m.group("num")), unit, m.start(), m.end()))
+    return found
+
+
+def _approved_numbers(facts: ProductFacts) -> set[tuple[str, str]]:
+    sources = (*facts.allowed_claims, *facts.prices, *facts.discounts, *facts.skus)
+    return {
+        (v, u) for source in (*sources, facts.product_name) for v, u, _s, _e in _numbers(source)
+    }
+
+
+def _number_approved(value: str, unit: str, approved: set[tuple[str, str]]) -> bool:
+    return any(v == value and (not unit or not u or u == unit) for v, u in approved)
+
+
+def _numeric_violations(text: str, context) -> list[RuleViolation]:
+    """Fail closed on numbers a claim-like sentence states but no approved fact contains.
+
+    Checked: a number followed by a claim unit (năm, tháng, %, cm, kg, size...), or a bare
+    number right after a benefit/capability word ("bảo hành 100"). Prices and "giảm X%" have
+    their own rules; counting numbers ("hôm nay có 2 món") are not claims and are left alone.
+    """
+    approved = _approved_numbers(context.facts)
+    violations: list[RuleViolation] = []
+    for sentence in _SENTENCE_SPLIT_RE.split(text):
+        lowered = sentence.lower()
+        price_spans = [m.span() for m in _PRICE_RE.finditer(lowered)]
+        price_spans += [m.span() for m in _DISCOUNT_RE.finditer(lowered)]
+        signals = [m.end() for m in _BENEFIT_RE.finditer(lowered)]
+        for value, unit, start, end in _numbers(lowered):
+            if any(a <= start and end <= b for a, b in price_spans):
+                continue
+            after_signal = any(0 <= start - e <= 12 for e in signals)
+            if not unit and not after_signal:
+                continue
+            if _number_approved(value, unit, approved):
+                continue
+            violations.append(
+                RuleViolation(
+                    rule_id=RULE_CLAIM_FACTUAL,
+                    severity=Severity.ERROR,
+                    message=(
+                        f"Number {sentence[start:end].strip()!r} is not in the approved "
+                        "facts; do not state it."
+                    ),
+                )
+            )
+    return violations
+
+
 def check_factual_claims(text: str, context) -> list[RuleViolation]:
     """Flag configured factual claims (sentences) absent from the allowed set.
 
@@ -323,7 +404,7 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
     Support is now derived purely from the allowed-claim set, so correctness
     does not depend on the product name/category.
     """
-    violations: list[RuleViolation] = []
+    violations: list[RuleViolation] = _numeric_violations(text, context)
     allowed = [claim.strip().lower() for claim in context.facts.allowed_claims]
     for sentence in re.split(r"[.!?]+", text):
         stripped = sentence.strip()

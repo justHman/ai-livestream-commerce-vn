@@ -17,6 +17,7 @@ runtime wires them. Same Director drives cloud or self-host.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -54,6 +55,11 @@ class DirectorSession:
     def bind_envelope(self, envelope) -> None:
         """Pin the approved envelope and give the Director each product's ordered units."""
         self.approved_envelope = envelope
+        try:
+            policy = json.loads(envelope.brief_json).get("transition_policy")
+        except (TypeError, ValueError, AttributeError):
+            policy = None
+        self.director.order_locked = policy == "ORDER_AWARE"
         units = {p.product_id: p.units for p in envelope.products}
         for product in self.director.state.products:
             product.units = units.get(product.product_id, ())

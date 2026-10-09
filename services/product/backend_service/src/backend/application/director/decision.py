@@ -122,6 +122,10 @@ class Director:
         # The 0.8 default is exactly the brief's proposed set — price/stock/
         # buy_intent (1.0), comparison (0.9), complaint (0.8).
         self.high_value_threshold: float = 0.8
+        # An ORDER_AWARE approved script bakes bridges between neighbouring products:
+        # demand must never move playback to another product (comments are still
+        # answered, as an excursion that resumes at the same cursor).
+        self.order_locked: bool = False
         self.safety_intents: frozenset[str] = frozenset()
 
     def is_high_value(self, envelope: Any) -> bool:
@@ -462,14 +466,17 @@ class Director:
                 total_demand = max(len(actionable_product_ids), 1)
                 target_share = actionable_product_ids.count(target_id) / total_demand
                 current_share = actionable_product_ids.count(cur.product_id) / total_demand
-                pivot = should_enter_pivot(
-                    target_id or "",
-                    actionable_product_ids,
-                    min_comments=c.demand_pivot_min_comments,
-                    enter_share=c.demand_pivot_enter_share,
-                    score_margin=c.demand_pivot_score_margin,
-                    top_score=target_share,
-                    current_score=current_share,
+                pivot = (
+                    should_enter_pivot(
+                        target_id or "",
+                        actionable_product_ids,
+                        min_comments=c.demand_pivot_min_comments,
+                        enter_share=c.demand_pivot_enter_share,
+                        score_margin=c.demand_pivot_score_margin,
+                        top_score=target_share,
+                        current_score=current_share,
+                    )
+                    and not self.order_locked
                 )
                 cross_selection = by_cluster.get(_cluster_id_of(by_members, cross_product))
                 cross_decision = self._qa_decision(
@@ -643,7 +650,11 @@ class Director:
         if decision.unit_index is not None and decision.product_id:
             for product in self.state.products:
                 if product.product_id == decision.product_id:
-                    product.next_unit = max(product.next_unit, decision.unit_index + 1)
+                    # Only the NEXT unit completes the cursor: a later unit finishing while an
+                    # earlier one was rejected must not skip it (the coordinator also drops
+                    # queued units behind a rejected one).
+                    if decision.unit_index == product.next_unit:
+                        product.next_unit += 1
                     break
         if decision.stage == "opening":
             if decision.action == "autonomous_opening":

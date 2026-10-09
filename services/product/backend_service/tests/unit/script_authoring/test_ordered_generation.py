@@ -385,3 +385,38 @@ def test_short_one_sentence_units_pass_role_bounds_and_common_phrases_only_warn(
     units = [f"Cả nhà ơi mình nói ý số {w} nhé." for w in "một hai ba bốn năm sáu bảy".split()]
     full = gate.run_full_script(units, ScriptGateContext(facts=ProductFacts(), total_min_seconds=1))
     assert full.passed
+
+
+@pytest.mark.asyncio
+async def test_regeneration_gates_with_the_real_product_facts() -> None:
+    service, repos = _service(FakeLLM(empty_for={("P1", "offer")}))
+    set_id = await _new_set(service)
+    await _run(service, repos, set_id)
+    assert (await _text(repos, set_id, "P1"))[0].state is ScriptState.GATE_FAILED
+    # the failed offer unit is rewritten with an authorised price spelt "150k"
+    service._engine_manager._llm_fn = lambda _p: (
+        "Gel XYZ đang có giá 150k thôi, ai cũng có thể thêm vào giỏ hôm nay một cách thoải mái."
+    )
+    await service.regenerate_segment(
+        set_id=set_id, product_id="P1", segment_index=3, idempotency_key="regen"
+    )
+    for _ in range(300):
+        item, version = await _text(repos, set_id, "P1")
+        if "150k" in version.spoken_text:
+            break
+        await asyncio.sleep(0.02)
+    assert "150k" in version.spoken_text
+    assert item.state is ScriptState.REVIEWABLE
+
+
+@pytest.mark.asyncio
+async def test_recovery_cannot_extend_the_whole_job_deadline() -> None:
+    service, repos = _service(FakeLLM(), unit_job_deadline_s=100.0)
+    set_id = await _new_set(service)
+    script_set = await repos.script_sets.get(set_id)
+    started = time.time() - 1000  # the job started long ago: nothing is left
+    ordered = service._ordered_batch(script_set, FakeLLM(), started_at=started)
+    with pytest.raises(LLMDeadlineError):
+        ordered.llm("p")
+    fresh = service._ordered_batch(script_set, FakeLLM(), started_at=None)
+    assert fresh.llm("Vai trò của phần này (1/7): Mở đầu phiên live. Tên sản phẩm: Kem ABC")

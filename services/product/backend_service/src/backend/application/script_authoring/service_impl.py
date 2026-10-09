@@ -28,6 +28,7 @@ import os
 import queue
 import re
 import socket
+import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -1214,7 +1215,10 @@ class ScriptAuthoringServiceImpl:
         return _EventEmittingDriver(driver, emit, batch_id)
 
     def _ordered_batch(
-        self, script_set: ScriptSet, llm_fn: Callable[[str], str] | None
+        self,
+        script_set: ScriptSet,
+        llm_fn: Callable[[str], str] | None,
+        started_at: float | None = None,
     ) -> _OrderedBatch:
         """Owner order, fixed roles and authoritative facts of every product of the set.
 
@@ -1258,7 +1262,9 @@ class ScriptAuthoringServiceImpl:
                 llm_fn,
                 attempts=cfg.unit_llm_attempts,
                 call_timeout_s=cfg.unit_llm_call_timeout_s,
-                job_deadline_s=cfg.unit_job_deadline_s,
+                # Recovery must not extend the whole-job deadline: count from the first start.
+                job_deadline_s=cfg.unit_job_deadline_s
+                - (max(0.0, time.time() - started_at) if started_at else 0.0),
             ),
         )
 
@@ -2140,7 +2146,7 @@ class ScriptAuthoringServiceImpl:
         llm_fn = self._require_llm()
         ordered = None
         if ordered_units:
-            ordered = self._ordered_batch(script_set, llm_fn)
+            ordered = self._ordered_batch(script_set, llm_fn, started_at=time.time())
         else:
             self._calibration().segment_count_for(target_duration_s)  # bounds check
         req = BatchRequest(
@@ -2816,11 +2822,19 @@ class ScriptAuthoringServiceImpl:
                 status=ScriptState.DRAFT,
                 version=current_segment.version + 1,
             )
-            ordered = list(segments)
-            ordered[segment_index] = new_segment
+            # One text per index (the latest candidate/placeholder), not every attempt row.
+            latest: dict[int, ScriptSegment] = {}
+            for seg in segments:
+                if (
+                    seg.segment_index not in latest
+                    or seg.version > latest[seg.segment_index].version
+                ):
+                    latest[seg.segment_index] = seg
+            latest[segment_index] = new_segment
+            ordered = [latest[i] for i in sorted(latest)]
             context = ScriptGateContext(
                 transition_policy=script_set.brief.transition_policy,
-                facts=ProductFacts(),
+                facts=self._product_facts(script_set.brief, item.product_id),
                 total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
             )
             result = self._gate.run_full_script([s.spoken_text for s in ordered], context)
@@ -3060,7 +3074,11 @@ class ScriptAuthoringServiceImpl:
         bridge = _SyncPersistBridge()
         persist_queue: queue.Queue[BatchState] = queue.Queue()
         ring = self._event_ring(batch_id)
-        ordered = self._ordered_batch(script_set, llm_fn) if state.ordered_units else None
+        ordered = (
+            self._ordered_batch(script_set, llm_fn, started_at=state.started_at)
+            if state.ordered_units
+            else None
+        )
 
         def create_workflow(product_id: str, target: float):
             item = items[product_id]

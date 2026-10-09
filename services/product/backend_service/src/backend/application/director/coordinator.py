@@ -1193,6 +1193,9 @@ class DirectorCoordinator:
         except SpeechRejected as exc:
             self._note_rejected(session_id, decision)
             self._record_cancelled(session_id, decision, exc.code)
+            if decision.unit_index is not None:
+                # Never let a later unit play ahead of the rejected one.
+                self._invalidate_queued(session_id, reason="unit_rejected")
             await self._emit(
                 session_id,
                 {
@@ -1333,6 +1336,8 @@ class DirectorCoordinator:
                 st.skips += 1
                 self._note_rejected(session_id, decision)
                 self._record_cancelled(session_id, decision, exc.code)
+                if decision.unit_index is not None:
+                    self._invalidate_queued(session_id, reason="unit_rejected")
                 await self._emit(
                     session_id,
                     {

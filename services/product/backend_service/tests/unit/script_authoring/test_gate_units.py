@@ -88,3 +88,60 @@ def test_multiplier_suffix_cannot_launder_a_price() -> None:
     assert check_price_claims("Giá 299k.", ctx) == []
     assert check_price_claims("Giá 299.000đ.", ctx) == []
     assert check_price_claims("Giá 299.000 VND.", ctx) == []
+
+
+NUM_FACTS = ProductFacts(
+    product_name="Kem ABC",
+    prices=("299000 VND",),
+    discounts=("giảm 20%",),
+    allowed_claims=("Bảo hành 1 năm.", "Dung tích 50 ml."),
+)
+
+
+def _numeric(text):
+    from backend.application.script_authoring.gate.rules.commerce_claims import (
+        check_factual_claims,
+    )
+
+    return check_factual_claims(text, ScriptGateContext(facts=NUM_FACTS))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Bảo hành 100 năm cho cả nhà.",
+        "Sản phẩm bảo hành 100 luôn.",
+        "Dung tích tới 500 ml nhé.",
+        "Đạt 98% khách hàng hài lòng.",
+        "Dùng liên tục 30 ngày là thấy hiệu quả.",
+    ],
+)
+def test_unapproved_numbers_in_claims_fail_closed(text) -> None:
+    assert [v for v in _numeric(text) if "Number" in v.message]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Bảo hành 1 năm cho cả nhà.",
+        "Dung tích 50 ml dùng rất tiện.",
+        "Hôm nay shop có 2 món cho cả nhà.",
+        "Món thứ 3 là Kem ABC nhé.",
+        "Giá chỉ 299k thôi.",
+        "Giảm 20% chỉ trong hôm nay.",
+        "Mình giới thiệu top 3 sản phẩm đây.",
+    ],
+)
+def test_harmless_or_approved_numbers_are_not_flagged(text) -> None:
+    assert not [v for v in _numeric(text) if "Number" in v.message]
+
+
+@pytest.mark.parametrize("written", ["299.000kđ", "299.000 k đ", "299.000 k", "299.000k₫"])
+def test_attached_multiplier_variants_are_priced_closed(written) -> None:
+    facts = ProductFacts(prices=("299000 VND",))
+    assert check_price_claims(f"Giá {written}.", ScriptGateContext(facts=facts))
+
+
+def test_attached_multiplier_with_plain_number_is_a_known_price() -> None:
+    facts = ProductFacts(prices=("299000 VND",))
+    assert check_price_claims("Giá 299kđ nhé.", ScriptGateContext(facts=facts)) == []

@@ -163,6 +163,9 @@ class _FakeVersionRepo:
     async def insert(self, version: ScriptVersion, *, conn=None) -> None:
         self.rows[version.id] = version.model_copy(deep=True)
 
+    async def list_by_item(self, item_id: str, *, conn=None) -> list[ScriptVersion]:
+        return [v for v in self.rows.values() if v.script_item_id == item_id]
+
 
 class _FakeGateRunRepo:
     def __init__(self) -> None:

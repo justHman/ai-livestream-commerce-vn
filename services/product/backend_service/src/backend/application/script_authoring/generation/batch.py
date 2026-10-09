@@ -27,6 +27,7 @@ clock and inspect recorded active windows — no asyncio race dependence.
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, TypeVar
 
@@ -131,6 +132,8 @@ class BatchState(BaseModel):
     # Ordered-units generation (fixed roles per product, owner order); recovery
     # must rebuild the same kind of workflow.
     ordered_units: bool = False
+    # Wall-clock start (epoch s) of the whole job; None on rows written before it existed.
+    started_at: Optional[float] = None
     products: dict[str, ProductWorkflowState] = Field(default_factory=dict)
     planned_semantic_calls: int = Field(default=0, ge=0)
     actual_semantic_calls: int = Field(default=0, ge=0)
@@ -342,6 +345,7 @@ class BatchScriptGenerationOrchestrator:
             requested_products=list(req.requested_products),
             target_durations=dict(req.target_durations),
             ordered_units=req.ordered_units,
+            started_at=time.time(),
             preview={
                 "products": preview_products,
                 "estimated_semantic_calls_total": planned_total,
