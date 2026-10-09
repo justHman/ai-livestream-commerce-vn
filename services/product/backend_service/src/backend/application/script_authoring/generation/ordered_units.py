@@ -34,13 +34,13 @@ __all__ = [
 # Spoken-duration bounds (seconds, canonical estimator) per role. Wide on purpose:
 # the owner edits the text; these only reject empty/one-word and runaway output.
 _BOUNDS_S: dict[str, tuple[float, float]] = {
-    "opening": (3.0, 40.0),
-    "intro": (3.0, 40.0),
-    "benefit": (3.0, 45.0),
-    "offer": (3.0, 45.0),
-    "trust": (3.0, 40.0),
-    "cta": (2.0, 35.0),
-    "closing": (2.0, 35.0),
+    "opening": (1.0, 40.0),
+    "intro": (1.0, 40.0),
+    "benefit": (1.0, 45.0),
+    "offer": (1.0, 45.0),
+    "trust": (1.0, 40.0),
+    "cta": (1.0, 35.0),
+    "closing": (1.0, 35.0),
 }
 _TITLES = {
     "opening": "Mở đầu phiên live",

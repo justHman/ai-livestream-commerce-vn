@@ -71,3 +71,20 @@ def test_factual_rule_runs_on_each_manual_unit_and_names_the_unit() -> None:
 def test_clean_manual_units_pass() -> None:
     manual = "Chào cả nhà, mình giới thiệu Kem ABC.\n\nGiá chỉ 299.000đ hôm nay."
     assert _gate().run_full_script([manual], _ctx()).passed
+
+
+@pytest.mark.parametrize(
+    "written", ["299.000k", "299.000 nghìn", "2.5", "299k đồng", "1.000 triệu"]
+)
+def test_ambiguous_prices_are_unparseable(written) -> None:
+    assert _vnd_amount(written) is None
+
+
+def test_multiplier_suffix_cannot_launder_a_price() -> None:
+    facts = ProductFacts(prices=("299000 VND",))
+    ctx = ScriptGateContext(facts=facts)
+    assert check_price_claims("Giá 299.000k hôm nay.", ctx)  # not 299000
+    assert check_price_claims("Giá 199000 VND hôm nay.", ctx)  # undetected before
+    assert check_price_claims("Giá 299k.", ctx) == []
+    assert check_price_claims("Giá 299.000đ.", ctx) == []
+    assert check_price_claims("Giá 299.000 VND.", ctx) == []

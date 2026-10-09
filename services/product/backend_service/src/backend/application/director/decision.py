@@ -215,6 +215,18 @@ class Director:
                 if cur2 is not None:
                     cur2.cluster_count = 0
                 return
+        # A pivot can leave an earlier product's units unplayed: go back to it. The
+        # session closing (reserved last unit) is only spoken after EVERY product's
+        # units are done.
+        for i in range(0, s.current_product_index):
+            earlier = s.products[i]
+            if earlier.units and not self._units_exhausted(earlier):
+                s.current_product_index = i
+                earlier.status = ProductStatus.ACTIVE
+                s.product_elapsed_sec = 0.0
+                s.sec_since_relevant_msg = 0.0
+                earlier.cluster_count = 0
+                return
         # nothing left -> closing
         s.phase = Phase.CLOSING
 
@@ -513,6 +525,10 @@ class Director:
             if s.phase == Phase.CLOSING:
                 return self._close_decision("all product sales stages completed", "closing")
             next_product = s.current_product()
+            if next_product is not None and next_product.is_introduced and next_product.units:
+                revisit = self._next_sales_turn(next_product)
+                if revisit is not None:
+                    return revisit
             if next_product is not None:
                 return self._introduce_decision(
                     next_product, "advance to next product after sales stages"
@@ -616,6 +632,14 @@ class Director:
             return
         if decision.pivot and decision.product_id:
             self._start_pivot(decision.product_id)
+        if (
+            decision.unit_index is not None
+            and decision.action in ("introduce_product", "sell_product")
+            and self.state.cursor.pivot_active
+            and decision.product_id == self.state.cursor.checkpoint_product_id
+        ):
+            # Back to the product the pivot interrupted: it resumes at its own next_unit.
+            self._resume_checkpoint()
         if decision.unit_index is not None and decision.product_id:
             for product in self.state.products:
                 if product.product_id == decision.product_id:
@@ -877,7 +901,10 @@ class Director:
 
     def _close_decision(self, reason: str, stage: Optional[str]) -> Decision:
         last = self.state.products[-1] if self.state.products else None
-        if last is not None and len(last.units) > 1:
+        pending_elsewhere = any(
+            p.units and not self._units_exhausted(p) for p in self.state.products[:-1]
+        )
+        if last is not None and len(last.units) > 1 and not pending_elsewhere:
             index = len(last.units) - 1
             if last.next_unit <= index:
                 text = last.units[index]

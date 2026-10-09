@@ -30,7 +30,11 @@ __all__ = [
 # "299k", "2.99 triệu", "2 triệu". The group separator is "." or "," (both
 # appear in Vietnamese commerce text); "k" and "triệu" are unit suffixes.
 _PRICE_RE = re.compile(
-    r"\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?\s*(?:đ|k|K|nghìn|triệu|tr)", re.UNICODE
+    # grouped number with an optional unit (so "299.000k" is read whole, not as 299.000),
+    # or any number followed by a currency/multiplier unit.
+    r"\d{1,3}(?:[.,]\d{3})+(?:\s*(?:đồng|đ|(?i:vnđ|vnd)|nghìn|ngàn|triệu|tr|k|K)(?!\w))?"
+    r"|\d+(?:[.,]\d+)?\s*(?:đồng|đ|(?i:vnđ|vnd)|nghìn|ngàn|triệu|tr|k|K)",
+    re.UNICODE,
 )
 
 # Discount forms: "giảm 20%", "-20%", "giảm giá 20%", "khuyến mãi 50%",
@@ -169,34 +173,38 @@ def _span_of(match: re.Match[str]) -> TextSpan:
     return TextSpan(match.start(), match.end())
 
 
+_UNIT_X1000 = ("k", "nghìn", "ngàn")
+_UNIT_X1M = ("triệu", "tr")
 _AMOUNT_RE = re.compile(
     r"(\d+(?:[.,]\d+)*)\s*(đồng|đ|vnđ|vnd|nghìn|ngàn|triệu|tr|k)?", re.IGNORECASE
 )
 
 
 def _vnd_amount(value: str) -> int | None:
-    """Whole-dong amount of a Vietnamese price written in any common form.
+    """Whole-dong amount of a price, strictly; ``None`` = ambiguous (fail closed).
 
-    "299.000đ", "299,000 đồng", "299000 VND", "299k", "2,5 triệu" all normalise
-    to one integer so a script and the facts compare by value, not by spelling.
-    ``None`` when ``value`` is not a plain price.
+    "299.000đ", "299,000 đồng", "299000 VND" -> 299000; "299k" -> 299000 (k/nghìn/ngàn
+    only after a plain integer); "2,5 triệu" -> 2500000 (tr/triệu after an integer or
+    a 1-2 digit decimal). A thousands-grouped number with a multiplier ("299.000k"),
+    a bare decimal ("2.5") or anything else is NOT a known price.
     """
     match = _AMOUNT_RE.fullmatch(value.strip())
     if match is None:
         return None
     number, unit = match.group(1), (match.group(2) or "").lower()
-    if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", number):
-        return int(re.sub(r"[.,]", "", number)) * (
-            1000 if unit in ("k", "nghìn", "ngàn") else 1_000_000 if unit in ("triệu", "tr") else 1
-        )
-    try:
-        amount = float(number.replace(",", "."))
-    except ValueError:
+    grouped = re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", number) is not None
+    plain = number.isdigit()
+    if unit in _UNIT_X1000:
+        return int(number) * 1000 if plain else None
+    if unit in _UNIT_X1M:
+        if plain:
+            return int(number) * 1_000_000
+        if re.fullmatch(r"\d+[.,]\d{1,2}", number):
+            return round(float(number.replace(",", ".")) * 1_000_000)
         return None
-    scale = (
-        1000 if unit in ("k", "nghìn", "ngàn") else 1_000_000 if unit in ("triệu", "tr") else 1
-    )
-    return round(amount * scale)
+    if plain:
+        return int(number)
+    return int(re.sub(r"[.,]", "", number)) if grouped else None
 
 
 def _claims(claim: str, facts: ProductFacts) -> bool:

@@ -370,3 +370,18 @@ def test_bounded_llm_retries_once_then_stops_and_honours_deadline() -> None:
     with pytest.raises(LLMDeadlineError):
         late("p")
     assert len(calls) == 2  # the expired job made no further call
+
+
+def test_short_one_sentence_units_pass_role_bounds_and_common_phrases_only_warn() -> None:
+    from backend.application.script_authoring.gate.context import ProductFacts, ScriptGateContext
+
+    gate = ScriptAuthoringServiceImpl._default_gate()
+    low, high = __import__(
+        "backend.application.script_authoring.generation.ordered_units", fromlist=["x"]
+    ).role_bounds_s("cta")
+    ctx = ScriptGateContext(facts=ProductFacts(), target_min_seconds=low, target_max_seconds=high)
+    assert gate.run_segment("Chốt đơn nhé cả nhà ơi.", ctx).passed
+    # a phrase shared by 6 of 7 units is a warning, not a block
+    units = [f"Cả nhà ơi mình nói ý số {w} nhé." for w in "một hai ba bốn năm sáu bảy".split()]
+    full = gate.run_full_script(units, ScriptGateContext(facts=ProductFacts(), total_min_seconds=1))
+    assert full.passed
