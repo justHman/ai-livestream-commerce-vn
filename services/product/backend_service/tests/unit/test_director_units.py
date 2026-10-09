@@ -159,3 +159,67 @@ def test_binding_an_order_aware_envelope_locks_the_director_order() -> None:
 
     assert bind("ORDER_AWARE") is True
     assert bind("ORDER_AGNOSTIC") is False
+
+
+def test_reattach_carries_units_with_their_cursor() -> None:
+    from backend.api.v1 import ProductEntityIn
+    from backend.application.director.embeddings import HashingEmbedder
+    from backend.application.director.session_context import DirectorRuntime
+    from backend.application.render.engines_base import FullPipelineBackend
+
+    class Backend(FullPipelineBackend):
+        name = "b"
+
+        def start(self, opts): ...
+
+        def say(self, session_id, text, generate=True):
+            return text
+
+        def interrupt(self, session_id): ...
+
+        def stop(self, session_id): ...
+
+    runtime = DirectorRuntime(backend=Backend(), embedder=HashingEmbedder())
+    entity = ProductEntityIn(id="P004", name="A").to_entity()
+    runtime.attach("s", [entity])
+    product = runtime.get_session("s").director.state.products[0]
+    product.units, product.next_unit = tuple(P1), 2
+    runtime.attach("s", [entity])  # re-attach rebuilds ProductState
+    again = runtime.get_session("s").director.state.products[0]
+    assert (again.units, again.next_unit) == (tuple(P1), 2)
+
+
+def test_rebind_restarts_only_products_whose_approved_text_changed() -> None:
+    import json
+    from types import SimpleNamespace
+
+    from backend.application.director.session_context import DirectorSession
+
+    d = _director(P1, P2)
+    session = DirectorSession(director=d, embedder=None)
+
+    def env(p1_text, policy="ORDER_AGNOSTIC"):
+        return SimpleNamespace(
+            brief_json=json.dumps({"transition_policy": policy}),
+            products=[
+                SimpleNamespace(
+                    product_id="P1",
+                    approved_version_id=p1_text,
+                    spoken_text=p1_text,
+                    units=tuple(P1),
+                ),
+                SimpleNamespace(
+                    product_id="P2",
+                    approved_version_id="v2",
+                    spoken_text="same",
+                    units=tuple(P2),
+                ),
+            ],
+        )
+
+    session.bind_envelope(env("v1"))
+    d.state.products[0].next_unit = 3
+    d.state.products[1].next_unit = 2
+    session.bind_envelope(env("v1-edited", policy="ORDER_AWARE"))
+    assert (d.state.products[0].next_unit, d.state.products[1].next_unit) == (0, 2)
+    assert d.order_locked is True

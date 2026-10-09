@@ -955,4 +955,11 @@ async def sessions_bind_script_set(
     d.approved_speech.rebind(session_id)
     if d.coordinator is not None and d.coordinator.has(session_id):
         await d.coordinator.interrupt(session_id)
+    if d.director is not None and d.director.has(session_id):
+        try:
+            new_envelope = await d.approved_speech.resolve(session_id)
+        except SpeechRejected:
+            new_envelope = None  # not active/attached yet: the next attach binds it
+        if new_envelope is not None:
+            d.director.get_session(session_id).bind_envelope(new_envelope)
     return {"ok": True, "session_id": session_id, "binding": snapshot.as_dict()}

@@ -333,7 +333,12 @@ class ApprovedSpeech:
         envelope = await self.resolve(session_id)
         candidates = (envelope.product(product_id),) if product_id else envelope.products
         if select_locked:
-            text = envelope.product(product_id).spoken_text
+            whole = envelope.product(product_id)
+            if len(whole.units) > 1:
+                # An intro/sell turn of a multi-part script MUST name its unit; never widen
+                # it to the whole text (e.g. a Director that lost its units during re-attach).
+                raise SpeechRejected("unit_required")
+            text = whole.spoken_text
         elif generate:
             if llm is None or getattr(llm, "name", "none") == "none":
                 raise SpeechRejected("generation_unavailable")

@@ -558,3 +558,49 @@ async def test_altered_unit_or_changed_approval_speaks_nothing(case_factory):
     with pytest.raises(SpeechRejected):
         await case.d.approved_speech.revalidate(good)
     assert not case.tts.calls
+
+
+@pytest.mark.asyncio
+async def test_unit_turn_without_a_unit_is_rejected_not_widened_to_whole_text(case_factory):
+    case = await case_factory(source=MultiSource({"product-b": B_UNITS, "product-a": A_UNITS}))
+    with pytest.raises(SpeechRejected) as rejected:
+        await case.d.approved_speech.prepare(
+            case.sid, "", product_id="product-b", select_locked=True, route="director"
+        )
+    assert rejected.value.code == "unit_required"
+
+
+@pytest.mark.asyncio
+async def test_late_rejection_drops_the_units_queued_behind_it(case_factory):
+    case = await case_factory(source=MultiSource({"product-b": B_UNITS, "product-a": A_UNITS}))
+    co, sid = case.d.coordinator, case.sid
+    token = case.d.director.current_generation_token(sid)
+
+    def unit(index):
+        return Decision(
+            action="sell_product",
+            product_id="product-b",
+            stage="benefit",
+            prepared_script=B_UNITS[index],
+            unit_index=index,
+            revision_token=token,
+        )
+
+    first, second = unit(1), unit(2)
+    await prepare(case, first)
+    await prepare(case, second)
+    co._speech_queue[sid].clear()
+    co._speech_queue[sid].append(second)
+    real = case.d.approved_speech.revalidate
+    calls = {"n": 0}
+
+    async def flaky(speech, *, live=lambda: True):
+        calls["n"] += 1
+        if calls["n"] == 3:  # the pre-media check inside playback, after both earlier ones
+            raise SpeechRejected("stale_execution_envelope")
+        return await real(speech, live=live)
+
+    case.d.approved_speech.revalidate = flaky
+    assert await co._maybe_speak(sid, first)
+    assert not case.tts.calls  # nothing reached media
+    assert not co._speech_queue[sid]  # the later unit did not stay queued behind the rejection

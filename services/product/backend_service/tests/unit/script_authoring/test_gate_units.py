@@ -145,3 +145,68 @@ def test_attached_multiplier_variants_are_priced_closed(written) -> None:
 def test_attached_multiplier_with_plain_number_is_a_known_price() -> None:
     facts = ProductFacts(prices=("299000 VND",))
     assert check_price_claims("Giá 299kđ nhé.", ScriptGateContext(facts=facts)) == []
+
+
+CROSS_FACTS = ProductFacts(
+    product_name="Kem ABC",
+    prices=("10k",),
+    allowed_claims=("Bảo hành 1 năm.", "Tuổi thọ 10 năm.", "Dung tích 50 ml."),
+)
+
+
+def _cross(text):
+    from backend.application.script_authoring.gate.rules.commerce_claims import (
+        check_factual_claims,
+    )
+
+    return [
+        v
+        for v in check_factual_claims(text, ScriptGateContext(facts=CROSS_FACTS))
+        if "Number" in v.message
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Bảo hành 10 năm cho cả nhà.",  # 10 is a price / a lifespan, not the warranty
+        "Bảo hành 10.",  # bare number is not backed by the warranty claim
+        "Dung tích 10 ml dùng rất tiện.",
+        "Tuổi thọ 1 năm thôi nhé.",  # warranty number on a lifespan sentence
+    ],
+)
+def test_numbers_are_authorised_by_the_same_claim_only(text) -> None:
+    assert _cross(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Bảo hành 1 năm cho cả nhà.", "Tuổi thọ 10 năm rất bền.", "Dung tích 50 ml nhé."],
+)
+def test_numbers_backed_by_their_own_claim_pass(text) -> None:
+    assert not _cross(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Cả nhà đợi 2 phút để shop lên sản phẩm tiếp theo nhé.",
+        "Mình chờ 30 giây cho mọi người vào live nhé.",
+        "Lát nữa khoảng 10 phút sau mình mở deal mới, cả nhà đón xem.",
+        "Hôm nay có 2 món cực xịn dành cho cả nhà.",
+        "Phiên live kéo dài 2 giờ nữa, mọi người cứ thoải mái xem nhé.",
+        "Đã có hơn 100 bạn vào xem live rồi, cảm ơn cả nhà.",
+        "Bước 1 là chọn size, bước 2 là chốt đơn.",
+    ],
+)
+def test_hosting_numbers_are_not_product_claims(text) -> None:
+    assert not _cross(text)
+
+
+@pytest.mark.parametrize(
+    "written", ["999000 Đồng", "299.000KĐ", "999000 VND", "299.000 Nghìn", "999 K"]
+)
+def test_capitalised_suffixes_cannot_bypass_price_checks(written) -> None:
+    facts = ProductFacts(prices=("299.000đ",))
+    assert check_price_claims(f"Giá {written} nhé.", ScriptGateContext(facts=facts))
+    assert check_price_claims("Giá 299.000 ĐỒNG nhé.", ScriptGateContext(facts=facts)) == []

@@ -1556,6 +1556,10 @@ class DirectorCoordinator:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if decision.unit_index is not None:
+                # Late rejection (pre-media check, guarded media boundary) or a failed
+                # delivery: no later unit may play ahead of this one.
+                self._invalidate_queued(session_id, reason="unit_failed")
             if self.runtime_failures is not None:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):

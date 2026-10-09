@@ -54,6 +54,10 @@ class DirectorSession:
 
     def bind_envelope(self, envelope) -> None:
         """Pin the approved envelope and give the Director each product's ordered units."""
+        previous = {
+            p.product_id: (p.approved_version_id, p.spoken_text)
+            for p in getattr(self.approved_envelope, "products", ())
+        }
         self.approved_envelope = envelope
         try:
             policy = json.loads(envelope.brief_json).get("transition_policy")
@@ -61,8 +65,19 @@ class DirectorSession:
             policy = None
         self.director.order_locked = policy == "ORDER_AWARE"
         units = {p.product_id: p.units for p in envelope.products}
+        changed = {
+            p.product_id
+            for p in envelope.products
+            if p.product_id in previous
+            and previous[p.product_id] != (p.approved_version_id, p.spoken_text)
+        }
         for product in self.director.state.products:
             product.units = units.get(product.product_id, ())
+            if product.product_id in changed:
+                # New approved text: its parts start over; untouched products keep their cursor.
+                product.next_unit = 0
+                product.is_introduced = False
+                product.stage_turn_index = 0
 
 
 class DirectorRuntime:
@@ -178,6 +193,7 @@ class DirectorRuntime:
                     item.reactive_streak = old.reactive_streak
                     item.cluster_count = old.cluster_count
                     item.next_unit = old.next_unit
+                    item.units = old.units  # units travel with their cursor, atomically
             state.products = prod_states
             state.run_plan = run_plan
             state.current_product_index = next(
