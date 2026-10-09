@@ -169,13 +169,44 @@ def _span_of(match: re.Match[str]) -> TextSpan:
     return TextSpan(match.start(), match.end())
 
 
+_AMOUNT_RE = re.compile(
+    r"(\d+(?:[.,]\d+)*)\s*(đồng|đ|vnđ|vnd|nghìn|ngàn|triệu|tr|k)?", re.IGNORECASE
+)
+
+
+def _vnd_amount(value: str) -> int | None:
+    """Whole-dong amount of a Vietnamese price written in any common form.
+
+    "299.000đ", "299,000 đồng", "299000 VND", "299k", "2,5 triệu" all normalise
+    to one integer so a script and the facts compare by value, not by spelling.
+    ``None`` when ``value`` is not a plain price.
+    """
+    match = _AMOUNT_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    number, unit = match.group(1), (match.group(2) or "").lower()
+    if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", number):
+        return int(re.sub(r"[.,]", "", number)) * (
+            1000 if unit in ("k", "nghìn", "ngàn") else 1_000_000 if unit in ("triệu", "tr") else 1
+        )
+    try:
+        amount = float(number.replace(",", "."))
+    except ValueError:
+        return None
+    scale = (
+        1000 if unit in ("k", "nghìn", "ngàn") else 1_000_000 if unit in ("triệu", "tr") else 1
+    )
+    return round(amount * scale)
+
+
 def _claims(claim: str, facts: ProductFacts) -> bool:
     """True when the claim value appears among the authoritative facts."""
     normalized = re.sub(r"\s+", " ", claim.strip().lower())
     for candidate in (*facts.prices, *facts.discounts, *facts.skus):
         if normalized == re.sub(r"\s+", " ", candidate.lower()):
             return True
-    return False
+    amount = _vnd_amount(claim)
+    return amount is not None and any(_vnd_amount(price) == amount for price in facts.prices)
 
 
 def check_price_claims(text: str, context) -> list[RuleViolation]:

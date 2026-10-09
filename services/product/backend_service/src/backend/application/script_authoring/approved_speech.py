@@ -19,6 +19,7 @@ from typing import Any, Callable
 from .fingerprints import ApprovalDependencies, approval_dependency_hash
 from .models import Approval, ScriptVersion
 from .runtime_handoff import resolve_approved_script
+from .units import split_units
 from .session_binding import RuntimePlan, validate_binding, _source_current_dependencies
 
 CAPABILITY = "content.approved_speech.v1"
@@ -51,7 +52,7 @@ class ApprovedProduct:
         # One unit = one blank-line separated paragraph of the approved text (the
         # authoring joiner is a blank line). Pure function of spoken_text, so the
         # approval hash and envelope fingerprint need no extra field and cannot drift.
-        return tuple(p.strip() for p in re.split(r"\n[ \t]*\n", self.spoken_text) if p.strip())
+        return split_units(self.spoken_text)
 
     def answers(self) -> tuple[str, ...]:
         # No substring fragments, negation removal, price templates or free
