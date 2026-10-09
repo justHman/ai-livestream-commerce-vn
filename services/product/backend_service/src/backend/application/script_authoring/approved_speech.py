@@ -365,7 +365,12 @@ class ApprovedSpeech:
 
             text = await asyncio.to_thread(collect)
         product = next(
-            (p for p in candidates if (text == p.spoken_text or text in p.units or text in p.answers())), None
+            (
+                p
+                for p in candidates
+                if (text == p.spoken_text or text in p.units or text in p.answers())
+            ),
+            None,
         )
         if product is None:
             raise SpeechRejected("unsupported_content")

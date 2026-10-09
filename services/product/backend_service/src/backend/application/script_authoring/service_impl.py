@@ -1315,7 +1315,9 @@ class ScriptAuthoringServiceImpl:
                             topic=role_title(roles[index]),
                         ),
                     )
-            return SegmentStepOutcome(index=index, state=continuity, error="empty_or_garbled_output")
+            return SegmentStepOutcome(
+                index=index, state=continuity, error="empty_or_garbled_output"
+            )
 
         def segment_generate(index, continuity, _target=None) -> SegmentStepOutcome:
             emit("segment.started", {"product_id": pid, "segment_index": index})

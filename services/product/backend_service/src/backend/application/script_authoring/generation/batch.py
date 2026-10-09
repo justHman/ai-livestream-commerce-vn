@@ -186,7 +186,11 @@ def request_fingerprint(req: BatchRequest) -> str:
         req.model_fingerprint,
         req.client_key,
         # Appended only when set so fingerprints of long-form batches never change.
-        *(["ordered_units:" + ",".join(f"{p}:{n}" for p, n in req.unit_counts)] if req.ordered_units else []),
+        *(
+            ["ordered_units:" + ",".join(f"{p}:{n}" for p, n in req.unit_counts)]
+            if req.ordered_units
+            else []
+        ),
     ]
     digest = hashlib.sha256()
     for part in parts:

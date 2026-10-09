@@ -284,9 +284,7 @@ class WorkflowDriver:
             next_topic=None,
         )
 
-    def _unit_failed(
-        self, index: int, attempt: int, message: str, *, gate_exhausted: bool
-    ) -> None:
+    def _unit_failed(self, index: int, attempt: int, message: str, *, gate_exhausted: bool) -> None:
         wf = self.workflow
         if self.failed_unit_text is None:
             if gate_exhausted:
