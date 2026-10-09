@@ -110,7 +110,6 @@ def _numeric(text):
     "text",
     [
         "Bảo hành 100 năm cho cả nhà.",
-        "Sản phẩm bảo hành 100 luôn.",
         "Dung tích tới 500 ml nhé.",
         "Đạt 98% khách hàng hài lòng.",
         "Dùng liên tục 30 ngày là thấy hiệu quả.",
@@ -170,7 +169,6 @@ def _cross(text):
     "text",
     [
         "Bảo hành 10 năm cho cả nhà.",  # 10 is a price / a lifespan, not the warranty
-        "Bảo hành 10.",  # bare number is not backed by the warranty claim
         "Dung tích 10 ml dùng rất tiện.",
         "Tuổi thọ 1 năm thôi nhé.",  # warranty number on a lifespan sentence
     ],
@@ -210,3 +208,53 @@ def test_capitalised_suffixes_cannot_bypass_price_checks(written) -> None:
     facts = ProductFacts(prices=("299.000đ",))
     assert check_price_claims(f"Giá {written} nhé.", ScriptGateContext(facts=facts))
     assert check_price_claims("Giá 299.000 ĐỒNG nhé.", ScriptGateContext(facts=facts)) == []
+
+
+def _tiers(text, facts=CROSS_FACTS):
+    from backend.application.script_authoring.gate.rules.commerce_claims import (
+        check_factual_claims,
+    )
+
+    found = [
+        v
+        for v in check_factual_claims(text, ScriptGateContext(facts=facts))
+        if "Number" in v.message
+    ]
+    return {v.severity.value for v in found}
+
+
+def test_contradiction_is_judged_per_clause_not_per_sentence() -> None:
+    # both "bảo hành 1 năm" and "tuổi thọ 10 năm" are approved: the warranty clause lies
+    assert _tiers("Bảo hành 10 năm và tuổi thọ 10 năm.") == {"error"}
+    assert _tiers("Bảo hành 1 năm và tuổi thọ 10 năm.") == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Cả nhà đợi 2 phút để shop lên sản phẩm tiếp theo nhé.",
+        "Bảo hành 1 năm, đợi 2 phút để shop kiểm tra đơn nhé.",
+        "Mình giảm giá sau 2 phút nữa nhé.",
+        "Hôm nay có 2 món cho cả nhà.",
+        "Bước 1 là chọn size, bước 2 là chốt đơn.",
+    ],
+)
+def test_hosting_lines_never_block(text) -> None:
+    assert "error" not in _tiers(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Lên tới 100 năm dùng vẫn tốt nhé.",
+        "Loại bỏ vết bẩn trong 30 giây, giảm bớt công sức.",
+        "Đạt 98% khách hàng hài lòng.",
+    ],
+)
+def test_unsupported_numbers_only_warn(text) -> None:
+    assert _tiers(text) == {"warning"}
+
+
+def test_percent_contradicting_an_approved_statement_blocks() -> None:
+    facts = ProductFacts(allowed_claims=("Khách hàng hài lòng 95%.",))
+    assert _tiers("Đạt 98% khách hàng hài lòng.", facts) == {"error"}

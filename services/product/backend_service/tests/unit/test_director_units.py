@@ -223,3 +223,50 @@ def test_rebind_restarts_only_products_whose_approved_text_changed() -> None:
     session.bind_envelope(env("v1-edited", policy="ORDER_AWARE"))
     assert (d.state.products[0].next_unit, d.state.products[1].next_unit) == (0, 2)
     assert d.order_locked is True
+
+
+def _envelope(order, texts, policy="ORDER_AWARE"):
+    import json
+    from types import SimpleNamespace
+
+    units = {"P1": tuple(P1), "P2": tuple(P2)}
+    return SimpleNamespace(
+        brief_json=json.dumps({"transition_policy": policy}),
+        products=[
+            SimpleNamespace(
+                product_id=pid,
+                approved_version_id=texts.get(pid, "v"),
+                spoken_text=texts.get(pid, "v"),
+                units=units[pid],
+            )
+            for pid in order
+        ],
+    )
+
+
+def test_rebind_to_a_new_owner_order_reorders_and_moves_the_closing() -> None:
+    from backend.application.director.session_context import DirectorSession
+
+    d = _director(P1, P2)
+    d.state.products[0].next_unit = 1
+    d.state.products[0].is_introduced = True
+    DirectorSession(director=d, embedder=None).bind_envelope(_envelope(["P2", "P1"], {}))
+    assert [p.product_id for p in d.state.products] == ["P2", "P1"]
+    assert d.state.current_product().product_id == "P1"  # same product, same cursor
+    # P1 is now the last product: its last unit is the session closing, spoken after P2's parts
+    assert _play(d) == [P1[1], P1[2], *P2, P1[3]]
+
+
+def test_changed_last_product_text_reopens_selling_from_its_first_unit() -> None:
+    from backend.application.director.session_context import DirectorSession
+    from backend.application.director.state import ProductStatus
+
+    d = _director(P1, P2)
+    session = DirectorSession(director=d, embedder=None)
+    session.bind_envelope(_envelope(["P1", "P2"], {"P2": "old"}))
+    for product, done in zip(d.state.products, (4, 3)):
+        product.next_unit, product.status = done, ProductStatus.DONE
+    d.state.phase = Phase.CLOSING  # everything but the closing was spoken
+    session.bind_envelope(_envelope(["P1", "P2"], {"P2": "new"}))
+    assert d.state.phase == Phase.SELLING and d.state.current_product().product_id == "P2"
+    assert _play(d) == P2  # restarts at unit 0 and reaches the closing only at the end

@@ -27,6 +27,7 @@ from backend.application.render.engines_base import RenderBackend
 from .catalog import embedding_text
 from .config import StreamConfig
 from .decision import Decision, Director
+from .state import Phase, ProductStatus
 from .embeddings import build_embedder
 from .hooks import HookPool
 from .state import ProductState, StreamState
@@ -71,13 +72,38 @@ class DirectorSession:
             if p.product_id in previous
             and previous[p.product_id] != (p.approved_version_id, p.spoken_text)
         }
-        for product in self.director.state.products:
+        state = self.director.state
+        for product in state.products:
             product.units = units.get(product.product_id, ())
             if product.product_id in changed:
                 # New approved text: its parts start over; untouched products keep their cursor.
                 product.next_unit = 0
                 product.is_introduced = False
                 product.stage_turn_index = 0
+                product.status = ProductStatus.PENDING
+        # Play in the envelope's (owner) order, keeping every cursor by product id. The
+        # reserved closing follows the new last product automatically.
+        order = {p.product_id: i for i, p in enumerate(envelope.products)}
+        current_id = state.current_product().product_id if state.current_product() else None
+        state.products.sort(key=lambda p: order.get(p.product_id, len(order)))
+        if current_id is not None:
+            state.goto_product(current_id)
+            state.product_elapsed_sec = 0.0
+        state.cursor.product_idx = state.current_product_index
+        # A changed text must be played from its first part, even after the session had
+        # reached the closing: reopen selling at the first product that has parts left.
+        pending = [
+            i
+            for i, p in enumerate(state.products)
+            if p.units and not self.director._units_exhausted(p)
+        ]
+        if pending and state.phase == Phase.CLOSING and not state.closing_spoken:
+            state.phase = Phase.SELLING
+            state.cursor.phase = "selling"
+            state.current_product_index = pending[0]
+            state.cursor.product_idx = pending[0]
+            state.products[pending[0]].status = ProductStatus.ACTIVE
+            state.product_elapsed_sec = 0.0
 
 
 class DirectorRuntime:

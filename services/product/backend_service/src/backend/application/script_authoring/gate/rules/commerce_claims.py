@@ -310,18 +310,32 @@ def check_identity_claims(text: str, context) -> list[RuleViolation]:
     return violations
 
 
-# Number + unit statements. A number is a PRODUCT claim only in the cases below; hosting
-# talk ("đợi 2 phút", "hôm nay có 2 món") is left alone.
-#   - measurement units (%, cm, kg, ml, size...): always tied to the product -> checked;
-#   - time/count units (năm, tháng, ngày, tuần, lần, vòng): checked next to a claim signal;
-#   - phút/giây/giờ: checked only next to a STRONG product signal (bảo hành, hạn dùng...);
-#   - a bare number right after a claim signal ("bảo hành 100", "tặng 2").
-_MEASURE_UNITS = "%|cm|mm|kg|mg|ml|mah|lít|inch|size|watt|w|v|g|m|l|tuổi"
-_TIME_UNITS = "năm|tháng|ngày|tuần|lần|vòng"
-_CLOCK_UNITS = "giờ|phút|giây"
+# Numbers with a unit in product talk. Advisory by design: the safety invariant is that
+# only exact owner-approved text is spoken. Two tiers, evaluated PER CLAUSE:
+#   ERROR   - a CONTRADICTION: the clause is about the same thing as an approved statement
+#             (shared subject words) that has a number of the same dimension, and the clause's
+#             number/unit differs from all of them ("bảo hành 10 năm" vs "Bảo hành 1 năm");
+#   WARNING - a number+unit that no approved statement speaks about (unsupported).
+# Prices and discount percentages keep their own strict rules; bare numbers are ignored.
+_UNIT_DIMENSION = {
+    **dict.fromkeys(("năm", "tháng", "ngày", "tuần"), "time"),
+    **dict.fromkeys(("giờ", "phút", "giây"), "clock"),
+    **dict.fromkeys(("cm", "mm", "m", "inch"), "length"),
+    **dict.fromkeys(("kg", "g", "mg"), "mass"),
+    **dict.fromkeys(("ml", "l", "lít"), "volume"),
+    "%": "percent",
+    "size": "size",
+    "mah": "battery",
+    "watt": "power",
+    "w": "power",
+    "v": "voltage",
+    "tuổi": "age",
+    "lần": "count",
+    "vòng": "count",
+}
 _NUM_RE = re.compile(
-    r"(?:(?P<pre>size|số)\s*)?(?P<num>\d+(?:[.,]\d+)*)\s*"
-    r"(?P<unit>(?:" + _MEASURE_UNITS + "|" + _TIME_UNITS + "|" + _CLOCK_UNITS + r")(?!\w)|%)?",
+    r"(?:(?P<pre>size)\s*)?(?P<num>\d+(?:[.,]\d+)*)\s*"
+    r"(?P<unit>(?:" + "|".join(sorted(_UNIT_DIMENSION, key=len, reverse=True)) + r")(?!\w)|%)?",
     re.IGNORECASE,
 )
 _STRONG_SIGNAL_RE = re.compile(
@@ -331,7 +345,11 @@ _STRONG_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-_SIGNAL_WINDOW = 25
+_NUM_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:[,;]|\bvà\b|\bnhưng\b|\bcòn\b|\s[-—–]\s)\s*")
+# Words too generic to say two statements are about the same thing.
+_GENERIC_WORDS = frozenset(
+    "dùng sản phẩm mọi người nhà shop hôm nay được trong bạn mình cả nhé nha ạ".split()
+)
 
 
 def _num_key(number: str) -> str:
@@ -350,75 +368,73 @@ def _numbers(text: str) -> list[tuple[str, str, int, int]]:
     return found
 
 
-def _near(spans: list[tuple[int, int]], start: int, end: int, window: int) -> bool:
-    return any(a - window <= end and start <= b + window for a, b in spans)
-
-
-def _is_product_number(lowered: str, unit: str, start: int, end: int) -> bool:
-    strong = [m.span() for m in _STRONG_SIGNAL_RE.finditer(lowered)]
-    soft = strong + [m.span() for m in _BENEFIT_RE.finditer(lowered)]
-    if unit == "%" or re.fullmatch(_MEASURE_UNITS, unit):
-        return True
-    if re.fullmatch(_CLOCK_UNITS, unit):
-        return _near(strong, start, end, _SIGNAL_WINDOW)
-    if re.fullmatch(_TIME_UNITS, unit):
-        return _near(soft, start, end, _SIGNAL_WINDOW)
-    # bare number (or "size 38"): a claim only right after a signal word
-    return unit == "size" or any(0 <= start - e <= 12 for _s, e in soft)
-
-
 def _claim_context(text: str) -> set[str]:
-    """Content words of a claim minus numbers and units: what the number is ABOUT."""
+    """Subject words of a statement: content words minus numbers, units, generic words."""
     return {
         w
         for w in _content_words(text)
-        if not w.isdigit()
-        and not re.fullmatch(_MEASURE_UNITS + "|" + _TIME_UNITS + "|" + _CLOCK_UNITS, w)
+        if not w.isdigit() and w not in _UNIT_DIMENSION and w not in _GENERIC_WORDS
     }
 
 
-def _approved_sources(facts: ProductFacts) -> list[tuple[set[tuple[str, str]], set[str]]]:
-    """Per approved statement: its (value, unit) pairs and its subject words.
-
-    One entry per allowed claim / discount / product name, so a number is authorised by
-    the SAME statement that talks about the same thing (warranty never authorises a
-    lifespan, a price never authorises a claim). Prices are not sources.
-    """
+def _approved_statements(facts: ProductFacts) -> list[tuple[set[tuple[str, str]], set[str]]]:
+    """Per approved claim/discount/product name: its (value, unit) pairs and subject words."""
     texts = (*facts.allowed_claims, *facts.discounts, facts.product_name)
-    return [({(v, u) for v, u, _s, _e in _numbers(t)}, _claim_context(t)) for t in texts if t]
+    out = []
+    for t in texts:
+        pairs = {(v, u) for v, u, _s, _e in _numbers(t) if u}
+        if pairs:
+            out.append((pairs, _claim_context(t)))
+    return out
 
 
 def _numeric_violations(text: str, context) -> list[RuleViolation]:
-    """Fail closed on a product-claim number no single approved statement backs.
-
-    The number AND its unit (a missing unit is NOT a wildcard) must occur in one approved
-    claim whose subject words overlap the sentence's. Prices and "giảm X%" are checked by
-    their own rules; hosting numbers are not product claims (see ``_is_product_number``).
-    """
-    sources = _approved_sources(context.facts)
+    statements = _approved_statements(context.facts)
     violations: list[RuleViolation] = []
     for sentence in _SENTENCE_SPLIT_RE.split(text):
-        lowered = sentence.lower()
-        skip = [m.span() for m in _PRICE_RE.finditer(lowered)]
-        skip += [m.span() for m in _DISCOUNT_RE.finditer(lowered)]
-        words = _claim_context(lowered)
-        for value, unit, start, end in _numbers(lowered):
-            if any(a <= start and end <= b for a, b in skip):
-                continue
-            if not _is_product_number(lowered, unit, start, end):
-                continue
-            if any((value, unit) in pairs and words & subject for pairs, subject in sources):
-                continue
-            violations.append(
-                RuleViolation(
-                    rule_id=RULE_CLAIM_FACTUAL,
-                    severity=Severity.ERROR,
-                    message=(
-                        f"Number {sentence[start:end].strip()!r} is not backed by an approved "
-                        "claim about the same thing; do not state it."
-                    ),
-                )
-            )
+        for clause in _NUM_CLAUSE_SPLIT_RE.split(sentence):
+            lowered = clause.lower()
+            skip = [m.span() for m in _PRICE_RE.finditer(lowered)]
+            skip += [m.span() for m in _DISCOUNT_RE.finditer(lowered)]
+            words = _claim_context(lowered)
+            for value, unit, start, end in _numbers(lowered):
+                if not unit or any(a <= start and end <= b for a, b in skip):
+                    continue
+                dimension = _UNIT_DIMENSION[unit]
+                same_topic = [
+                    pairs
+                    for pairs, subject in statements
+                    if words & subject and any(_UNIT_DIMENSION[u] == dimension for _v, u in pairs)
+                ]
+                shown = lowered[start:end].strip()
+                if same_topic:
+                    if any((value, unit) in pairs for pairs in same_topic):
+                        continue
+                    violations.append(
+                        RuleViolation(
+                            rule_id=RULE_CLAIM_FACTUAL,
+                            severity=Severity.ERROR,
+                            message=(
+                                f"Number {shown!r} contradicts the approved claim about the "
+                                "same thing; use the approved value."
+                            ),
+                        )
+                    )
+                elif (
+                    dimension != "clock"
+                    or _STRONG_SIGNAL_RE.search(lowered)
+                    or _BENEFIT_RE.search(lowered)
+                ):
+                    violations.append(
+                        RuleViolation(
+                            rule_id=RULE_CLAIM_FACTUAL,
+                            severity=Severity.WARNING,
+                            message=(
+                                f"Number {shown!r} is not in any approved claim; "
+                                "confirm it is true before approving."
+                            ),
+                        )
+                    )
     return violations
 
 
