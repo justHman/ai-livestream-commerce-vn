@@ -442,3 +442,36 @@ async def test_recovery_cannot_extend_the_whole_job_deadline() -> None:
         ordered.llm("p")
     fresh = service._ordered_batch(script_set, lambda _p: "ok", started_at=None)
     assert fresh.llm("p") == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", ["", "   ", "\n "])
+async def test_blank_spoken_text_means_not_provided_and_is_compiled(blank) -> None:
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await service.save_draft(
+        set_id=set_id,
+        product_id="P2",
+        display_text="Giá 299.000đ nhé.\n\nSize XL.",
+        spoken_text=blank,
+        revision=None,
+    )
+    _item, version = await _text(repos, set_id, "P2")
+    assert split_units(version.spoken_text) == (
+        "Giá hai trăm chín mươi chín nghìn đồng nhé.",
+        "Size XL.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_blank_spoken_text_still_wins_verbatim() -> None:
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await service.save_draft(
+        set_id=set_id,
+        product_id="P2",
+        display_text="Giá 299.000đ",
+        spoken_text="Giá chốt riêng của chủ shop.",
+        revision=None,
+    )
+    assert (await _text(repos, set_id, "P2"))[1].spoken_text == "Giá chốt riêng của chủ shop."

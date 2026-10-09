@@ -1799,8 +1799,9 @@ class ScriptAuthoringServiceImpl:
         if item.current_version_id is not None:
             current_version = await self._repos.versions.get(item.current_version_id)
         spoken = (
+            # None AND blank both mean "not provided": never store an empty spoken text.
             spoken_text
-            if spoken_text is not None
+            if spoken_text is not None and spoken_text.strip()
             else compile_spoken_text(display_text).spoken_text
         )
         bridge = _SyncPersistBridge()
