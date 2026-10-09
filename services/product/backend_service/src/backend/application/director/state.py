@@ -53,6 +53,12 @@ class ProductState:
     stage_turn_index: int = 0
     spoken_turns: int = 0
     reactive_streak: int = 0
+    # Approved-script playback: the ordered spoken units of this product and the
+    # one explicit index of the next unspoken unit. Only mark_spoken advances it
+    # (monotonic max), so Q&A, hold/resume, pivot checkpoints and queue
+    # projection can never replay or skip a unit. Empty units = legacy planning.
+    units: tuple[str, ...] = ()
+    next_unit: int = 0
 
 
 @dataclass

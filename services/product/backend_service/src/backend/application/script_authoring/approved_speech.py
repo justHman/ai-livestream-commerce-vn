@@ -46,6 +46,13 @@ class ApprovedProduct:
     approval_hash: str
     facts_json: str
 
+    @property
+    def units(self) -> tuple[str, ...]:
+        # One unit = one blank-line separated paragraph of the approved text (the
+        # authoring joiner is a blank line). Pure function of spoken_text, so the
+        # approval hash and envelope fingerprint need no extra field and cannot drift.
+        return tuple(p.strip() for p in re.split(r"\n[ \t]*\n", self.spoken_text) if p.strip())
+
     def answers(self) -> tuple[str, ...]:
         # No substring fragments, negation removal, price templates or free
         # connectors. The complete claim must be an artifact sentence too.
@@ -213,7 +220,7 @@ class ApprovedSpeech:
             check = await validate_binding(
                 script_set_id=binding["script_set_id"],
                 source=source,
-                runtime_plan=RuntimePlan(order_locked=False),
+                runtime_plan=RuntimePlan(order_locked=True),
                 runtime_catalog=Catalog(),
             )
             if not check.ok or check.script_set is None:
@@ -357,7 +364,7 @@ class ApprovedSpeech:
 
             text = await asyncio.to_thread(collect)
         product = next(
-            (p for p in candidates if (text == p.spoken_text or text in p.answers())), None
+            (p for p in candidates if (text == p.spoken_text or text in p.units or text in p.answers())), None
         )
         if product is None:
             raise SpeechRejected("unsupported_content")

@@ -63,6 +63,8 @@ class Decision:
     prepared_script: Optional[str] = None
     prepared_variants: tuple[str, ...] = ()
     approved_speech: object = None
+    # Approved-script unit this turn speaks (index into ProductState.units).
+    unit_index: Optional[int] = None
     prepared_from_projection: bool = False
     is_cancelled: bool = False
     attempt: int = 0
@@ -183,6 +185,9 @@ class Director:
         s, c = self.state, self.cfg
         cur = s.current_product()
         if cur is None or s.cursor.pivot_active:
+            return False
+        if cur.units and not self._units_exhausted(cur):
+            # The owner's ordered parts must all be spoken: no budget/decay skips.
             return False
         if s.product_elapsed_sec >= c.product_time_budget_sec:
             return True
@@ -308,10 +313,7 @@ class Director:
         if s.phase == Phase.CLOSING:
             if s.closing_spoken:
                 return Decision(action="idle", reason="closing already spoken", score=0.0)
-            hook = self.hooks.next_hook("closing")
-            return Decision(
-                action="close", text=hook, stage="closing", reason="closing phase", score=0.0
-            )
+            return self._close_decision("closing phase", "closing")
 
         # SELLING
         if not reducer_mode:
@@ -348,12 +350,7 @@ class Director:
         if self._should_switch_product():
             self._advance_product()
             if s.phase == Phase.CLOSING:
-                return Decision(
-                    action="close",
-                    text=self.hooks.next_hook("closing"),
-                    reason="all products done",
-                    score=0.0,
-                )
+                return self._close_decision("all products done", None)
             if reducer_mode:
                 # Same re-filter as the legacy re-rank, minus a re-cluster: the
                 # reducer clusters are the only ones and they already exist.
@@ -418,8 +415,12 @@ class Director:
             pivot_lifecycle_complete = bool(
                 pivot_product
                 and pivot_product.product_id == pivot_id
-                and pivot_product.is_introduced
-                and pivot_product.stage_turn_index >= len(self._sales_tasks(pivot_id))
+                and (pivot_product.is_introduced or self._units_exhausted(pivot_product))
+                and (
+                    self._units_exhausted(pivot_product)
+                    if pivot_product.units
+                    else pivot_product.stage_turn_index >= len(self._sales_tasks(pivot_id))
+                )
             )
             if (
                 pivot_lifecycle_complete
@@ -494,17 +495,10 @@ class Director:
         if (
             cur is not None
             and not cur.is_introduced
+            and not self._units_exhausted(cur)
             and not _any_high(ranked, by_members, high_value)
         ):
-            return Decision(
-                action="introduce_product",
-                prompt=self._introduce_prompt(cur),
-                product_id=cur.product_id,
-                stage="intro",
-                task_id=f"{cur.product_id}:intro",
-                reason="introduce current product before viewer Q&A",
-                score=0.0,
-            )
+            return self._introduce_decision(cur, "introduce current product before viewer Q&A")
 
         # No viewer question: keep selling the current product one short stage
         # at a time. When its stage plan is exhausted, advance in operator order.
@@ -513,24 +507,15 @@ class Director:
             if proactive is not None:
                 return proactive
             self._advance_product()
+            # A product whose units were all spoken (pivot revisit) is not replayed.
+            while s.phase != Phase.CLOSING and self._units_exhausted(s.current_product()):
+                self._advance_product()
             if s.phase == Phase.CLOSING:
-                return Decision(
-                    action="close",
-                    text=self.hooks.next_hook("closing"),
-                    stage="closing",
-                    reason="all product sales stages completed",
-                    score=0.0,
-                )
+                return self._close_decision("all product sales stages completed", "closing")
             next_product = s.current_product()
             if next_product is not None:
-                return Decision(
-                    action="introduce_product",
-                    prompt=self._introduce_prompt(next_product),
-                    product_id=next_product.product_id,
-                    stage="intro",
-                    task_id=f"{next_product.product_id}:intro",
-                    reason="advance to next product after sales stages",
-                    score=0.0,
+                return self._introduce_decision(
+                    next_product, "advance to next product after sales stages"
                 )
             return Decision(action="idle", reason="no product available", score=0.0)
 
@@ -631,6 +616,11 @@ class Director:
             return
         if decision.pivot and decision.product_id:
             self._start_pivot(decision.product_id)
+        if decision.unit_index is not None and decision.product_id:
+            for product in self.state.products:
+                if product.product_id == decision.product_id:
+                    product.next_unit = max(product.next_unit, decision.unit_index + 1)
+                    break
         if decision.stage == "opening":
             if decision.action == "autonomous_opening":
                 # P0 has one complete approved opening, not three template hooks.
@@ -793,6 +783,12 @@ class Director:
     def _next_sales_turn(self, product) -> Optional[Decision]:
         if product is None:
             return None
+        if product.units:
+            if self._units_exhausted(product):
+                return None
+            return self._unit_decision(
+                product, "sell_product", "benefit", f"continue product unit {product.next_unit}"
+            )
         tasks = self._sales_tasks(product.product_id)
         index = product.stage_turn_index
         if not tasks:
@@ -833,6 +829,75 @@ class Director:
             stage=stage,
             task_id=task_id,
             reason=f"continue product sales stage {stage}",
+        )
+
+    # -- approved-script units ------------------------------------------
+
+    def _unit_limit(self, product) -> Optional[int]:
+        """Units played as intro/sell turns; None = legacy product without units.
+
+        The last unit of the LAST product is reserved: it is the session closing.
+        """
+        if product is None or not product.units:
+            return None
+        last = bool(self.state.products) and self.state.products[-1] is product
+        return len(product.units) - 1 if last and len(product.units) > 1 else len(product.units)
+
+    def _units_exhausted(self, product) -> bool:
+        limit = self._unit_limit(product)
+        return limit is not None and product.next_unit >= limit
+
+    def _unit_decision(self, product, action: str, stage: str, reason: str) -> Decision:
+        index = product.next_unit
+        text = product.units[index]
+        return Decision(
+            action=action,
+            text=text,
+            prepared_script=text,
+            product_id=product.product_id,
+            stage=stage,
+            task_id=f"{product.product_id}:unit:{index}",
+            unit_index=index,
+            reason=reason,
+            score=0.0,
+        )
+
+    def _introduce_decision(self, product, reason: str) -> Decision:
+        if product.units:
+            return self._unit_decision(product, "introduce_product", "intro", reason)
+        return Decision(
+            action="introduce_product",
+            prompt=self._introduce_prompt(product),
+            product_id=product.product_id,
+            stage="intro",
+            task_id=f"{product.product_id}:intro",
+            reason=reason,
+            score=0.0,
+        )
+
+    def _close_decision(self, reason: str, stage: Optional[str]) -> Decision:
+        last = self.state.products[-1] if self.state.products else None
+        if last is not None and len(last.units) > 1:
+            index = len(last.units) - 1
+            if last.next_unit <= index:
+                text = last.units[index]
+                return Decision(
+                    action="close",
+                    text=text,
+                    prepared_script=text,
+                    product_id=last.product_id,
+                    stage="closing",
+                    task_id=f"{last.product_id}:unit:{index}",
+                    unit_index=index,
+                    reason=reason,
+                    score=0.0,
+                )
+        return Decision(
+            action="close",
+            text=self.hooks.next_hook("closing"),
+            stage=stage,
+            reason=reason,
+            score=0.0,
         )
 
     def _covered_key_points(self, product_id: str) -> list[str]:

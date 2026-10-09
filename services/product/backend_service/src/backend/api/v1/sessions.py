@@ -584,7 +584,7 @@ async def sessions_attach(
             runtime_config=runtime_values,
         )
         if envelope is not None:
-            d.director.get_session(session_id).approved_envelope = envelope
+            d.director.get_session(session_id).bind_envelope(envelope)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if binding is not None:
@@ -888,7 +888,7 @@ async def sessions_bind_script_set(
     check = await validate_binding(
         script_set_id=req.script_set_id,
         source=source,
-        runtime_plan=RuntimePlan(order_locked=False),
+        runtime_plan=RuntimePlan(order_locked=True),
         runtime_catalog=runtime_catalog,
         requested_products=None,
         recorded_dependencies_by_item=None,

@@ -596,7 +596,8 @@ class DirectorCoordinator:
             task_id="approved-opening",
             turn_id=opening_turn_id,
             product_id=product.product_id,
-            prepared_script=product.spoken_text,
+            prepared_script=product.units[0],
+            unit_index=0,
             revision_token=self._runtime.current_generation_token(session_id),
         )
         self._autonomous_openings[session_id] = opening_turn_id

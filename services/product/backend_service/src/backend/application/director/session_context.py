@@ -51,6 +51,13 @@ class DirectorSession:
     def now(self) -> float:
         return time.monotonic() - self.t0
 
+    def bind_envelope(self, envelope) -> None:
+        """Pin the approved envelope and give the Director each product's ordered units."""
+        self.approved_envelope = envelope
+        units = {p.product_id: p.units for p in envelope.products}
+        for product in self.director.state.products:
+            product.units = units.get(product.product_id, ())
+
 
 class DirectorRuntime:
     """Per-session Director registry + execution against a RenderBackend."""
@@ -164,6 +171,7 @@ class DirectorRuntime:
                     item.spoken_turns = old.spoken_turns
                     item.reactive_streak = old.reactive_streak
                     item.cluster_count = old.cluster_count
+                    item.next_unit = old.next_unit
             state.products = prod_states
             state.run_plan = run_plan
             state.current_product_index = next(
