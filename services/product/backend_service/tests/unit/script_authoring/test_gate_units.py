@@ -258,3 +258,34 @@ def test_unsupported_numbers_only_warn(text) -> None:
 def test_percent_contradicting_an_approved_statement_blocks() -> None:
     facts = ProductFacts(allowed_claims=("Khách hàng hài lòng 95%.",))
     assert _tiers("Đạt 98% khách hàng hài lòng.", facts) == {"error"}
+
+
+def _facts(*claims):
+    return ProductFacts(allowed_claims=claims)
+
+
+@pytest.mark.parametrize(
+    "claim, text",
+    [
+        ("Bảo hành 1 năm.", "Bảo hành 2 năm nhé."),
+        ("Chiều dài 20 cm.", "Chiều dài 30 cm nhé."),
+        ("Khối lượng 1,5 kg.", "Khối lượng 2,5 kg nhé."),
+        ("Dung tích 50 ml.", "Dung tích 500 ml nhé."),
+        ("Khách hàng hài lòng 95%.", "Khách hàng hài lòng 99% nhé."),
+        ("Kích cỡ size 38.", "Kích cỡ size 40 nhé."),
+        ("Bảo hành 1 năm.", "Bảo hành, 10 năm nhé."),  # subject inherited by the number clause
+    ],
+)
+def test_contradictions_across_dimensions_block(claim, text) -> None:
+    assert _tiers(text, _facts(claim)) == {"error"}
+
+
+def test_decimal_comma_is_one_number_and_same_value_passes() -> None:
+    assert _tiers("Khối lượng 1,5 kg nhé.", _facts("Khối lượng 1,5 kg.")) == set()
+
+
+def test_each_clause_of_an_approved_statement_authorises_only_itself() -> None:
+    facts = _facts("Bảo hành 1 năm và tuổi thọ 10 năm.")
+    assert _tiers("Bảo hành 10 năm.", facts) == {"error"}
+    assert _tiers("Tuổi thọ 10 năm.", facts) == set()
+    assert _tiers("Bảo hành 1 năm.", facts) == set()

@@ -345,7 +345,10 @@ _STRONG_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-_NUM_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:[,;]|\bvà\b|\bnhưng\b|\bcòn\b|\s[-—–]\s)\s*")
+# A comma between digits is a decimal separator ("1,5 kg"), not a clause break.
+_NUM_CLAUSE_SPLIT_RE = re.compile(
+    r"\s*(?:(?<!\d),|,(?!\d)|;|\bvà\b|\bnhưng\b|\bcòn\b|\s[-—–]\s)\s*"
+)
 # Words too generic to say two statements are about the same thing.
 _GENERIC_WORDS = frozenset(
     "dùng sản phẩm mọi người nhà shop hôm nay được trong bạn mình cả nhé nha ạ".split()
@@ -377,64 +380,77 @@ def _claim_context(text: str) -> set[str]:
     }
 
 
+def _clause_items(text: str) -> list[tuple[str, set[str]]]:
+    """(lowercase clause, subject words) per clause; a clause with no subject of its own
+    ("Bảo hành, 10 năm") inherits the previous clause's."""
+    items: list[tuple[str, set[str]]] = []
+    previous: set[str] = set()
+    for sentence in _SENTENCE_SPLIT_RE.split(text):
+        for clause in _NUM_CLAUSE_SPLIT_RE.split(sentence):
+            lowered = clause.lower()
+            words = _claim_context(lowered) or previous
+            previous = words
+            items.append((lowered, words))
+    return items
+
+
 def _approved_statements(facts: ProductFacts) -> list[tuple[set[tuple[str, str]], set[str]]]:
-    """Per approved claim/discount/product name: its (value, unit) pairs and subject words."""
+    """Every CLAUSE of every approved claim/discount/product name is its own source, so
+    "Bảo hành 1 năm và tuổi thọ 10 năm" never lets the lifespan authorise the warranty."""
     texts = (*facts.allowed_claims, *facts.discounts, facts.product_name)
     out = []
     for t in texts:
-        pairs = {(v, u) for v, u, _s, _e in _numbers(t) if u}
-        if pairs:
-            out.append((pairs, _claim_context(t)))
+        for lowered, words in _clause_items(t or ""):
+            pairs = {(v, u) for v, u, _s, _e in _numbers(lowered) if u}
+            if pairs:
+                out.append((pairs, words))
     return out
 
 
 def _numeric_violations(text: str, context) -> list[RuleViolation]:
     statements = _approved_statements(context.facts)
     violations: list[RuleViolation] = []
-    for sentence in _SENTENCE_SPLIT_RE.split(text):
-        for clause in _NUM_CLAUSE_SPLIT_RE.split(sentence):
-            lowered = clause.lower()
-            skip = [m.span() for m in _PRICE_RE.finditer(lowered)]
-            skip += [m.span() for m in _DISCOUNT_RE.finditer(lowered)]
-            words = _claim_context(lowered)
-            for value, unit, start, end in _numbers(lowered):
-                if not unit or any(a <= start and end <= b for a, b in skip):
+    for lowered, words in _clause_items(text):
+        skip = [m.span() for m in _PRICE_RE.finditer(lowered)]
+        skip += [m.span() for m in _DISCOUNT_RE.finditer(lowered)]
+        for value, unit, start, end in _numbers(lowered):
+            if not unit or any(a <= start and end <= b for a, b in skip):
+                continue
+            dimension = _UNIT_DIMENSION[unit]
+            same_topic = [
+                pairs
+                for pairs, subject in statements
+                if words & subject and any(_UNIT_DIMENSION[u] == dimension for _v, u in pairs)
+            ]
+            shown = lowered[start:end].strip()
+            if same_topic:
+                if any((value, unit) in pairs for pairs in same_topic):
                     continue
-                dimension = _UNIT_DIMENSION[unit]
-                same_topic = [
-                    pairs
-                    for pairs, subject in statements
-                    if words & subject and any(_UNIT_DIMENSION[u] == dimension for _v, u in pairs)
-                ]
-                shown = lowered[start:end].strip()
-                if same_topic:
-                    if any((value, unit) in pairs for pairs in same_topic):
-                        continue
-                    violations.append(
-                        RuleViolation(
-                            rule_id=RULE_CLAIM_FACTUAL,
-                            severity=Severity.ERROR,
-                            message=(
-                                f"Number {shown!r} contradicts the approved claim about the "
-                                "same thing; use the approved value."
-                            ),
-                        )
+                violations.append(
+                    RuleViolation(
+                        rule_id=RULE_CLAIM_FACTUAL,
+                        severity=Severity.ERROR,
+                        message=(
+                            f"Number {shown!r} contradicts the approved claim about the "
+                            "same thing; use the approved value."
+                        ),
                     )
-                elif (
-                    dimension != "clock"
-                    or _STRONG_SIGNAL_RE.search(lowered)
-                    or _BENEFIT_RE.search(lowered)
-                ):
-                    violations.append(
-                        RuleViolation(
-                            rule_id=RULE_CLAIM_FACTUAL,
-                            severity=Severity.WARNING,
-                            message=(
-                                f"Number {shown!r} is not in any approved claim; "
-                                "confirm it is true before approving."
-                            ),
-                        )
+                )
+            elif (
+                dimension != "clock"
+                or _STRONG_SIGNAL_RE.search(lowered)
+                or _BENEFIT_RE.search(lowered)
+            ):
+                violations.append(
+                    RuleViolation(
+                        rule_id=RULE_CLAIM_FACTUAL,
+                        severity=Severity.WARNING,
+                        message=(
+                            f"Number {shown!r} is not in any approved claim; "
+                            "confirm it is true before approving."
+                        ),
                     )
+                )
     return violations
 
 

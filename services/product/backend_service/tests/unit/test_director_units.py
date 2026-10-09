@@ -270,3 +270,19 @@ def test_changed_last_product_text_reopens_selling_from_its_first_unit() -> None
     session.bind_envelope(_envelope(["P1", "P2"], {"P2": "new"}))
     assert d.state.phase == Phase.SELLING and d.state.current_product().product_id == "P2"
     assert _play(d) == P2  # restarts at unit 0 and reaches the closing only at the end
+
+
+def test_late_reorder_never_falls_back_to_a_generic_closing_hook() -> None:
+    from backend.application.director.session_context import DirectorSession
+    from backend.application.director.state import ProductStatus
+
+    d = _director(P1, P2)
+    session = DirectorSession(director=d, embedder=None)
+    session.bind_envelope(_envelope(["P1", "P2"], {}))
+    d.state.products[0].next_unit, d.state.products[0].status = 4, ProductStatus.DONE
+    d.state.products[1].next_unit = 3  # P2 played up to its penultimate unit
+    d.state.current_product_index = 1
+    session.bind_envelope(_envelope(["P2", "P1"], {}))  # P1 (fully spoken) is now last
+    assert _play(d) == [P2[3]]  # P2's last unit as an ordinary unit, then nothing generic
+    after = d.decide([], now=99.0)
+    assert after.action == "idle" and after.text is None

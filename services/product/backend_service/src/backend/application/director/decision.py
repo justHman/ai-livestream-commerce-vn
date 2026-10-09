@@ -912,12 +912,16 @@ class Director:
 
     def _close_decision(self, reason: str, stage: Optional[str]) -> Decision:
         last = self.state.products[-1] if self.state.products else None
-        pending_elsewhere = any(
-            p.units and not self._units_exhausted(p) for p in self.state.products[:-1]
-        )
-        if last is not None and len(last.units) > 1 and not pending_elsewhere:
+        if last is not None and last.units:
+            # Approved sessions speak ONLY approved units: the closing is the last unit of the
+            # CURRENT last product, and only if no unit of any other product is still pending
+            # and it was not already spoken (e.g. played as an ordinary unit before a reorder).
+            # Otherwise everything approved is done: stay idle, never a generic hook.
             index = len(last.units) - 1
-            if last.next_unit <= index:
+            pending_elsewhere = any(
+                p.units and not self._units_exhausted(p) for p in self.state.products[:-1]
+            )
+            if len(last.units) > 1 and last.next_unit <= index and not pending_elsewhere:
                 text = last.units[index]
                 return Decision(
                     action="close",
@@ -930,6 +934,7 @@ class Director:
                     reason=reason,
                     score=0.0,
                 )
+            return Decision(action="idle", reason="all approved parts spoken", score=0.0)
         return Decision(
             action="close",
             text=self.hooks.next_hook("closing"),
