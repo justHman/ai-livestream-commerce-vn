@@ -131,3 +131,59 @@ async def authorize_session(container, session_id, text):
     }
     await container.store.set(session_id, meta)
     return source
+
+
+class MultiSource(Source):
+    """Approved set with several products in OWNER order (units = blank-line paragraphs)."""
+
+    def __init__(self, units_by_product: dict):
+        super().__init__()
+        self.set.product_ids = list(units_by_product)
+        self.set.brief.product_facts = {
+            pid: {"product_name": pid, "prices": ["100000 VND"], "allowed_claims": [CLAIM]}
+            for pid in units_by_product
+        }
+        self.items, self.versions, self.approvals = {}, {}, {}
+        for pid, units in units_by_product.items():
+            self.add(pid, "\n\n".join(units))
+
+    def add(self, pid, text):
+        item = ScriptItem(
+            id=new_id("script_item"),
+            script_set_id=self.set.id,
+            product_id=pid,
+            state=ScriptState.APPROVED,
+        )
+        version = ScriptVersion(
+            id=new_id("script_version"),
+            script_item_id=item.id,
+            version=1,
+            spoken_text=text,
+        )
+        item.approved_version_id = item.current_version_id = version.id
+        approval = Approval(
+            id=new_id("approval"),
+            script_item_id=item.id,
+            script_version_id=version.id,
+            actor="trusted-human",
+            gate_run_id=new_id("gate_run"),
+            approval_hash=approval_dependency_hash(
+                ApprovalDependencies(
+                    spoken_text=text, product_facts_version="facts-v1", rule_set="rules-v1"
+                )
+            ),
+        )
+        self.items[pid], self.versions[pid], self.approvals[pid] = item, version, approval
+
+    async def get_script_item(self, *, product_id, **kwargs):
+        return self.items[product_id]
+
+    async def get_script_version(self, *, product_id, **kwargs):
+        return self.versions[product_id]
+
+    async def get_approval(self, *, product_id, **kwargs):
+        return self.approvals[product_id]
+
+    async def get_approved_version(self, *, product_id, **kwargs):
+        version = self.versions[product_id]
+        return ResolvedApprovedScript(product_id, version.id, version.spoken_text)

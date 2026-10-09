@@ -421,6 +421,12 @@ class ScriptAuthoringConfig:
     # job/batch row is fenced to its owning replica before another
     # replica's ``recover_pending`` may re-claim it.
     recovery_lease_seconds: int = 300
+    # Ordered-units generation bounds: transport attempts per LLM call, wall-clock
+    # per call, and for the whole batch job (afterwards every remaining unit fails
+    # fast and the owner finishes the script by hand).
+    unit_llm_attempts: int = 2
+    unit_llm_call_timeout_s: float = 60.0
+    unit_job_deadline_s: float = 900.0
 
     def lease_heartbeat_interval(self) -> float:
         """Bounded heartbeat cadence for owned provider calls (R8.3).

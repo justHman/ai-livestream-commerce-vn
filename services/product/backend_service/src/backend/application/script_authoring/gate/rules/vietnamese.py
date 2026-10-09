@@ -96,7 +96,9 @@ def check_common_spelling(text: str, context) -> list[RuleViolation]:
             violations.append(
                 RuleViolation(
                     rule_id=RULE_VN_SPELLING_GI_D,
-                    severity=Severity.ERROR,
+                    # Several listed words are valid Vietnamese ("da" skin, "dung" in "nội dung",
+                    # "di chuyển"): a hit is advice for the owner, never a block on the script.
+                    severity=Severity.WARNING,
                     message=(
                         f"Spelling of {word!r}: in Vietnamese, {correct!r} "
                         f"(meaning {meaning}) is the common form; review and fix."

@@ -13,8 +13,9 @@ versions => identical result (task 3.12 contract).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from ..units import split_units
 from .context import ScriptGateContext
 from .registry import RuleSpec, ScriptRuleRegistry
 from .results import GateRunResult, RuleSetFingerprint, RuleViolation
@@ -44,6 +45,22 @@ from .rules import (
     check_tts_markup,
     check_tts_numbers,
     check_whitespace,
+)
+
+# Rules re-run on EVERY final unit (generated, manually edited or approved): what a
+# unit may state (price/discount/identity/claim) plus hard safety/format rules.
+# Duration is excluded: a unit's length is judged by its role/the total, not here.
+UNIT_RULE_IDS = frozenset(
+    {
+        "FORMAT_CONTROL",
+        "PROFANITY_OFFENSIVE",
+        "CLAIM_PRICE",
+        "CLAIM_DISCOUNT",
+        "CLAIM_IDENTITY",
+        "CLAIM_FACTUAL",
+        "TTS_MARKUP",
+        "TTS_CONTROL",
+    }
 )
 
 __all__ = [
@@ -110,6 +127,7 @@ class ScriptGate:
         self._registry = registry
         self._segment_rules = segment_rules
         self._full_rules = full_rules
+        self._unit_rules = [rule for rule in segment_rules if rule.id in UNIT_RULE_IDS]
 
     # -- public API --------------------------------------------------------
 
@@ -130,15 +148,23 @@ class ScriptGate:
     ) -> GateRunResult:
         """Evaluate a compiled full script (exact ordered segment texts).
 
-        ``segments`` must be the exact selected segment versions in order;
-        the full-script rules receive the whole list so cross-segment
-        checks can attribute violations to ``segment_index``.
+        ``segments`` must be the exact selected segment versions in order. Every
+        blank-line separated unit inside them becomes one ordered element, so
+        cross-unit rules see the same boundaries the runtime plays, and the
+        factual/safety unit rules run on each unit even for a manually written
+        or already approved text. Violations carry the unit index.
         """
+        units = [unit for segment in segments for unit in split_units(segment)]
         violations: list[RuleViolation] = []
         for rule in self._full_rules:
-            violations.extend(rule.check(segments, context))
+            violations.extend(rule.check(units, context))
+        for index, unit in enumerate(units):
+            for rule in self._unit_rules:
+                violations.extend(
+                    replace(v, segment_index=index) for v in rule.check(unit, context)
+                )
         fingerprint = RuleSetFingerprint.from_rule_versions(
-            [(rule.id, rule.version) for rule in self._full_rules]
+            [(rule.id, rule.version) for rule in (*self._full_rules, *self._unit_rules)]
         )
         return GateRunResult(
             scope="full_script", violations=tuple(violations), fingerprint=fingerprint

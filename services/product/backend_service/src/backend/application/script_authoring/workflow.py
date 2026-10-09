@@ -346,6 +346,35 @@ class ProductGenerationWorkflow:
         )
         return candidate
 
+    def record_failed_unit(
+        self, index: int, placeholder: str, *, version: int, message: str = ""
+    ) -> ScriptSegment:
+        """Select a visible placeholder for a unit that could not be written.
+
+        Ordered-units generation keeps every other unit; the placeholder fails the
+        full gate, so the compiled script is GATE_FAILED and never approvable until
+        the owner rewrites the part. Sequential like ``start_segment``.
+        """
+        if self.item.state is not ScriptState.GENERATING:
+            raise IllegalTransitionError(self.item.state, "generation_complete")
+        if self.plan_id is None:
+            raise ValueError("plan not set; complete_planning first")
+        if index != len(self.segments):
+            raise ValueError(f"failed unit index {index} != current {len(self.segments)}")
+        self.last_error = message
+        segment = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=self.item.id,
+            plan_id=self.plan_id,
+            segment_index=index,
+            display_text=placeholder,
+            spoken_text=placeholder,
+            status=ScriptState.GATE_FAILED,
+            version=version,
+        )
+        self.segments[index] = segment
+        return segment
+
     def fail_segment_gate(self, index: int, *, message: str = "") -> None:
         """Move GENERATING -> GATE_FAILED after the bounded segment auto-heal
         budget is exhausted (reviewer R9.2/3.4).

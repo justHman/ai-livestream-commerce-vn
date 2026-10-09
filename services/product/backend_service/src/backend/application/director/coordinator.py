@@ -596,7 +596,8 @@ class DirectorCoordinator:
             task_id="approved-opening",
             turn_id=opening_turn_id,
             product_id=product.product_id,
-            prepared_script=product.spoken_text,
+            prepared_script=product.units[0],
+            unit_index=0,
             revision_token=self._runtime.current_generation_token(session_id),
         )
         self._autonomous_openings[session_id] = opening_turn_id
@@ -1192,6 +1193,9 @@ class DirectorCoordinator:
         except SpeechRejected as exc:
             self._note_rejected(session_id, decision)
             self._record_cancelled(session_id, decision, exc.code)
+            if decision.unit_index is not None:
+                # Never let a later unit play ahead of the rejected one.
+                self._invalidate_queued(session_id, reason="unit_rejected")
             await self._emit(
                 session_id,
                 {
@@ -1332,6 +1336,8 @@ class DirectorCoordinator:
                 st.skips += 1
                 self._note_rejected(session_id, decision)
                 self._record_cancelled(session_id, decision, exc.code)
+                if decision.unit_index is not None:
+                    self._invalidate_queued(session_id, reason="unit_rejected")
                 await self._emit(
                     session_id,
                     {
@@ -1550,6 +1556,10 @@ class DirectorCoordinator:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if decision.unit_index is not None:
+                # Late rejection (pre-media check, guarded media boundary) or a failed
+                # delivery: no later unit may play ahead of this one.
+                self._invalidate_queued(session_id, reason="unit_failed")
             if self.runtime_failures is not None:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):

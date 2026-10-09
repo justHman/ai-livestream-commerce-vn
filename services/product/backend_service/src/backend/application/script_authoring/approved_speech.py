@@ -19,6 +19,7 @@ from typing import Any, Callable
 from .fingerprints import ApprovalDependencies, approval_dependency_hash
 from .models import Approval, ScriptVersion
 from .runtime_handoff import resolve_approved_script
+from .units import split_units
 from .session_binding import RuntimePlan, validate_binding, _source_current_dependencies
 
 CAPABILITY = "content.approved_speech.v1"
@@ -45,6 +46,13 @@ class ApprovedProduct:
     spoken_text: str
     approval_hash: str
     facts_json: str
+
+    @property
+    def units(self) -> tuple[str, ...]:
+        # One unit = one blank-line separated paragraph of the approved text (the
+        # authoring joiner is a blank line). Pure function of spoken_text, so the
+        # approval hash and envelope fingerprint need no extra field and cannot drift.
+        return split_units(self.spoken_text)
 
     def answers(self) -> tuple[str, ...]:
         # No substring fragments, negation removal, price templates or free
@@ -213,7 +221,7 @@ class ApprovedSpeech:
             check = await validate_binding(
                 script_set_id=binding["script_set_id"],
                 source=source,
-                runtime_plan=RuntimePlan(order_locked=False),
+                runtime_plan=RuntimePlan(order_locked=True),
                 runtime_catalog=Catalog(),
             )
             if not check.ok or check.script_set is None:
@@ -325,7 +333,12 @@ class ApprovedSpeech:
         envelope = await self.resolve(session_id)
         candidates = (envelope.product(product_id),) if product_id else envelope.products
         if select_locked:
-            text = envelope.product(product_id).spoken_text
+            whole = envelope.product(product_id)
+            if len(whole.units) > 1:
+                # An intro/sell turn of a multi-part script MUST name its unit; never widen
+                # it to the whole text (e.g. a Director that lost its units during re-attach).
+                raise SpeechRejected("unit_required")
+            text = whole.spoken_text
         elif generate:
             if llm is None or getattr(llm, "name", "none") == "none":
                 raise SpeechRejected("generation_unavailable")
@@ -357,7 +370,12 @@ class ApprovedSpeech:
 
             text = await asyncio.to_thread(collect)
         product = next(
-            (p for p in candidates if (text == p.spoken_text or text in p.answers())), None
+            (
+                p
+                for p in candidates
+                if (text == p.spoken_text or text in p.units or text in p.answers())
+            ),
+            None,
         )
         if product is None:
             raise SpeechRejected("unsupported_content")

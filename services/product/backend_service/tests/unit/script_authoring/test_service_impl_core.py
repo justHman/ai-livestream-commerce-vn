@@ -1193,7 +1193,7 @@ async def test_short_product_script_passes_submit_and_approval_with_the_real_gat
     created = await service.create_script_set(
         name="A", transition_policy="ORDER_AGNOSTIC", product_ids=["P1"], brief=None
     )
-    text = "Quần kaki. Có nhiều size, chất vải thoáng mát. Đổi size trong 7 ngày."
+    text = "Quần kaki. Có nhiều size, chất vải thoáng mát. Đổi size cho bạn nhé."
     await service.save_draft(
         set_id=created["id"], product_id="P1", display_text=text, spoken_text=text, revision=None
     )

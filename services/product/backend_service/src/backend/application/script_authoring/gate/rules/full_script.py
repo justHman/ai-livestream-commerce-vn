@@ -92,6 +92,9 @@ def check_cross_segment_repetition(segments: list[str], context) -> list[RuleVio
     phrases in 2-3 segments (15.4 real-LLM E2E finding).
     """
     violations: list[RuleViolation] = []
+    # Ordered-unit scripts have 6+ short parts that naturally share common phrases
+    # ("cả nhà ơi", product name): for those it is a warning for the owner, not a block.
+    severity = Severity.ERROR if len(segments) < 6 else Severity.WARNING
     gram_segments: dict[tuple[str, ...], list[int]] = {}
     for index, segment in enumerate(segments):
         for gram in _word_ngrams(segment, 4):
@@ -103,7 +106,7 @@ def check_cross_segment_repetition(segments: list[str], context) -> list[RuleVio
             violations.append(
                 RuleViolation(
                     rule_id=RULE_REPETITION_CROSS,
-                    severity=Severity.ERROR,
+                    severity=severity,
                     message=(
                         f"Phrase {phrase!r} repeats across segments "
                         f"{', '.join(str(i + 1) for i in unique)}; distribute content."
