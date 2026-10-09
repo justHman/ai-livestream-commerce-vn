@@ -18,93 +18,52 @@ from backend.application.clients.llm.openai_compatible import LLMClientError
 from backend.application.script_authoring.generation.ordered_units import (
     BoundedLLM,
     LLMDeadlineError,
+    ProductBrief,
     clean_unit_text,
-    plan_roles,
+    plan_units,
+    spoken_price,
 )
 from backend.application.script_authoring.models import ScriptState
 from backend.application.script_authoring.service import ScriptAuthoringError
 from backend.application.script_authoring.units import split_units
 
+P2_CLAIMS = [
+    "Kem dưỡng ẩm sâu cho tóc khô.",
+    "Chất kem mềm mượt dễ thoa.",
+    "Bảo hành 1 năm.",
+    "Giảm 20% vào thứ Tư đầu tháng.",
+]
+P1_CLAIMS = [
+    "Gel làm sạch nhẹ nhàng mỗi ngày.",
+    "Chai nhỏ gọn dùng được lâu.",
+    "Có size từ 36 đến 44.",
+]
 BRIEF = {
     "title": "Live thử nghiệm",
-    "shop_name": "Shop A",
+    "shop_name": "",  # unknown shop: the opening must not invent a name
     "product_facts": {
         "P2": {
             "product_name": "Kem ABC",
-            "prices": ["299.000đ"],
-            "allowed_claims": ["Kem dưỡng ẩm sâu cho tóc khô.", "Thiết kế gọn nhẹ dễ mang theo."],
+            "prices": ["100000.00 VND"],
+            "allowed_claims": P2_CLAIMS,
+            "claims_by_type": {
+                "feature": P2_CLAIMS[:2],
+                "warranty": [P2_CLAIMS[2]],
+                "promotion": [P2_CLAIMS[3]],
+            },
+            "product_info": {"brand": "Hãng A", "category": "Mỹ phẩm"},
         },
         "P1": {
             "product_name": "Gel XYZ",
-            "prices": ["150.000đ"],
-            "allowed_claims": ["Gel làm sạch nhẹ nhàng mỗi ngày.", "Chai nhỏ gọn dùng được lâu."],
+            "prices": ["150000.00 VND", "200000.00 VND"],
+            "allowed_claims": P1_CLAIMS,  # no claims_by_type: clustered from the flat list
         },
     },
 }
 
-# Distinct, gate-clean Vietnamese per role/product (no phrase shared by 4+ units).
-TEXT = {
-    (
-        "P2",
-        "opening",
-    ): "Chào cả nhà, chào mừng mọi người đã ghé buổi live của Shop A hôm nay, mình rất vui được gặp lại mọi người.",
-    (
-        "P2",
-        "intro",
-    ): "Đầu tiên mình xin giới thiệu Kem ABC, món quen thuộc của chị em yêu thích việc chăm sóc mái tóc mỗi ngày.",
-    (
-        "P2",
-        "benefit0",
-    ): "Kem dưỡng ẩm sâu cho tóc khô, thoa lên là thấy sợi tóc mềm mượt ngay sau vài phút sử dụng.",
-    (
-        "P2",
-        "benefit1",
-    ): "Thiết kế gọn nhẹ dễ mang theo, bỏ vào túi xách đi đâu cũng thấy thật tiện cho các bạn.",
-    (
-        "P2",
-        "offer",
-    ): "Hôm nay Kem ABC có giá chỉ 299.000đ cho mỗi hộp, một mức giá mình thấy rất dễ chịu.",
-    (
-        "P2",
-        "trust",
-    ): "Mình trấn an cả nhà nhé, shop kiểm hàng thật kỹ trước khi đóng gói gửi đến tận tay mọi người.",
-    (
-        "P2",
-        "cta",
-    ): "Bạn nào ưng ý thì bấm đặt hàng giúp mình nhé, sau đó mình sẽ sang món tiếp theo ngay đây.",
-    (
-        "P1",
-        "intro",
-    ): "Nào, chuyển sang món kế tiếp là Gel XYZ, một lựa chọn nhẹ nhàng cho những ngày bạn muốn thư giãn.",
-    (
-        "P1",
-        "benefit0",
-    ): "Gel làm sạch nhẹ nhàng mỗi ngày, rửa xong vẫn thoáng và không bị căng rát khó chịu.",
-    (
-        "P1",
-        "benefit1",
-    ): "Chai nhỏ gọn dùng được lâu, một chai đủ cho cả tháng chăm sóc đều đặn của bạn.",
-    (
-        "P1",
-        "offer",
-    ): "Gel XYZ đang có giá 150.000đ thôi, ai cũng có thể thêm vào giỏ hôm nay một cách thoải mái.",
-    (
-        "P1",
-        "trust",
-    ): "Cả nhà cứ yên tâm, shop luôn đồng hành hỗ trợ đổi trả nếu bạn chưa hài lòng với món này.",
-    (
-        "P1",
-        "cta",
-    ): "Nếu hợp thì chốt đơn ngay trong lúc livestream để nhận hàng sớm cùng quà nhỏ từ shop nhé.",
-    (
-        "P1",
-        "closing",
-    ): "Cảm ơn mọi người đã theo dõi suốt buổi, hẹn gặp lại cả nhà ở những buổi live thật vui sau này.",
-}
-
 
 class FakeLLM:
-    """Answers each unit prompt by its role line; records every prompt."""
+    """Writes each unit from the facts its prompt carries; records every prompt."""
 
     def __init__(self, empty_for=None, raises=None):
         self.prompts = []
@@ -115,30 +74,26 @@ class FakeLLM:
         self.prompts.append(prompt)
         if self.raises is not None:
             raise self.raises
-        role_line = re.search(r"\((\d+)/(\d+)\): ([^.]+)\.", prompt)
-        title = role_line.group(3)
-        names = {"Kem ABC": "P2", "Gel XYZ": "P1"}
-        pid = next(p for n, p in names.items() if f"Tên sản phẩm: {n}" in prompt)
-        role = {
-            "Mở đầu phiên live": "opening",
-            "Giới thiệu sản phẩm": "intro",
-            "Điểm nổi bật": "benefit",
-            "Giá và ưu đãi": "offer",
-            "Tạo niềm tin": "trust",
-            "Chốt đơn": "cta",
-            "Lời kết phiên live": "closing",
-        }[title]
-        if role == "benefit":
-            # the prompt carries exactly one allowed claim: pick the matching text
-            role = (
-                "benefit0"
-                if "Thông tin được phép nói: " + BRIEF["product_facts"][pid]["allowed_claims"][0]
-                in prompt
-                else "benefit1"
-            )
-        if (pid, role) in self.empty_for:
+        title = re.search(r"\((\d+)/(\d+)\): ([^.]+)\.", prompt).group(3)
+        name = re.search(r"Tên sản phẩm: (.+)", prompt).group(1)
+        before_used = prompt.split("Đã nói ở các phần trước")[0]
+        items = re.findall(r"^- (.+)$", before_used, flags=re.MULTILINE)
+        if (name, title) in self.empty_for:
             return ""
-        return TEXT[(pid, role)]
+        if title == "Mở đầu phiên live":
+            return "Chào cả nhà, chào mừng mọi người đến với buổi live hôm nay, bạn nào cần hỏi size hay giá cứ bình luận cho mình nhé."
+        if title == "Giới thiệu sản phẩm":
+            lead = "Nào, chuyển sang món kế tiếp là " if "lời nối" in prompt else "Mình giới thiệu "
+            return f"{lead}{name}, một sản phẩm rất dễ làm quen với cả nhà."
+        if title in ("Điểm nổi bật", "Cam kết và lưu ý"):
+            return " ".join(items)
+        if title == "Giá và ưu đãi":
+            prices = re.search(r"đã đọc thành chữ\): (.+)", prompt).group(1)
+            soft = " Bạn nào quan tâm thì nhắn mình nhé." if "lời mời nhẹ" in prompt else ""
+            return f"Giá chỉ {prices}. {' '.join(items)}{soft}"
+        return (
+            "Cảm ơn mọi người đã theo dõi suốt buổi, hẹn gặp lại cả nhà ở những buổi live sau nhé."
+        )
 
 
 def _service(llm, **config):
@@ -184,7 +139,7 @@ async def _text(repos, set_id, pid):
 
 
 @pytest.mark.asyncio
-async def test_set_is_written_as_ordered_units_in_owner_order() -> None:
+async def test_units_adapt_to_the_facts_and_never_repeat_a_fact() -> None:
     llm = FakeLLM()
     service, repos = _service(llm)
     set_id = await _new_set(service)
@@ -193,58 +148,72 @@ async def test_set_is_written_as_ordered_units_in_owner_order() -> None:
     first, v_first = await _text(repos, set_id, "P2")
     last, v_last = await _text(repos, set_id, "P1")
     assert first.state is ScriptState.REVIEWABLE and last.state is ScriptState.REVIEWABLE
-    units_first, units_last = split_units(v_first.spoken_text), split_units(v_last.spoken_text)
-    # opening only in the FIRST product, closing only in the LAST, one claim per selling point
-    assert units_first == tuple(
-        TEXT[("P2", r)]
-        for r in ("opening", "intro", "benefit0", "benefit1", "offer", "trust", "cta")
-    )
-    assert units_last == tuple(
-        TEXT[("P1", r)]
-        for r in ("intro", "benefit0", "benefit1", "offer", "trust", "cta", "closing")
-    )
-    # facts reach the prompts; the bridge names the neighbours only for an ORDER_AWARE set
-    by_role = {p: p for p in llm.prompts}
-    assert any("299.000đ" in p for p in by_role)
-    assert any("lời nối từ sản phẩm trước (Kem ABC)" in p for p in by_role)
-    assert any("sản phẩm tiếp theo là Gel XYZ" in p for p in by_role)
-    assert len(llm.prompts) == 14  # one call per unit, no planning call, no retries needed
+    u2, u1 = split_units(v_first.spoken_text), split_units(v_last.spoken_text)
+    # P2: opening, intro, features, warranty, offer(+promotion); P1: intro, ONE claim unit, offer, closing
+    assert len(u2) == 5 and len(u1) == 4
+    assert len(llm.prompts) == 9  # one call per unit, no planning call, no retries
+    # every approved claim is spoken exactly once per product
+    for claim in P2_CLAIMS:
+        assert v_first.spoken_text.count(claim) == 1
+    for claim in P1_CLAIMS:
+        assert v_last.spoken_text.count(claim) == 1
+    # the first product never says "next product"; the bridge lives only in the later intro
+    assert "tiếp theo" not in u2[1] and "kế tiếp" not in u2[1]
+    assert "kế tiếp là Gel XYZ" in u1[0]
+    assert "Gel XYZ" not in v_first.spoken_text  # nothing bridges at the END of the previous one
+    # prices are spoken words, never machine text
+    assert "một trăm nghìn đồng" in u2[4] and "hai trăm nghìn đồng" in u1[2]
+    full = v_first.spoken_text + v_last.spoken_text
+    assert not re.search(r"\d+[.,]\d\d|VND", full)
+    # conditional promotion keeps its condition and is not hard-sold
+    assert "vào thứ Tư đầu tháng" in u2[4]
+    assert not re.search(r"ngay|bỏ lỡ|chốt đơn", full)
+    # warm-up opening invites comments; no shop name is invented
+    assert "bình luận" in u2[0]
+    opening_prompt = next(p for p in llm.prompts if "Mở đầu phiên live" in p)
+    assert "Chưa biết tên shop" in opening_prompt
+    # exactly one soft CTA per product, in its last unit
+    assert sum("lời mời nhẹ" in p for p in llm.prompts) == 2
 
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     assert snapshot["outcome"] == "succeeded" and snapshot["total"] == 2 and snapshot["done"] == 2
-    assert [p["status"] for p in snapshot["products"]] == ["done", "done"]
 
 
 @pytest.mark.asyncio
-async def test_order_agnostic_set_never_names_neighbouring_products() -> None:
+async def test_three_claims_make_at_most_four_units_with_intro_and_offer() -> None:
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await _run(service, repos, set_id)
+    _item, version = await _text(repos, set_id, "P1")
+    assert len(split_units(version.spoken_text)) <= 4  # intro, claims, offer, (closing)
+
+
+@pytest.mark.asyncio
+async def test_order_agnostic_set_never_bridges_to_neighbours() -> None:
     llm = FakeLLM()
     service, repos = _service(llm)
     set_id = await _new_set(service, policy="ORDER_AGNOSTIC")
     await _run(service, repos, set_id)
-    assert not any("sản phẩm trước (" in p or "sản phẩm tiếp theo là" in p for p in llm.prompts)
+    assert not any("lời nối" in p or "sản phẩm trước (" in p for p in llm.prompts)
 
 
 @pytest.mark.asyncio
 async def test_failed_unit_keeps_the_other_units_and_blocks_approval() -> None:
-    llm = FakeLLM(empty_for={("P1", "trust")})
+    llm = FakeLLM(empty_for={("Gel XYZ", "Giá và ưu đãi")})
     service, repos = _service(llm)
     set_id = await _new_set(service)
     batch_id = await _run(service, repos, set_id)
 
     item, version = await _text(repos, set_id, "P1")
     units = split_units(version.spoken_text)
-    assert item.state is ScriptState.GATE_FAILED
-    assert len(units) == 7 and units[3] == TEXT[("P1", "offer")]
-    assert units[4].startswith("<Phần này chưa soạn được")  # visible, gate-failing placeholder
-    kept = [u for i, u in enumerate(units) if i != 4]
-    assert kept == [
-        TEXT[("P1", r)] for r in ("intro", "benefit0", "benefit1", "offer", "cta", "closing")
-    ]
+    assert item.state is ScriptState.GATE_FAILED and len(units) == 4
+    assert units[2].startswith("<Phần này chưa soạn được")  # visible, gate-failing placeholder
+    assert units[1] == " ".join(P1_CLAIMS)
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     statuses = {p["product_id"]: p for p in snapshot["products"]}
     assert snapshot["outcome"] == "partial"
     assert statuses["P2"]["status"] == "done" and statuses["P1"]["status"] == "failed"
-    assert any(i["unit_index"] == 4 for i in statuses["P1"]["issues"])
+    assert any(i["unit_index"] == 2 for i in statuses["P1"]["issues"])
     with pytest.raises(ScriptAuthoringError):
         await service.approve_product(
             set_id=set_id,
@@ -268,8 +237,7 @@ async def test_provider_errors_are_bounded_and_never_crash_the_batch(monkeypatch
     item, version = await _text(repos, set_id, "P2")
     assert item.state is ScriptState.GATE_FAILED
     assert all(u.startswith("<Phần này chưa soạn được") for u in split_units(version.spoken_text))
-    # <= 2 transport attempts per call, 2 calls per unit (empty-output retry never triggers on errors)
-    assert len(llm.prompts) <= 14 * 2
+    assert len(llm.prompts) <= 9 * 2  # <= 2 transport attempts per unit
 
 
 @pytest.mark.asyncio
@@ -285,7 +253,7 @@ async def test_existing_owner_text_is_never_overwritten() -> None:
         revision=None,
     )
     await _run(service, repos, set_id)
-    item, version = await _text(repos, set_id, "P2")
+    _item, version = await _text(repos, set_id, "P2")
     assert version.spoken_text == "Bài của chủ shop."
     assert not any("Tên sản phẩm: Kem ABC" in p for p in llm.prompts)
     assert (await _text(repos, set_id, "P1"))[0].state is ScriptState.REVIEWABLE
@@ -321,35 +289,74 @@ async def test_idempotency_key_rejects_a_different_request_and_foreign_batches()
     assert await service.get_batch_events_snapshot(set_id=other_set, batch_id=batch_id) is None
 
 
-def test_roles_are_fixed_by_position_and_claims() -> None:
-    assert plan_roles(first=True, last=False, claim_count=2) == [
+def test_plan_clusters_flat_claims_by_keyword_and_uses_each_once() -> None:
+    brief = ProductBrief(
+        product_id="p",
+        name="N",
+        prices=("1000 VND",),
+        claims=(
+            "Chất liệu cotton.",
+            "Form rộng thoải mái.",
+            "Bảo hành 6 tháng.",
+            "Đổi trả trong 7 ngày.",
+            "Tặng túi vải khi mua hai.",
+            "Chất liệu cotton.",
+        ),
+    )
+    units = plan_units(brief, first=True, last=True)
+    assert [u.role for u in units] == [
         "opening",
         "intro",
-        "benefit",
-        "benefit",
+        "highlight",
+        "assurance",
         "offer",
-        "trust",
-        "cta",
-    ]
-    assert plan_roles(first=False, last=True, claim_count=5) == [
-        "intro",
-        "benefit",
-        "benefit",
-        "benefit",
-        "offer",
-        "trust",
-        "cta",
         "closing",
     ]
-    assert plan_roles(first=True, last=True, claim_count=0).count("benefit") == 1
+    spoken = [c for u in units for c in (*u.claims, *u.promos)]
+    assert sorted(spoken) == sorted(set(brief.claims))  # once each, duplicates folded
+    assert units[-2].with_cta and not any(u.with_cta for u in units[:-2])
+    assert units[-2].promos == ("Tặng túi vải khi mua hai.",)
 
 
-def test_clean_unit_text_rejects_garbage_and_normalises_style() -> None:
+def test_plan_without_facts_is_just_intro_with_the_cta() -> None:
+    units = plan_units(ProductBrief(product_id="p", name="N"), first=False, last=False)
+    assert [u.role for u in units] == ["intro"] and units[0].with_cta
+
+
+def test_plan_bridge_only_for_a_later_product_on_a_locked_order() -> None:
+    brief = ProductBrief(product_id="p", name="N")
+    assert plan_units(brief, first=False, last=False, ordered_aware=True)[0].bridge
+    assert not plan_units(brief, first=True, last=False, ordered_aware=True)[0].bridge
+    assert not plan_units(brief, first=False, last=False, ordered_aware=False)[0].bridge
+
+
+def test_spoken_price_words() -> None:
+    assert spoken_price("100000.00 VND") == "một trăm nghìn đồng"
+    assert spoken_price("299.000đ") == "hai trăm chín mươi chín nghìn đồng"
+    assert spoken_price("2,5 triệu") == "hai triệu năm trăm nghìn đồng"
+    assert spoken_price("liên hệ") is None
+
+
+def test_clean_unit_text_rules() -> None:
     assert clean_unit_text("") is None
     assert clean_unit_text("...") is None
     assert clean_unit_text("x" * 800) is None
-    assert clean_unit_text('"Giá tốt — chốt đơn nhé"') == "Giá tốt, chốt đơn nhé"
+    assert clean_unit_text('"Giá tốt — mời bạn xem nhé"') == "Giá tốt, mời bạn xem nhé"
     assert clean_unit_text("- Một ý.\n\nVà ý nữa.") == "Một ý. Và ý nữa."
+    # never mention missing data; never hard-sell
+    assert clean_unit_text("Hiện chưa có thông tin khuyến mãi nhé cả nhà.") is None
+    assert clean_unit_text("Đặt hàng ngay để không bỏ lỡ nhé cả nhà.") is None
+    # a pointer to "the next product" only where a bridge belongs
+    assert clean_unit_text("Sau đó là sản phẩm tiếp theo nhé cả nhà.") is None
+    assert clean_unit_text("Kế tiếp là Gel XYZ nhé cả nhà.", allow_bridge=True)
+    # approved prices become words, an unapproved price stays as digits for the gate
+    assert (
+        clean_unit_text("Giá 100000.00 VND thôi nhé.", prices=("100000.00 VND",))
+        == "Giá một trăm nghìn đồng thôi nhé."
+    )
+    assert "999.000" in clean_unit_text("Giá 999.000đ thôi nhé.", prices=("100000.00 VND",))
+    # sizes stay one token
+    assert clean_unit_text("Có size X L và X X L nhé cả nhà.") == "Có size XL và XXL nhé cả nhà."
 
 
 def test_bounded_llm_retries_once_then_stops_and_honours_deadline() -> None:
@@ -374,13 +381,12 @@ def test_bounded_llm_retries_once_then_stops_and_honours_deadline() -> None:
 
 def test_short_one_sentence_units_pass_role_bounds_and_common_phrases_only_warn() -> None:
     from backend.application.script_authoring.gate.context import ProductFacts, ScriptGateContext
+    from backend.application.script_authoring.generation.ordered_units import role_bounds_s
 
     gate = ScriptAuthoringServiceImpl._default_gate()
-    low, high = __import__(
-        "backend.application.script_authoring.generation.ordered_units", fromlist=["x"]
-    ).role_bounds_s("cta")
+    low, high = role_bounds_s("offer")
     ctx = ScriptGateContext(facts=ProductFacts(), target_min_seconds=low, target_max_seconds=high)
-    assert gate.run_segment("Chốt đơn nhé cả nhà ơi.", ctx).passed
+    assert gate.run_segment("Mời bạn xem giỏ hàng nhé.", ctx).passed
     # a phrase shared by 6 of 7 units is a warning, not a block
     units = [f"Cả nhà ơi mình nói ý số {w} nhé." for w in "một hai ba bốn năm sáu bảy".split()]
     full = gate.run_full_script(units, ScriptGateContext(facts=ProductFacts(), total_min_seconds=1))
@@ -389,16 +395,16 @@ def test_short_one_sentence_units_pass_role_bounds_and_common_phrases_only_warn(
 
 @pytest.mark.asyncio
 async def test_regeneration_gates_with_the_real_product_facts() -> None:
-    service, repos = _service(FakeLLM(empty_for={("P1", "offer")}))
+    service, repos = _service(FakeLLM(empty_for={("Gel XYZ", "Giá và ưu đãi")}))
     set_id = await _new_set(service)
     await _run(service, repos, set_id)
     assert (await _text(repos, set_id, "P1"))[0].state is ScriptState.GATE_FAILED
     # the failed offer unit is rewritten with an authorised price spelt "150k"
     service._engine_manager._llm_fn = lambda _p: (
-        "Gel XYZ đang có giá 150k thôi, ai cũng có thể thêm vào giỏ hôm nay một cách thoải mái."
+        "Gel XYZ đang có giá 150k thôi, bạn nào quan tâm thì nhắn mình một cách thoải mái nhé."
     )
     await service.regenerate_segment(
-        set_id=set_id, product_id="P1", segment_index=3, idempotency_key="regen"
+        set_id=set_id, product_id="P1", segment_index=2, idempotency_key="regen"
     )
     for _ in range(300):
         item, version = await _text(repos, set_id, "P1")
@@ -410,13 +416,29 @@ async def test_regeneration_gates_with_the_real_product_facts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_manual_draft_without_spoken_text_compiles_prices_and_keeps_units() -> None:
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    display = "Giá 100000.00 VND hôm nay.\n\nCó size XL và XXL."
+    await service.save_draft(
+        set_id=set_id, product_id="P2", display_text=display, spoken_text=None, revision=None
+    )
+    _item, version = await _text(repos, set_id, "P2")
+    assert version.display_text == display
+    assert split_units(version.spoken_text) == (
+        "Giá một trăm nghìn đồng hôm nay.",
+        "Có size XL và XXL.",
+    )
+
+
+@pytest.mark.asyncio
 async def test_recovery_cannot_extend_the_whole_job_deadline() -> None:
     service, repos = _service(FakeLLM(), unit_job_deadline_s=100.0)
     set_id = await _new_set(service)
     script_set = await repos.script_sets.get(set_id)
     started = time.time() - 1000  # the job started long ago: nothing is left
-    ordered = service._ordered_batch(script_set, FakeLLM(), started_at=started)
+    ordered = service._ordered_batch(script_set, lambda _p: "ok", started_at=started)
     with pytest.raises(LLMDeadlineError):
         ordered.llm("p")
-    fresh = service._ordered_batch(script_set, FakeLLM(), started_at=None)
-    assert fresh.llm("Vai trò của phần này (1/7): Mở đầu phiên live. Tên sản phẩm: Kem ABC")
+    fresh = service._ordered_batch(script_set, lambda _p: "ok", started_at=None)
+    assert fresh.llm("p") == "ok"

@@ -1,11 +1,12 @@
-"""Ordered session script: fixed unit roles, unit prompts and a bounded LLM call.
+"""Ordered session script: adaptive unit plan, unit prompts and a bounded LLM call.
 
-One generated unit is one short spoken part (1-3 sentences) with a fixed role:
-session opening (first product only), intro, selling points, offer/price,
-trust, CTA and session closing (last product only). Roles are fixed by the
-backend, so no free-form planning call is spent and no model can change how
-many parts a product has. Prompts carry the authoritative product facts only;
-the deterministic unit gate decides whether the text may be kept.
+One generated unit is one short spoken part (1-2 sentences). The backend fixes the
+plan from the AVAILABLE facts, so no filler parts exist and no model decides how many
+parts a product has: session opening (first product only, a warm-up), intro, one unit
+per cluster of approved claims (every claim exactly once), a price/offer unit that
+carries the single soft call to action, and the session closing (last product only).
+Prompts carry authoritative facts only; the deterministic unit gate and the output
+guards below decide whether a text may be kept.
 """
 
 from __future__ import annotations
@@ -14,7 +15,10 @@ import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from ..compile import number_to_vietnamese_words
+from ..gate.rules.commerce_claims import _vnd_amount
 
 __all__ = [
     "BoundedLLM",
@@ -22,13 +26,15 @@ __all__ = [
     "ProductBrief",
     "SessionBrief",
     "UNIT_FAILED_PREFIX",
+    "UnitSpec",
     "build_unit_prompt",
     "build_unit_repair_prompt",
     "clean_unit_text",
     "failed_unit_text",
-    "plan_roles",
+    "plan_units",
     "role_bounds_s",
     "role_title",
+    "spoken_price",
 ]
 
 # Spoken-duration bounds (seconds, canonical estimator) per role. Wide on purpose:
@@ -36,44 +42,91 @@ __all__ = [
 _BOUNDS_S: dict[str, tuple[float, float]] = {
     "opening": (1.0, 40.0),
     "intro": (1.0, 40.0),
-    "benefit": (1.0, 45.0),
+    "highlight": (1.0, 45.0),
+    "assurance": (1.0, 45.0),
     "offer": (1.0, 45.0),
-    "trust": (1.0, 40.0),
-    "cta": (1.0, 35.0),
     "closing": (1.0, 35.0),
 }
 _TITLES = {
     "opening": "Mở đầu phiên live",
     "intro": "Giới thiệu sản phẩm",
-    "benefit": "Điểm nổi bật",
+    "highlight": "Điểm nổi bật",
+    "assurance": "Cam kết và lưu ý",
     "offer": "Giá và ưu đãi",
-    "trust": "Tạo niềm tin",
-    "cta": "Chốt đơn",
     "closing": "Lời kết phiên live",
 }
 _GUIDE = {
     "opening": (
-        "Chào khán giả, giới thiệu ngắn về buổi live và shop, tạo không khí thân thiện. "
-        "Không nói giá, không nêu tính năng sản phẩm."
+        "Chào khán giả, giới thiệu ngắn về buổi live, tạo không khí thân thiện và MỜI khán giả "
+        "bình luận, đặt câu hỏi (ví dụ hỏi size, hỏi giá) ngay trong phiên. Không nói giá, "
+        "không nêu tính năng, không nhắc sản phẩm cụ thể."
     ),
-    "intro": "Giới thiệu sản phẩm bằng một câu định vị hấp dẫn, gợi tò mò. Chưa nói giá.",
-    "benefit": (
-        "Nêu đúng MỘT điểm nổi bật (lấy từ thông tin được phép nói), nói gần như nguyên văn, "
-        "mở đầu bằng một cụm nối tự nhiên với ý trước."
+    "intro": (
+        "Giới thiệu sản phẩm bằng 1 đến 2 câu tự nhiên từ thông tin được phép nói (tên, "
+        "thương hiệu, loại, mô tả). Chưa nói giá."
     ),
-    "offer": "Nêu giá đúng như thông tin được phép nói và ưu đãi nếu có. Không tự tạo giá hay quà.",
-    "trust": (
-        "Tạo niềm tin bằng thông tin được phép nói (hoặc lời trấn an chung, không có số liệu "
-        "mới). Không cam kết điều gì ngoài thông tin được phép nói."
+    "highlight": (
+        "Nói các ý được phép nói bên dưới trong 1 đến 2 câu, MỖI ý đúng một lần, giữ nguyên "
+        "số liệu và ký hiệu size (S, M, L, XL...) viết liền, không tách chữ."
     ),
-    "cta": "Kêu gọi chốt đơn tự nhiên, một lời mời ngắn. Không ép mua.",
+    "assurance": (
+        "Nói các ý bên dưới một cách trung thực, tự nhiên; nếu là điều kiện hay hạn chế thì "
+        "nói rõ ràng, nhẹ nhàng, không bán gắt. MỖI ý đúng một lần."
+    ),
+    "offer": (
+        "Nói giá (đã đọc thành chữ bên dưới, chép đúng, không viết lại thành số) và ưu đãi nếu "
+        "có. Ưu đãi có điều kiện hay thời gian thì giữ NGUYÊN điều kiện/thời gian như thông "
+        "tin, không nói như đang áp dụng ngay hôm nay."
+    ),
     "closing": "Cảm ơn khán giả, nhắc theo dõi và hẹn gặp lại. Không giới thiệu thêm sản phẩm.",
 }
+_CTA_LINE = (
+    "Cuối phần này thêm MỘT lời mời nhẹ nhàng (ví dụ bạn nào quan tâm thì nhắn mình hoặc xem "
+    "giỏ hàng). Không dùng: chốt đơn ngay, đặt ngay, mua ngay, nhanh tay, không bỏ lỡ, số "
+    "lượng có hạn."
+)
+_COMMON_RULES = (
+    "Không bao giờ nói rằng thiếu thông tin (ví dụ 'chưa có thông tin', 'chưa có khuyến mãi'): "
+    "nếu không có gì để nói thì bỏ qua ý đó."
+)
 
 UNIT_FAILED_PREFIX = "<Phần này chưa soạn được"
-_MAX_UNIT_CHARS = 700
+_MAX_UNIT_CHARS = 600
 _DASH_RE = re.compile(r"\s*[—–]\s*")
 _FENCE_RE = re.compile(r"```[a-z]*|^[#>*\-\s]+(?=\S)", re.MULTILINE)
+# A letter-spaced size ("X L", "X X L") is one token.
+_SPLIT_SIZE_RE = re.compile(r"\b((?:X\s+){1,3})(?=[SL]\b)")
+_MISSING_INFO_RE = re.compile(
+    r"chưa có (?:thông tin|khuyến mãi|ưu đãi|giá|dữ liệu)|không có (?:thông tin|khuyến mãi)"
+    r"|hiện (?:tại )?chưa có|chưa (?:rõ|được cung cấp|cập nhật)|thiếu thông tin",
+    re.IGNORECASE,
+)
+_HARD_SELL_RE = re.compile(
+    r"chốt đơn ngay|đặt (?:hàng )?ngay|mua ngay|nhanh tay|không bỏ lỡ|đừng bỏ lỡ|số lượng có hạn"
+    r"|chốt ngay|order ngay",
+    re.IGNORECASE,
+)
+_BRIDGE_RE = re.compile(
+    r"(?:sản phẩm|món|mẫu)\s+(?:tiếp theo|kế tiếp|tiếp đến)|(?:tiếp theo|kế tiếp) là",
+    re.IGNORECASE,
+)
+_PRICE_TOKEN_RE = re.compile(
+    r"(?<![\w.,])\d[\d.,]*\s*(?:vnđ|vnd|đồng|₫|đ|nghìn|ngàn|triệu|tr|k)(?!\w)", re.IGNORECASE
+)
+_PROMO_RE = re.compile(r"giảm|tặng|khuyến mãi|ưu đãi|quà|voucher|mã giảm", re.IGNORECASE)
+_ASSURANCE_RE = re.compile(
+    r"bảo hành|đổi trả|hoàn tiền|giao hàng|vận chuyển|\bship\b|chính hãng|cam kết|kiểm hàng"
+    r"|chứng nhận|công bố|không (?:đổi|hoàn)",
+    re.IGNORECASE,
+)
+_CONDITION_RE = re.compile(
+    r"\bvào\b|thứ|đầu tháng|cuối tháng|cuối tuần|\bkhi\b|\bnếu\b|\btừ\b.*\bđến\b|mỗi|"
+    r"áp dụng|đơn từ|tối thiểu",
+    re.IGNORECASE,
+)
+_HIGHLIGHT_TYPES = ("feature", "benefit", "ingredient", "usage")
+_ASSURANCE_TYPES = ("warranty", "shipping", "compliance", "faq", "limitation")
+_MAX_CLAIMS_PER_UNIT = 3
 
 
 def role_bounds_s(role: str) -> tuple[float, float]:
@@ -84,25 +137,6 @@ def role_title(role: str) -> str:
     return _TITLES[role]
 
 
-def plan_roles(*, first: bool, last: bool, claim_count: int) -> list[str]:
-    """Fixed, ordered unit roles of one product.
-
-    The session opening belongs to the first product and the closing to the last.
-    One selling point per allowed claim (2 to 3 when there are claims, one generic
-    otherwise), so the unit count never depends on model output.
-    """
-    benefits = min(3, max(2, claim_count)) if claim_count else 1
-    return [
-        *(["opening"] if first else []),
-        "intro",
-        *(["benefit"] * benefits),
-        "offer",
-        "trust",
-        "cta",
-        *(["closing"] if last else []),
-    ]
-
-
 def failed_unit_text(role: str) -> str:
     """Visible placeholder for a unit the model could not write.
 
@@ -110,6 +144,26 @@ def failed_unit_text(role: str) -> str:
     pass the gate, be approved or be spoken until the owner rewrites that part.
     """
     return f"{UNIT_FAILED_PREFIX}: {role_title(role)}. Hãy tự viết lại phần này>"
+
+
+def spoken_price(price: str) -> str | None:
+    """ "100000.00 VND" / "299.000đ" / "299k" -> "một trăm nghìn đồng"; None if ambiguous."""
+    amount = _vnd_amount(price)
+    return None if amount is None else f"{number_to_vietnamese_words(amount)} đồng"
+
+
+def _speak_approved_prices(text: str, prices: tuple[str, ...]) -> str:
+    """Rewrite raw price tokens that equal an APPROVED price as words. An unapproved price
+    is left as digits so the gate still rejects it."""
+    approved = {a for a in (_vnd_amount(p) for p in prices) if a is not None}
+
+    def swap(match: re.Match[str]) -> str:
+        amount = _vnd_amount(match.group().strip())
+        if amount is not None and amount in approved:
+            return f"{number_to_vietnamese_words(amount)} đồng"
+        return match.group()
+
+    return _PRICE_TOKEN_RE.sub(swap, text)
 
 
 @dataclass(frozen=True)
@@ -126,87 +180,187 @@ class ProductBrief:
     name: str
     prices: tuple[str, ...] = ()
     discounts: tuple[str, ...] = ()
-    claims: tuple[str, ...] = ()
+    claims: tuple[str, ...] = ()  # flat, authoritative
+    claims_by_type: tuple[tuple[str, tuple[str, ...]], ...] = ()  # optional grouping
+    info: tuple[tuple[str, str], ...] = ()  # brand / category / short_description
     previous_name: str | None = None  # only when the set is ORDER_AWARE
-    next_name: str | None = None  # only when the set is ORDER_AWARE
 
 
-def clean_unit_text(raw: str | None) -> str | None:
-    """One paragraph of plain speech, or ``None`` when the output is empty/garbled."""
+@dataclass(frozen=True)
+class UnitSpec:
+    """One planned unit: its role and exactly the facts it may speak."""
+
+    role: str
+    claims: tuple[str, ...] = ()
+    promos: tuple[str, ...] = ()
+    with_price: bool = False
+    with_cta: bool = False
+    bridge: bool = False  # first unit of a later product on a locked (ORDER_AWARE) order
+    first_product: bool = False
+    last_product: bool = False
+
+
+def _cluster_claims(product: ProductBrief) -> tuple[list[str], list[str], list[str]]:
+    """(highlights, assurances, promotions): each approved claim lands in exactly one list."""
+    typed: dict[str, str] = {}
+    for kind, texts in product.claims_by_type:
+        for text in texts:
+            typed.setdefault(text, kind)
+    highlights: list[str] = []
+    assurances: list[str] = []
+    promos: list[str] = []
+    seen: set[str] = set()
+    for claim in (*product.claims, *typed, *product.discounts):
+        if claim in seen:
+            continue
+        seen.add(claim)
+        kind = typed.get(claim)
+        if (
+            kind == "promotion"
+            or claim in product.discounts
+            or (kind is None and _PROMO_RE.search(claim))
+        ):
+            promos.append(claim)
+        elif kind in _ASSURANCE_TYPES or (kind is None and _ASSURANCE_RE.search(claim)):
+            assurances.append(claim)
+        else:
+            highlights.append(claim)
+    return highlights, assurances, promos
+
+
+def _chunks(items: list[str]) -> list[tuple[str, ...]]:
+    return [
+        tuple(items[i : i + _MAX_CLAIMS_PER_UNIT])
+        for i in range(0, len(items), _MAX_CLAIMS_PER_UNIT)
+    ]
+
+
+def plan_units(
+    product: ProductBrief, *, first: bool, last: bool, ordered_aware: bool = False
+) -> list[UnitSpec]:
+    """Adaptive, ordered units of one product from its available facts.
+
+    opening (first product) -> intro -> one unit per claim cluster -> offer (price and
+    promotions) -> closing (last product). The single soft CTA is folded into the last
+    product unit. A bridge is asked of the intro only for a later product on a locked order.
+    """
+    highlights, assurances, promos = _cluster_claims(product)
+    flags = {"first_product": first, "last_product": last}
+    units = [
+        *([UnitSpec("opening", **flags)] if first else []),
+        UnitSpec("intro", bridge=ordered_aware and not first, **flags),
+        *(UnitSpec("highlight", claims=c, **flags) for c in _chunks(highlights)),
+        *(UnitSpec("assurance", claims=c, **flags) for c in _chunks(assurances)),
+    ]
+    if product.prices or promos:
+        units.append(
+            UnitSpec("offer", promos=tuple(promos), with_price=bool(product.prices), **flags)
+        )
+    body = [i for i, u in enumerate(units) if u.role != "opening"]
+    units[body[-1]] = replace(units[body[-1]], with_cta=True)
+    if last:
+        units.append(UnitSpec("closing", **flags))
+    return units
+
+
+def clean_unit_text(
+    raw: str | None, *, prices: tuple[str, ...] = (), allow_bridge: bool = False
+) -> str | None:
+    """One paragraph of plain speech, or ``None`` when the output is unusable.
+
+    Unusable = empty/garbled, mentions missing information, hard-sells, or points at "the
+    next product" where no bridge belongs. Approved prices written as digits become words.
+    """
     if not raw:
         return None
     text = _FENCE_RE.sub("", raw).strip().strip("\"'“”")
     text = _DASH_RE.sub(", ", text)
     text = re.sub(r"\s+", " ", text).strip()
+    text = _SPLIT_SIZE_RE.sub(lambda m: re.sub(r"\s+", "", m.group(1)), text)
+    text = _speak_approved_prices(text, prices)
     if len(text) < 6 or len(text) > _MAX_UNIT_CHARS or not re.search(r"[^\W\d_]{2}", text):
+        return None
+    if _MISSING_INFO_RE.search(text) or _HARD_SELL_RE.search(text):
+        return None
+    if not allow_bridge and _BRIDGE_RE.search(text):
         return None
     return text
 
 
-def _facts_block(product: ProductBrief, role: str, benefit_no: int) -> str:
+def _facts_block(product: ProductBrief, spec: UnitSpec, used: list[str]) -> str:
     lines = [f"Tên sản phẩm: {product.name or product.product_id}"]
-    if role == "offer":
-        if product.prices:
-            lines.append("Giá được phép nói (chép đúng): " + "; ".join(product.prices))
-        else:
-            lines.append("Không có giá được phép nói: KHÔNG nêu bất kỳ con số giá nào.")
-        if product.discounts:
-            lines.append("Ưu đãi được phép nói: " + "; ".join(product.discounts))
-    elif role in ("benefit", "trust") and product.claims:
-        # trust reuses the claim after the last selling point so the two never repeat.
-        pick = benefit_no if role == "benefit" else benefit_no + 1
-        claim = product.claims[pick % len(product.claims)]
-        lines.append(f"Thông tin được phép nói: {claim}")
-    elif role in ("benefit", "trust"):
-        lines.append(
-            "Không có thông tin cụ thể: chỉ nói chung chung, KHÔNG nêu tính năng hay số liệu."
-        )
+    if spec.role == "intro":
+        lines += [f"{k}: {v}" for k, v in product.info if v]
+    if spec.claims:
+        lines.append("Thông tin được phép nói (dùng hết, mỗi ý một lần):")
+        lines += [f"- {c}" for c in spec.claims]
+    if spec.role == "offer":
+        spoken = [w for w in (spoken_price(p) for p in product.prices) if w]
+        if spoken:
+            lines.append("Giá được phép nói (đã đọc thành chữ): " + "; ".join(spoken))
+            if len(spoken) > 1:
+                lines.append("Có nhiều mức giá: nói như một khoảng giá hoặc nêu từng mức.")
+        if spec.promos:
+            lines.append("Ưu đãi được phép nói (giữ nguyên điều kiện/thời gian):")
+            lines += [f"- {p}" for p in spec.promos]
+            if any(_CONDITION_RE.search(p) for p in spec.promos):
+                lines.append(
+                    "Ưu đãi này CÓ điều kiện/thời gian: nói rõ điều kiện, KHÔNG nói như đang "
+                    "áp dụng hôm nay, KHÔNG thúc giục."
+                )
+    if used:
+        lines.append("Đã nói ở các phần trước, TUYỆT ĐỐI không nhắc lại: " + " | ".join(used))
     return "\n".join(lines)
 
 
-def _bridge_line(product: ProductBrief, role: str, first_product: bool, last_product: bool) -> str:
-    if role == "intro" and not first_product:
+def _position_line(product: ProductBrief, spec: UnitSpec) -> str:
+    if spec.role != "intro":
+        return ""
+    if spec.first_product:
+        return "Đây là sản phẩm đầu tiên của buổi live: không dùng 'tiếp theo' hay 'kế tiếp'."
+    if spec.bridge:
         prev = f" ({product.previous_name})" if product.previous_name else ""
-        return f"Câu đầu là lời nối từ sản phẩm trước{prev} sang sản phẩm này."
-    if role == "cta" and not last_product:
-        nxt = f" là {product.next_name}" if product.next_name else ""
-        return f"Kết thúc bằng một cụm dẫn nhẹ sang sản phẩm tiếp theo{nxt}."
-    return ""
+        return f"Câu đầu là lời nối tự nhiên từ sản phẩm trước{prev} sang sản phẩm này."
+    return "Không nhắc tới sản phẩm trước hay sau."
 
 
 def build_unit_prompt(
     session: SessionBrief,
     product: ProductBrief,
-    roles: list[str],
+    specs: list[UnitSpec],
     index: int,
     *,
     tail: str = "",
     used_ctas: frozenset[str] = frozenset(),
 ) -> str:
-    role = roles[index]
-    benefit_no = sum(1 for r in roles[:index] if r == "benefit")
-    first_product = "opening" in roles
-    last_product = "closing" in roles
+    spec = specs[index]
+    used = [c for s in specs[:index] for c in (*s.claims, *s.promos)]
     parts = [
         "Bạn là MC livestream bán hàng Việt Nam, giọng thân thiện, tự nhiên, nói ngắn gọn.",
-        "Viết ĐÚNG MỘT phần lời thoại để đọc thành tiếng, gồm 1 đến 3 câu (khoảng 8 đến 25 giây).",
+        "Viết ĐÚNG MỘT phần lời thoại để đọc thành tiếng, gồm 1 đến 2 câu ngắn.",
         "Chỉ trả về lời thoại. Không tiêu đề, không markdown, không emoji, không chú thích, "
         "không dấu gạch ngang dài.",
         "Mọi con số, giá, ưu đãi, tính năng PHẢI lấy từ phần thông tin được phép nói; "
-        "tuyệt đối không bịa thêm.",
+        "tuyệt đối không bịa thêm. Giá luôn nói bằng chữ, không viết số.",
+        _COMMON_RULES,
         f"Phiên live: {session.title or '(chưa đặt tên)'}"
         + (f"; shop: {session.shop_name}" if session.shop_name else "")
         + (f"; MC: {session.persona}" if session.persona else ""),
     ]
+    if spec.role == "opening" and not session.shop_name:
+        parts.append("Chưa biết tên shop: không nhắc tên shop.")
     if session.notes:
         parts.append(f"Ghi chú của chủ shop: {session.notes}")
     parts.append(
-        f"Vai trò của phần này ({index + 1}/{len(roles)}): {role_title(role)}. {_GUIDE[role]}"
+        f"Vai trò của phần này ({index + 1}/{len(specs)}): {role_title(spec.role)}. "
+        f"{_GUIDE[spec.role]}"
     )
-    bridge = _bridge_line(product, role, first_product, last_product)
-    if bridge:
-        parts.append(bridge)
-    parts.append(_facts_block(product, role, benefit_no))
+    position = _position_line(product, spec)
+    if position:
+        parts.append(position)
+    parts.append(_facts_block(product, spec, used))
+    if spec.with_cta:
+        parts.append(_CTA_LINE)
     if tail:
         parts.append("Phần liền trước (không lặp lại cách diễn đạt này): " + tail)
     if used_ctas:
@@ -217,14 +371,14 @@ def build_unit_prompt(
 def build_unit_repair_prompt(
     session: SessionBrief,
     product: ProductBrief,
-    roles: list[str],
+    specs: list[UnitSpec],
     index: int,
     *,
     failed_text: str,
     problems: list[str],
     tail: str = "",
 ) -> str:
-    base = build_unit_prompt(session, product, roles, index, tail=tail)
+    base = build_unit_prompt(session, product, specs, index, tail=tail)
     return (
         base
         + "\n\nBản trước bị từ chối:\n"

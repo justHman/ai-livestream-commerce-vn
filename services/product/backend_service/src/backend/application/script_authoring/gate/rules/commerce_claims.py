@@ -197,6 +197,8 @@ def _vnd_amount(value: str) -> int | None:
     number, unit = match.group(1), re.sub(r"\s", "", (match.group(2) or "").lower())
     if unit in ("kđ", "k₫"):
         unit = "k"
+    if re.fullmatch(r"\d+[.,]0{1,2}", number) and unit in ("đ", "₫", "đồng", "vnđ", "vnd"):
+        number = re.split(r"[.,]", number)[0]  # "100000.00 VND": zero cents
     grouped = re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", number) is not None
     plain = number.isdigit()
     if unit in _UNIT_X1000:
@@ -220,6 +222,18 @@ def _claims(claim: str, facts: ProductFacts) -> bool:
             return True
     amount = _vnd_amount(claim)
     return amount is not None and any(_vnd_amount(price) == amount for price in facts.prices)
+
+
+def _discount_stated(token: str, facts: ProductFacts) -> bool:
+    """The discount token is an approved discount, or part of an approved discount/promotion
+    statement ("giảm 20%" inside "Giảm 20% vào thứ Tư đầu tháng")."""
+    if _claims(token, facts):
+        return True
+    needle = re.sub(r"\s+", " ", token.strip().lower())
+    return any(
+        needle in re.sub(r"\s+", " ", statement.lower())
+        for statement in (*facts.discounts, *facts.allowed_claims)
+    )
 
 
 def check_price_claims(text: str, context) -> list[RuleViolation]:
@@ -253,7 +267,7 @@ def check_discount_claims(text: str, context) -> list[RuleViolation]:
     """
     violations: list[RuleViolation] = []
     for match in _DISCOUNT_RE.finditer(text):
-        if _claims(match.group(), context.facts):
+        if _discount_stated(match.group(), context.facts):
             continue
         violations.append(
             RuleViolation(
@@ -271,7 +285,7 @@ def check_discount_claims(text: str, context) -> list[RuleViolation]:
         if any(start <= match.start() and match.end() <= end for start, end in discount_spans):
             # The percent is part of an authorized "giảm X%" span already.
             continue
-        if _claims(match.group(), context.facts):
+        if _discount_stated(match.group(), context.facts):
             continue
         violations.append(
             RuleViolation(

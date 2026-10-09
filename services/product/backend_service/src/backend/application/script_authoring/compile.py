@@ -26,6 +26,7 @@ __all__ = [
     "CompiledScriptVersion",
     "compile_spoken_text",
     "expand_vietnamese_number",
+    "number_to_vietnamese_words",
     "NORMALIZER_IDS",
 ]
 
@@ -86,6 +87,13 @@ _GROUPS = ("", "nghìn", "triệu", "tỷ")
 # Longer alternates first ("đồng" before "đ") so a full suffix is never
 # partially consumed.
 _GROUPED_PRICE_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+\s*(?:đồng|VND|vnđ|₫|đ|k|K)?")
+
+# A whole price with a currency word and optional zero cents: "100000.00 VND", "50000 đồng".
+# Run BEFORE the grouped/bare number steps so "100000.00" never becomes "phẩy không".
+_PLAIN_CURRENCY_RE = re.compile(r"(?<![\w.,])(\d+)(?:[.,]0{1,2})?\s*(?:VND|vnd|vnđ|₫|đồng)(?!\w)")
+
+# Size tokens are spoken as written ("XL" must not become "X L").
+_SIZE_TOKENS = frozenset({"XS", "XL", "XXL", "XXXL"})
 
 # A compact price with a currency suffix: "299.000đ", "50k", "99đ".
 _COMPACT_CURRENCY_RE = re.compile(
@@ -189,9 +197,16 @@ def expand_vietnamese_number(value: str) -> str:
     return _number_to_words(int(value))
 
 
+def number_to_vietnamese_words(n: int) -> str:
+    """Spoken Vietnamese for a nonnegative integer (public alias used by generation)."""
+    return _number_to_words(n)
+
+
 def _spell_acronym(match: re.Match[str]) -> str:
     """Letter-by-letter spelling of an uppercase token (acronym/SKU)."""
     token = match.group()
+    if token in _SIZE_TOKENS:
+        return token
     return " ".join(ch for ch in token if ch.isalnum())
 
 
@@ -239,6 +254,12 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
     """
     if denomination not in ("đồng", "VND", "đô"):
         raise ValueError(f"unsupported denomination {denomination!r}")
+    paragraphs = [p for p in re.split(r"\n[ \t]*\n", display_text) if p.strip()]
+    if len(paragraphs) > 1:
+        # Blank-line paragraphs are the script's units: compile each, keep the boundaries.
+        parts = [compile_spoken_text(p, denomination=denomination) for p in paragraphs]
+        applied_all = tuple(dict.fromkeys(a for part in parts for a in part.applied))
+        return CompileResult("\n\n".join(part.spoken_text for part in parts), applied_all)
     applied: list[str] = []
 
     def _changed(old: str, new: str, nid: str) -> str:
@@ -280,6 +301,9 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
         return f"{spoken}{suffix}"
 
     stage_before_currency = text
+    text = _PLAIN_CURRENCY_RE.sub(
+        lambda m: f"{_number_to_words(int(m.group(1)))} {denomination}", text
+    )
     text = _GROUPED_PRICE_RE.sub(_grouped_expand, text)
     text = _COMPACT_CURRENCY_RE.sub(_expand_currency, text)
     # Track provenance against the text as it was BEFORE this stage.
