@@ -141,6 +141,7 @@ class ScriptAuthoringService(Protocol):
         product_ids: list[str],
         target_duration_s: int,
         idempotency_key: str,
+        ordered_units: bool = False,
     ) -> dict[str, Any] | None: ...
 
     async def get_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None: ...

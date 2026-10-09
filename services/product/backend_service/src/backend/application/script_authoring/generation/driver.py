@@ -114,6 +114,12 @@ class WorkflowDriver:
     # the minimum local change instead of blind regeneration. When None, retry
     # attempts regenerate the segment blindly (still inside the fixed budget).
     segment_repair: Optional[SegmentRepair] = None
+    # Ordered-units mode: gate by unit index (role-specific bounds) and, when a unit
+    # cannot be written, keep every other unit and put a visible placeholder in its
+    # place instead of stopping the product. The placeholder fails the full gate,
+    # so the script lands GATE_FAILED for the owner to finish by hand.
+    segment_gate_at: Optional[Callable[[int, str], Any]] = None
+    failed_unit_text: Optional[Callable[[int], str]] = None
 
     def is_terminal(self) -> bool:
         return self.workflow.item.state in _TERMINAL
@@ -217,17 +223,21 @@ class WorkflowDriver:
             else:
                 outcome = self.segment_generate(index, continuity, segment_target)
             if outcome.error is not None:
-                wf.segment_failed(index, message=str(outcome.error))
-                self.persist(wf.item)
+                self._unit_failed(index, attempt, str(outcome.error), gate_exhausted=False)
                 return
             result = outcome.result
             if result is None:
-                wf.segment_failed(index, message="segment generator returned no result")
-                self.persist(wf.item)
+                self._unit_failed(
+                    index, attempt, "segment generator returned no result", gate_exhausted=False
+                )
                 return
             # ONE deterministic Segment Gate evaluation per semantic candidate
             # (reviewer R9.2/3.4): never gate the same candidate twice.
-            gate = wf.segment_gate(result.spoken_text, segment_target)
+            gate = (
+                self.segment_gate_at(index, result.spoken_text)
+                if self.segment_gate_at is not None
+                else wf.segment_gate(result.spoken_text, segment_target)
+            )
             # Persist the immutable candidate + its GateRun as auditable attempt
             # evidence — a failed candidate before the final attempt must not
             # disappear even though LLM money was spent on it.
@@ -248,11 +258,12 @@ class WorkflowDriver:
             # index in place with the exact failed rules as context.
             last_failure = (result, gate)
         if selected is None:
-            wf.fail_segment_gate(
+            self._unit_failed(
                 index,
-                message=f"segment {index} gate failed after {attempts} semantic attempts",
+                attempts,
+                f"segment {index} gate failed after {attempts} semantic attempts",
+                gate_exhausted=True,
             )
-            self.persist(wf.item)
             return
         # Advance the bounded cross-segment state so the next prompt avoids the
         # previous tail / covered claims / used opening fingerprints (15.4).
@@ -271,6 +282,24 @@ class WorkflowDriver:
             cta_count=continuity.cta_count + (1 if selected.cta_used else 0),
             last_topic=selected.topic or continuity.last_topic,
             next_topic=None,
+        )
+
+    def _unit_failed(
+        self, index: int, attempt: int, message: str, *, gate_exhausted: bool
+    ) -> None:
+        wf = self.workflow
+        if self.failed_unit_text is None:
+            if gate_exhausted:
+                wf.fail_segment_gate(index, message=message)
+            else:
+                wf.segment_failed(index, message=message)
+            self.persist(wf.item)
+            return
+        wf.last_error = message
+        self.persist(
+            wf.record_failed_unit(
+                index, self.failed_unit_text(index), version=attempt + 1, message=message
+            )
         )
 
     def _compile_and_gate(self) -> None:

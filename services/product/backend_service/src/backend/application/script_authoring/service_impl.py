@@ -79,6 +79,18 @@ from backend.application.script_authoring.generation.intent import (
     ScriptIntent as GenScriptIntent,
     build_transition_context,
 )
+from backend.application.script_authoring.generation.ordered_units import (
+    BoundedLLM,
+    ProductBrief,
+    SessionBrief,
+    build_unit_prompt,
+    build_unit_repair_prompt,
+    clean_unit_text,
+    failed_unit_text,
+    plan_roles,
+    role_bounds_s,
+    role_title,
+)
 from backend.application.script_authoring.generation.planner import (
     AuthoritativeContext as PlannerAuthoritativeContext,
     PlanRejectionError,
@@ -134,6 +146,39 @@ __all__ = ["ScriptAuthoringServiceImpl"]
 
 # Floor for one product's own script (the owner approves the text); only rejects trivial lines.
 _PRODUCT_SCRIPT_MIN_SECONDS = 3.0
+
+
+@dataclass
+class _OrderedBatch:
+    """Per-batch context of ordered-units generation (owner order, fixed roles)."""
+
+    session: SessionBrief
+    products: dict[str, ProductBrief]
+    roles: dict[str, list[str]]
+    llm: BoundedLLM
+
+
+class _SkippedWorkflow:
+    """Product that already has owner/approved content: never overwritten, no LLM spend."""
+
+    plan_segment_count = 0
+    current_segment_index = 0
+    semantic_calls = 0
+
+    def __init__(self, product_id: str) -> None:
+        self.product_id = product_id
+
+    def step(self) -> bool:
+        return False
+
+    def is_terminal(self) -> bool:
+        return True
+
+    def snapshot(self) -> dict:
+        return {}
+
+    def restore(self, state: dict) -> None:
+        return None
 
 
 class _SyncPersistBridge:
@@ -1084,6 +1129,7 @@ class ScriptAuthoringServiceImpl:
         emit,
         batch_id: str,
         loaders,
+        ordered: "_OrderedBatch | None" = None,
     ):
         facts = self._product_facts(script_set.brief, item.product_id)
         base_context = ScriptGateContext(
@@ -1132,6 +1178,17 @@ class ScriptAuthoringServiceImpl:
             generate=lambda *a, **k: None,  # AI-enabled marker; driver calls closures
         )
         workflow.target_duration_s = target_duration_s
+        if ordered is not None:
+            return self._build_ordered_driver(
+                item,
+                script_set,
+                workflow,
+                ordered,
+                bridge,
+                emit=emit,
+                batch_id=batch_id,
+                loaders=loaders,
+            )
         plan_generate = self._make_plan_generate(
             item, script_set, target_duration_s, llm_fn, emit=emit
         )
@@ -1153,6 +1210,164 @@ class ScriptAuthoringServiceImpl:
             load_version=loaders[2],
             fingerprint=self._generation_fingerprint(),
             max_segment_attempts=self._config.segment_max_attempts,
+        )
+        return _EventEmittingDriver(driver, emit, batch_id)
+
+    def _ordered_batch(
+        self, script_set: ScriptSet, llm_fn: Callable[[str], str] | None
+    ) -> _OrderedBatch:
+        """Owner order, fixed roles and authoritative facts of every product of the set.
+
+        Position comes from the SET's product order (the owner's order): the first
+        product carries the session opening, the last one the session closing.
+        Neighbour product names reach prompts only for an ORDER_AWARE set.
+        """
+        brief = script_set.brief
+        ordered_ids = list(script_set.product_ids)
+        aware = brief.transition_policy == "ORDER_AWARE"
+        facts = {pid: self._product_facts(brief, pid) for pid in ordered_ids}
+        name = {pid: facts[pid].product_name or pid for pid in ordered_ids}
+        products: dict[str, ProductBrief] = {}
+        roles: dict[str, list[str]] = {}
+        for i, pid in enumerate(ordered_ids):
+            products[pid] = ProductBrief(
+                product_id=pid,
+                name=name[pid],
+                prices=facts[pid].prices,
+                discounts=facts[pid].discounts,
+                claims=facts[pid].allowed_claims,
+                previous_name=name[ordered_ids[i - 1]] if aware and i > 0 else None,
+                next_name=name[ordered_ids[i + 1]] if aware and i + 1 < len(ordered_ids) else None,
+            )
+            roles[pid] = plan_roles(
+                first=i == 0,
+                last=i == len(ordered_ids) - 1,
+                claim_count=len(facts[pid].allowed_claims),
+            )
+        cfg = self._config
+        return _OrderedBatch(
+            session=SessionBrief(
+                title=brief.title,
+                shop_name=brief.shop_name,
+                persona=brief.persona,
+                notes=brief.notes,
+            ),
+            products=products,
+            roles=roles,
+            llm=BoundedLLM(
+                llm_fn,
+                attempts=cfg.unit_llm_attempts,
+                call_timeout_s=cfg.unit_llm_call_timeout_s,
+                job_deadline_s=cfg.unit_job_deadline_s,
+            ),
+        )
+
+    def _build_ordered_driver(
+        self, item, script_set, workflow, ordered: _OrderedBatch, bridge, *, emit, batch_id, loaders
+    ):
+        pid = item.product_id
+        roles = ordered.roles[pid]
+        product = ordered.products[pid]
+        facts = self._product_facts(script_set.brief, pid)
+        policy = script_set.brief.transition_policy
+
+        def unit_gate(index: int, text: str) -> GateRunResult:
+            low, high = role_bounds_s(roles[index])
+            return self._gate.run_segment(
+                text,
+                ScriptGateContext(
+                    transition_policy=policy,
+                    facts=facts,
+                    target_min_seconds=low,
+                    target_max_seconds=high,
+                ),
+            )
+
+        workflow.full_gate = lambda segments: self._gate.run_full_script(
+            list(segments),
+            ScriptGateContext(
+                transition_policy=policy,
+                facts=facts,
+                total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
+            ),
+        )
+
+        def write(index: int, prompt: str, continuity: ContinuityState) -> SegmentStepOutcome:
+            # One extra call only when the model returned nothing usable.
+            for _ in range(2):
+                try:
+                    raw = ordered.llm(prompt)
+                except Exception as exc:  # noqa: BLE001 - provider/transport failure of this unit
+                    return SegmentStepOutcome(
+                        index=index, state=continuity, error=f"llm_failed:{type(exc).__name__}"
+                    )
+                text = clean_unit_text(raw)
+                if text is not None:
+                    words = text.split()
+                    return SegmentStepOutcome(
+                        index=index,
+                        state=continuity,
+                        result=SegmentGenerationResult(
+                            segment_index=index,
+                            display_text=text,
+                            spoken_text=text,
+                            opening_fingerprint=" ".join(words[:5])[:80],
+                            topic=role_title(roles[index]),
+                        ),
+                    )
+            return SegmentStepOutcome(index=index, state=continuity, error="empty_or_garbled_output")
+
+        def segment_generate(index, continuity, _target=None) -> SegmentStepOutcome:
+            emit("segment.started", {"product_id": pid, "segment_index": index})
+            prompt = build_unit_prompt(
+                ordered.session,
+                product,
+                roles,
+                index,
+                tail=continuity.previous_segment_tail,
+                used_ctas=continuity.used_ctas,
+            )
+            return write(index, prompt, continuity)
+
+        def segment_repair(index, continuity, hint) -> SegmentStepOutcome:
+            emit("segment.repairing", {"product_id": pid, "segment_index": index})
+            prompt = build_unit_repair_prompt(
+                ordered.session,
+                product,
+                roles,
+                index,
+                failed_text=hint.source_text,
+                problems=hint.repair_instructions,
+                tail=continuity.previous_segment_tail,
+            )
+            return write(index, prompt, continuity)
+
+        def plan_generate():
+            candidates = [
+                {
+                    "title": role_title(role),
+                    "intent": role,
+                    "target_duration_s": int(role_bounds_s(role)[1]),
+                }
+                for role in roles
+            ]
+            return len(candidates), candidates
+
+        driver = WorkflowDriver(
+            product_id=pid,
+            workflow=workflow,
+            plan_generate=plan_generate,
+            segment_generate=segment_generate,
+            segment_repair=segment_repair,
+            persist=bridge,
+            load_item=loaders[0],
+            load_segment=loaders[1],
+            load_version=loaders[2],
+            fingerprint=self._generation_fingerprint(),
+            # initial write + at most ONE local repair per unit
+            max_segment_attempts=min(self._config.segment_max_attempts, 2),
+            segment_gate_at=unit_gate,
+            failed_unit_text=lambda index: failed_unit_text(roles[index]),
         )
         return _EventEmittingDriver(driver, emit, batch_id)
 
@@ -1891,11 +2106,18 @@ class ScriptAuthoringServiceImpl:
         product_ids: list[str],
         target_duration_s: int,
         idempotency_key: str,
+        ordered_units: bool = False,
     ) -> dict[str, Any] | None:
         self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
             self._raise_not_found("script set", set_id)
+        if ordered_units:
+            # Owner order comes from the set itself; the client only selects products.
+            product_ids = list(dict.fromkeys(product_ids or script_set.product_ids))
+            unknown = [pid for pid in product_ids if pid not in script_set.product_ids]
+            if unknown:
+                self._raise_not_found("product script", unknown[0])
         items: dict[str, ScriptItem] = {}
         for pid in product_ids:
             item = await self._repos.items.get_by_product(set_id, pid)
@@ -1904,6 +2126,9 @@ class ScriptAuthoringServiceImpl:
             items[pid] = item
         existing_batch = await self._repos.batches.find_by_idempotency(set_id, idempotency_key)
         if existing_batch is not None:
+            await self._require_same_batch_request(
+                existing_batch, product_ids, target_duration_s, ordered_units
+            )
             return {
                 "batch_id": existing_batch.id,
                 "workflow_summary": {"products": [], "estimated_semantic_calls_total": 0},
@@ -1911,7 +2136,11 @@ class ScriptAuthoringServiceImpl:
                 "idempotent": True,
             }
         llm_fn = self._require_llm()
-        self._calibration().segment_count_for(target_duration_s)  # bounds check
+        ordered = None
+        if ordered_units:
+            ordered = self._ordered_batch(script_set, llm_fn)
+        else:
+            self._calibration().segment_count_for(target_duration_s)  # bounds check
         req = BatchRequest(
             script_set_id=set_id,
             script_set_revision=script_set.revision,
@@ -1921,6 +2150,10 @@ class ScriptAuthoringServiceImpl:
             max_attempts=self._config.provider_max_attempts,
             model_fingerprint=self._model_fingerprint(),
             client_key=idempotency_key,
+            ordered_units=ordered_units,
+            unit_counts=tuple((pid, len(ordered.roles[pid])) for pid in product_ids)
+            if ordered is not None
+            else (),
         )
         fingerprint = request_fingerprint(req)
         existing_id = await self._repos.idempotency.get(fingerprint)
@@ -1952,6 +2185,8 @@ class ScriptAuthoringServiceImpl:
 
         def create_workflow(product_id: str, target: float):
             item = items[product_id]
+            if ordered is not None and item.state is not ScriptState.EMPTY:
+                return _SkippedWorkflow(product_id)  # keep owner/approved content
             return self._build_driver(
                 item,
                 script_set,
@@ -1961,6 +2196,7 @@ class ScriptAuthoringServiceImpl:
                 emit=event_sink,
                 batch_id=_batch_id,
                 loaders=self._make_loaders(items, {}, {}),
+                ordered=ordered,
             )
 
         orch = BatchScriptGenerationOrchestrator(
@@ -2009,19 +2245,97 @@ class ScriptAuthoringServiceImpl:
             "status": "queued",
         }
 
-    async def get_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None:
+    async def _require_same_batch_request(
+        self,
+        existing: GenerationBatch,
+        product_ids: list[str],
+        target_duration_s: int,
+        ordered_units: bool,
+    ) -> None:
+        """An idempotency key may only ever replay the SAME request."""
+        stored = await self._repos.batches.get(existing.id)
+        state = stored[1] if stored is not None else None
+        same = list(existing.product_ids) == list(product_ids) and (
+            state is None
+            or (
+                state.ordered_units == ordered_units
+                and all(
+                    int(state.target_durations.get(pid, -1)) == int(target_duration_s)
+                    for pid in product_ids
+                )
+            )
+        )
+        if not same:
+            raise ScriptAuthoringError(
+                "idempotency_conflict", "idempotency key was already used for a different request"
+            )
+
+    async def _batch_of_set(self, set_id: str, batch_id: str):
+        """The batch row, only when it belongs to ``set_id`` (never trust the path pair)."""
         result = await self._repos.batches.get(batch_id)
+        if result is None or result[0].script_set_id != set_id:
+            return None
+        return result
+
+    async def get_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None:
+        result = await self._batch_of_set(set_id, batch_id)
         if result is None:
             self._raise_not_found("generation batch", batch_id)
         _batch, state = result
+        products = []
+        for pid in state.requested_products:
+            progress = state.products.get(pid)
+            item = await self._repos.items.get_by_product(set_id, pid)
+            item_state = item.state if item is not None else None
+            status = {"queued": "pending", "running": "running", "cancelled": "cancelled"}.get(
+                progress.status if progress else "queued", "failed"
+            )
+            if progress is not None and progress.status == "completed":
+                # The batch only knows the workflow stopped; the item says how it ended.
+                status = (
+                    "failed"
+                    if item_state in (ScriptState.GATE_FAILED, ScriptState.FAILED)
+                    else "done"
+                )
+            entry: dict[str, Any] = {
+                "product_id": pid,
+                "status": status,
+                "item_state": item_state.name if item_state is not None else None,
+                "error": progress.error if progress else "",
+            }
+            if status == "failed" and item is not None and item_state is ScriptState.GATE_FAILED:
+                runs = await self._repos.gate_runs.list_by_item(item.id)
+                last = runs[-1] if runs else None
+                entry["issues"] = [
+                    {"unit_index": v.segment_index, "rule_id": v.rule_id}
+                    for v in (last.violations if last is not None else [])
+                    if v.severity == "error"
+                ][:20]
+            products.append(entry)
+        statuses = [p["status"] for p in products]
+        if state.status in ("queued", "running"):
+            outcome = "running"
+        elif state.status == "cancelled":
+            outcome = "cancelled"
+        elif all(x == "done" for x in statuses):
+            outcome = "succeeded"
+        elif any(x == "done" for x in statuses):
+            outcome = "partial"
+        else:
+            outcome = "failed"
         return {
             "batch_id": batch_id,
             "status": state.status,
+            "outcome": outcome,
             "product_ids": list(state.requested_products),
+            "ordered_units": state.ordered_units,
+            "total": len(products),
+            "done": sum(1 for p in products if p["status"] in ("done", "failed", "cancelled")),
+            "products": products,
         }
 
     async def cancel_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None:
-        result = await self._repos.batches.get(batch_id)
+        result = await self._batch_of_set(set_id, batch_id)
         if result is None:
             self._raise_not_found("generation batch", batch_id)
         _batch, state = result
@@ -2069,7 +2383,7 @@ class ScriptAuthoringServiceImpl:
         return {"batch_id": batch_id, "status": "cancelling"}
 
     async def get_batch_events_snapshot(self, *, set_id: str, batch_id: str) -> str | None:
-        result = await self._repos.batches.get(batch_id)
+        result = await self._batch_of_set(set_id, batch_id)
         if result is None:
             return None
         _batch, state = result
@@ -2085,7 +2399,7 @@ class ScriptAuthoringServiceImpl:
     async def stream_batch_events(
         self, *, set_id: str, batch_id: str
     ) -> AsyncIterator[dict[str, str]]:
-        if await self._repos.batches.get(batch_id) is None:
+        if await self._batch_of_set(set_id, batch_id) is None:
             return
         ring = self._event_ring(batch_id)
         consumed = 0
@@ -2744,6 +3058,7 @@ class ScriptAuthoringServiceImpl:
         bridge = _SyncPersistBridge()
         persist_queue: queue.Queue[BatchState] = queue.Queue()
         ring = self._event_ring(batch_id)
+        ordered = self._ordered_batch(script_set, llm_fn) if state.ordered_units else None
 
         def create_workflow(product_id: str, target: float):
             item = items[product_id]
@@ -2756,6 +3071,7 @@ class ScriptAuthoringServiceImpl:
                 emit=lambda event, payload: self._batch_sink(batch_id, ring, event, payload),
                 batch_id=batch_id,
                 loaders=self._make_loaders(items, segments, versions),
+                ordered=ordered,
             )
 
         orch = BatchScriptGenerationOrchestrator(

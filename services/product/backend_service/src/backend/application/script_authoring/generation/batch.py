@@ -128,6 +128,9 @@ class BatchState(BaseModel):
     requested_products: list[str] = Field(default_factory=list)
     target_durations: dict[str, float] = Field(default_factory=dict)
     preview: dict = Field(default_factory=dict)
+    # Ordered-units generation (fixed roles per product, owner order); recovery
+    # must rebuild the same kind of workflow.
+    ordered_units: bool = False
     products: dict[str, ProductWorkflowState] = Field(default_factory=dict)
     planned_semantic_calls: int = Field(default=0, ge=0)
     actual_semantic_calls: int = Field(default=0, ge=0)
@@ -166,6 +169,9 @@ class BatchRequest:
     max_attempts: int
     model_fingerprint: str  # model/skill/rules fingerprint (Decision 12)
     client_key: str = ""  # client Idempotency-Key
+    ordered_units: bool = False
+    # (product_id, number of fixed unit roles) when ``ordered_units``.
+    unit_counts: tuple[tuple[str, int], ...] = ()
 
 
 def request_fingerprint(req: BatchRequest) -> str:
@@ -179,6 +185,8 @@ def request_fingerprint(req: BatchRequest) -> str:
         str(req.max_attempts),
         req.model_fingerprint,
         req.client_key,
+        # Appended only when set so fingerprints of long-form batches never change.
+        *(["ordered_units:" + ",".join(f"{p}:{n}" for p, n in req.unit_counts)] if req.ordered_units else []),
     ]
     digest = hashlib.sha256()
     for part in parts:
@@ -306,9 +314,14 @@ class BatchScriptGenerationOrchestrator:
         """Assemble the persisted batch state (task 10.3)."""
         preview_products: list[dict] = []
         planned_total = 0
+        unit_counts = dict(req.unit_counts)
         for product_id, duration in req.target_durations:
-            k = max(1, round(duration / 600.0))
-            planned = 1 + k  # planning call + K segments (Decision 7)
+            if req.ordered_units:
+                k = unit_counts.get(product_id, 1)
+                planned = k  # fixed roles: no planning call, one call per unit
+            else:
+                k = max(1, round(duration / 600.0))
+                planned = 1 + k  # planning call + K segments (Decision 7)
             preview_products.append(
                 {
                     "product_id": product_id,
@@ -324,6 +337,7 @@ class BatchScriptGenerationOrchestrator:
             status="queued",
             requested_products=list(req.requested_products),
             target_durations=dict(req.target_durations),
+            ordered_units=req.ordered_units,
             preview={
                 "products": preview_products,
                 "estimated_semantic_calls_total": planned_total,

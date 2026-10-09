@@ -88,6 +88,7 @@ def _raise_domain(service_error: ScriptAuthoringError) -> HTTPException:
         "stale_revision",
         "fix_not_eligible",
         "missing_or_stale_script",
+        "idempotency_conflict",
     ):
         return _domain_error(409, service_error.code, service_error.message)
     if service_error.code == "llm_unavailable":
@@ -192,6 +193,10 @@ class BatchGenerateReq(BaseModel):
     product_ids: list[str] = Field(default_factory=list, max_length=200)
     target_duration_s: int = Field(ge=60, le=7_200)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    # True = write the whole set in the owner's order as short ordered parts (units):
+    # opening, per product intro/selling points/offer/trust/CTA, closing. Empty
+    # ``product_ids`` then means every product of the set.
+    ordered_units: bool = False
 
 
 class ApproveBatchReq(BaseModel):
@@ -520,6 +525,8 @@ async def generate_batch(
             product_ids=list(req.product_ids),
             target_duration_s=req.target_duration_s,
             idempotency_key=key,
+            # Only sent when asked for, so a service without the option keeps working.
+            **({"ordered_units": True} if req.ordered_units else {}),
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc

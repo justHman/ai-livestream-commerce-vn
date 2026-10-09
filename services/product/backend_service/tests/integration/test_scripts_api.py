@@ -413,6 +413,7 @@ class FakeScriptAuthoringService:
         product_ids: list[str],
         target_duration_s: int,
         idempotency_key: str,
+        ordered_units: bool = False,
     ) -> dict[str, Any] | None:
         script_set = self._sets.get(set_id)
         if script_set is None:
@@ -945,6 +946,23 @@ def test_generate_batch_idempotency_header(client: TestClient) -> None:
     )
     assert second.status_code == 202, second.text
     assert second.json()["batch_id"] == first.json()["batch_id"]
+
+
+def test_generate_batch_ordered_units_flag_is_accepted(client: TestClient) -> None:
+    set_id = _new_set(client, ["P001", "P002"])
+    resp = client.post(
+        f"/api/v1/script-sets/{set_id}/generate-batch",
+        json={"product_ids": [], "target_duration_s": 600, "ordered_units": True},
+    )
+    assert resp.status_code == 202, resp.text
+
+
+def test_idempotency_conflict_is_a_409() -> None:
+    from backend.api.v1.scripts import _raise_domain
+    from backend.application.script_authoring.service import ScriptAuthoringError
+
+    exc = _raise_domain(ScriptAuthoringError("idempotency_conflict", "different request"))
+    assert exc.status_code == 409
 
 
 def test_generate_batch_unknown_product_404(client: TestClient) -> None:
