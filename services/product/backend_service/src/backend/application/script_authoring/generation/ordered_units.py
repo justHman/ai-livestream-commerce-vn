@@ -268,7 +268,8 @@ def plan_units(
 def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
     """A "missing data" phrase is fine only when an approved statement itself says it
     (e.g. the restriction "Không có khuyến mãi cho đơn dưới 200k.")."""
-    statements = [a.lower() for a in approved]
+    # Same whitespace cleanup as the cleaner applies to the model output.
+    statements = [" ".join(a.lower().split()) for a in approved]
     return any(
         not any(m.group().lower() in statement for statement in statements)
         for m in _MISSING_INFO_RE.finditer(text)

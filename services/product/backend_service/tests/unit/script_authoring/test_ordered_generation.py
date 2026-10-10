@@ -503,3 +503,9 @@ def test_missing_data_phrase_allowed_only_when_an_approved_statement_says_it() -
     assert clean_unit_text(sentence) is None
     assert clean_unit_text(sentence, approved=approved) is not None
     assert clean_unit_text("Hiện chưa có khuyến mãi nhé cả nhà.", approved=approved) is None
+
+
+def test_missing_data_phrase_exception_ignores_whitespace_differences() -> None:
+    approved = ("Không có  khuyến mãi cho đơn dưới 200k.\nTheo từng đợt.",)
+    sentence = "Lưu ý là không có khuyến mãi cho đơn dưới 200k nhé cả nhà."
+    assert clean_unit_text(sentence, approved=approved) is not None
