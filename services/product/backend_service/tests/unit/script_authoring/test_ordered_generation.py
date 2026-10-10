@@ -448,9 +448,7 @@ def test_typed_claims_cap_only_decorative_ones_and_count_the_rest() -> None:
     rows = [
         f"Cao 1m{50 + i} đến 1m{52 + i}, nặng {45 + i} đến {48 + i} ký: size M." for i in range(12)
     ]
-    features = [
-        f"Điểm nổi bật số {w} của mẫu này." for w in "một hai ba bốn năm sáu bảy tám".split()
-    ]
+    features = [f"Điểm nổi bật số {w} của mẫu này." for w in "a b c d e f g h i j k l m n".split()]
     policy = [f"Chính sách số {w}: đổi trả dễ." for w in "một hai ba bốn năm sáu bảy tám".split()]
     brief = ProductBrief(
         product_id="p",
@@ -461,14 +459,14 @@ def test_typed_claims_cap_only_decorative_ones_and_count_the_rest() -> None:
     )
     units = plan_units(brief, first=False, last=False)
     roles = [u.role for u in units]
-    assert roles == ["intro", "highlight", "sizes", "assurance", "assurance", "offer"]
+    assert roles == ["intro", "highlight", "highlight", "sizes", "assurance", "assurance", "offer"]
     by_role = {u.role: u for u in units}
     assert by_role["sizes"].claims == tuple(rows)  # the whole chart is ONE unit
-    assert len(by_role["highlight"].claims) == 6  # decorative: capped
+    assert sum(len(u.claims) for u in units if u.role == "highlight") == 12  # decorative: capped
     shipping = [c for u in units if u.role == "assurance" for c in u.claims]
     assert sorted(shipping) == sorted(policy)  # must-keep type: all kept, <= 4 per unit
     assert all(len(u.claims) <= 4 for u in units if u.role == "assurance")
-    assert [u.with_cta for u in units] == [False] * 5 + [True]
+    assert [u.with_cta for u in units] == [False] * 6 + [True]
 
 
 def test_untyped_claims_are_never_capped() -> None:
@@ -844,7 +842,7 @@ def test_ordinary_descriptions_pass_the_guards(sentence) -> None:
 @pytest.mark.asyncio
 async def test_batch_counts_exactly_the_claims_the_saved_text_does_not_speak() -> None:
     service, repos = _service(FakeLLM())
-    features = [f"Điểm nổi bật số {i}." for i in range(10)]
+    features = [f"Điểm nổi bật số {i}." for i in range(14)]
     many = {
         "product_name": "Áo ABC",
         "prices": ["100000.00 VND"],
@@ -860,7 +858,7 @@ async def test_batch_counts_exactly_the_claims_the_saved_text_does_not_speak() -
     batch_id = await _run(service, repos, set_id)
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     entry = {p["product_id"]: p for p in snapshot["products"]}
-    assert entry["P2"]["claims_not_spoken"] == 4  # 6 of 10 decorative claims were spoken
+    assert entry["P2"]["claims_not_spoken"] == 2  # 12 of 14 decorative claims were spoken
     assert "claims_not_spoken" not in entry["P1"]
 
 
@@ -1034,3 +1032,21 @@ def test_garment_weight_facts_are_not_a_size_chart_and_approved_cheapness_passes
     assert not [u for u in units if u.role == "sizes"]
     text = "Mẫu này không phải giá rẻ, chất lượng được ưu tiên."
     assert check_unit_text(text, approved=(text,))[0]
+
+
+def test_fallback_claims_are_separated_by_sentence_ends() -> None:
+    brief = ProductBrief(product_id="p", name="Áo", claims=("Hai màu xanh", "Có túi sâu"))
+    text = fallback_unit_text(UnitSpec("highlight", claims=brief.claims), brief)
+    assert text == "Hai màu xanh. Có túi sâu."
+
+
+def test_typed_highlights_fill_two_units_and_offer_may_name_the_product() -> None:
+    claims = tuple(f"Đặc điểm số {i}." for i in range(12))
+    brief = ProductBrief(
+        product_id="p", name="Áo", claims=claims, claims_by_type=(("feature", claims),)
+    )
+    units = plan_units(brief, first=False, last=False)
+    assert len([u for u in units if u.role == "highlight"]) == 2
+    text = "Áo này giá một trăm nghìn đồng nhé."
+    spec = UnitSpec("offer")
+    assert check_unit_text(text, spec=spec, product_name="Áo", name_used_elsewhere=5)[0]
