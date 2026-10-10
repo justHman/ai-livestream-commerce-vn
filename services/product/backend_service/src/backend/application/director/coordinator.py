@@ -98,6 +98,7 @@ class _SessionStats:
     skips: int = 0
     interrupts: int = 0
     last_decision_ts: Optional[float] = None
+    last_turn_end: Optional[float] = None  # monotonic end of the previous spoken turn
 
 
 class DirectorCoordinator:
@@ -1415,7 +1416,10 @@ class DirectorCoordinator:
         queue = BoundedVideoQueue(max_size=self._max_queue_windows)
         metrics = CoordinatorMetrics()
 
+        first_audio_at: list[float] = []
+
         async def opening_audio(window):
+            first_audio_at.append(time.monotonic())
             await self._record_opening_media(session_id, decision, window.utterance_id, speech)
             if self._audio_window_callback is not None:
                 await self._audio_window_callback(window)
@@ -1513,7 +1517,23 @@ class DirectorCoordinator:
                 decision.revision_token and not self._runtime.has(session_id)
             ):
                 return True
-            decision.latency_spans["playback"]["end"] = time.monotonic()
+            ended = time.monotonic()
+            decision.latency_spans["playback"]["end"] = ended
+            # Where a pause between two units comes from: waiting for the turn to start, for the
+            # first audio, or the playback itself.
+            previous_end = st.last_turn_end
+            logger.info(
+                "speech turn timing session=%s unit=%s action=%s start_gap_ms=%s "
+                "first_audio_ms=%s total_ms=%s chars=%s",
+                session_id,
+                decision.unit_index,
+                decision.action,
+                "na" if previous_end is None else int((playback_started - previous_end) * 1000),
+                int((first_audio_at[0] - playback_started) * 1000) if first_audio_at else "na",
+                int((ended - playback_started) * 1000),
+                len(text or ""),
+            )
+            st.last_turn_end = ended
             completed = {
                 "turn_id": decision.turn_id,
                 "latency_spans": dict(decision.latency_spans),
@@ -1582,10 +1602,11 @@ class DirectorCoordinator:
                     return True
                 self.runtime_failures.fail(session_id, exc, decision.revision_token)
                 logger.error(
-                    "speech pipeline failed session=%s turn=%s class=%s",
+                    "speech pipeline failed session=%s turn=%s class=%s detail=%s",
                     session_id,
                     decision.turn_id,
                     type(exc).__name__,
+                    str(exc)[:200],  # provider error text, no credentials in it
                 )
             else:
                 logger.exception(
