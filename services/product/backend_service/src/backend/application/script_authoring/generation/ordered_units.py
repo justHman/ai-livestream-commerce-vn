@@ -470,7 +470,27 @@ _NUMBER_WORDS = frozenset(
     "không một hai ba bốn năm sáu bảy tám chín mười mươi mốt tư lăm trăm nghìn ngàn triệu tỷ "
     "lẻ linh rưỡi phẩy".split()
 )
+_DIGITISH = frozenset("một hai ba bốn năm sáu bảy tám chín mười mốt lăm tư rưỡi".split())
+_TIME_UNITS = frozenset({"ngày", "tháng", "tuần", "giờ", "phút", "giây"})
 _CLAIM_NUMBER_RE = re.compile(r"(\d+(?:[.,]\d+)?)(%?)\s*([^\W\d_]+)?")
+# Negations/restrictions a paraphrase must not lose ("Không bảo hành" must not become "Có").
+_RESTRICTION_PHRASES = (
+    "không",
+    "chưa",
+    "chẳng",
+    "chỉ",
+    "trừ",
+    "ngoại trừ",
+    "miễn là",
+    "nếu",
+    "khi",
+    "điều kiện",
+    "tối đa",
+    "tối thiểu",
+    "ít nhất",
+)
+_TIMING_WORDS = ("thứ", "tháng", "đầu", "cuối")
+_SIZE_TOKEN_RE = re.compile(r"(?<![A-Za-z])(?:XXXL|XXL|XL|XS|S|M|L)(?![A-Za-z])")
 
 
 def _spoken_words(text: str) -> list[str]:
@@ -478,35 +498,72 @@ def _spoken_words(text: str) -> list[str]:
     return re.findall(r"\w+", compile_spoken_text(text).spoken_text.lower())
 
 
-def _has_run(words: list[str], phrase: list[str]) -> bool:
-    n = len(phrase)
-    return bool(n) and any(words[i : i + n] == phrase for i in range(len(words) - n + 1))
-
-
 def _claim_numbers(claim: str) -> list[tuple[list[str], list[str], str]]:
-    """Per digit token of a claim, compiled INDIVIDUALLY: (expected phrase, bare number
-    words, unit word right after it). "20%" expects "hai mươi phần trăm", unit "phần"."""
+    """Per number of a claim: (expected phrase, bare number words, unit word right after it).
+
+    Digit tokens are compiled INDIVIDUALLY ("20%" expects "hai mươi phần trăm", unit "phần");
+    runs of number WORDS written in the claim ("bảy ngày") are expected phrases too.
+    """
     out = []
     for number, percent, unit in _CLAIM_NUMBER_RE.findall(claim):
         bare = _spoken_words(number)
-        expected = _spoken_words(number + percent)
-        out.append((expected, bare, "phần" if percent else (unit or "").lower()))
+        out.append(
+            (_spoken_words(number + percent), bare, "phần" if percent else (unit or "").lower())
+        )
+    words = re.findall(r"\w+", claim.lower())
+    i = 0
+    while i < len(words):
+        if words[i] not in _NUMBER_WORDS or words[i].isdigit():
+            i += 1
+            continue
+        j = i
+        while j < len(words) and words[j] in _NUMBER_WORDS:
+            j += 1
+        run, unit = words[i:j], (words[j] if j < len(words) else "")
+        if not any(w in _DIGITISH for w in run):  # "nghìn" after a digit token, "trăm" alone
+            i = j
+            continue
+        if run[-1] == "năm" and len(run) > 1:  # "một năm": the trailing năm is the unit
+            run, unit = run[:-1], "năm"
+        if run != ["năm"] or unit in _TIME_UNITS:  # a lone "năm" is usually the word "year"
+            out.append((run, run, unit))
+        i = j
     return out
 
 
-def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
-    """Coverage of one claim by a text, without any numeric arithmetic.
+def _run_found(words: list[str], phrase: list[str], unit: str) -> bool:
+    """``phrase`` occurs as a MAXIMAL run of number words: the neighbours are not number
+    words (the unit word itself may follow: "một năm")."""
+    n = len(phrase)
+    if not n:
+        return False
+    for i in range(len(words) - n + 1):
+        if words[i : i + n] != phrase:
+            continue
+        before = words[i - 1] if i else ""
+        after = words[i + n] if i + n < len(words) else ""
+        if before not in _NUMBER_WORDS and (after not in _NUMBER_WORDS or after == unit):
+            return True
+    return False
 
-    Numbers: each digit token of the claim, compiled by the canonical compiler, must occur as a
-    contiguous word run in the text (digits the model wrote are normalised the same way). Extra
-    number guard: right before each unit word the claim uses (ngày, năm, phần...), the text's
-    maximal run of number words must equal one of the expected phrases (or be empty), so
-    "1 năm" is not "hai mươi mốt năm". ``context`` = other claims allowed to share the text.
+
+def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
+    """Best-effort ADVISORY coverage of one claim by a text (the owner approves the exact text;
+    this only guards against silent LLM drift and fails safe into the verbatim fallback).
+
+    Numbers: each number of the claim (digits compiled individually, or number words), as the
+    canonical spoken phrase, must occur in the text as a maximal run; right before each unit
+    word the claim uses, the text's run of number words must equal an expected phrase or be
+    empty ("1 năm" is not "hai mươi mốt năm"). Restriction words (không, chỉ, nếu, khi...),
+    timing words (thứ <x>, tháng, đầu, cuối) and uppercase sizes (XL is not XXL) must be kept.
     Other words: at least 60% appear (case/diacritic folded).
+
+    Accepted residuals: numbers swapped between two claims of one unit, prices with grouped
+    thousands split by the model, and "Năm nay" read as a numeric unit (quality only).
     """
     spoken = _spoken_words(text)
     numbers = _claim_numbers(claim)
-    if any(not _has_run(spoken, expected) for expected, _bare, _u in numbers):
+    if any(not _run_found(spoken, expected, unit) for expected, _bare, unit in numbers):
         return False
     allowed = [bare for _e, bare, _u in numbers]
     for other in context:
@@ -523,6 +580,23 @@ def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
             run = spoken[start:j]
             if run and run not in allowed:
                 return False
+    lowered, claim_lower = text.lower(), claim.lower()
+    for phrase in _RESTRICTION_PHRASES:
+        if re.search(r"(?<!\w)" + phrase + r"(?!\w)", claim_lower) and not re.search(
+            r"(?<!\w)" + phrase + r"(?!\w)", lowered
+        ):
+            return False
+    for word in _TIMING_WORDS:
+        if re.search(r"(?<!\w)" + word + r"(?!\w)", claim_lower) and not re.search(
+            r"(?<!\w)" + word + r"(?!\w)", lowered
+        ):
+            return False
+    for match in re.finditer(r"(?<!\w)thứ ([^\W\d_]+)", claim_lower):
+        if f"thứ {match.group(1)}" not in lowered:
+            return False
+    for size in set(_SIZE_TOKEN_RE.findall(claim)):
+        if not re.search(r"(?<![A-Za-z])" + size + r"(?![A-Za-z])", text):
+            return False
     tokens = set(re.findall(r"\w+", _fold(text)))
     words = re.findall(r"[^\W\d_]{2,}", _fold(claim))
     if not words:

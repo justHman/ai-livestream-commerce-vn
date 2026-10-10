@@ -175,3 +175,24 @@ def test_a_number_before_sentence_punctuation_is_still_spoken() -> None:
         == "Cao từ ba mươi sáu đến bốn mươi bốn."
     )
     assert compile_spoken_text("Có 2, rồi 3.").spoken_text == "Có hai, rồi ba."
+
+
+@pytest.mark.parametrize(
+    "written, spoken",
+    [
+        ("Size 36-44.", "Size ba mươi sáu đến bốn mươi bốn."),
+        ("Size 36-44 nhé.", "Size ba mươi sáu đến bốn mươi bốn nhé."),
+        ("Gọi 0901234567.", "Gọi không chín không một hai ba bốn năm sáu bảy."),
+        (
+            "Gọi 0901234567 nhé.",
+            "Gọi không chín không một hai ba bốn năm sáu bảy nhé.",
+        ),
+        ("Giá 299.000đ.", "Giá hai trăm chín mươi chín nghìn đồng."),
+        ("Giảm 20%.", "Giảm hai mươi phần trăm."),
+        ("Nặng 1,5 kg.", "Nặng một phẩy năm kg."),
+    ],
+)
+def test_ranges_phones_prices_percents_and_decimals(written, spoken) -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    assert compile_spoken_text(written).spoken_text == spoken

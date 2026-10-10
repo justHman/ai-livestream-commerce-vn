@@ -92,6 +92,16 @@ _GROUPED_PRICE_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+\s*(?:đồng|VND|vnđ|₫
 # Run BEFORE the grouped/bare number steps so "100000.00" never becomes "phẩy không".
 _PLAIN_CURRENCY_RE = re.compile(r"(?<![\w.,])(\d+)(?:[.,]0{1,2})?\s*(?:VND|vnd|vnđ|₫|đồng)(?!\w)")
 
+# A numeric range "36-44" reads "36 đến 44" (not a decimal, not a comma); a chain of three or
+# more numbers is a date/serial and keeps the old behaviour.
+_RANGE_RE = re.compile(
+    r"(?<![\d.,\-–—])(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)(?![\d.,]*\s*[-–—]\s*\d)"
+)
+
+# Vietnamese phone numbers are read digit by digit (the leading zero is a digit).
+_PHONE_RE = re.compile(r"(?<![\w.,])(?:0\d{8,10}|\+?84\d{9,10})(?![\w%]|[.,]\d)")
+_DIGIT_WORD = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
+
 # Size tokens are spoken as written ("XL" must not become "X L").
 _SIZE_TOKENS = frozenset({"XS", "XL", "XXL", "XXXL"})
 
@@ -300,6 +310,7 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
     whitespace_stripped = " ".join(whitespace_stripped.split())
     text = _changed(text, whitespace_stripped, "collapse_whitespace")
 
+    text = _RANGE_RE.sub(r"\1 đến \2", text)
     dashes = _DASH_RE.sub(",", text)
     if dashes != text:
         applied.append("punctuation_and_hyphen")
@@ -324,6 +335,9 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
         return f"{spoken}{suffix}"
 
     stage_before_currency = text
+    text = _PHONE_RE.sub(
+        lambda m: " ".join(_DIGIT_WORD[int(d)] for d in m.group().lstrip("+")), text
+    )
     text = _PLAIN_CURRENCY_RE.sub(
         lambda m: f"{_number_to_words(int(m.group(1)))} {denomination}", text
     )

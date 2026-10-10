@@ -933,3 +933,36 @@ def test_one_long_claim_is_split_at_clauses_within_the_bound_without_changing_wo
     assert all(spoken_duration_ms(p) / 1000.0 <= 45.0 for p in paragraphs)
     rebuilt = " ".join(paragraphs)
     assert rebuilt.count("kích ứng nặng") == 14  # nothing dropped
+
+
+@pytest.mark.parametrize(
+    "claim, text, covered",
+    [
+        # negations and restrictions survive
+        ("Không bảo hành khi giặt máy.", "Không bảo hành khi giặt máy nhé.", True),
+        ("Không bảo hành khi giặt máy.", "Có bảo hành khi giặt máy nhé.", False),
+        ("Chỉ áp dụng cho lỗi sản xuất.", "Áp dụng cho lỗi sản xuất nhé.", False),
+        ("Giảm 20% vào thứ Tư đầu tháng.", "Giảm hai mươi phần trăm vào thứ tư đầu tháng.", True),
+        ("Giảm 20% vào thứ Tư đầu tháng.", "Giảm hai mươi phần trăm vào thứ năm đầu tháng.", False),
+        ("Giảm 20% vào thứ Tư đầu tháng.", "Giảm hai mươi phần trăm vào thứ tư nhé.", False),
+        # maximal runs
+        ("Giá 299 nghìn.", "Giá một triệu hai trăm chín mươi chín nghìn.", False),
+        ("Cao 44.", "Cao một trăm bốn mươi bốn.", False),
+        ("Ngày 1.", "Ngày thứ mười một.", False),
+        ("Bảo hành 1 năm.", "Bảo hành mười một năm.", False),
+        # number words in the claim itself behave like digits
+        ("Đổi trả trong bảy ngày.", "Đổi trả trong bảy ngày nhé.", True),
+        ("Đổi trả trong bảy ngày.", "Đổi trả trong hai mươi bảy ngày nhé.", False),
+        ("Bảo hành một năm.", "Bảo hành một năm nhé.", True),
+        ("Bảo hành một năm.", "Bảo hành hai mươi mốt năm nhé.", False),
+        ("Hàng về năm nay.", "Hàng về năm nay nhé.", True),
+        # uppercase sizes are exact
+        ("Có size XL.", "Có size XXL nhé.", False),
+        ("Có size XL.", "Có size XL nhé.", True),
+        ("Có size M, L.", "Có size M nhé.", False),
+    ],
+)
+def test_restrictions_timing_runs_and_sizes_are_preserved(claim, text, covered) -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert claim_covered(claim, text) is covered
