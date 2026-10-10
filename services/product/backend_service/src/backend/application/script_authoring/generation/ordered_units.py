@@ -47,10 +47,10 @@ __all__ = [
 _BOUNDS_S: dict[str, tuple[float, float]] = {
     "opening": (1.0, 40.0),
     "intro": (1.0, 40.0),
-    "highlight": (1.0, 45.0),
-    "sizes": (1.0, 45.0),
-    "assurance": (1.0, 45.0),
-    "offer": (1.0, 45.0),
+    "highlight": (1.0, 60.0),
+    "sizes": (1.0, 60.0),
+    "assurance": (1.0, 60.0),
+    "offer": (1.0, 60.0),
     "closing": (1.0, 35.0),
 }
 _TITLES = {
@@ -64,34 +64,43 @@ _TITLES = {
 }
 _GUIDE = {
     "opening": (
-        "Chào khán giả, giới thiệu ngắn về buổi live, tạo không khí thân thiện và MỜI khán giả "
-        "bình luận, đặt câu hỏi (ví dụ hỏi size, hỏi giá) ngay trong phiên. Không nói giá, "
-        "không nêu tính năng, không nhắc sản phẩm cụ thể."
+        "Chào khán giả thật ấm áp như gặp người quen, nói vài câu về không khí buổi live hôm "
+        "nay, hứa hẹn những gì mọi người sẽ xem, và MỜI khán giả bình luận, đặt câu hỏi (ví dụ "
+        "hỏi size, hỏi giá) ngay trong phiên. 2 đến 4 câu. Không nói giá, không nêu tính "
+        "năng, không nhắc sản phẩm cụ thể."
     ),
     "intro": (
-        "Giới thiệu sản phẩm bằng 1 đến 2 câu tự nhiên từ thông tin được phép nói (tên, "
-        "thương hiệu, loại, mô tả). Chưa nói giá."
+        "Mở đầu sản phẩm như người trong nghề đang giới thiệu cho bạn bè: nói tên sản phẩm, "
+        "nó dành cho ai và hợp dịp nào, tạo sự tò mò. 3 đến 5 câu. Chưa nói giá."
     ),
     "highlight": (
-        "Chọn các ý quan trọng nhất bên dưới, nói trong 1 đến 3 câu ngắn; MỖI CÂU CHỈ MỘT CHỦ "
-        "ĐỀ, không nối các ý khác chủ đề (ví dụ size với cách giặt) bằng 'và'. Giữ nguyên số "
-        "liệu và ký hiệu size (S, M, L, XL...) viết liền, không tách chữ."
+        "Kể về những điểm hay bên dưới bằng lời của MC: mỗi điểm nói thành 1 đến 2 câu, có "
+        "cảm nhận hoặc hình dung khi dùng (không thêm thông số mới), xen một câu hỏi gợi mở hay "
+        "lời nhắn khán giả nếu hợp. 4 đến 7 câu. MỖI CÂU CHỈ MỘT CHỦ ĐỀ, không nối các ý khác "
+        "chủ đề (ví dụ size với cách giặt) bằng 'và'. Giữ nguyên số liệu và ký hiệu size "
+        "(S, M, L, XL...) viết liền, không tách chữ."
     ),
     "sizes": (
-        "Đây là bảng size: nói thật dễ nghe bằng khoảng chiều cao và cân nặng, tối đa 3 mức "
-        "size trong một câu, không đọc dài chuỗi số; có thể mời mọi người nhắn chiều cao cân "
-        "nặng để mình tư vấn size. Không nói gì ngoài size."
+        "Đây là bảng size: nói thật dễ nghe bằng khoảng chiều cao và cân nặng, mỗi câu tối đa "
+        "3 mức size, không đọc dài chuỗi số; thêm lời dặn thân thiện như người bán tư vấn, mời "
+        "mọi người nhắn chiều cao cân nặng để mình tư vấn size. 3 đến 6 câu. Không nói gì "
+        "ngoài size."
     ),
     "assurance": (
-        "Nói các ý bên dưới một cách trung thực, tự nhiên; nếu là điều kiện hay hạn chế thì "
-        "nói rõ ràng, nhẹ nhàng, không bán gắt. MỖI ý đúng một lần."
+        "Nói các ý bên dưới một cách trung thực và trấn an như người bán hàng tử tế: giải thích "
+        "vì sao điều đó có lợi cho khách, nếu là điều kiện hay hạn chế thì nói rõ ràng, nhẹ "
+        "nhàng, không bán gắt. 3 đến 6 câu."
     ),
     "offer": (
         "Nói giá (đã đọc thành chữ bên dưới, chép đúng, không viết lại thành số) và ưu đãi nếu "
-        "có. Ưu đãi có điều kiện hay thời gian thì giữ NGUYÊN điều kiện/thời gian như thông "
-        "tin, không nói như đang áp dụng ngay hôm nay."
+        "có, kèm một hai câu giúp khách thấy giá trị. Ưu đãi có điều kiện hay thời gian thì giữ "
+        "NGUYÊN điều kiện/thời gian như thông tin, không nói như đang áp dụng ngay hôm nay. 2 "
+        "đến 5 câu."
     ),
-    "closing": "Cảm ơn khán giả, nhắc theo dõi và hẹn gặp lại. Không giới thiệu thêm sản phẩm.",
+    "closing": (
+        "Cảm ơn khán giả chân thành, nhắc lại tinh thần buổi live, mời theo dõi và hẹn gặp lại. "
+        "2 đến 4 câu. Không giới thiệu thêm sản phẩm."
+    ),
 }
 _CTA_LINE = (
     "Cuối phần này thêm MỘT lời mời nhẹ nhàng (ví dụ bạn nào quan tâm thì nhắn mình hoặc xem "
@@ -100,8 +109,21 @@ _CTA_LINE = (
 )
 _STYLE_RULES = (
     "Luôn gọi người xem là 'mọi người' hoặc 'các bạn' (không dùng quý vị, quý khách, anh, "
-    "chị, em, bạn nam, bạn nữ). Viết đúng chính tả. Chỉ nhắc tên sản phẩm đầy đủ ở phần giới "
+    "chị, em, bạn nam, bạn nữ) và xưng 'mình' (không xưng em, tôi; không gọi sản phẩm là "
+    "'em nó'). Viết đúng chính tả. Chỉ nhắc tên sản phẩm đầy đủ ở phần giới "
     "thiệu; các phần sau gọi 'mẫu này' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn."
+)
+_TRUTH_RULES = (
+    "Phần 'Thông tin được phép nói' là SỰ THẬT bạn phải giữ đúng, KHÔNG phải kịch bản để đọc "
+    "lại: hãy diễn đạt bằng lời của MC, sắp xếp cho tự nhiên và mở rộng bằng cảm nhận khi "
+    "dùng, tình huống sử dụng quen thuộc, lợi ích suy ra hợp lý, câu hỏi gợi mở và lời trấn "
+    "an. Thông tin của chủ shop có thể rất ngắn, việc của bạn là làm nó thành lời nói sinh "
+    "động. TUYỆT ĐỐI KHÔNG thêm: con số, giá, ưu đãi, thời hạn, bảo hành, chính sách, thông "
+    "số, chất liệu, xuất xứ, chứng nhận không có trong thông tin; không hứa hiệu quả hay tác "
+    "dụng sức khỏe; không nói 'bán chạy nhất', 'tốt nhất', 'hàng nghìn khách'; không so sánh "
+    "với nhãn hàng khác. Không nói giờ giấc hay buổi trong ngày, thời lượng buổi live, vị trí nút "
+    "bấm hay giỏ hàng trên màn hình; không thêm chi tiết sản xuất, đường may, công dụng cụ "
+    "thể hay lý do kỹ thuật không có trong thông tin. Giá luôn nói bằng chữ, không viết số."
 )
 _COMMON_RULES = (
     "Không bao giờ nói rằng thiếu thông tin (ví dụ 'chưa có thông tin', 'chưa có khuyến mãi'): "
@@ -109,7 +131,8 @@ _COMMON_RULES = (
 )
 
 UNIT_FAILED_PREFIX = "<Phần này chưa soạn được"
-_MAX_UNIT_CHARS = 600
+_MAX_UNIT_CHARS = 900
+_FALLBACK_MAX_S = 45.0  # extractive paragraphs stay short even though written units may run longer
 _DASH_RE = re.compile(r"\s*[—–]\s*")
 _FENCE_RE = re.compile(r"```[a-z]*|^[#>*\-\s]+(?=\S)", re.MULTILINE)
 # A letter-spaced size ("X L", "X X L") is one token.
@@ -177,7 +200,11 @@ _CTA_RE = re.compile(
     r"đặt hàng|giỏ hàng|nhắn mình|nhắn tin|inbox|bình luận để|chốt đơn", re.IGNORECASE
 )
 _TYPOS = {"thoải chọn": "thoải mái chọn", "đúng mẫi": "đúng mẫu"}
-_CHEAP_RE = re.compile(r"giá (?:siêu )?rẻ|rẻ nhất", re.IGNORECASE)  # subjective unless approved
+_CHEAP_RE = re.compile(
+    r"giá (?:siêu )?rẻ|rẻ nhất|bán chạy nhất|tốt nhất|số (?:một|1)\b"
+    r"|hàng (?:nghìn|ngàn|triệu) (?:khách|người)",
+    re.IGNORECASE,
+)  # subjective/superlative claims are not facts unless the owner approved them
 _KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
 # Clearly different subjects only (material/feel/fit are properties of ONE attribute).
 _TOPICS = {
@@ -277,7 +304,7 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     no facts. No LLM, no invented facts, no markup.
     """
     name = product.name or product.product_id
-    max_s = role_bounds_s(spec.role)[1]
+    max_s = min(role_bounds_s(spec.role)[1], _FALLBACK_MAX_S)
     if spec.role == "opening":
         text = "Chào mọi người, chào mừng mọi người đến với buổi live hôm nay."
     elif spec.role == "closing":
@@ -705,8 +732,9 @@ def check_unit_text(
         return None, "missing_info"
     if _HARD_SELL_RE.search(text):
         return None, "hard_sell"
-    if _CHEAP_RE.search(text) and not any(_CHEAP_RE.search(a) for a in approved):
-        return None, "hard_sell"
+    lowered = [a.lower() for a in approved]
+    if any(not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(text)):
+        return None, "hard_sell"  # each superlative must be one the owner wrote
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"
     if _ADDRESS_RE.search(text):
@@ -740,7 +768,9 @@ def _facts_block(product: ProductBrief, spec: UnitSpec, used: list[str]) -> str:
     if spec.role == "intro":
         lines += [f"{k}: {v}" for k, v in product.info if v]
     if spec.claims:
-        lines.append("Thông tin được phép nói (dùng hết, mỗi ý một lần):")
+        lines.append(
+            "Thông tin được phép nói (phải nhắc đủ các ý này, đúng sự thật, sắp xếp lại cho tự nhiên):"
+        )
         lines += [f"- {c}" for c in spec.claims]
     if spec.role == "offer":
         spoken = [w for w in (spoken_price(p) for p in product.prices) if w]
@@ -784,12 +814,14 @@ def build_unit_prompt(
     spec = specs[index]
     used = [c for s in specs[:index] for c in (*s.claims, *s.promos)]
     parts = [
-        "Bạn là MC livestream bán hàng Việt Nam, giọng thân thiện, tự nhiên, nói ngắn gọn.",
-        "Viết ĐÚNG MỘT phần lời thoại để đọc thành tiếng, gồm 1 đến 2 câu ngắn.",
+        "Bạn là MC livestream bán hàng Việt Nam giàu kinh nghiệm: nói chuyện như người thật đang "
+        "trò chuyện với khán giả, giọng ấm, tự nhiên, có cảm xúc, câu dài ngắn đan xen, không "
+        "đọc như đọc danh sách hay đọc lại tài liệu.",
+        "Viết ĐÚNG MỘT phần lời thoại để đọc thành tiếng, đủ dài và đủ ý như người nói thật "
+        "(xem số câu ở vai trò bên dưới).",
         "Chỉ trả về lời thoại. Không tiêu đề, không markdown, không emoji, không chú thích, "
         "không dấu gạch ngang dài.",
-        "Mọi con số, giá, ưu đãi, tính năng PHẢI lấy từ phần thông tin được phép nói; "
-        "tuyệt đối không bịa thêm. Giá luôn nói bằng chữ, không viết số.",
+        _TRUTH_RULES,
         _COMMON_RULES,
         _STYLE_RULES,
         f"Phiên live: {session.title or '(chưa đặt tên)'}"
@@ -834,7 +866,7 @@ def build_unit_repair_prompt(
         + failed_text
         + "\nLý do:\n- "
         + "\n- ".join(problems)
-        + "\nViết lại phần này, sửa đúng các lỗi trên, giữ ngắn gọn, chỉ dùng thông tin được phép nói."
+        + "\nViết lại phần này, sửa đúng các lỗi trên, vẫn tự nhiên và đủ dài, không thêm thông tin sai."
     )
 
 

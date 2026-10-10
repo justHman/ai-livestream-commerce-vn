@@ -155,7 +155,7 @@ logger = logging.getLogger(__name__)
 _UNIT_MAX_TOKENS = 900
 _COVERAGE_RETRY = "\n\nLần trước thiếu ý BẮT BUỘC. Phải nói đủ, gần nguyên văn: "
 _SHORTER_RETRY = (
-    "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 2 câu ngắn, kết thúc trọn câu."
+    "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 4 câu, kết thúc trọn câu."
 )
 
 

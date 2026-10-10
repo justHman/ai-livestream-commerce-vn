@@ -19,7 +19,9 @@ from backend.application.script_authoring.generation.ordered_units import (
     BoundedLLM,
     LLMDeadlineError,
     ProductBrief,
+    SessionBrief,
     UnitSpec,
+    build_unit_prompt,
     check_unit_text,
     clean_unit_text,
     fallback_unit_text,
@@ -1058,3 +1060,26 @@ def test_sentence_end_is_not_doubled_after_closing_quotes_or_brackets() -> None:
     )
     text = fallback_unit_text(UnitSpec("highlight", claims=brief.claims), brief)
     assert text == "Có túi sâu.) Hai màu. Bền “thật”."
+
+
+def test_prompt_asks_for_natural_longer_speech_but_keeps_facts_strict() -> None:
+    brief = ProductBrief(product_id="p", name="Áo", prices=("100000.00 VND",), claims=("Vải dày.",))
+    units = plan_units(brief, first=False, last=False)
+    prompt = build_unit_prompt(SessionBrief(title="Live"), brief, units, 1)
+    assert "câu" in prompt and "ngắn gọn" not in prompt  # no longer told to stay short
+    assert "SỰ THẬT" in prompt and "KHÔNG phải kịch bản để đọc" in prompt  # facts, not a script
+    assert "KHÔNG thêm: con số, giá" in prompt  # the false-information ban stays
+
+
+def test_unapproved_superlatives_are_rejected_but_approved_ones_pass() -> None:
+    assert check_unit_text("Đây là mẫu bán chạy nhất đó mọi người.") == (None, "hard_sell")
+    said = "Mẫu này bán chạy nhất tuần qua."
+    assert check_unit_text(said, approved=(said,))[0]
+
+
+def test_approving_one_superlative_does_not_allow_another() -> None:
+    said = "Mẫu này bán chạy nhất tuần qua."
+    assert check_unit_text(said + " Hàng nghìn khách đã mua mẫu này.", approved=(said,)) == (
+        None,
+        "hard_sell",
+    )
