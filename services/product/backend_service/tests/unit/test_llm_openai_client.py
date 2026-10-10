@@ -139,3 +139,18 @@ def test_retry_after_request_error():
     assert calls["n"] == 2
     assert result.text == "ok"
     client.close()
+
+
+def test_chat_path_is_configurable_for_other_providers(monkeypatch):
+    monkeypatch.setenv("LLM_CHAT_PATH", "/chat/completions")
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "xin chào"}}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    llm = OpenAICompatibleClient("https://host/v1beta/openai/", model="m", http_client=client)
+    llm.chat(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+    assert seen == ["/v1beta/openai/chat/completions"]
+    client.close()
