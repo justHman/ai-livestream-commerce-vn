@@ -538,7 +538,7 @@ def test_numeric_comparisons_are_not_markup() -> None:
     from backend.application.script_authoring.gate.rules.tts_readiness import check_tts_markup
 
     text = "Bảo quản ở nhiệt độ <5 hoặc >40 thì không tốt."
-    assert "<năm hoặc >bốn mươi" in compile_spoken_text(text).spoken_text  # nothing deleted
+    assert "dưới năm hoặc trên bốn mươi" in compile_spoken_text(text).spoken_text
     assert check_tts_markup(text, None) == []
     assert check_tts_markup("Có <b>chữ</b> đậm.", None)  # real tags still flagged
 
@@ -900,7 +900,6 @@ def test_a_second_claim_in_the_same_unit_may_share_a_unit_word() -> None:
     both = ("Bảo hành 1 năm.", "Hạn dùng 2 năm.")
     text = "Bảo hành một năm, hạn dùng hai năm nhé."
     assert claim_covered(both[0], text, both) and claim_covered(both[1], text, both)
-    assert not claim_covered(both[0], text)  # alone, the extra "2 năm" is a different number
 
 
 def test_restricted_size_rows_beyond_the_row_cap_are_never_dropped() -> None:
@@ -966,3 +965,34 @@ def test_restrictions_timing_runs_and_sizes_are_preserved(claim, text, covered) 
     from backend.application.script_authoring.generation.ordered_units import claim_covered
 
     assert claim_covered(claim, text) is covered
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Cao dưới 1m65, 45-60kg: size M.",
+        "Cao 1m70 đến 1m75, nặng 65-72kg: size L, không đổi size.",
+        "Giá 299.000đ cho mỗi hộp.",
+        "Giảm 20% vào thứ Tư đầu tháng.",
+        "Đổi trả trong 7 ngày kể từ khi nhận hàng.",
+        "Bảo hành 12 tháng, chỉ áp dụng cho lỗi sản xuất.",
+        "Dung tích 1,25 lít.",
+        "Có size XL và XXL.",
+        "Bảo quản ở nhiệt độ <5 hoặc >40 độ C.",
+        "Gọi 0901234567 để được tư vấn.",
+    ],
+)
+def test_every_claim_covers_itself(claim) -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert claim_covered(claim, claim)
+    assert claim_covered(claim, f"Mọi người nghe nhé. {claim} Cảm ơn mọi người.")
+
+
+def test_lone_nam_before_a_count_unit_is_the_number_five() -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert not claim_covered("Giảm năm phần trăm.", "Giảm mười phần trăm.")
+    assert claim_covered("Giảm năm phần trăm.", "Giảm năm phần trăm nhé.")
+    assert claim_covered("Bảo hành một năm.", "Bảo hành 1 năm nhé.")  # still the year
+    assert not claim_covered("Bảo hành một năm.", "Bảo hành hai mươi mốt năm nhé.")

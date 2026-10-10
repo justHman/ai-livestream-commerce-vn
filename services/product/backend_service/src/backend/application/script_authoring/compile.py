@@ -102,6 +102,19 @@ _RANGE_RE = re.compile(
 _PHONE_RE = re.compile(r"(?<![\w.,])(?:0\d{8,10}|\+?84\d{9,10})(?![\w%]|[.,]\d)")
 _DIGIT_WORD = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
 
+# Compact measurements: "1m65" -> "một mét sáu mươi lăm", "60kg" -> "sáu mươi ki lô gam".
+_METER_CM_RE = re.compile(r"(?<![\w.,])(\d{1,3})m(\d{1,2})(?!\w)")
+_MEASURE_RE = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d+)?)\s?(kg|mg|ml|cm|mm|g|m)(?!\w)")
+_MEASURE_WORDS = {
+    "kg": "ki lô gam",
+    "mg": "mi li gam",
+    "ml": "mi li lít",
+    "cm": "xăng ti mét",
+    "mm": "mi li mét",
+    "g": "gam",
+    "m": "mét",
+}
+
 # Size tokens are spoken as written ("XL" must not become "X L").
 _SIZE_TOKENS = frozenset({"XS", "XL", "XXL", "XXXL"})
 
@@ -147,8 +160,15 @@ _UNWRAP_RES = (
     re.compile(r"(?<![\w_])_([^_\n]+)_(?![\w_])"),
     re.compile(r"`([^`]+)`"),
 )
-# Real HTML tags only: "nhiệt độ <5 hoặc >40" is a comparison, not markup.
-_TAG_OR_HEADING_RE = re.compile(r"</?[A-Za-z][^<>]*>|^#{1,6}\s", re.MULTILINE)
+# Real HTML tags only (ASCII tag name, ASCII attributes): "<năm hoặc >" is never a tag.
+HTML_TAG_RE = (
+    r"</?[A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z][A-Za-z0-9_-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\s>]+))?)*"
+    r"\s*/?>"
+)
+_TAG_OR_HEADING_RE = re.compile(HTML_TAG_RE + r"|^#{1,6}\s", re.MULTILINE)
+# Comparison signs are spoken, so a compiled text has no angle brackets (recompiling is a no-op).
+_LESS_RE = re.compile(r"<\s*(?=\d)")
+_GREATER_RE = re.compile(r">\s*(?=\d)")
 
 
 def _strip_markup(text: str) -> str:
@@ -300,7 +320,7 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
             applied.append(nid)
         return new
 
-    text = _strip_markup(display_text)
+    text = _GREATER_RE.sub("trên ", _LESS_RE.sub("dưới ", _strip_markup(display_text)))
     text = _CONTROL_RE.sub("", text)
     text = _INVISIBLE_SPACE_RE.sub(" ", text)
     text = _changed(display_text, text, "strip_markup_and_controls")
@@ -353,6 +373,19 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
         applied.append("percent")
 
     stage_before_number = text
+
+    def _metres(match: re.Match[str]) -> str:
+        cm = match.group(2)
+        lead = "lẻ " if len(cm) == 2 and cm[0] == "0" else ""
+        return (
+            f"{_number_to_words(int(match.group(1)))} mét "
+            f"{lead}{_number_to_words(int(cm.lstrip('0') or '0'))}"
+        )
+
+    text = _METER_CM_RE.sub(_metres, text)
+    text = _MEASURE_RE.sub(
+        lambda m: f"{expand_vietnamese_number(m.group(1))} {_MEASURE_WORDS[m.group(2)]}", text
+    )
     text = _NUMBER_RE.sub(_expand_bare_number, text)
     if text != stage_before_number:
         applied.append("number_to_words")

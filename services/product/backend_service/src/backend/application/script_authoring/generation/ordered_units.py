@@ -472,6 +472,20 @@ _NUMBER_WORDS = frozenset(
 )
 _DIGITISH = frozenset("một hai ba bốn năm sáu bảy tám chín mười mốt lăm tư rưỡi".split())
 _TIME_UNITS = frozenset({"ngày", "tháng", "tuần", "giờ", "phút", "giây"})
+# A lone "năm" before one of these is the number 5, not the year ("năm phần trăm").
+_COUNT_UNITS = frozenset(
+    "phần ki xăng mi gam lít mét size đồng nghìn ngàn triệu cái chiếc đôi sản".split()
+)
+# What the compiler says for a unit written next to a digit token.
+_UNIT_SPOKEN = {
+    "kg": "ki",
+    "mg": "mi",
+    "ml": "mi",
+    "cm": "xăng",
+    "mm": "mi",
+    "g": "gam",
+    "m": "mét",
+}
 _CLAIM_NUMBER_RE = re.compile(r"(\d+(?:[.,]\d+)?)(%?)\s*([^\W\d_]+)?")
 # Negations/restrictions a paraphrase must not lose ("Không bảo hành" must not become "Có").
 _RESTRICTION_PHRASES = (
@@ -507,9 +521,8 @@ def _claim_numbers(claim: str) -> list[tuple[list[str], list[str], str]]:
     out = []
     for number, percent, unit in _CLAIM_NUMBER_RE.findall(claim):
         bare = _spoken_words(number)
-        out.append(
-            (_spoken_words(number + percent), bare, "phần" if percent else (unit or "").lower())
-        )
+        word = "phần" if percent else (unit or "").lower()
+        out.append((_spoken_words(number + percent), bare, _UNIT_SPOKEN.get(word, word)))
     words = re.findall(r"\w+", claim.lower())
     i = 0
     while i < len(words):
@@ -525,7 +538,7 @@ def _claim_numbers(claim: str) -> list[tuple[list[str], list[str], str]]:
             continue
         if run[-1] == "năm" and len(run) > 1:  # "một năm": the trailing năm is the unit
             run, unit = run[:-1], "năm"
-        if run != ["năm"] or unit in _TIME_UNITS:  # a lone "năm" is usually the word "year"
+        if run != ["năm"] or unit in _TIME_UNITS or unit in _COUNT_UNITS:  # else: the year
             out.append((run, run, unit))
         i = j
     return out
@@ -562,6 +575,10 @@ def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
     thousands split by the model, and "Năm nay" read as a numeric unit (quality only).
     """
     spoken = _spoken_words(text)
+    claim_words = _spoken_words(claim)
+    n = len(claim_words)
+    if n and any(spoken[i : i + n] == claim_words for i in range(len(spoken) - n + 1)):
+        return True  # the compiled claim itself is in the text (identity)
     numbers = _claim_numbers(claim)
     if any(not _run_found(spoken, expected, unit) for expected, _bare, unit in numbers):
         return False

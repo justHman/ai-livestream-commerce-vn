@@ -189,10 +189,44 @@ def test_a_number_before_sentence_punctuation_is_still_spoken() -> None:
         ),
         ("Giá 299.000đ.", "Giá hai trăm chín mươi chín nghìn đồng."),
         ("Giảm 20%.", "Giảm hai mươi phần trăm."),
-        ("Nặng 1,5 kg.", "Nặng một phẩy năm kg."),
+        ("Nặng 1,5 kg.", "Nặng một phẩy năm ki lô gam."),
     ],
 )
 def test_ranges_phones_prices_percents_and_decimals(written, spoken) -> None:
     from backend.application.script_authoring.compile import compile_spoken_text
 
     assert compile_spoken_text(written).spoken_text == spoken
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Bảo quản nhiệt độ <5 hoặc >40 độ C.",
+        "Cao dưới 1m65, 45-60kg: size M.",
+        "Giá 299.000đ, giảm 20%.",
+        "Size 36-44 nhé.",
+        "Gọi 0901234567 nhé.",
+        "Dung tích 1,5 lít, nặng 1,5 kg.",
+        "Có <b>chữ</b> đậm.",
+    ],
+)
+def test_compile_is_idempotent_and_leaves_no_angle_brackets_for_comparisons(text) -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    once = compile_spoken_text(text).spoken_text
+    assert compile_spoken_text(once).spoken_text == once
+    if "<b>" not in text:
+        assert "<" not in once and ">" not in once
+
+
+def test_comparison_signs_and_compact_measurements_are_spoken() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    assert (
+        compile_spoken_text("Nhiệt độ <5 hoặc >40.").spoken_text
+        == "Nhiệt độ dưới năm hoặc trên bốn mươi."
+    )
+    assert (
+        compile_spoken_text("Cao 1m65, 45-60kg.").spoken_text
+        == "Cao một mét sáu mươi lăm, bốn mươi lăm đến sáu mươi ki lô gam."
+    )
