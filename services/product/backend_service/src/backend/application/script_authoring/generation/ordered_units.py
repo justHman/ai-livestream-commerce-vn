@@ -122,7 +122,7 @@ _MISSING_INFO_RE = re.compile(
 )
 _HARD_SELL_RE = re.compile(
     r"chốt đơn ngay|đặt (?:hàng )?ngay|mua ngay|nhanh tay|không bỏ lỡ|đừng bỏ lỡ|số lượng có hạn"
-    r"|chốt ngay|order ngay|giá (?:rẻ|siêu rẻ)|rẻ nhất",
+    r"|chốt ngay|order ngay",
     re.IGNORECASE,
 )
 _BRIDGE_RE = re.compile(
@@ -152,7 +152,7 @@ _MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
 _MAX_SIZE_ROWS = 40
 _SIZE_ROW_RE = re.compile(
     r"(?:cao|chiều cao)[^.]*?(?:cân nặng|nặng)|\bsize\s*[A-Za-z0-9]+\b[^.]*\d"
-    r"|\d\s*(?:kg|kí|ki lô)\b[^.]*\bsize\b",
+    r"|\b\d\s*m\s*\d{2}\b[^.]*\d\s*(?:kg|kí|ki lô)\b[^.]*\bsize\b",
     re.IGNORECASE,
 )
 _SENTENCE_END_RE = re.compile(r"[.!?…][\"'”’)\]]*$")
@@ -175,7 +175,8 @@ _COVERAGE = 0.6
 _CTA_RE = re.compile(
     r"đặt hàng|giỏ hàng|nhắn mình|nhắn tin|inbox|bình luận để|chốt đơn", re.IGNORECASE
 )
-_TYPOS = {"thoải chọn": "thoải mái chọn", "đúng mẫi": "đúng mẫu", "đi quan": "đi quen"}
+_TYPOS = {"thoải chọn": "thoải mái chọn", "đúng mẫi": "đúng mẫu"}
+_CHEAP_RE = re.compile(r"giá (?:siêu )?rẻ|rẻ nhất", re.IGNORECASE)  # subjective unless approved
 _KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
 # Clearly different subjects only (material/feel/fit are properties of ONE attribute).
 _TOPICS = {
@@ -694,6 +695,8 @@ def check_unit_text(
     if _states_missing_data(text, approved):
         return None, "missing_info"
     if _HARD_SELL_RE.search(text):
+        return None, "hard_sell"
+    if _CHEAP_RE.search(text) and not any(_CHEAP_RE.search(a) for a in approved):
         return None, "hard_sell"
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"

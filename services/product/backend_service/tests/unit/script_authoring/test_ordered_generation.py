@@ -1016,13 +1016,20 @@ def test_known_typos_and_shorthand_are_fixed_and_cheap_price_claim_is_rejected()
         check_unit_text("Cam kết đúng mẫi và đúng màu nhé.")[0]
         == "Cam kết đúng mẫu và đúng màu nhé."
     )
-    assert (
-        check_unit_text("Mẫu này cần đi quan vài ngày nhé.")[0]
-        == "Mẫu này cần đi quen vài ngày nhé."
-    )
+    assert check_unit_text("Mang giày đi quan sát địa hình rất tiện.")[0]  # valid words untouched
     assert check_unit_text("Áo này giá rẻ nhé.") == (None, "hard_sell")
     brief = ProductBrief(
         product_id="p", name="Áo", claims=("Có đổi size được kh? Có, trong 15 ngày.",)
     )
     text = fallback_unit_text(UnitSpec("assurance", claims=brief.claims), brief)
     assert text.startswith("Nhiều bạn hỏi:") and "kh?" not in text and "không?" in text
+
+
+def test_garment_weight_facts_are_not_a_size_chart_and_approved_cheapness_passes() -> None:
+    rows = tuple(f"Khối lượng áo là {i}kg ở size {s}." for i, s in ((1, "M"), (2, "L"), (3, "XL")))
+    units = plan_units(
+        ProductBrief(product_id="p", name="Áo", claims=rows), first=False, last=False
+    )
+    assert not [u for u in units if u.role == "sizes"]
+    text = "Mẫu này không phải giá rẻ, chất lượng được ưu tiên."
+    assert check_unit_text(text, approved=(text,))[0]
