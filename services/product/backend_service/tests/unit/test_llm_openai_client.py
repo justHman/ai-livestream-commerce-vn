@@ -183,8 +183,9 @@ def test_omit_params_drops_fields_a_provider_rejects(monkeypatch):
     request = ChatRequest(messages=[ChatMessage(role="user", content="hi")])
     client = httpx.Client(transport=httpx.MockTransport(handler))
     OpenAICompatibleClient("https://h", model="m", http_client=client).chat(request)
-    monkeypatch.setenv("LLM_OMIT_PARAMS", "seed, top_p")
+    monkeypatch.setenv("LLM_OMIT_PARAMS", "seed, top_p, stream, model, messages")
     OpenAICompatibleClient("https://h", model="m", http_client=client).chat(request)
     client.close()
     assert "seed" in bodies[0] and "top_p" in bodies[0]
-    assert "seed" not in bodies[1] and "top_p" not in bodies[1] and "model" in bodies[1]
+    assert "seed" not in bodies[1] and "top_p" not in bodies[1]
+    assert {"model", "messages", "stream"} <= bodies[1].keys()  # the call itself is protected
