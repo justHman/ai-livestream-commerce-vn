@@ -355,3 +355,32 @@ def test_rollover_is_skipped_when_there_is_no_avatar_to_replace():
     _ignoring(lambda: backend.stream_audio(sid, win("u1", 0, final=True)))
     assert len(rest.starts) == 1 and rest.controls == []
     backend.stop_all()
+
+
+def test_a_replacement_that_lands_late_and_displaces_the_avatar_is_adopted():
+    now = [1000.0]
+    room = FakeRoom()
+    rest = FakeLemonSlice(room)
+    backend = LemonSliceRenderBackend(
+        settings(
+            max_session_s=100.0,
+            rollover_after_s=60.0,
+            keepalive_s=0,
+            request_timeout_s=0.2,
+            ready_timeout_s=0.3,
+        ),
+        room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
+        http_post=rest,
+        monotonic=lambda: now[0],
+    )
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.session_id = "ls-2"
+    release = rest.hold()  # creation is slower than the rollover waits
+    backend.stream_audio(sid, win("u1", 0, final=True))  # rollover times out: old session speaks on
+    assert backend._sessions[sid].provider_session_id == "ls-1"
+    release.set()  # the replacement lands late, joins and displaces the old avatar
+    assert until(lambda: backend._sessions[sid].provider_session_id == "ls-2")
+    assert until(lambda: (f"{BASE}/sessions/ls-1/control", "terminate") in rest.controls)
+    backend.stop_all()
