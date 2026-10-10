@@ -257,7 +257,10 @@ def _size_paragraphs(rows: tuple[str, ...], must: set[str], max_s: float) -> lis
 
 def _end(claim: str) -> str:
     """Claims are stored without final punctuation; joined as-is they run into one breath."""
-    return claim if claim.rstrip().endswith((".", "!", "?", "…", ";")) else f"{claim.rstrip()}."
+    text = claim.rstrip()
+    if text.rstrip("\"'”’)]»").endswith((".", "!", "?", "…", ";")):
+        return text
+    return f"{text}."
 
 
 def _ask_aloud(claim: str) -> str:

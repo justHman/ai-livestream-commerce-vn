@@ -1050,3 +1050,11 @@ def test_typed_highlights_fill_two_units_and_offer_may_name_the_product() -> Non
     text = "Áo này giá một trăm nghìn đồng nhé."
     spec = UnitSpec("offer")
     assert check_unit_text(text, spec=spec, product_name="Áo", name_used_elsewhere=5)[0]
+
+
+def test_sentence_end_is_not_doubled_after_closing_quotes_or_brackets() -> None:
+    brief = ProductBrief(
+        product_id="p", name="Áo", claims=("Có túi sâu.)", "Hai màu", "Bền “thật”")
+    )
+    text = fallback_unit_text(UnitSpec("highlight", claims=brief.claims), brief)
+    assert text == "Có túi sâu.) Hai màu. Bền “thật”."
