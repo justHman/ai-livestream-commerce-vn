@@ -1016,7 +1016,8 @@ def test_known_typos_and_shorthand_are_fixed_and_cheap_price_claim_is_rejected()
         check_unit_text("Cam kết đúng mẫi và đúng màu nhé.")[0]
         == "Cam kết đúng mẫu và đúng màu nhé."
     )
-    assert check_unit_text("Mang giày đi quan sát địa hình rất tiện.")[0]  # valid words untouched
+    valid = "Mang giày đi quan sát địa hình rất tiện."
+    assert check_unit_text(valid)[0] == valid  # valid words untouched
     assert check_unit_text("Áo này giá rẻ nhé.") == (None, "hard_sell")
     brief = ProductBrief(
         product_id="p", name="Áo", claims=("Có đổi size được kh? Có, trong 15 ngày.",)
