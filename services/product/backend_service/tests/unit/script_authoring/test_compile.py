@@ -157,3 +157,11 @@ def test_compiled_script_version_normalizes_trailing_punctuation() -> None:
     assert version.compiled_spoken_text() == (
         "Đoạn một không có chấm. Đoạn hai có chấm. Đoạn ba có chấm hỏi."
     )
+
+
+def test_machine_price_sizes_and_paragraphs_compile_to_spoken_units() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    out = compile_spoken_text("Giá 100000.00 VND.\n\nSize XL, XXL và ABC.").spoken_text
+    assert out == "Giá một trăm nghìn đồng.\n\nSize XL, XXL và A B C."
+    assert compile_spoken_text(out).spoken_text == out  # idempotent, boundaries kept

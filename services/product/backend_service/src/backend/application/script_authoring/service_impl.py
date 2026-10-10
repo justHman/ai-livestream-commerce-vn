@@ -84,11 +84,12 @@ from backend.application.script_authoring.generation.ordered_units import (
     BoundedLLM,
     ProductBrief,
     SessionBrief,
+    UnitSpec,
     build_unit_prompt,
     build_unit_repair_prompt,
     clean_unit_text,
     failed_unit_text,
-    plan_roles,
+    plan_units,
     role_bounds_s,
     role_title,
 )
@@ -149,13 +150,35 @@ __all__ = ["ScriptAuthoringServiceImpl"]
 _PRODUCT_SCRIPT_MIN_SECONDS = 3.0
 
 
+def _claims_by_type(raw: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Tolerant parse of ``claims_by_type``: anything malformed is ignored (flat list wins)."""
+    if not isinstance(raw, dict):
+        return ()
+    return tuple(
+        (str(kind), tuple(str(t) for t in texts if isinstance(t, str) and t.strip()))
+        for kind, texts in raw.items()
+        if isinstance(texts, (list, tuple))
+    )
+
+
+def _product_info(raw: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(raw, dict):
+        return ()
+    labels = {"brand": "Thương hiệu", "category": "Loại", "short_description": "Mô tả ngắn"}
+    return tuple(
+        (label, str(raw[key]).strip())
+        for key, label in labels.items()
+        if isinstance(raw.get(key), str) and raw[key].strip()
+    )
+
+
 @dataclass
 class _OrderedBatch:
     """Per-batch context of ordered-units generation (owner order, fixed roles)."""
 
     session: SessionBrief
     products: dict[str, ProductBrief]
-    roles: dict[str, list[str]]
+    roles: dict[str, list[UnitSpec]]
     llm: BoundedLLM
 
 
@@ -1232,21 +1255,24 @@ class ScriptAuthoringServiceImpl:
         facts = {pid: self._product_facts(brief, pid) for pid in ordered_ids}
         name = {pid: facts[pid].product_name or pid for pid in ordered_ids}
         products: dict[str, ProductBrief] = {}
-        roles: dict[str, list[str]] = {}
+        roles: dict[str, list[UnitSpec]] = {}
         for i, pid in enumerate(ordered_ids):
+            raw = (brief.product_facts or {}).get(pid) or {}
             products[pid] = ProductBrief(
                 product_id=pid,
                 name=name[pid],
                 prices=facts[pid].prices,
                 discounts=facts[pid].discounts,
                 claims=facts[pid].allowed_claims,
+                claims_by_type=_claims_by_type(raw.get("claims_by_type")),
+                info=_product_info(raw.get("product_info")),
                 previous_name=name[ordered_ids[i - 1]] if aware and i > 0 else None,
-                next_name=name[ordered_ids[i + 1]] if aware and i + 1 < len(ordered_ids) else None,
             )
-            roles[pid] = plan_roles(
+            roles[pid] = plan_units(
+                products[pid],
                 first=i == 0,
                 last=i == len(ordered_ids) - 1,
-                claim_count=len(facts[pid].allowed_claims),
+                ordered_aware=aware,
             )
         cfg = self._config
         return _OrderedBatch(
@@ -1278,7 +1304,7 @@ class ScriptAuthoringServiceImpl:
         policy = script_set.brief.transition_policy
 
         def unit_gate(index: int, text: str) -> GateRunResult:
-            low, high = role_bounds_s(roles[index])
+            low, high = role_bounds_s(roles[index].role)
             return self._gate.run_segment(
                 text,
                 ScriptGateContext(
@@ -1307,7 +1333,12 @@ class ScriptAuthoringServiceImpl:
                     return SegmentStepOutcome(
                         index=index, state=continuity, error=f"llm_failed:{type(exc).__name__}"
                     )
-                text = clean_unit_text(raw)
+                text = clean_unit_text(
+                    raw,
+                    prices=product.prices,
+                    allow_bridge=roles[index].bridge,
+                    approved=(*product.claims, *product.discounts),
+                )
                 if text is not None:
                     words = text.split()
                     return SegmentStepOutcome(
@@ -1318,7 +1349,7 @@ class ScriptAuthoringServiceImpl:
                             display_text=text,
                             spoken_text=text,
                             opening_fingerprint=" ".join(words[:5])[:80],
-                            topic=role_title(roles[index]),
+                            topic=role_title(roles[index].role),
                         ),
                     )
             return SegmentStepOutcome(
@@ -1353,11 +1384,11 @@ class ScriptAuthoringServiceImpl:
         def plan_generate():
             candidates = [
                 {
-                    "title": role_title(role),
-                    "intent": role,
-                    "target_duration_s": int(role_bounds_s(role)[1]),
+                    "title": role_title(spec.role),
+                    "intent": spec.role,
+                    "target_duration_s": int(role_bounds_s(spec.role)[1]),
                 }
-                for role in roles
+                for spec in roles
             ]
             return len(candidates), candidates
 
@@ -1375,7 +1406,7 @@ class ScriptAuthoringServiceImpl:
             # initial write + at most ONE local repair per unit
             max_segment_attempts=min(self._config.segment_max_attempts, 2),
             segment_gate_at=unit_gate,
-            failed_unit_text=lambda index: failed_unit_text(roles[index]),
+            failed_unit_text=lambda index: failed_unit_text(roles[index].role),
         )
         return _EventEmittingDriver(driver, emit, batch_id)
 
@@ -1773,8 +1804,9 @@ class ScriptAuthoringServiceImpl:
         if item.current_version_id is not None:
             current_version = await self._repos.versions.get(item.current_version_id)
         spoken = (
+            # None AND blank both mean "not provided": never store an empty spoken text.
             spoken_text
-            if spoken_text is not None
+            if spoken_text is not None and spoken_text.strip()
             else compile_spoken_text(display_text).spoken_text
         )
         bridge = _SyncPersistBridge()
