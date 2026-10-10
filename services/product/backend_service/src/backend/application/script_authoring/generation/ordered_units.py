@@ -732,8 +732,9 @@ def check_unit_text(
         return None, "missing_info"
     if _HARD_SELL_RE.search(text):
         return None, "hard_sell"
-    if _CHEAP_RE.search(text) and not any(_CHEAP_RE.search(a) for a in approved):
-        return None, "hard_sell"
+    lowered = [a.lower() for a in approved]
+    if any(not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(text)):
+        return None, "hard_sell"  # each superlative must be one the owner wrote
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"
     if _ADDRESS_RE.search(text):

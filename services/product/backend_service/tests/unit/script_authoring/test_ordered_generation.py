@@ -1075,3 +1075,11 @@ def test_unapproved_superlatives_are_rejected_but_approved_ones_pass() -> None:
     assert check_unit_text("Đây là mẫu bán chạy nhất đó mọi người.") == (None, "hard_sell")
     said = "Mẫu này bán chạy nhất tuần qua."
     assert check_unit_text(said, approved=(said,))[0]
+
+
+def test_approving_one_superlative_does_not_allow_another() -> None:
+    said = "Mẫu này bán chạy nhất tuần qua."
+    assert check_unit_text(said + " Hàng nghìn khách đã mua mẫu này.", approved=(said,)) == (
+        None,
+        "hard_sell",
+    )
