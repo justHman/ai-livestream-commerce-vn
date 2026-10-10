@@ -289,3 +289,22 @@ def test_each_clause_of_an_approved_statement_authorises_only_itself() -> None:
     assert _tiers("Bảo hành 10 năm.", facts) == {"error"}
     assert _tiers("Tuổi thọ 10 năm.", facts) == set()
     assert _tiers("Bảo hành 1 năm.", facts) == set()
+
+
+def test_discount_inside_an_approved_promotion_statement_is_stated() -> None:
+    from backend.application.script_authoring.gate.rules.commerce_claims import (
+        check_discount_claims,
+    )
+
+    facts = ProductFacts(allowed_claims=("Giảm 20% vào thứ Tư đầu tháng.",))
+    ctx = ScriptGateContext(facts=facts)
+    assert check_discount_claims("Có giảm 20% vào thứ Tư đầu tháng nhé.", ctx) == []
+    assert check_discount_claims("Hôm nay giảm 50% luôn nhé.", ctx)
+
+
+def test_zero_cent_machine_price_equals_the_spoken_amount() -> None:
+    facts = ProductFacts(prices=("100000.00 VND",))
+    ctx = ScriptGateContext(facts=facts)
+    assert check_price_claims("Giá 100k nhé.", ctx) == []
+    assert check_price_claims("Giá 100000.00 VND nhé.", ctx) == []
+    assert check_price_claims("Giá 100.000.000 VND nhé.", ctx)
