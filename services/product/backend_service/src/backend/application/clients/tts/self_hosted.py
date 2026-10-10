@@ -24,6 +24,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin
@@ -37,6 +38,10 @@ DEFAULT_OPENAI_SAMPLE_RATE = 48_000
 
 
 logger = logging.getLogger(__name__)
+
+# One dropped request must not end a live: a transient failure (network, 429, 5xx) is retried
+# after these pauses; the total stays well below the speech watchdog.
+_RETRY_DELAYS_S = (0.4, 1.2)
 
 
 class TTSClientError(RuntimeError):
@@ -170,16 +175,27 @@ class SelfHostedTTSClient:
         headers: dict[str, str],
     ) -> httpx.Response:
         """POST + typed error mapping, shared by both wire contracts."""
-        try:
-            resp = client.post(url, json=body, headers=headers)
-        except httpx.RequestError as exc:
-            raise TTSClientError(f"self-host TTS request failed: {exc}") from exc
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            detail = (resp.text or "")[:300]
-            raise TTSClientError(f"self-host TTS failed: HTTP {resp.status_code} {detail}") from exc
-        return resp
+        for attempt in range(len(_RETRY_DELAYS_S) + 1):
+            last = attempt == len(_RETRY_DELAYS_S)
+            try:
+                resp = client.post(url, json=body, headers=headers)
+            except httpx.RequestError as exc:
+                if last:
+                    raise TTSClientError(f"self-host TTS request failed: {exc}") from exc
+            else:
+                try:
+                    resp.raise_for_status()
+                    return resp
+                except httpx.HTTPStatusError as exc:
+                    transient = resp.status_code == 429 or resp.status_code >= 500
+                    if last or not transient:
+                        detail = (resp.text or "")[:300]
+                        raise TTSClientError(
+                            f"self-host TTS failed: HTTP {resp.status_code} {detail}"
+                        ) from exc
+            logger.warning("self-host TTS transient failure, retry %s", attempt + 1)
+            time.sleep(_RETRY_DELAYS_S[attempt])
+        raise AssertionError("unreachable")  # the loop returns or raises on its last attempt
 
     def _synthesize_openai_audio_speech(self, text: str, *, voice: str = "") -> TTSResult:
         """`POST /v1/audio/speech` — raw PCM s16le mono, no x-audio-* headers."""

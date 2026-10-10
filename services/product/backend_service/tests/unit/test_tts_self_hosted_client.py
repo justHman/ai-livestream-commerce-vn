@@ -120,7 +120,9 @@ def test_synthesize_wav_body_uses_header_rate():
     client.close()
 
 
-def test_http_error_message():
+def test_http_error_message(monkeypatch):
+    monkeypatch.setattr("backend.application.clients.tts.self_hosted.time.sleep", lambda _s: None)
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")
 
@@ -128,6 +130,43 @@ def test_http_error_message():
     engine = SelfHostedTTSClient(base_url="http://tts:8002", http_client=client)
     with pytest.raises(TTSClientError, match="HTTP 500"):
         engine.synthesize("x")
+    client.close()
+
+
+def test_transient_http_failure_is_retried_then_succeeds(monkeypatch):
+    monkeypatch.setattr("backend.application.clients.tts.self_hosted.time.sleep", lambda _s: None)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) < 3:
+            return httpx.Response(503, text="busy")
+        return httpx.Response(
+            200,
+            content=bytes(20),
+            headers={"x-audio-sample-rate": "24000", "x-audio-duration-ms": "1"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    engine = SelfHostedTTSClient(base_url="http://tts:8002", http_client=client)
+    assert engine.synthesize("x").pcm16 == bytes(20)
+    assert len(calls) == 3
+    client.close()
+
+
+def test_client_error_is_not_retried(monkeypatch):
+    monkeypatch.setattr("backend.application.clients.tts.self_hosted.time.sleep", lambda _s: None)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(400, text="bad voice")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    engine = SelfHostedTTSClient(base_url="http://tts:8002", http_client=client)
+    with pytest.raises(TTSClientError, match="HTTP 400"):
+        engine.synthesize("x")
+    assert len(calls) == 1
     client.close()
 
 

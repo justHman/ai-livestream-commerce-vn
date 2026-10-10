@@ -1582,10 +1582,11 @@ class DirectorCoordinator:
                     return True
                 self.runtime_failures.fail(session_id, exc, decision.revision_token)
                 logger.error(
-                    "speech pipeline failed session=%s turn=%s class=%s",
+                    "speech pipeline failed session=%s turn=%s class=%s detail=%s",
                     session_id,
                     decision.turn_id,
                     type(exc).__name__,
+                    str(exc)[:200],  # provider error text, no credentials in it
                 )
             else:
                 logger.exception(
