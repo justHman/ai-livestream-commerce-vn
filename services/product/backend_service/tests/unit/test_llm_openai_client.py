@@ -171,3 +171,21 @@ def test_reasoning_effort_is_sent_only_when_configured(monkeypatch):
     client.close()
     assert "reasoning_effort" not in bodies[0]
     assert bodies[1]["reasoning_effort"] == "low"
+
+
+def test_omit_params_drops_fields_a_provider_rejects(monkeypatch):
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    request = ChatRequest(messages=[ChatMessage(role="user", content="hi")])
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    OpenAICompatibleClient("https://h", model="m", http_client=client).chat(request)
+    monkeypatch.setenv("LLM_OMIT_PARAMS", "seed, top_p, stream, model, messages")
+    OpenAICompatibleClient("https://h", model="m", http_client=client).chat(request)
+    client.close()
+    assert "seed" in bodies[0] and "top_p" in bodies[0]
+    assert "seed" not in bodies[1] and "top_p" not in bodies[1]
+    assert {"model", "messages", "stream"} <= bodies[1].keys()  # the call itself is protected
