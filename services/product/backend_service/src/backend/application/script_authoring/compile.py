@@ -135,7 +135,8 @@ _UNWRAP_RES = (
     re.compile(r"(?<![\w_])_([^_\n]+)_(?![\w_])"),
     re.compile(r"`([^`]+)`"),
 )
-_TAG_OR_HEADING_RE = re.compile(r"<[^>]+>|^#{1,6}\s", re.MULTILINE)
+# Real HTML tags only: "nhiệt độ <5 hoặc >40" is a comparison, not markup.
+_TAG_OR_HEADING_RE = re.compile(r"</?[A-Za-z][^<>]*>|^#{1,6}\s", re.MULTILINE)
 
 
 def _strip_markup(text: str) -> str:

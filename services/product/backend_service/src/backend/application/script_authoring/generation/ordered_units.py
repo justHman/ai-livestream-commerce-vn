@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, replace
 
-from ..compile import compile_spoken_text, number_to_vietnamese_words
+from ..compile import compile_spoken_text, expand_vietnamese_number, number_to_vietnamese_words
+from ..duration import spoken_duration_ms
 from ..gate.rules.commerce_claims import _vnd_amount
 
 __all__ = [
@@ -30,7 +32,9 @@ __all__ = [
     "build_unit_repair_prompt",
     "clean_unit_text",
     "check_unit_text",
+    "claim_covered",
     "claims_not_spoken",
+    "uncovered_claims",
     "fallback_unit_text",
     "plan_units",
     "role_bounds_s",
@@ -141,7 +145,10 @@ _CONDITION_RE = re.compile(
 )
 _HIGHLIGHT_TYPES = ("feature", "benefit", "ingredient", "usage")
 _ASSURANCE_TYPES = ("warranty", "shipping", "compliance", "faq", "limitation")
-_MAX_CLAIMS_PER_UNIT = 6  # a cluster speaks at most this many claims; the rest stay for Q&A
+_MAX_CLAIMS_PER_UNIT = 6  # decorative claims (typed mode) speak at most this many per unit
+_MAX_MUST_PER_UNIT = 4  # must-keep (assurance) and untyped claims per unit
+_MAX_PROMOS_PER_UNIT = 3
+_MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
 _MAX_SIZE_ROWS = 40
 _SIZE_ROW_RE = re.compile(
     r"(?:cao|chiều cao)[^.]*?(?:cân nặng|nặng)|\bsize\s*[A-Za-z0-9]+\b[^.]*\d", re.IGNORECASE
@@ -157,8 +164,12 @@ _ADDRESS_RE = re.compile(
 _CONDITION_CLAIM_RE = re.compile(
     r"\b(?:không|chỉ|trừ|ngoại trừ|nếu|khi|điều kiện|miễn là)\b", re.IGNORECASE
 )
-_LIMIT_TYPES = ("limitation", "compliance")
-_MAX_ASSURANCE_UNITS = 2
+# The owner chose these types explicitly: never capped or dropped.
+_MUST_TYPES = ("warranty", "shipping", "promotion", "compliance", "limitation")
+_POSITION_RE = re.compile(
+    r"cuối cùng của buổi|(?:sản phẩm|món) (?:đầu tiên|cuối cùng)", re.IGNORECASE
+)
+_COVERAGE = 0.6
 _CTA_RE = re.compile(
     r"đặt hàng|giỏ hàng|nhắn mình|nhắn tin|inbox|bình luận để|chốt đơn", re.IGNORECASE
 )
@@ -182,27 +193,48 @@ def role_title(role: str) -> str:
     return _TITLES[role]
 
 
-def _split_keeping_conditions(claims: list[str], size: int) -> list[list[str]]:
-    """Consecutive chunks of at most ``size``; a restriction never starts a chunk (it stays
-    beside the claim it qualifies)."""
-    chunks: list[list[str]] = []
-    for claim in claims:
-        starts_new = not chunks or len(chunks[-1]) >= size
-        if starts_new and chunks and _CONDITION_CLAIM_RE.search(claim):
-            starts_new = False
-        if starts_new:
-            chunks.append([])
-        chunks[-1].append(claim)
-    return chunks
+def _paragraphs(items: list[str], max_s: float) -> list[str]:
+    """Short paragraphs: <= 3 claims and within the duration bound (split, never exceed)."""
+    paras: list[list[str]] = []
+    for item in items:
+        cur = paras[-1] if paras else None
+        if cur is not None and len(cur) < _MAX_PARAGRAPH_CLAIMS:
+            joined = compile_spoken_text(" ".join([*cur, item])).spoken_text
+            if spoken_duration_ms(joined) / 1000.0 <= max_s:
+                cur.append(item)
+                continue
+        paras.append([item])
+    return [" ".join(p) for p in paras]
+
+
+def _is_condition(claim: str) -> bool:
+    return bool(_CONDITION_CLAIM_RE.search(claim))
+
+
+def _size_paragraphs(rows: tuple[str, ...], must: set[str], max_s: float) -> list[str]:
+    """As many rows as fit the duration bound; restricted rows are ALWAYS spoken."""
+    paras: list[str] = []
+    for row in rows:
+        keep = row in must or _is_condition(row)
+        if paras:
+            joined = compile_spoken_text(f"{paras[-1]} {row}").spoken_text
+            if spoken_duration_ms(joined) / 1000.0 <= max_s:
+                paras[-1] = f"{paras[-1]} {row}"
+                continue
+        if keep or not paras:
+            paras.append(row)
+    return paras
 
 
 def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     """Deterministic extractive unit for a part the model could not write.
 
-    Only approved claim sentences (ALL of the unit's claims, verbatim, in short paragraphs)
-    and price words; fixed greetings carry no facts. No LLM, no invented facts, no markup.
+    Only approved claim sentences (ALL of the unit's claims, verbatim, in short paragraphs;
+    size rows as many as fit, restricted ones always) and price words; fixed greetings carry
+    no facts. No LLM, no invented facts, no markup.
     """
     name = product.name or product.product_id
+    max_s = role_bounds_s(spec.role)[1]
     if spec.role == "opening":
         text = "Chào mọi người, chào mừng mọi người đến với buổi live hôm nay."
     elif spec.role == "closing":
@@ -211,14 +243,12 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
         text = f"Mình giới thiệu {name} đến mọi người."
     elif spec.role == "offer":
         words = [w for w in (spoken_price(p) for p in product.prices) if w]
-        price = f"Giá {' hoặc '.join(words)}." if words else ""
-        text = " ".join(x for x in (price, *spec.promos) if x)  # promotions keep their conditions
+        price = [f"Giá {' hoặc '.join(words)}."] if words and spec.with_price else []
+        text = "\n\n".join(_paragraphs([*price, *spec.promos], max_s))
     elif spec.role == "sizes":
-        text = " ".join(spec.claims[:2])
+        text = "\n\n".join(_size_paragraphs(spec.claims, set(spec.must), max_s))
     else:
-        text = "\n\n".join(
-            " ".join(chunk) for chunk in _split_keeping_conditions(list(spec.claims), 3)
-        )
+        text = "\n\n".join(_paragraphs(list(spec.claims), max_s))
     return compile_spoken_text(text or f"Mình giới thiệu thêm về {name}.").spoken_text
 
 
@@ -274,54 +304,41 @@ class UnitSpec:
     bridge: bool = False  # first unit of a later product on a locked (ORDER_AWARE) order
     first_product: bool = False
     last_product: bool = False
+    must: tuple[str, ...] = ()  # claims of this unit the text MUST cover (checked)
 
 
-def _is_limit(claim: str, kind: str | None) -> bool:
-    return kind in _LIMIT_TYPES or bool(_CONDITION_CLAIM_RE.search(claim))
+_KIND_RANK = {"warranty": 0, "limitation": 1, "compliance": 2}
 
 
-def _select(claims: list[str], kinds: dict[str, str], cap: int) -> list[str]:
-    """At most ``cap`` claims, original order. Restrictions/conditions are never dropped; then
-    warranty/compliance; then the rest."""
-
-    def rank(claim: str) -> int:
-        kind = kinds.get(claim)
-        if kind in _LIMIT_TYPES:
-            return 0
-        if _CONDITION_CLAIM_RE.search(claim):
-            return 1
-        return 2 if kind == "warranty" else 3
-
-    must = {c for c in claims if rank(c) <= 1}
-    keep = list(must)
-    for claim in sorted(claims, key=rank):
-        if len(keep) >= cap:
-            break
-        if claim not in must:
-            keep.append(claim)
-    return [c for c in claims if c in keep]
+def _chunks(items: list[str], size: int) -> list[tuple[str, ...]]:
+    return [tuple(items[i : i + size]) for i in range(0, len(items), size)]
 
 
-def _cluster_claims(
-    product: ProductBrief,
-) -> tuple[list[str], list[str], list[str], list[str], dict[str, str]]:
-    """(highlights, sizes, assurances, promotions, kinds): each FLAT approved claim lands in
-    one list. ``claims_by_type`` only classifies; a typed text absent from the flat list is
-    ignored. A size chart (3+ "cao ... nặng ..." rows) becomes its own list.
+def _cluster_claims(product: ProductBrief) -> dict:
+    """Group the FLAT approved claims (``claims_by_type`` only classifies; a typed text absent
+    from the flat list is ignored).
+
+    must-keep = typed warranty/shipping/promotion/compliance/limitation (when types are given)
+    plus any claim with a restriction word. Without types nothing can be classified, so nothing
+    is capped. A size chart (3+ "cao ... nặng ..." rows) is its own list.
     """
     typed: dict[str, str] = {}
     for kind, texts in product.claims_by_type:
         for text in texts:
             typed.setdefault(text, kind)
+    typed_mode = bool(typed)
     highlights: list[str] = []
     assurances: list[str] = []
     promos: list[str] = []
+    must: set[str] = set()
     seen: set[str] = set()
     for claim in (*product.claims, *product.discounts):
         if claim in seen:
             continue
         seen.add(claim)
         kind = typed.get(claim)
+        if kind in _MUST_TYPES and typed_mode or _is_condition(claim):
+            must.add(claim)
         if (
             kind == "promotion"
             or claim in product.discounts
@@ -333,10 +350,22 @@ def _cluster_claims(
         else:
             highlights.append(claim)
     rows = [c for c in highlights if _SIZE_ROW_RE.search(c)]
-    sizes = rows[:_MAX_SIZE_ROWS] if len(rows) >= 3 else []
-    if sizes:
+    sizes: list[str] = []
+    if len(rows) >= 3:
+        # restricted rows first so the row cap can never remove them; the rest keep their order
+        keep = [r for r in rows if r in must][:_MAX_SIZE_ROWS]
+        keep += [r for r in rows if r not in keep][: _MAX_SIZE_ROWS - len(keep)]
+        sizes = [r for r in rows if r in keep]
         highlights = [c for c in highlights if c not in rows]
-    return highlights, sizes, assurances, promos, typed
+    return {
+        "typed": typed_mode,
+        "kinds": typed,
+        "highlights": highlights,
+        "sizes": sizes,
+        "assurances": assurances,
+        "promos": promos,
+        "must": must,
+    }
 
 
 def plan_units(
@@ -344,50 +373,97 @@ def plan_units(
 ) -> list[UnitSpec]:
     """Adaptive, ordered units of one product from its available facts.
 
-    intro -> highlights (<= 6 claims) -> size chart (one unit) -> assurances (<= 2 units of
-    <= 6, restrictions never dropped) -> offer. The offer exists only with a parseable price or
-    an approved promotion. The single soft CTA is folded into the last product unit. A bridge
-    is asked of the intro only for a later product on a locked order.
+    intro -> highlights -> size chart (one unit) -> assurances (warranty, limitation,
+    compliance, then shipping; <= 4 claims per unit, never capped) -> offer (price, promotions
+    <= 3 per unit). With types, only decorative claims are capped (6); without types nothing is
+    dropped (units of <= 4). The single soft CTA is folded into the last product unit.
     """
-    highlights, sizes, assurances, promos, kinds = _cluster_claims(product)
-    flags = {"first_product": first, "last_product": last}
-    cap = _MAX_CLAIMS_PER_UNIT
-    kept = _select(assurances, kinds, cap * _MAX_ASSURANCE_UNITS)
-    assurance_units = [
-        UnitSpec("assurance", claims=tuple(chunk), **flags)
-        for chunk in _split_keeping_conditions(kept, cap)[:_MAX_ASSURANCE_UNITS]
-    ]
-    # a restriction pushed past the second unit joins it instead of being dropped
-    spoken = {c for u in assurance_units for c in u.claims}
-    if assurance_units and (missing := [c for c in kept if c not in spoken]):
-        last_unit = assurance_units[-1]
-        assurance_units[-1] = replace(last_unit, claims=(*last_unit.claims, *missing))
+    c = _cluster_claims(product)
+    must: set[str] = c["must"]
+    positional = {"first_product": first and ordered_aware, "last_product": last and ordered_aware}
+
+    def spec(role: str, claims=(), promos=(), **extra) -> UnitSpec:
+        covered = tuple(x for x in (*claims, *promos) if x in must)
+        return UnitSpec(
+            role, claims=tuple(claims), promos=tuple(promos), must=covered, **positional, **extra
+        )
+
+    highlights: list[str] = c["highlights"]
+    if c["typed"]:
+        keep = [x for x in highlights if x in must]
+        for x in highlights:
+            if len(keep) >= _MAX_CLAIMS_PER_UNIT:
+                break
+            if x not in keep:
+                keep.append(x)
+        highlights = [x for x in highlights if x in keep]
+        highlight_chunks = _chunks(highlights, _MAX_CLAIMS_PER_UNIT)
+    else:
+        highlight_chunks = _chunks(highlights, _MAX_MUST_PER_UNIT)
+
+    def rank(claim: str) -> int:
+        kind = c["kinds"].get(claim)
+        if kind in _KIND_RANK:
+            return _KIND_RANK[kind]
+        if _is_condition(claim):
+            return 1
+        return 0 if re.search(r"bảo hành|đổi trả", claim, re.IGNORECASE) else 3
+
+    ordered_assurance = sorted(c["assurances"], key=rank)  # stable: warranty, limitation, ...
     units = [
-        *([UnitSpec("opening", **flags)] if first else []),
-        UnitSpec("intro", bridge=ordered_aware and not first, **flags),
-        *(
-            [UnitSpec("highlight", claims=tuple(_select(highlights, kinds, cap)), **flags)]
-            if highlights
-            else []
-        ),
-        *([UnitSpec("sizes", claims=tuple(sizes), **flags)] if sizes else []),
-        *assurance_units,
+        *([spec("opening")] if first else []),
+        spec("intro", bridge=ordered_aware and not first),
+        *(spec("highlight", chunk) for chunk in highlight_chunks),
+        *([spec("sizes", c["sizes"])] if c["sizes"] else []),
+        *(spec("assurance", chunk) for chunk in _chunks(ordered_assurance, _MAX_MUST_PER_UNIT)),
     ]
     has_price = any(spoken_price(p) for p in product.prices)
-    if has_price or promos:
-        units.append(UnitSpec("offer", promos=tuple(promos), with_price=has_price, **flags))
+    promo_chunks = _chunks(c["promos"], _MAX_PROMOS_PER_UNIT) or ([()] if has_price else [])
+    for i, chunk in enumerate(promo_chunks):
+        units.append(spec("offer", promos=chunk, with_price=has_price and i == 0))
     body = [i for i, u in enumerate(units) if u.role != "opening"]
     units[body[-1]] = replace(units[body[-1]], with_cta=True)
     if last:
-        units.append(UnitSpec("closing", **flags))
+        units.append(spec("closing"))
     return units
 
 
-def claims_not_spoken(product: ProductBrief, specs: list[UnitSpec]) -> int:
-    """How many approved claims/discounts no unit of this product speaks (owner-visible)."""
-    approved = {*product.claims, *product.discounts}
-    spoken = {c for u in specs for c in (*u.claims, *u.promos)}
-    return len(approved - spoken)
+def _fold(text: str) -> str:
+    """Lowercase without diacritics (đ -> d)."""
+    folded = unicodedata.normalize("NFD", text.lower().replace("đ", "d"))
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Mn")
+
+
+def claim_covered(claim: str, text: str) -> bool:
+    """Lexical coverage: every number appears exactly (digits or spoken words) and at least
+    60% of the other content tokens appear, after case/diacritic folding."""
+    haystack = _fold(text)
+    tokens = set(re.findall(r"\w+", haystack))
+    for number in re.findall(r"\d[\d.,]*", claim):
+        number = number.rstrip(".,")
+        # spoken digits keep their tone marks ("tám" must not match "tâm")
+        spoken = (
+            expand_vietnamese_number(number).lower()
+            if number.replace(".", "").replace(",", "").isdigit()
+            else ""
+        )
+        digits = re.search(r"(?<![0-9])" + re.escape(number) + r"(?![0-9])", haystack)
+        said = spoken and re.search(r"(?<!\w)" + re.escape(spoken) + r"(?!\w)", text.lower())
+        if not digits and not said:
+            return False
+    words = [w for w in re.findall(r"[^\W\d_]{2,}", _fold(claim))]
+    if not words:
+        return True
+    return sum(1 for w in words if w in tokens) >= _COVERAGE * len(words)
+
+
+def uncovered_claims(text: str, claims: tuple[str, ...]) -> list[str]:
+    return [c for c in claims if not claim_covered(c, text)]
+
+
+def claims_not_spoken(approved: tuple[str, ...], saved_text: str) -> int:
+    """Approved claims/discounts that the SAVED script text does not cover (owner-visible)."""
+    return len(uncovered_claims(saved_text, tuple(dict.fromkeys(approved))))
 
 
 def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
@@ -414,6 +490,8 @@ def check_unit_text(
     approved: tuple[str, ...] = (),
     product_name: str = "",
     name_used_elsewhere: int = 0,
+    must: tuple[str, ...] = (),
+    aware: bool = True,
 ) -> tuple[str | None, str | None]:
     """(text, None) when usable, else (None, machine reason code).
 
@@ -453,6 +531,10 @@ def check_unit_text(
             a, b = _topics(left), _topics(right)
             if a and b and not (a & b):
                 return None, "mashup"  # unrelated facts joined with "và"
+    if not aware and role not in ("opening", "closing", "") and _POSITION_RE.search(text):
+        return None, "position"  # legacy unlocked order: no first/last wording
+    if must and uncovered_claims(text, must):
+        return None, "coverage"  # a must-keep claim (restriction, warranty...) was left out
     if product_name and role not in ("intro", "") and name_used_elsewhere >= 2:
         if product_name.lower() in text.lower():
             return None, "name_repeat"

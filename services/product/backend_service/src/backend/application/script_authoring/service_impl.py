@@ -91,6 +91,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     check_unit_text,
     claims_not_spoken,
     fallback_unit_text,
+    uncovered_claims,
     plan_units,
     role_bounds_s,
     role_title,
@@ -152,6 +153,7 @@ logger = logging.getLogger(__name__)
 # Vietnamese tokenizes long: a 1-3 sentence unit (plus a reasoning preamble on some free
 # models) needs far more than the 512 default shared with live answers.
 _UNIT_MAX_TOKENS = 900
+_COVERAGE_RETRY = "\n\nLần trước thiếu ý BẮT BUỘC. Phải nói đủ, gần nguyên văn: "
 _SHORTER_RETRY = (
     "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 2 câu ngắn, kết thúc trọn câu."
 )
@@ -1370,6 +1372,8 @@ class ScriptAuthoringServiceImpl:
                     approved=(*product.claims, *product.discounts),
                     product_name=product.name,
                     name_used_elsewhere=len(name_units - {index}),
+                    must=roles[index].must,
+                    aware=policy == "ORDER_AWARE",
                 )
                 if text is not None:
                     if product.name and product.name.lower() in text.lower():
@@ -1399,6 +1403,9 @@ class ScriptAuthoringServiceImpl:
                 )
                 if reason in ("truncated", "too_long") and attempt == 1:
                     prompt = prompt + _SHORTER_RETRY
+                if reason == "coverage" and attempt == 1:
+                    left_out = uncovered_claims(raw or "", roles[index].must)
+                    prompt = prompt + _COVERAGE_RETRY + " | ".join(left_out)
             return SegmentStepOutcome(index=index, state=continuity, error=f"guard:{reason}")
 
         def segment_generate(index, continuity, _target=None) -> SegmentStepOutcome:
@@ -2392,10 +2399,19 @@ class ScriptAuthoringServiceImpl:
                 "item_state": item_state.name if item_state is not None else None,
                 "error": progress.error if progress else "",
             }
-            if plan is not None and pid in plan.roles:
-                skipped = claims_not_spoken(plan.products[pid], plan.roles[pid])
-                if skipped:
-                    entry["claims_not_spoken"] = skipped  # approved claims no part speaks
+            if plan is not None and pid in plan.products and item is not None:
+                saved = (
+                    await self._repos.versions.get(item.current_version_id)
+                    if item.current_version_id
+                    else None
+                )
+                if saved is not None:
+                    product_brief = plan.products[pid]
+                    skipped = claims_not_spoken(
+                        (*product_brief.claims, *product_brief.discounts), saved.spoken_text
+                    )
+                    if skipped:
+                        entry["claims_not_spoken"] = skipped  # computed from the SAVED text
             fallback = (
                 ((progress.workflow_snapshot or {}).get("fallback_units") or {}) if progress else {}
             )
