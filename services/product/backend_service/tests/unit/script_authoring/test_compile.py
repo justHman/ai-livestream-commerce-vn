@@ -230,3 +230,93 @@ def test_comparison_signs_and_compact_measurements_are_spoken() -> None:
         compile_spoken_text("Cao 1m65, 45-60kg.").spoken_text
         == "Cao một mét sáu mươi lăm, bốn mươi lăm đến sáu mươi ki lô gam."
     )
+
+
+@pytest.mark.parametrize(
+    "written, spoken",
+    [
+        ("Nặng 1,05 kg.", "Nặng một phẩy không năm ki lô gam."),
+        ("Nặng 1,5 kg.", "Nặng một phẩy năm ki lô gam."),
+        ("Nặng 2,25 kg.", "Nặng hai phẩy hai mươi lăm ki lô gam."),
+        ("Giảm 0,05%.", "Giảm không phẩy không năm phần trăm."),
+        ("Giảm 0,125%.", "Giảm không phẩy một hai năm phần trăm."),
+        ("Khối lượng 1.000 kg.", "Khối lượng một nghìn ki lô gam."),
+        (
+            "Chỉ áp dụng từ 01-10-2026.",
+            "Chỉ áp dụng từ ngày một tháng mười năm hai nghìn không trăm hai mươi sáu.",
+        ),
+        (
+            "Hết hạn 05/10/2026.",
+            "Hết hạn ngày năm tháng mười năm hai nghìn không trăm hai mươi sáu.",
+        ),
+        ("Size 36-44.", "Size ba mươi sáu đến bốn mươi bốn."),
+        ("Giá 1000000000000 đồng.", "Giá một nghìn tỷ đồng."),
+        ("Giá 1.000.000.000.000đ.", "Giá một nghìn tỷ đồng."),
+    ],
+)
+def test_decimals_units_dates_and_huge_numbers(written, spoken) -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    assert compile_spoken_text(written).spoken_text == spoken
+
+
+SALES_SENTENCES = [
+    "Giá chỉ 299.000đ cho mỗi hộp, giảm 20% hôm nay.",
+    "Combo 2 hộp giá 550k, tặng kèm 1 túi vải.",
+    "Nặng 1,05 kg, dung tích 1,5 lít, cao 1m65.",
+    "Giảm 0,5% cho đơn từ 1.000.000đ.",
+    "Cao 1m60-1m70, nặng 55-65kg: size M.",
+    "Size 36-44 đều có sẵn nhé.",
+    "Gọi 0901234567 hoặc +84901234567 để được tư vấn.",
+    "Ưu đãi từ 01-10-2026 đến 15-10-2026.",
+    "Chương trình áp dụng ngày 5/10 và 10/10/2026.",
+    "Nhiệt độ bảo quản <5 hoặc >40 độ C.",
+    "Bảo hành 12 tháng, đổi trả trong 7 ngày.",
+    "Dùng 2 lần mỗi ngày, mỗi lần 15 phút.",
+    "Hạn dùng 36 tháng kể từ ngày sản xuất.",
+    "Khối lượng 1.000 kg mỗi lô, 500g mỗi gói.",
+    "Giá 100000.00 VND cho 1 sản phẩm.",
+    "Mua 3 tặng 1, tổng 4 sản phẩm.",
+    "Đường kính 25cm, dày 5mm, nặng 250g.",
+    "Pin 5000mAh dùng được 2 ngày.",
+    "Giá 1000000000000 đồng chỉ là ví dụ.",
+    "Mã giảm 20k cho đơn đầu tiên.",
+    "Livestream lúc 20h hôm nay, 19h30 vào phòng.",
+    "Tặng voucher 50.000đ cho 100 khách đầu tiên.",
+    "Cân nặng 45-52kg mặc size S, 53-60kg mặc size M.",
+    "Chiều cao 1m55 đến 1m62 chọn size M.",
+    "Giảm 0,125% phí vận chuyển.",
+    "Có 3 màu, 4 size, 5 kiểu dáng.",
+    "Tỷ lệ 70% cotton, 30% polyester.",
+    "Giá 1,5 triệu hoặc 1.500.000đ.",
+    "Từ 2-4 ngày là nhận được hàng.",
+    "Thứ 4 hàng tuần giảm 15%.",
+    "Khách hàng hài lòng 98,5%.",
+    "Hotline 1900 1234 mở cửa 8-22h.",
+    "Size XL 80-90kg, XXL 90-100kg.",
+    "Giá 299,000đ cho 1 chiếc.",
+    "Sản phẩm số 1 năm 2026.",
+    "Đơn từ 200k miễn phí ship, tối đa 30k.",
+    "Phiên bản 2.0 ra mắt ngày 01/10/2026.",
+    "Trọng lượng 0,25kg, rộng 10,5cm.",
+    "Giá niêm yết 999.999.999.999đ.",
+    "Điện áp 220V, công suất 1500W.",
+]
+
+
+@pytest.mark.parametrize("sentence", SALES_SENTENCES)
+def test_compile_never_raises_is_idempotent_and_leaves_no_digits(sentence) -> None:
+    import re
+
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    once = compile_spoken_text(sentence).spoken_text
+    assert compile_spoken_text(once).spoken_text == once
+    assert not re.search(r"\d", once), once
+
+
+def test_compile_survives_absurd_digit_strings() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    for digits in ("9" * 22, "1" + "0" * 40, "7" * 5000):
+        assert compile_spoken_text(f"Giá {digits} đồng.").spoken_text
