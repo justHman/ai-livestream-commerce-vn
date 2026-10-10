@@ -111,7 +111,7 @@ _STYLE_RULES = (
     "Luôn gọi người xem là 'mọi người' hoặc 'các bạn' (không dùng quý vị, quý khách, anh, "
     "chị, em, bạn nam, bạn nữ) và xưng 'mình' (không xưng em, tôi; không gọi sản phẩm là "
     "'em nó'). Viết đúng chính tả. Chỉ nhắc tên sản phẩm đầy đủ ở phần giới "
-    "thiệu; các phần sau gọi 'mẫu này' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn."
+    "thiệu; các phần sau gọi 'mẫu này' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn. Tránh lặp các cụm quen tai ('thật lòng', 'yên tâm', 'có tò mò ... không', 'cực kỳ'): mỗi cụm dùng nhiều nhất một lần trong một phần, đổi cách nói ở các phần khác nhau. Không thúc giục khách đặt sớm."
 )
 _TRUTH_RULES = (
     "Phần 'Thông tin được phép nói' là SỰ THẬT bạn phải giữ đúng, KHÔNG phải kịch bản để đọc "
@@ -145,9 +145,12 @@ _MISSING_INFO_RE = re.compile(
 )
 _HARD_SELL_RE = re.compile(
     r"chốt đơn ngay|đặt (?:hàng )?ngay|mua ngay|nhanh tay|không bỏ lỡ|đừng bỏ lỡ|số lượng có hạn"
-    r"|chốt ngay|order ngay",
+    r"|chốt ngay|order ngay|tranh thủ (?:lên đơn|đặt|mua|chốt)|lên đơn sớm|kẻo hết"
+    r"|sắp hết hàng|nhanh lên",
     re.IGNORECASE,
 )
+# Inviting people to follow the channel is not sales pressure (opening/closing only).
+_FOLLOW_INVITE_RE = re.compile(r"(?:không|đừng) bỏ lỡ", re.IGNORECASE)
 _BRIDGE_RE = re.compile(
     r"(?:sản phẩm|món|mẫu)\s+(?:tiếp theo|kế tiếp|tiếp đến)|(?:tiếp theo|kế tiếp) là",
     re.IGNORECASE,
@@ -169,7 +172,7 @@ _CONDITION_RE = re.compile(
 _HIGHLIGHT_TYPES = ("feature", "benefit", "ingredient", "usage")
 _ASSURANCE_TYPES = ("warranty", "shipping", "compliance", "faq", "limitation")
 _MAX_CLAIMS_PER_UNIT = 6  # decorative claims (typed mode) speak at most this many per unit
-_MAX_HIGHLIGHT_CLAIMS = 12  # typed mode keeps at most two highlight units of selling points
+_MAX_HIGHLIGHT_CLAIMS = 18  # typed mode keeps at most three highlight units of selling points
 _MAX_MUST_PER_UNIT = 4  # must-keep (assurance) and untyped claims per unit
 _MAX_PROMOS_PER_UNIT = 3
 _MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
@@ -730,7 +733,10 @@ def check_unit_text(
         return None, "truncated"  # cut mid-sentence/mid-word by the provider
     if _states_missing_data(text, approved):
         return None, "missing_info"
-    if _HARD_SELL_RE.search(text):
+    sell_text = text
+    if spec is not None and spec.role in ("opening", "closing"):
+        sell_text = _FOLLOW_INVITE_RE.sub("", text)
+    if _HARD_SELL_RE.search(sell_text):
         return None, "hard_sell"
     lowered = [a.lower() for a in approved]
     if any(not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(text)):
