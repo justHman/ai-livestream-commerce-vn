@@ -429,8 +429,8 @@ def test_the_full_product_name_is_not_repeated_in_every_unit() -> None:
     mid = UnitSpec("highlight")
     kwargs = {"spec": mid, "product_name": "Áo khoác denim"}
     text = "Áo khoác denim này rất bền nhé."
-    assert check_unit_text(text, name_used_elsewhere=1, **kwargs)[0]
-    assert check_unit_text(text, name_used_elsewhere=2, **kwargs) == (None, "name_repeat")
+    assert check_unit_text(text, name_used_elsewhere=2, **kwargs)[0]
+    assert check_unit_text(text, name_used_elsewhere=3, **kwargs) == (None, "name_repeat")
     intro = UnitSpec("intro")
     assert check_unit_text(text, spec=intro, product_name="Áo khoác denim", name_used_elsewhere=5)[
         0
@@ -996,3 +996,41 @@ def test_lone_nam_before_a_count_unit_is_the_number_five() -> None:
     assert claim_covered("Giảm năm phần trăm.", "Giảm năm phần trăm nhé.")
     assert claim_covered("Bảo hành một năm.", "Bảo hành 1 năm nhé.")  # still the year
     assert not claim_covered("Bảo hành một năm.", "Bảo hành hai mươi mốt năm nhé.")
+
+
+def test_size_chart_without_cao_is_still_one_sizes_unit() -> None:
+    rows = (
+        "Dưới 1m65, 45-60kg: Size M",
+        "1m65-1m70, 60-70kg: Size L",
+        "Hơn 1m70, 70-80kg: Size XL",
+    )
+    units = plan_units(
+        ProductBrief(product_id="p", name="Áo", claims=rows), first=False, last=False
+    )
+    sizes = [u for u in units if u.role == "sizes"]
+    assert len(sizes) == 1 and sizes[0].claims == rows
+
+
+def test_known_typos_and_shorthand_are_fixed_and_cheap_price_claim_is_rejected() -> None:
+    assert (
+        check_unit_text("Cam kết đúng mẫi và đúng màu nhé.")[0]
+        == "Cam kết đúng mẫu và đúng màu nhé."
+    )
+    valid = "Mang giày đi quan sát địa hình rất tiện."
+    assert check_unit_text(valid)[0] == valid  # valid words untouched
+    assert check_unit_text("Áo này giá rẻ nhé.") == (None, "hard_sell")
+    brief = ProductBrief(
+        product_id="p", name="Áo", claims=("Có đổi size được kh? Có, trong 15 ngày.",)
+    )
+    text = fallback_unit_text(UnitSpec("assurance", claims=brief.claims), brief)
+    assert text.startswith("Nhiều bạn hỏi:") and "kh?" not in text and "không?" in text
+
+
+def test_garment_weight_facts_are_not_a_size_chart_and_approved_cheapness_passes() -> None:
+    rows = tuple(f"Khối lượng áo là {i}kg ở size {s}." for i, s in ((1, "M"), (2, "L"), (3, "XL")))
+    units = plan_units(
+        ProductBrief(product_id="p", name="Áo", claims=rows), first=False, last=False
+    )
+    assert not [u for u in units if u.role == "sizes"]
+    text = "Mẫu này không phải giá rẻ, chất lượng được ưu tiên."
+    assert check_unit_text(text, approved=(text,))[0]
