@@ -81,6 +81,9 @@ class OpenAICompatibleClient:
         # Reasoning models bill hidden thinking tokens as output; "low"/"none" cuts cost and
         # latency for short script lines. Unset = provider default.
         self._reasoning_effort = (os.environ.get("LLM_REASONING_EFFORT", "") or "").strip()
+        # Some providers reject standard fields they do not know (Gemini: "seed" -> HTTP 400).
+        omit = os.environ.get("LLM_OMIT_PARAMS", "") or ""
+        self._omit_params = {name.strip() for name in omit.split(",") if name.strip()}
         self._api_key = api_key or os.environ.get("LLM_AUTH_TOKEN", "") or ""
         self._model = model or os.environ.get("LLM_MODEL", "") or ""
         self._timeout = float(timeout)
@@ -114,6 +117,8 @@ class OpenAICompatibleClient:
             body["stop"] = req.stop
         if req.seed:
             body["seed"] = req.seed
+        for name in self._omit_params:
+            body.pop(name, None)
         return body
 
     def chat(self, req: ChatRequest) -> LLMResult:
