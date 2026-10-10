@@ -146,6 +146,7 @@ _CONDITION_RE = re.compile(
 _HIGHLIGHT_TYPES = ("feature", "benefit", "ingredient", "usage")
 _ASSURANCE_TYPES = ("warranty", "shipping", "compliance", "faq", "limitation")
 _MAX_CLAIMS_PER_UNIT = 6  # decorative claims (typed mode) speak at most this many per unit
+_MAX_HIGHLIGHT_CLAIMS = 12  # typed mode keeps at most two highlight units of selling points
 _MAX_MUST_PER_UNIT = 4  # must-keep (assurance) and untyped claims per unit
 _MAX_PROMOS_PER_UNIT = 3
 _MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
@@ -254,6 +255,14 @@ def _size_paragraphs(rows: tuple[str, ...], must: set[str], max_s: float) -> lis
     return paras
 
 
+def _end(claim: str) -> str:
+    """Claims are stored without final punctuation; joined as-is they run into one breath."""
+    text = claim.rstrip()
+    if text.rstrip("\"'”’)]»").endswith((".", "!", "?", "…", ";")):
+        return text
+    return f"{text}."
+
+
 def _ask_aloud(claim: str) -> str:
     """A stored FAQ ("Q? A") is spoken as what viewers ask; fixed wording, no new fact."""
     head, sep, _ = claim.partition("?")
@@ -280,9 +289,9 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
         price = [f"Giá {' hoặc '.join(words)}."] if words and spec.with_price else []
         text = "\n\n".join(_paragraphs([*price, *spec.promos], max_s))
     elif spec.role == "sizes":
-        text = "\n\n".join(_size_paragraphs(spec.claims, set(spec.must), max_s))
+        text = "\n\n".join(_size_paragraphs(tuple(map(_end, spec.claims)), set(spec.must), max_s))
     else:
-        text = "\n\n".join(_paragraphs([_ask_aloud(c) for c in spec.claims], max_s))
+        text = "\n\n".join(_paragraphs([_end(_ask_aloud(c)) for c in spec.claims], max_s))
     text = _KH_RE.sub("không", text or f"Mình giới thiệu thêm về {name}.")
     return compile_spoken_text(text).spoken_text
 
@@ -433,7 +442,7 @@ def plan_units(
     if c["typed"]:
         keep = [x for x in highlights if x in must]
         for x in highlights:
-            if len(keep) >= _MAX_CLAIMS_PER_UNIT:
+            if len(keep) >= _MAX_HIGHLIGHT_CLAIMS:
                 break
             if x not in keep:
                 keep.append(x)
@@ -716,7 +725,7 @@ def check_unit_text(
         return None, "position"  # legacy unlocked order: no first/last wording
     if must and uncovered_claims(text, must, (*spec.claims, *spec.promos) if spec else ()):
         return None, "coverage"  # a must-keep claim (restriction, warranty...) was left out
-    if product_name and role not in ("intro", "") and name_used_elsewhere >= 3:
+    if product_name and role not in ("intro", "offer", "") and name_used_elsewhere >= 3:
         if product_name.lower() in text.lower():
             return None, "name_repeat"
     return text, None
