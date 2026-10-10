@@ -74,6 +74,13 @@ class OpenAICompatibleClient:
         if not base:
             raise LLMClientError("OpenAICompatibleClient needs base_url or env LLM_BASE_URL")
         self._base_url = base.rstrip("/")
+        # Providers differ in path: default {base}/v1/chat/completions; Gemini's OpenAI-compatible
+        # endpoint is {base}/chat/completions, so LLM_CHAT_PATH=/chat/completions selects it.
+        chat_path = (os.environ.get("LLM_CHAT_PATH", "") or "/v1/chat/completions").strip()
+        self._chat_url = f"{self._base_url}/{chat_path.lstrip('/')}"
+        # Reasoning models bill hidden thinking tokens as output; "low"/"none" cuts cost and
+        # latency for short script lines. Unset = provider default.
+        self._reasoning_effort = (os.environ.get("LLM_REASONING_EFFORT", "") or "").strip()
         self._api_key = api_key or os.environ.get("LLM_AUTH_TOKEN", "") or ""
         self._model = model or os.environ.get("LLM_MODEL", "") or ""
         self._timeout = float(timeout)
@@ -101,6 +108,8 @@ class OpenAICompatibleClient:
             "top_p": req.top_p,
             "stream": req.stream,
         }
+        if self._reasoning_effort:
+            body["reasoning_effort"] = self._reasoning_effort
         if req.stop:
             body["stop"] = req.stop
         if req.seed:
@@ -110,7 +119,7 @@ class OpenAICompatibleClient:
     def chat(self, req: ChatRequest) -> LLMResult:
         """Blocking chat completion. Returns the full response."""
         client = self._get_client()
-        url = f"{self._base_url}/v1/chat/completions"
+        url = self._chat_url
         body = self._build_body(req)
         last_error: Optional[Exception] = None
         for attempt in range(max(1, self._max_retries + 1)):
@@ -145,7 +154,7 @@ class OpenAICompatibleClient:
     def chat_stream(self, req: ChatRequest) -> Iterator[str]:
         """Streaming chat completion. Yields text deltas."""
         client = self._get_client()
-        url = f"{self._base_url}/v1/chat/completions"
+        url = self._chat_url
         body = self._build_body(req)
         body["stream"] = True
         try:
