@@ -12,6 +12,7 @@ injected sync loaders) without re-running completed segments.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -35,6 +36,8 @@ from backend.application.script_authoring.models import (
     new_id,
 )
 from backend.application.script_authoring.workflow import ProductGenerationWorkflow
+
+logger = logging.getLogger(__name__)
 
 # One bounded semantic call that produces the planned section list + fixed K.
 PlanOutcome = Callable[[], tuple[int, list[dict]]]
@@ -119,7 +122,11 @@ class WorkflowDriver:
     # place instead of stopping the product. The placeholder fails the full gate,
     # so the script lands GATE_FAILED for the owner to finish by hand.
     segment_gate_at: Optional[Callable[[int, str], Any]] = None
-    failed_unit_text: Optional[Callable[[int], str]] = None
+    failed_unit_text: Optional[Callable[[int], str]] = None  # extractive fallback text
+    # unit index -> machine reason codes of every failed attempt (guards, gate rule ids, LLM
+    # error class); units that ended on the fallback are listed in ``fallback_units``.
+    unit_reasons: dict = field(default_factory=dict)
+    fallback_units: dict = field(default_factory=dict)
 
     def is_terminal(self) -> bool:
         return self.workflow.item.state in _TERMINAL
@@ -223,6 +230,7 @@ class WorkflowDriver:
             else:
                 outcome = self.segment_generate(index, continuity, segment_target)
             if outcome.error is not None:
+                self.unit_reasons.setdefault(index, []).append(str(outcome.error))
                 self._unit_failed(index, attempt, str(outcome.error), gate_exhausted=False)
                 return
             result = outcome.result
@@ -256,6 +264,20 @@ class WorkflowDriver:
                 break
             # gate failed: budget remaining -> constrain-repair/regenerate THIS
             # index in place with the exact failed rules as context.
+            codes = [
+                v.rule_id
+                for v in gate.violations
+                if str(getattr(v.severity, "value", "")) == "error"
+            ]
+            self.unit_reasons.setdefault(index, []).extend(codes)
+            logger.warning(
+                "script unit rejected by gate product=%s unit=%s attempt=%s rules=%s sample=%r",
+                self.product_id,
+                index,
+                attempt,
+                codes,
+                result.spoken_text[:120],
+            )
             last_failure = (result, gate)
         if selected is None:
             self._unit_failed(
@@ -294,6 +316,14 @@ class WorkflowDriver:
             self.persist(wf.item)
             return
         wf.last_error = message
+        reasons = self.unit_reasons.get(index) or [message]
+        self.fallback_units[index] = list(reasons)
+        logger.warning(
+            "script unit fell back to extractive text product=%s unit=%s reasons=%s",
+            self.product_id,
+            index,
+            reasons[:8],
+        )
         self.persist(
             wf.record_failed_unit(
                 index, self.failed_unit_text(index), version=attempt + 1, message=message
@@ -327,6 +357,7 @@ class WorkflowDriver:
                 for idx, seg in sorted(wf.segments.items())
             ],
             "version_ids": [v.id for v in wf.versions],
+            "fallback_units": {str(i): list(r)[:8] for i, r in self.fallback_units.items()},
         }
 
     def restore(self, state: dict) -> None:
@@ -344,6 +375,9 @@ class WorkflowDriver:
         wf.plan_segment_count = state.get("plan_segment_count")
         wf.target_duration_s = state.get("target_duration_s")
         wf.semantic_calls = int(state.get("semantic_calls", 0))
+        self.fallback_units = {
+            int(i): list(r) for i, r in (state.get("fallback_units") or {}).items()
+        }
         for entry in state.get("segment_versions", []):
             segment = self.load_segment(entry["id"])
             wf.segments[int(entry["index"])] = segment

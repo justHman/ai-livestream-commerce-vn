@@ -17,7 +17,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, replace
 
-from ..compile import number_to_vietnamese_words
+from ..compile import compile_spoken_text, number_to_vietnamese_words
 from ..gate.rules.commerce_claims import _vnd_amount
 
 __all__ = [
@@ -25,12 +25,12 @@ __all__ = [
     "LLMDeadlineError",
     "ProductBrief",
     "SessionBrief",
-    "UNIT_FAILED_PREFIX",
     "UnitSpec",
     "build_unit_prompt",
     "build_unit_repair_prompt",
     "clean_unit_text",
-    "failed_unit_text",
+    "check_unit_text",
+    "fallback_unit_text",
     "plan_units",
     "role_bounds_s",
     "role_title",
@@ -43,6 +43,7 @@ _BOUNDS_S: dict[str, tuple[float, float]] = {
     "opening": (1.0, 40.0),
     "intro": (1.0, 40.0),
     "highlight": (1.0, 45.0),
+    "sizes": (1.0, 45.0),
     "assurance": (1.0, 45.0),
     "offer": (1.0, 45.0),
     "closing": (1.0, 35.0),
@@ -51,6 +52,7 @@ _TITLES = {
     "opening": "Mở đầu phiên live",
     "intro": "Giới thiệu sản phẩm",
     "highlight": "Điểm nổi bật",
+    "sizes": "Bảng size",
     "assurance": "Cam kết và lưu ý",
     "offer": "Giá và ưu đãi",
     "closing": "Lời kết phiên live",
@@ -66,8 +68,14 @@ _GUIDE = {
         "thương hiệu, loại, mô tả). Chưa nói giá."
     ),
     "highlight": (
-        "Nói các ý được phép nói bên dưới trong 1 đến 2 câu, MỖI ý đúng một lần, giữ nguyên "
-        "số liệu và ký hiệu size (S, M, L, XL...) viết liền, không tách chữ."
+        "Chọn các ý quan trọng nhất bên dưới, nói trong 1 đến 3 câu ngắn; MỖI CÂU CHỈ MỘT CHỦ "
+        "ĐỀ, không nối các ý khác chủ đề (ví dụ size với cách giặt) bằng 'và'. Giữ nguyên số "
+        "liệu và ký hiệu size (S, M, L, XL...) viết liền, không tách chữ."
+    ),
+    "sizes": (
+        "Đây là bảng size: nói thật dễ nghe bằng khoảng chiều cao và cân nặng, tối đa 3 mức "
+        "size trong một câu, không đọc dài chuỗi số; có thể mời mọi người nhắn chiều cao cân "
+        "nặng để mình tư vấn size. Không nói gì ngoài size."
     ),
     "assurance": (
         "Nói các ý bên dưới một cách trung thực, tự nhiên; nếu là điều kiện hay hạn chế thì "
@@ -84,6 +92,11 @@ _CTA_LINE = (
     "Cuối phần này thêm MỘT lời mời nhẹ nhàng (ví dụ bạn nào quan tâm thì nhắn mình hoặc xem "
     "giỏ hàng). Không dùng: chốt đơn ngay, đặt ngay, mua ngay, nhanh tay, không bỏ lỡ, số "
     "lượng có hạn."
+)
+_STYLE_RULES = (
+    "Luôn gọi người xem là 'mọi người' hoặc 'các bạn' (không dùng quý vị, quý khách, anh, "
+    "chị, em, bạn nam, bạn nữ). Viết đúng chính tả. Chỉ nhắc tên sản phẩm đầy đủ ở phần giới "
+    "thiệu; các phần sau gọi 'mẫu này' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn."
 )
 _COMMON_RULES = (
     "Không bao giờ nói rằng thiếu thông tin (ví dụ 'chưa có thông tin', 'chưa có khuyến mãi'): "
@@ -127,7 +140,30 @@ _CONDITION_RE = re.compile(
 )
 _HIGHLIGHT_TYPES = ("feature", "benefit", "ingredient", "usage")
 _ASSURANCE_TYPES = ("warranty", "shipping", "compliance", "faq", "limitation")
-_MAX_CLAIMS_PER_UNIT = 3
+_MAX_CLAIMS_PER_UNIT = 6  # a cluster speaks at most this many claims; the rest stay for Q&A
+_MAX_SIZE_ROWS = 40
+_SIZE_ROW_RE = re.compile(
+    r"(?:cao|chiều cao)[^.]*?(?:cân nặng|nặng)|\bsize\s*[A-Za-z0-9]+\b[^.]*\d", re.IGNORECASE
+)
+_SENTENCE_END_RE = re.compile(r"[.!?…][\"'”’)\]]*$")
+_ADDRESS_RE = re.compile(
+    r"\bquý (?:vị|khách)\b|\b(?:anh|chị|em)\b|\bbạn (?:nam|nữ)\b|\bcác (?:anh|chị)\b",
+    re.IGNORECASE,
+)
+_CTA_RE = re.compile(
+    r"đặt hàng|giỏ hàng|nhắn mình|nhắn tin|inbox|bình luận để|chốt đơn", re.IGNORECASE
+)
+_TYPOS = {"thoải chọn": "thoải mái chọn"}
+_TOPICS = {
+    "size": re.compile(r"\bsize\b|chiều cao|cân nặng|kích cỡ|form", re.IGNORECASE),
+    "care": re.compile(r"giặt|phơi|\bủi\b|bảo quản|nhiệt độ|là ủi", re.IGNORECASE),
+    "material": re.compile(
+        r"chất liệu|cotton|denim|\bvải\b|co giãn|\bdày\b|\bmỏng\b", re.IGNORECASE
+    ),
+    "policy": re.compile(
+        r"đổi trả|bảo hành|giao hàng|vận chuyển|hoàn tiền|kiểm hàng", re.IGNORECASE
+    ),
+}
 
 
 def role_bounds_s(role: str) -> tuple[float, float]:
@@ -138,13 +174,27 @@ def role_title(role: str) -> str:
     return _TITLES[role]
 
 
-def failed_unit_text(role: str) -> str:
-    """Visible placeholder for a unit the model could not write.
+def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
+    """Deterministic extractive unit for a part the model could not write.
 
-    The angle brackets trip the TTS markup rule, so a script holding one can never
-    pass the gate, be approved or be spoken until the owner rewrites that part.
+    Only approved claim sentences (verbatim) and price words; fixed greetings carry no facts.
+    No LLM, no invented facts, no markup: it always passes the markup/repetition gates.
     """
-    return f"{UNIT_FAILED_PREFIX}: {role_title(role)}. Hãy tự viết lại phần này>"
+    name = product.name or product.product_id
+    if spec.role == "opening":
+        text = "Chào mọi người, chào mừng mọi người đến với buổi live hôm nay."
+    elif spec.role == "closing":
+        text = "Cảm ơn mọi người đã theo dõi, hẹn gặp lại mọi người."
+    elif spec.role == "intro":
+        text = f"Mình giới thiệu {name} đến mọi người."
+    elif spec.role == "offer":
+        words = [w for w in (spoken_price(p) for p in product.prices) if w]
+        price = f"Giá {' hoặc '.join(words)}." if words else ""
+        text = " ".join(x for x in (price, *spec.promos[:2]) if x) or f"{name} đang có ưu đãi."
+    else:
+        limit = 2 if spec.role == "sizes" else 3
+        text = " ".join(spec.claims[:limit]) or f"Mình giới thiệu thêm về {name}."
+    return compile_spoken_text(text).spoken_text
 
 
 def spoken_price(price: str) -> str | None:
@@ -201,8 +251,14 @@ class UnitSpec:
     last_product: bool = False
 
 
-def _cluster_claims(product: ProductBrief) -> tuple[list[str], list[str], list[str]]:
-    """(highlights, assurances, promotions): each approved claim lands in exactly one list."""
+def _cluster_claims(
+    product: ProductBrief,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """(highlights, sizes, assurances, promotions): each FLAT approved claim lands in one list.
+
+    ``claims_by_type`` only classifies; a typed text absent from the flat list is ignored.
+    A size chart (3+ "cao ... nặng ..." rows) becomes its own list.
+    """
     typed: dict[str, str] = {}
     for kind, texts in product.claims_by_type:
         for text in texts:
@@ -211,7 +267,6 @@ def _cluster_claims(product: ProductBrief) -> tuple[list[str], list[str], list[s
     assurances: list[str] = []
     promos: list[str] = []
     seen: set[str] = set()
-    # claims_by_type only CLASSIFIES flat claims; a typed entry not in the flat list is ignored.
     for claim in (*product.claims, *product.discounts):
         if claim in seen:
             continue
@@ -227,36 +282,36 @@ def _cluster_claims(product: ProductBrief) -> tuple[list[str], list[str], list[s
             assurances.append(claim)
         else:
             highlights.append(claim)
-    return highlights, assurances, promos
-
-
-def _chunks(items: list[str]) -> list[tuple[str, ...]]:
-    return [
-        tuple(items[i : i + _MAX_CLAIMS_PER_UNIT])
-        for i in range(0, len(items), _MAX_CLAIMS_PER_UNIT)
-    ]
+    rows = [c for c in highlights if _SIZE_ROW_RE.search(c)]
+    sizes = rows[:_MAX_SIZE_ROWS] if len(rows) >= 3 else []
+    if sizes:
+        highlights = [c for c in highlights if c not in rows]
+    return highlights, sizes, assurances, promos
 
 
 def plan_units(
     product: ProductBrief, *, first: bool, last: bool, ordered_aware: bool = False
 ) -> list[UnitSpec]:
-    """Adaptive, ordered units of one product from its available facts.
+    """Adaptive, ordered units of one product from its available facts (at most 5 parts, +
+    opening for the first product and closing for the last).
 
-    opening (first product) -> intro -> one unit per claim cluster -> offer (price and
-    promotions) -> closing (last product). The single soft CTA is folded into the last
-    product unit. A bridge is asked of the intro only for a later product on a locked order.
+    intro -> highlights (<= 6 claims) -> size chart (one unit) -> assurances (<= 6 claims) ->
+    offer (price + promotions). The single soft CTA is folded into the last product unit. A
+    bridge is asked of the intro only for a later product on a locked order.
     """
-    highlights, assurances, promos = _cluster_claims(product)
+    highlights, sizes, assurances, promos = _cluster_claims(product)
     flags = {"first_product": first, "last_product": last}
+    cap = _MAX_CLAIMS_PER_UNIT
     units = [
         *([UnitSpec("opening", **flags)] if first else []),
         UnitSpec("intro", bridge=ordered_aware and not first, **flags),
-        *(UnitSpec("highlight", claims=c, **flags) for c in _chunks(highlights)),
-        *(UnitSpec("assurance", claims=c, **flags) for c in _chunks(assurances)),
+        *([UnitSpec("highlight", claims=tuple(highlights[:cap]), **flags)] if highlights else []),
+        *([UnitSpec("sizes", claims=tuple(sizes), **flags)] if sizes else []),
+        *([UnitSpec("assurance", claims=tuple(assurances[:cap]), **flags)] if assurances else []),
     ]
     if product.prices or promos:
         units.append(
-            UnitSpec("offer", promos=tuple(promos), with_price=bool(product.prices), **flags)
+            UnitSpec("offer", promos=tuple(promos[:2]), with_price=bool(product.prices), **flags)
         )
     body = [i for i, u in enumerate(units) if u.role != "opening"]
     units[body[-1]] = replace(units[body[-1]], with_cta=True)
@@ -276,32 +331,62 @@ def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
     )
 
 
-def clean_unit_text(
+def _topics(sentence: str) -> set[str]:
+    return {name for name, rx in _TOPICS.items() if rx.search(sentence)}
+
+
+def check_unit_text(
     raw: str | None,
     *,
+    spec: "UnitSpec | None" = None,
     prices: tuple[str, ...] = (),
     allow_bridge: bool = False,
     approved: tuple[str, ...] = (),
-) -> str | None:
-    """One paragraph of plain speech, or ``None`` when the output is unusable.
+    product_name: str = "",
+    name_used_elsewhere: int = 0,
+) -> tuple[str | None, str | None]:
+    """(text, None) when usable, else (None, machine reason code).
 
-    Unusable = empty/garbled, mentions missing information, hard-sells, or points at "the
-    next product" where no bridge belongs. Approved prices written as digits become words.
+    Reasons: empty, too_long, truncated, missing_info, hard_sell, bridge, address, cta,
+    mashup, name_repeat. Approved prices written as digits become words.
     """
     if not raw:
-        return None
+        return None, "empty"
     text = _FENCE_RE.sub("", raw).strip().strip("\"'“”")
     text = _DASH_RE.sub(", ", text)
     text = re.sub(r"\s+", " ", text).strip()
+    for wrong, right in _TYPOS.items():
+        text = text.replace(wrong, right)
     text = _SPLIT_SIZE_RE.sub(lambda m: re.sub(r"\s+", "", m.group(1)), text)
     text = _speak_approved_prices(text, prices)
-    if len(text) < 6 or len(text) > _MAX_UNIT_CHARS or not re.search(r"[^\W\d_]{2}", text):
-        return None
-    if _states_missing_data(text, approved) or _HARD_SELL_RE.search(text):
-        return None
+    if len(text) < 6 or not re.search(r"[^\W\d_]{2}", text):
+        return None, "empty"
+    if len(text) > _MAX_UNIT_CHARS:
+        return None, "too_long"
+    if not _SENTENCE_END_RE.search(text):
+        return None, "truncated"  # cut mid-sentence/mid-word by the provider
+    if _states_missing_data(text, approved):
+        return None, "missing_info"
+    if _HARD_SELL_RE.search(text):
+        return None, "hard_sell"
     if not allow_bridge and _BRIDGE_RE.search(text):
-        return None
-    return text
+        return None, "bridge"
+    if _ADDRESS_RE.search(text):
+        return None, "address"
+    role = spec.role if spec is not None else ""
+    if spec is not None and role not in ("opening", "closing", "sizes") and not spec.with_cta:
+        if _CTA_RE.search(text):
+            return None, "cta"  # one soft call to action per product, in its last unit
+    if any(len(_topics(s)) > 1 and " và " in s for s in re.split(r"(?<=[.!?])\s+", text)):
+        return None, "mashup"  # unrelated facts joined with "và"
+    if product_name and role not in ("intro", "") and name_used_elsewhere >= 2:
+        if product_name.lower() in text.lower():
+            return None, "name_repeat"
+    return text, None
+
+
+def clean_unit_text(raw: str | None, **kwargs) -> str | None:
+    return check_unit_text(raw, **kwargs)[0]
 
 
 def _facts_block(product: ProductBrief, spec: UnitSpec, used: list[str]) -> str:
@@ -360,6 +445,7 @@ def build_unit_prompt(
         "Mọi con số, giá, ưu đãi, tính năng PHẢI lấy từ phần thông tin được phép nói; "
         "tuyệt đối không bịa thêm. Giá luôn nói bằng chữ, không viết số.",
         _COMMON_RULES,
+        _STYLE_RULES,
         f"Phiên live: {session.title or '(chưa đặt tên)'}"
         + (f"; shop: {session.shop_name}" if session.shop_name else "")
         + (f"; MC: {session.persona}" if session.persona else ""),

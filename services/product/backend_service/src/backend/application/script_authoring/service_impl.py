@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import queue
 import re
@@ -87,8 +88,8 @@ from backend.application.script_authoring.generation.ordered_units import (
     UnitSpec,
     build_unit_prompt,
     build_unit_repair_prompt,
-    clean_unit_text,
-    failed_unit_text,
+    check_unit_text,
+    fallback_unit_text,
     plan_units,
     role_bounds_s,
     role_title,
@@ -144,6 +145,15 @@ from backend.application.script_authoring.workflow import (
 from backend.config import ScriptAuthoringConfig
 
 __all__ = ["ScriptAuthoringServiceImpl"]
+
+logger = logging.getLogger(__name__)
+
+# Vietnamese tokenizes long: a 1-3 sentence unit (plus a reasoning preamble on some free
+# models) needs far more than the 512 default shared with live answers.
+_UNIT_MAX_TOKENS = 900
+_SHORTER_RETRY = (
+    "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 2 câu ngắn, kết thúc trọn câu."
+)
 
 
 # Floor for one product's own script (the owner approves the text); only rejects trivial lines.
@@ -1252,6 +1262,7 @@ class ScriptAuthoringServiceImpl:
         brief = script_set.brief
         ordered_ids = list(script_set.product_ids)
         aware = brief.transition_policy == "ORDER_AWARE"
+        llm_fn = self._unit_llm_fn() or llm_fn
         facts = {pid: self._product_facts(brief, pid) for pid in ordered_ids}
         name = {pid: facts[pid].product_name or pid for pid in ordered_ids}
         products: dict[str, ProductBrief] = {}
@@ -1294,6 +1305,13 @@ class ScriptAuthoringServiceImpl:
             ),
         )
 
+    def _unit_llm_fn(self) -> Callable[[str], str] | None:
+        """The engine's llm function with a larger output budget, when it supports one."""
+        try:
+            return self._engine_manager.get_llm_fn(max_tokens=_UNIT_MAX_TOKENS)
+        except Exception:  # noqa: BLE001 - fakes/older managers take no argument
+            return None
+
     def _build_ordered_driver(
         self, item, script_set, workflow, ordered: _OrderedBatch, bridge, *, emit, batch_id, loaders
     ):
@@ -1324,22 +1342,37 @@ class ScriptAuthoringServiceImpl:
             ),
         )
 
+        name_units: set[int] = set()  # units that already carry the full product name
+
         def write(index: int, prompt: str, continuity: ContinuityState) -> SegmentStepOutcome:
-            # One extra call only when the model returned nothing usable.
-            for _ in range(2):
+            # Up to two writes per unit; the second asks for a shorter text after a cut/overlong
+            # reply. Every failed attempt is logged with its machine reason.
+            reason = "empty"
+            for attempt in (1, 2):
                 try:
                     raw = ordered.llm(prompt)
                 except Exception as exc:  # noqa: BLE001 - provider/transport failure of this unit
-                    return SegmentStepOutcome(
-                        index=index, state=continuity, error=f"llm_failed:{type(exc).__name__}"
+                    code = f"llm_failed:{type(exc).__name__}"
+                    logger.warning(
+                        "script unit llm error product=%s unit=%s attempt=%s error=%s",
+                        pid,
+                        index,
+                        attempt,
+                        code,
                     )
-                text = clean_unit_text(
+                    return SegmentStepOutcome(index=index, state=continuity, error=code)
+                text, why = check_unit_text(
                     raw,
+                    spec=roles[index],
                     prices=product.prices,
                     allow_bridge=roles[index].bridge,
                     approved=(*product.claims, *product.discounts),
+                    product_name=product.name,
+                    name_used_elsewhere=len(name_units - {index}),
                 )
                 if text is not None:
+                    if product.name and product.name.lower() in text.lower():
+                        name_units.add(index)
                     words = text.split()
                     return SegmentStepOutcome(
                         index=index,
@@ -1352,9 +1385,20 @@ class ScriptAuthoringServiceImpl:
                             topic=role_title(roles[index].role),
                         ),
                     )
-            return SegmentStepOutcome(
-                index=index, state=continuity, error="empty_or_garbled_output"
-            )
+                reason = why or "empty"
+                logger.warning(
+                    "script unit rejected by guard product=%s unit=%s role=%s attempt=%s "
+                    "reason=%s sample=%r",
+                    pid,
+                    index,
+                    roles[index].role,
+                    attempt,
+                    reason,
+                    (raw or "")[:120],
+                )
+                if reason in ("truncated", "too_long") and attempt == 1:
+                    prompt = prompt + _SHORTER_RETRY
+            return SegmentStepOutcome(index=index, state=continuity, error=f"guard:{reason}")
 
         def segment_generate(index, continuity, _target=None) -> SegmentStepOutcome:
             emit("segment.started", {"product_id": pid, "segment_index": index})
@@ -1406,7 +1450,7 @@ class ScriptAuthoringServiceImpl:
             # initial write + at most ONE local repair per unit
             max_segment_attempts=min(self._config.segment_max_attempts, 2),
             segment_gate_at=unit_gate,
-            failed_unit_text=lambda index: failed_unit_text(roles[index].role),
+            failed_unit_text=lambda index: fallback_unit_text(roles[index], product),
         )
         return _EventEmittingDriver(driver, emit, batch_id)
 
@@ -2343,6 +2387,14 @@ class ScriptAuthoringServiceImpl:
                 "item_state": item_state.name if item_state is not None else None,
                 "error": progress.error if progress else "",
             }
+            fallback = (
+                ((progress.workflow_snapshot or {}).get("fallback_units") or {}) if progress else {}
+            )
+            if fallback:
+                # Units written from approved claims only (no model text): review before use.
+                entry["fallback_units"] = [
+                    {"unit_index": int(i), "reasons": list(r)[:8]} for i, r in fallback.items()
+                ]
             if status == "failed" and item is not None and item_state is ScriptState.GATE_FAILED:
                 runs = await self._repos.gate_runs.list_by_item(item.id)
                 last = runs[-1] if runs else None
