@@ -200,7 +200,10 @@ class FakeRoom:
         pubs = {"v": SimpleNamespace(kind=KIND_VIDEO)}
         if self.mode != "video_only":
             pubs["a"] = SimpleNamespace(kind=KIND_AUDIO)
-        self.remote_participants[AVATAR] = SimpleNamespace(track_publications=pubs)
+        self.joins = getattr(self, "joins", 0) + 1
+        self.remote_participants[AVATAR] = SimpleNamespace(
+            track_publications=pubs, sid=f"PA_{self.joins}"
+        )
 
     def fire(self, method, payload="", caller=AVATAR):
         handler = self.local_participant.rpc[method]

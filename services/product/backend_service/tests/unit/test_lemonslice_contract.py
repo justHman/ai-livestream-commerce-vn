@@ -237,3 +237,77 @@ def test_backend_never_uses_agent_session_or_worker_apis():
     assert {"livekit.agents", "livekit.plugins.lemonslice.api"} >= {
         n for n in names if n.startswith("livekit.agents") or n.startswith("livekit.plugins")
     }
+
+
+def _rolling(rollover_after_s=60.0, max_session_s=100.0):
+    now = [1000.0]
+    room = FakeRoom()
+    rest = FakeLemonSlice(room)
+    backend = LemonSliceRenderBackend(
+        settings(max_session_s=max_session_s, rollover_after_s=rollover_after_s, keepalive_s=0),
+        room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
+        http_post=rest,
+        monotonic=lambda: now[0],
+    )
+    return backend, rest, now
+
+
+def test_rollover_replaces_the_provider_session_before_the_cap():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.session_id = "ls-2"
+    backend.stream_audio(sid, win("u1", 0, final=True))
+    assert len(rest.starts) == 2 and rest.starts[1]["livekit_session_id"] == "RM_fake"
+    assert rest.controls == [(f"{BASE}/sessions/ls-1/control", "terminate")]
+    now[0] += 60  # 121 s after the start, but only 60 s after the rollover
+    assert backend.session_status(sid) == "active"
+    backend.stream_audio(sid, win("u2", 0, final=True))  # the age guard does not refuse it
+    backend.stop(sid)
+    assert rest.controls[-1] == (f"{BASE}/sessions/ls-2/control", "terminate")
+    backend.stop_all()
+
+
+def test_rollover_is_off_by_default():
+    backend, rest, now = _rolling(rollover_after_s=0.0)
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 90
+    backend.stream_audio(sid, win("u1", 0, final=True))
+    assert len(rest.starts) == 1 and rest.controls == []
+    backend.stop_all()
+
+
+def test_rollover_waits_for_the_next_utterance_boundary():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    backend.stream_audio(sid, win("u1", 0, final=False))  # utterance u1 is open
+    now[0] += 61
+    backend.stream_audio(sid, win("u1", 1, final=True))  # the same utterance continues
+    assert len(rest.starts) == 1
+    rest.session_id = "ls-2"
+    backend.stream_audio(sid, win("u2", 0, final=True))  # a new utterance: roll over now
+    assert len(rest.starts) == 2
+    backend.stop_all()
+
+
+def test_failed_rollover_keeps_the_session_retries_later_and_the_cap_still_applies():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.start_raise = ConnectionError("provider down")
+    backend.stream_audio(sid, win("u1", 0, final=True))  # keeps speaking on the old session
+    assert len(rest.starts) == 2 and rest.controls == []
+    now[0] += 10
+    backend.stream_audio(sid, win("u2", 0, final=True))
+    assert len(rest.starts) == 2  # not retried inside the pause
+    now[0] += 30  # now 101 s old: past the retry pause and past the cap
+    with pytest.raises(SessionNearCap):
+        backend.stream_audio(sid, win("u3", 0, final=True))
+    assert len(rest.starts) == 3  # one more attempt was made before the guard refused
+    backend.stop_all()
+
+
+def test_rollover_must_start_before_the_age_guard():
+    with pytest.raises(ValueError):
+        settings(rollover_after_s=100.0, max_session_s=100.0)
