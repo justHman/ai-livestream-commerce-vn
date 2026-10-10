@@ -105,7 +105,9 @@ _PERCENT_RE = re.compile(r"(?<!\w)(\d{1,3}(?:[.,]\d{1,3})?)\s*%(?!\w)")
 
 # A bare integer or decimal number (excludes grouped prices and percents,
 # which are expanded by the earlier normalizers).
-_NUMBER_RE = re.compile(r"(?<![\w.,])(\d{1,15}(?:[.,]\d{1,3})?)(?![\w.,%])")
+_NUMBER_RE = re.compile(
+    r"(?<![\w.,])(\d{1,15}(?:[.,]\d{1,3})?)(?![\w%]|[.,]\d)"
+)  # a sentence-final "44." is still a number
 
 # Uppercase acronyms/product codes: "ABC", "SKU-123", "HT1" -> spelled out
 # letter-by-letter ("A B C", "S K U một hai ba").

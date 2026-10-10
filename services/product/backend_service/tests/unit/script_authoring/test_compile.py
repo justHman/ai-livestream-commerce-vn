@@ -165,3 +165,13 @@ def test_machine_price_sizes_and_paragraphs_compile_to_spoken_units() -> None:
     out = compile_spoken_text("Giá 100000.00 VND.\n\nSize XL, XXL và ABC.").spoken_text
     assert out == "Giá một trăm nghìn đồng.\n\nSize XL, XXL và A B C."
     assert compile_spoken_text(out).spoken_text == out  # idempotent, boundaries kept
+
+
+def test_a_number_before_sentence_punctuation_is_still_spoken() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    assert (
+        compile_spoken_text("Cao từ 36 đến 44.").spoken_text
+        == "Cao từ ba mươi sáu đến bốn mươi bốn."
+    )
+    assert compile_spoken_text("Có 2, rồi 3.").spoken_text == "Có hai, rồi ba."

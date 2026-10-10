@@ -870,19 +870,25 @@ async def test_batch_counts_exactly_the_claims_the_saved_text_does_not_speak() -
         ("Bảo hành 1 năm.", "Bảo hành một năm nhé.", True),
         ("Bảo hành 1 năm.", "Bảo hành hai mươi mốt năm nhé.", False),
         ("Bảo hành 1 năm.", "Bảo hành hai mươi một năm nhé.", False),
+        ("Bảo hành 1 năm.", "Bảo hành 1 năm nhé.", True),
+        ("Đổi trả trong 5 ngày.", "Đổi trả trong năm ngày.", True),
         ("Đổi trả trong 15 ngày.", "Đổi trả trong mười lăm ngày nhé.", True),
         ("Đổi trả trong 15 ngày.", "Đổi trả trong năm ngày nhé.", False),
         ("Đổi trả trong 5 ngày.", "Đổi trả trong mười lăm ngày nhé.", False),
-        ("Giao trong 3 ngày.", "Giao trong ba mươi ngày nhé.", False),
         ("Giao trong 30 ngày.", "Giao trong ba ngày nhé.", False),
-        ("Giao trong 30 ngày.", "Giao trong ba mươi ngày nhé.", True),
-        ("Bảo hành 20 năm.", "Bảo hành hai mươi năm nhé.", True),
-        ("Bảo hành 1 năm.", "Bảo hành 1 năm nhé.", True),
-        ("Dung tích 1,5 lít.", "Dung tích một phẩy năm lít nhé.", True),
-        ("Giá 105 nghìn.", "Giá một trăm linh năm nghìn nhé.", True),
+        ("Giao trong 3 ngày.", "Giao trong ba mươi ngày nhé.", False),
+        ("Giao trong 105 ngày.", "Giao trong một trăm lẻ năm ngày.", True),
+        ("Giảm 20% khi mua hàng.", "Giảm hai mươi phần trăm khi mua hàng.", True),
+        ("Giảm 20% khi mua hàng.", "Giảm hai phần trăm khi mua hàng.", False),
+        ("Dung tích 1,25 lít.", "Dung tích một phẩy hai mươi lăm lít.", True),
+        ("Dung tích 1,25 lít.", "Dung tích 1,25 lít.", True),
+        ("Cao 36-44.", "Cao từ 36 đến 44.", True),
+        ("Cao 36-44.", "Cao từ ba mươi sáu đến bốn mươi bốn.", True),
+        ("Cao 36-44.", "Cao từ ba mươi sáu đến bốn mươi.", False),
+        ("Giá 105 nghìn.", "Giá một trăm lẻ năm nghìn.", True),
     ],
 )
-def test_number_coverage_compares_whole_numeric_expressions(claim, text, covered) -> None:
+def test_number_coverage_uses_the_canonical_spoken_form(claim, text, covered) -> None:
     from backend.application.script_authoring.generation.ordered_units import claim_covered
 
     assert claim_covered(claim, text) is covered

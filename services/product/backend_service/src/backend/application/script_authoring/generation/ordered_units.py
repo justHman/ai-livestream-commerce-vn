@@ -465,118 +465,64 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in folded if unicodedata.category(ch) != "Mn")
 
 
-_DIGIT_WORDS = {
-    "một": 1,
-    "hai": 2,
-    "ba": 3,
-    "bốn": 4,
-    "lăm": 5,
-    "sáu": 6,
-    "bảy": 7,
-    "tám": 8,
-    "chín": 9,
-}
-_MULTIPLIERS = {"nghìn": 1000, "ngàn": 1000, "triệu": 1_000_000}
-_TOKEN_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?!\d)|\d+(?:[.,]\d+)?|[^\W\d_]+")
+# Words compile_spoken_text emits for numbers: the only vocabulary of the extra-number guard.
+_NUMBER_WORDS = frozenset(
+    "không một hai ba bốn năm sáu bảy tám chín mười mươi mốt tư lăm trăm nghìn ngàn triệu tỷ "
+    "lẻ linh rưỡi phẩy".split()
+)
+_CLAIM_NUMBER_RE = re.compile(r"(\d+(?:[.,]\d+)?)(%?)\s*([^\W\d_]+)?")
 
 
-def _digit_value(token: str) -> float:
-    if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", token):
-        return float(re.sub(r"[.,]", "", token))
-    return float(token.replace(",", "."))
+def _spoken_words(text: str) -> list[str]:
+    """The canonical spoken form (compile_spoken_text) as lowercase words."""
+    return re.findall(r"\w+", compile_spoken_text(text).spoken_text.lower())
 
 
-def numbers_in(text: str) -> list[tuple[float, str]]:
-    """(value, following word) of every COMPLETE numeric expression: digit numbers and
-    Vietnamese number-word runs ("hai mươi mốt" is 21, never "một")."""
-    tokens = _TOKEN_RE.findall(text.lower())
-    found: list[tuple[float, str]] = []
-    i = 0
+def _has_run(words: list[str], phrase: list[str]) -> bool:
+    n = len(phrase)
+    return bool(n) and any(words[i : i + n] == phrase for i in range(len(words) - n + 1))
 
-    def word_at(k: int) -> str:
-        return tokens[k] if k < len(tokens) and not tokens[k][0].isdigit() else ""
 
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok[0].isdigit():
-            value, unit = _digit_value(tok), word_at(i + 1)
-            if unit in _MULTIPLIERS:  # "105 nghìn" is 105000
-                value *= _MULTIPLIERS[unit]
-                i += 1
-                unit = word_at(i + 1)
-            found.append((value, unit))
-            i += 1
-            continue
-        nxt = word_at(i + 1)
-        is_num = (
-            tok in _DIGIT_WORDS
-            or tok in ("mười", "mươi", "trăm", *_MULTIPLIERS)
-            or (tok == "năm" and nxt in ("mươi", "trăm", *_MULTIPLIERS))
-            or (tok in ("tư", "mốt") and i > 0 and tokens[i - 1] == "mươi")
-        )
-        if not is_num:
-            i += 1
-            continue
-        total = hundreds = tens = last = 0.0
-        has_last = False
-        while i < len(tokens) and not tokens[i][0].isdigit():
-            t = tokens[i]
-            after = word_at(i + 1)
-            if t in _DIGIT_WORDS or (t == "năm" and after in ("mươi", "trăm", *_MULTIPLIERS)):
-                last, has_last = _DIGIT_WORDS.get(t, 5), True
-            elif t in ("tư", "mốt") and i > 0 and tokens[i - 1] == "mươi":
-                last, has_last = (4 if t == "tư" else 1), True
-            elif t == "mười":
-                tens = 10
-            elif t == "mươi":
-                tens, has_last = (last if has_last else 1) * 10, False
-            elif t == "trăm":
-                hundreds, has_last = (last if has_last else 1) * 100, False
-            elif t in ("linh", "lẻ"):
-                pass
-            elif t in _MULTIPLIERS:
-                group = hundreds + tens + (last if has_last else 0)
-                total += (group or 1) * _MULTIPLIERS[t]
-                hundreds = tens = last = 0.0
-                has_last = False
-            else:
-                break
-            i += 1
-        value = total + hundreds + tens + (last if has_last else 0)
-        if word_at(i) == "rưỡi":
-            value += 0.5
-            i += 1
-        elif word_at(i) in ("phẩy", "chấm") and word_at(i + 1) in (*_DIGIT_WORDS, "năm"):
-            decimals = ""
-            i += 1
-            while word_at(i) in (*_DIGIT_WORDS, "năm", "không"):
-                decimals += str(_DIGIT_WORDS.get(word_at(i), 5 if word_at(i) == "năm" else 0))
-                i += 1
-            value += float("0." + decimals)
-        found.append((round(value, 3), word_at(i)))
-    return [(round(v, 3), u) for v, u in found]
+def _claim_numbers(claim: str) -> list[tuple[list[str], list[str], str]]:
+    """Per digit token of a claim, compiled INDIVIDUALLY: (expected phrase, bare number
+    words, unit word right after it). "20%" expects "hai mươi phần trăm", unit "phần"."""
+    out = []
+    for number, percent, unit in _CLAIM_NUMBER_RE.findall(claim):
+        bare = _spoken_words(number)
+        expected = _spoken_words(number + percent)
+        out.append((expected, bare, "phần" if percent else (unit or "").lower()))
+    return out
 
 
 def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
-    """Coverage of one claim by a text.
+    """Coverage of one claim by a text, without any numeric arithmetic.
 
-    Numbers: every number of the claim appears as a COMPLETE expression in the text, and the
-    text adds no different number next to a unit word the claim uses (1 năm is not 21 năm).
-    ``context`` = the other claims allowed to share the text (their numbers are not errors).
-    Words: at least 60% of the other content tokens appear (case/diacritic folded).
+    Numbers: each digit token of the claim, compiled by the canonical compiler, must occur as a
+    contiguous word run in the text (digits the model wrote are normalised the same way). Extra
+    number guard: right before each unit word the claim uses (ngày, năm, phần...), the text's
+    maximal run of number words must equal one of the expected phrases (or be empty), so
+    "1 năm" is not "hai mươi mốt năm". ``context`` = other claims allowed to share the text.
+    Other words: at least 60% appear (case/diacritic folded).
     """
-    wanted = numbers_in(claim)
-    present = numbers_in(text)
-    present_values = {v for v, _u in present}
-    if any(v not in present_values for v, _u in wanted):
+    spoken = _spoken_words(text)
+    numbers = _claim_numbers(claim)
+    if any(not _has_run(spoken, expected) for expected, _bare, _u in numbers):
         return False
-    allowed: dict[str, set[float]] = {}
-    for source in (claim, *context):
-        for value, unit in numbers_in(source):
-            allowed.setdefault(unit, set()).add(value)
-    claim_units = {u for _v, u in wanted if u}
-    if any(u in claim_units and v not in allowed.get(u, set()) for v, u in present if u):
-        return False
+    allowed = [bare for _e, bare, _u in numbers]
+    for other in context:
+        allowed += [bare for _e, bare, _u in _claim_numbers(other)]
+    for _expected, _bare, unit in numbers:
+        if not unit:
+            continue
+        for j, word in enumerate(spoken):
+            if word != unit:
+                continue
+            start = j
+            while start > 0 and spoken[start - 1] in _NUMBER_WORDS:
+                start -= 1
+            run = spoken[start:j]
+            if run and run not in allowed:
+                return False
     tokens = set(re.findall(r"\w+", _fold(text)))
     words = re.findall(r"[^\W\d_]{2,}", _fold(claim))
     if not words:
