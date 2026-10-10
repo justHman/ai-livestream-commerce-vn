@@ -98,6 +98,7 @@ class _SessionStats:
     skips: int = 0
     interrupts: int = 0
     last_decision_ts: Optional[float] = None
+    last_turn_end: Optional[float] = None  # monotonic end of the previous spoken turn
 
 
 class DirectorCoordinator:
@@ -169,7 +170,6 @@ class DirectorCoordinator:
         self._decision_queue: dict[str, deque[Decision]] = {}
         self._speech_queue: dict[str, deque[Decision]] = {}
         self._current_speech: dict[str, Decision] = {}
-        self._last_turn_end: dict[str, float] = {}  # monotonic end of the previous spoken turn
         self._completed_speech: dict[str, dict] = {}
         self._completed_history: dict[str, deque[dict]] = {}
         self._completed_history_size = completed_history_size
@@ -1521,7 +1521,7 @@ class DirectorCoordinator:
             decision.latency_spans["playback"]["end"] = ended
             # Where a pause between two units comes from: waiting for the turn to start, for the
             # first audio, or the playback itself.
-            previous_end = self._last_turn_end.get(session_id)
+            previous_end = st.last_turn_end
             logger.info(
                 "speech turn timing session=%s unit=%s action=%s start_gap_ms=%s "
                 "first_audio_ms=%s total_ms=%s chars=%s",
@@ -1533,7 +1533,7 @@ class DirectorCoordinator:
                 int((ended - playback_started) * 1000),
                 len(text or ""),
             )
-            self._last_turn_end[session_id] = ended
+            st.last_turn_end = ended
             completed = {
                 "turn_id": decision.turn_id,
                 "latency_spans": dict(decision.latency_spans),
