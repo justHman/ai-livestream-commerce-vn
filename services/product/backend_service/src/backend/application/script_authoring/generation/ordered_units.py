@@ -122,7 +122,7 @@ _MISSING_INFO_RE = re.compile(
 )
 _HARD_SELL_RE = re.compile(
     r"chốt đơn ngay|đặt (?:hàng )?ngay|mua ngay|nhanh tay|không bỏ lỡ|đừng bỏ lỡ|số lượng có hạn"
-    r"|chốt ngay|order ngay",
+    r"|chốt ngay|order ngay|giá (?:rẻ|siêu rẻ)|rẻ nhất",
     re.IGNORECASE,
 )
 _BRIDGE_RE = re.compile(
@@ -151,7 +151,9 @@ _MAX_PROMOS_PER_UNIT = 3
 _MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
 _MAX_SIZE_ROWS = 40
 _SIZE_ROW_RE = re.compile(
-    r"(?:cao|chiều cao)[^.]*?(?:cân nặng|nặng)|\bsize\s*[A-Za-z0-9]+\b[^.]*\d", re.IGNORECASE
+    r"(?:cao|chiều cao)[^.]*?(?:cân nặng|nặng)|\bsize\s*[A-Za-z0-9]+\b[^.]*\d"
+    r"|\d\s*(?:kg|kí|ki lô)\b[^.]*\bsize\b",
+    re.IGNORECASE,
 )
 _SENTENCE_END_RE = re.compile(r"[.!?…][\"'”’)\]]*$")
 # Viewer-address forms only; "trẻ em", "em bé", "anh em" are ordinary words, not address.
@@ -173,7 +175,8 @@ _COVERAGE = 0.6
 _CTA_RE = re.compile(
     r"đặt hàng|giỏ hàng|nhắn mình|nhắn tin|inbox|bình luận để|chốt đơn", re.IGNORECASE
 )
-_TYPOS = {"thoải chọn": "thoải mái chọn"}
+_TYPOS = {"thoải chọn": "thoải mái chọn", "đúng mẫi": "đúng mẫu", "đi quan": "đi quen"}
+_KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
 # Clearly different subjects only (material/feel/fit are properties of ONE attribute).
 _TOPICS = {
     "size": re.compile(r"\bsize\b|chiều cao|cân nặng|kích cỡ", re.IGNORECASE),
@@ -250,6 +253,12 @@ def _size_paragraphs(rows: tuple[str, ...], must: set[str], max_s: float) -> lis
     return paras
 
 
+def _ask_aloud(claim: str) -> str:
+    """A stored FAQ ("Q? A") is spoken as what viewers ask; fixed wording, no new fact."""
+    head, sep, _ = claim.partition("?")
+    return f"Nhiều bạn hỏi: {claim}" if sep and len(head) > 3 else claim
+
+
 def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     """Deterministic extractive unit for a part the model could not write.
 
@@ -272,8 +281,9 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     elif spec.role == "sizes":
         text = "\n\n".join(_size_paragraphs(spec.claims, set(spec.must), max_s))
     else:
-        text = "\n\n".join(_paragraphs(list(spec.claims), max_s))
-    return compile_spoken_text(text or f"Mình giới thiệu thêm về {name}.").spoken_text
+        text = "\n\n".join(_paragraphs([_ask_aloud(c) for c in spec.claims], max_s))
+    text = _KH_RE.sub("không", text or f"Mình giới thiệu thêm về {name}.")
+    return compile_spoken_text(text).spoken_text
 
 
 def spoken_price(price: str) -> str | None:
@@ -672,6 +682,7 @@ def check_unit_text(
     text = re.sub(r"\s+", " ", text).strip()
     for wrong, right in _TYPOS.items():
         text = text.replace(wrong, right)
+    text = _KH_RE.sub("không", text)
     text = _SPLIT_SIZE_RE.sub(lambda m: re.sub(r"\s+", "", m.group(1)), text)
     text = _speak_approved_prices(text, prices)
     if len(text) < 6 or not re.search(r"[^\W\d_]{2}", text):
@@ -702,7 +713,7 @@ def check_unit_text(
         return None, "position"  # legacy unlocked order: no first/last wording
     if must and uncovered_claims(text, must, (*spec.claims, *spec.promos) if spec else ()):
         return None, "coverage"  # a must-keep claim (restriction, warranty...) was left out
-    if product_name and role not in ("intro", "") and name_used_elsewhere >= 2:
+    if product_name and role not in ("intro", "") and name_used_elsewhere >= 3:
         if product_name.lower() in text.lower():
             return None, "name_repeat"
     return text, None
