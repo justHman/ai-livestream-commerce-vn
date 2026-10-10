@@ -89,6 +89,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     build_unit_prompt,
     build_unit_repair_prompt,
     check_unit_text,
+    claims_not_spoken,
     fallback_unit_text,
     plan_units,
     role_bounds_s,
@@ -2367,6 +2368,10 @@ class ScriptAuthoringServiceImpl:
             self._raise_not_found("generation batch", batch_id)
         _batch, state = result
         products = []
+        plan = None
+        if state.ordered_units:
+            script_set = await self._repos.script_sets.get(set_id)
+            plan = self._ordered_batch(script_set, None) if script_set is not None else None
         for pid in state.requested_products:
             progress = state.products.get(pid)
             item = await self._repos.items.get_by_product(set_id, pid)
@@ -2387,6 +2392,10 @@ class ScriptAuthoringServiceImpl:
                 "item_state": item_state.name if item_state is not None else None,
                 "error": progress.error if progress else "",
             }
+            if plan is not None and pid in plan.roles:
+                skipped = claims_not_spoken(plan.products[pid], plan.roles[pid])
+                if skipped:
+                    entry["claims_not_spoken"] = skipped  # approved claims no part speaks
             fallback = (
                 ((progress.workflow_snapshot or {}).get("fallback_units") or {}) if progress else {}
             )

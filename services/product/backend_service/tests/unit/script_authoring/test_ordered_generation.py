@@ -458,11 +458,19 @@ def test_28_claims_become_at_most_five_parts_and_one_size_chart_unit() -> None:
         claims=tuple(features + rows + policy),
     )
     units = plan_units(brief, first=False, last=False)
-    assert [u.role for u in units] == ["intro", "highlight", "sizes", "assurance", "offer"]
+    assert [u.role for u in units] == [
+        "intro",
+        "highlight",
+        "sizes",
+        "assurance",
+        "assurance",
+        "offer",
+    ]
     by_role = {u.role: u for u in units}
     assert by_role["sizes"].claims == tuple(rows)  # the whole chart is ONE unit
-    assert len(by_role["highlight"].claims) == 6 and len(by_role["assurance"].claims) == 6
-    assert [u.with_cta for u in units] == [False, False, False, False, True]
+    assert len(by_role["highlight"].claims) == 6
+    assert sum(len(u.claims) for u in units if u.role == "assurance") == 8  # none dropped
+    assert [u.with_cta for u in units] == [False] * 5 + [True]
 
 
 def test_fallback_units_use_only_approved_words_and_no_markup() -> None:
@@ -473,7 +481,8 @@ def test_fallback_units_use_only_approved_words_and_no_markup() -> None:
         claims=("Gel làm sạch nhẹ.", "Chai nhỏ gọn.", "Dùng được lâu.", "Mùi dễ chịu."),
     )
     highlight = fallback_unit_text(UnitSpec("highlight", claims=tuple(brief.claims)), brief)
-    assert highlight == "Gel làm sạch nhẹ. Chai nhỏ gọn. Dùng được lâu."
+    # ALL claims, verbatim, in short paragraphs (never truncated to the first few)
+    assert highlight == "Gel làm sạch nhẹ. Chai nhỏ gọn. Dùng được lâu.\n\nMùi dễ chịu."
     offer = fallback_unit_text(UnitSpec("offer", promos=("Tặng quà nhỏ.",), with_price=True), brief)
     assert offer == "Giá một trăm năm mươi nghìn đồng. Tặng quà nhỏ."
     for role in ("opening", "intro", "closing", "assurance", "sizes", "offer"):
@@ -637,3 +646,82 @@ def test_missing_data_phrase_exception_ignores_whitespace_differences() -> None:
     approved = ("Không có  khuyến mãi cho đơn dưới 200k.\nTheo từng đợt.",)
     sentence = "Lưu ý là không có khuyến mãi cho đơn dưới 200k nhé cả nhà."
     assert clean_unit_text(sentence, approved=approved) is not None
+
+
+def test_restrictions_are_never_dropped_by_a_cap_or_a_fallback() -> None:
+    claims = (
+        "Bảo hành một năm.",
+        "Đổi trả trong bảy ngày.",
+        "Giao hàng toàn quốc.",
+        "Không bảo hành khi giặt máy.",
+    )
+    brief = ProductBrief(product_id="p", name="Áo", claims=claims)
+    spec = next(u for u in plan_units(brief, first=False, last=False) if u.role == "assurance")
+    text = fallback_unit_text(spec, brief)
+    assert (
+        "Không bảo hành khi giặt máy." in text and text.count("\n\n") == 0
+    )  # restriction stays beside its claims
+    # even with far more claims than fit, the restriction survives and stays beside its warranty
+    many = tuple(f"Cam kết số {i}." for i in range(20)) + claims
+    units = [u for u in plan_units(ProductBrief("p", "Áo", claims=many), first=False, last=False)]
+    spoken = [c for u in units if u.role == "assurance" for c in u.claims]
+    assert "Không bảo hành khi giặt máy." in spoken
+    assert len([u for u in units if u.role == "assurance"]) <= 2
+
+
+def test_markdown_in_approved_claims_is_unwrapped_never_deleted() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    text = "Bảo hành một năm. **Không bảo hành khi giặt máy.** _Giao nhanh_ và `đổi trả`."
+    assert compile_spoken_text(text).spoken_text == (
+        "Bảo hành một năm. Không bảo hành khi giặt máy. Giao nhanh và đổi trả."
+    )
+    brief = ProductBrief(product_id="p", name="Áo", claims=(text,))
+    out = fallback_unit_text(UnitSpec("assurance", claims=(text,)), brief)
+    assert "Không bảo hành khi giặt máy." in out
+
+
+def test_unparseable_price_never_invents_an_offer() -> None:
+    brief = ProductBrief(
+        product_id="p", name="Áo", prices=("Liên hệ shop",), claims=("Áo cotton.",)
+    )
+    units = plan_units(brief, first=False, last=False)
+    assert [u.role for u in units] == ["intro", "highlight"] and units[-1].with_cta
+    offer = UnitSpec("offer")
+    text = fallback_unit_text(offer, brief)
+    assert not re.search(r"ưu đãi|khuyến mãi|giảm", text)
+    promo = ProductBrief(product_id="p", name="Áo", claims=("Giảm 10% khi mua hai.",))
+    assert [u.role for u in plan_units(promo, first=False, last=False)] == ["intro", "offer"]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Sản phẩm dành cho trẻ em.",
+        "Áo co giãn và giữ form tốt.",
+        "Áo vải cotton và có thể giặt máy.",
+    ],
+)
+def test_ordinary_descriptions_pass_the_guards(sentence) -> None:
+    assert check_unit_text(sentence, spec=UnitSpec("highlight")) == (sentence, None)
+
+
+@pytest.mark.asyncio
+async def test_batch_reports_approved_claims_no_part_speaks() -> None:
+    service, repos = _service(FakeLLM())
+    many = {
+        "product_name": "Áo ABC",
+        "prices": ["100000.00 VND"],
+        "allowed_claims": [f"Điểm nổi bật số {i}." for i in range(10)],
+    }
+    brief = {**BRIEF, "product_facts": {"P2": many, "P1": BRIEF["product_facts"]["P1"]}}
+    set_id = (
+        await service.create_script_set(
+            name="X", transition_policy="ORDER_AWARE", product_ids=["P2", "P1"], brief=brief
+        )
+    )["id"]
+    batch_id = await _run(service, repos, set_id)
+    snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
+    entry = {p["product_id"]: p for p in snapshot["products"]}
+    assert entry["P2"]["claims_not_spoken"] == 4  # 6 of 10 fit the highlight unit
+    assert "claims_not_spoken" not in entry["P1"]

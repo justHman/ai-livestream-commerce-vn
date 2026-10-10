@@ -127,6 +127,25 @@ _INVISIBLE_SPACE_RE = re.compile("[\xad​⁠﻿]")
 _DASH_RE = re.compile(r"[—–]|(?<=[^\s])-(?=[^\s])")
 
 
+_UNWRAP_RES = (
+    re.compile(r"\[([^\]]+)\]\([^)]+\)"),  # [text](url) -> text
+    re.compile(r"\*\*([^*]+)\*\*"),
+    re.compile(r"__([^_]+)__"),
+    re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])"),
+    re.compile(r"(?<![\w_])_([^_\n]+)_(?![\w_])"),
+    re.compile(r"`([^`]+)`"),
+)
+_TAG_OR_HEADING_RE = re.compile(r"<[^>]+>|^#{1,6}\s", re.MULTILINE)
+
+
+def _strip_markup(text: str) -> str:
+    """Remove markup characters but KEEP the words they wrap ("**Không bảo hành**" is a
+    restriction, not decoration); only HTML tags and heading marks are dropped."""
+    for rx in _UNWRAP_RES:
+        text = rx.sub(r"\1", text)
+    return _TAG_OR_HEADING_RE.sub("", text)
+
+
 def _number_to_words(n: int) -> str:
     """Convert a nonnegative integer to canonical spoken Vietnamese."""
     if n == 0:
@@ -268,7 +287,7 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
             applied.append(nid)
         return new
 
-    text = _MARKUP_RE.sub("", display_text)
+    text = _strip_markup(display_text)
     text = _CONTROL_RE.sub("", text)
     text = _INVISIBLE_SPACE_RE.sub(" ", text)
     text = _changed(display_text, text, "strip_markup_and_controls")
