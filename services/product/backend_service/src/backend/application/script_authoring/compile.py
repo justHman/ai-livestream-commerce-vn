@@ -80,17 +80,81 @@ _TENS = (
     "chín mươi",
 )
 _HUNDRED = "trăm"
-_GROUPS = ("", "nghìn", "triệu", "tỷ")
+_GROUPS = ("", "nghìn", "triệu", "tỷ", "nghìn tỷ", "triệu tỷ", "tỷ tỷ")
+_MAX_WORDED_DIGITS = 21  # beyond "tỷ tỷ" a digit string is read digit by digit
 
 # A grouped price with an optional currency suffix: "299.000đ", "299.000 đ",
 # "1.299.000", "20.000k" (vietnamese commerce uses both separators).
 # Longer alternates first ("đồng" before "đ") so a full suffix is never
 # partially consumed.
-_GROUPED_PRICE_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+\s*(?:đồng|VND|vnđ|₫|đ|k|K)?")
+_GROUPED_PRICE_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:\s*(?:đồng|VND|vnđ|₫|đ|k|K)(?!\w))?")
 
 # A whole price with a currency word and optional zero cents: "100000.00 VND", "50000 đồng".
 # Run BEFORE the grouped/bare number steps so "100000.00" never becomes "phẩy không".
 _PLAIN_CURRENCY_RE = re.compile(r"(?<![\w.,])(\d+)(?:[.,]0{1,2})?\s*(?:VND|vnd|vnđ|₫|đồng)(?!\w)")
+
+# Dates dd-mm-yyyy, dd/mm/yyyy and dd/mm are read as dates (a bare "10-12" stays a range).
+_DATE_RE = re.compile(r"(?<![\d.,/\-])(\d{1,2})([-/])(\d{1,2})(?:\2(\d{4}))?(?![\d/\-])")
+
+
+def _year_words(year: int) -> str:
+    rest = year % 1000
+    if year < 1000 or rest == 0 or rest >= 100:
+        return _number_to_words(year)
+    lead = _number_to_words(year - rest)
+    return f"{lead} không trăm {'lẻ ' if rest < 10 else ''}{_number_to_words(rest)}"
+
+
+_DATE_CUES = ("ngày", "hạn", "từ", "đến", "trước", "sau")
+
+
+def _read_date(match: re.Match[str]) -> str:
+    day, sep, month, year = match.groups()
+    if sep == "-" and not year:
+        return match.group()  # "10-12" is a range, not a date
+    if not (1 <= int(day) <= 31 and 1 <= int(month) <= 12):
+        return match.group()
+    before = match.string[: match.start()].split()
+    cue = before[-1].lower() if before else ""
+    if not year and ((day, month) == ("24", "7") or cue not in _DATE_CUES):
+        # a bare a/b is a date only right after a date cue; "24/7" and "1/2 viên" never are
+        return match.group()
+    lead = "" if cue == "ngày" else "ngày "  # "ngày 1/10" already carries the word
+    spoken = f"{lead}{_number_to_words(int(day))} tháng {_number_to_words(int(month))}"
+    return f"{spoken} năm {_year_words(int(year))}" if year else spoken
+
+
+# A numeric range "36-44" reads "36 đến 44" (not a decimal, not a comma); a chain of three or
+# more numbers is a date/serial and keeps the old behaviour.
+_RANGE_RE = re.compile(
+    r"(?<![\d.,\-–—])(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)(?![\d.,]*\s*[-–—]\s*\d)"
+)
+
+# Vietnamese phone numbers are read digit by digit (the leading zero is a digit).
+_PHONE_RE = re.compile(r"(?<![\w.,])(?:0\d{8,10}|\+?84\d{9,10})(?![\w%]|[.,]\d)")
+# Hotlines 1800/1900 xxxx are read digit by digit.
+_HOTLINE_RE = re.compile(r"(?<![\w.,])(1[89]00)\s(\d{4})(?![\w%]|[.,]\d)")
+_DIGIT_WORD = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
+
+# Compact measurements: "1m65" -> "một mét sáu mươi lăm", "60kg" -> "sáu mươi ki lô gam".
+_METER_CM_RE = re.compile(r"(?<![\w.,])(\d{1,3})m(\d{1,2})(?!\w)")
+_MEASURE_RE = re.compile(
+    r"(?<![\w.,])(\d{1,3}(?:\.\d{3})+|\d+(?:[.,]\d+)?)\s?(mAh|kg|mg|ml|cm|mm|g|m|V|W)(?!\w)"
+)
+_MEASURE_WORDS = {
+    "kg": "ki lô gam",
+    "mg": "mi li gam",
+    "ml": "mi li lít",
+    "cm": "xăng ti mét",
+    "mm": "mi li mét",
+    "g": "gam",
+    "m": "mét",
+    "mAh": "mi li am pe giờ",
+    "V": "vôn",
+    "W": "oát",
+}
+# Clock times "20h", "19h30" -> "hai mươi giờ", "mười chín giờ ba mươi".
+_TIME_RE = re.compile(r"(?<![\w.,])(\d{1,2})h(\d{2})?(?!\w)")
 
 # Size tokens are spoken as written ("XL" must not become "X L").
 _SIZE_TOKENS = frozenset({"XS", "XL", "XXL", "XXXL"})
@@ -105,7 +169,9 @@ _PERCENT_RE = re.compile(r"(?<!\w)(\d{1,3}(?:[.,]\d{1,3})?)\s*%(?!\w)")
 
 # A bare integer or decimal number (excludes grouped prices and percents,
 # which are expanded by the earlier normalizers).
-_NUMBER_RE = re.compile(r"(?<![\w.,])(\d{1,15}(?:[.,]\d{1,3})?)(?![\w.,%])")
+_NUMBER_RE = re.compile(
+    r"(?<![\w.,])(\d{1,15}(?:[.,]\d{1,3})?)(?![\w%]|[.,]\d)"
+)  # a sentence-final "44." is still a number
 
 # Uppercase acronyms/product codes: "ABC", "SKU-123", "HT1" -> spelled out
 # letter-by-letter ("A B C", "S K U một hai ba").
@@ -127,10 +193,51 @@ _INVISIBLE_SPACE_RE = re.compile("[\xad​⁠﻿]")
 _DASH_RE = re.compile(r"[—–]|(?<=[^\s])-(?=[^\s])")
 
 
+_UNWRAP_RES = (
+    re.compile(r"\[([^\]]+)\]\([^)]+\)"),  # [text](url) -> text
+    re.compile(r"\*\*([^*]+)\*\*"),
+    re.compile(r"__([^_]+)__"),
+    re.compile(r"(?<![\w*])\*([^*\n]+)\*(?![\w*])"),
+    re.compile(r"(?<![\w_])_([^_\n]+)_(?![\w_])"),
+    re.compile(r"`([^`]+)`"),
+)
+# Real HTML tags only (ASCII tag name, ASCII attributes): "<năm hoặc >" is never a tag.
+HTML_TAG_RE = (
+    r"</?[A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z][A-Za-z0-9_-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\s>]+))?)*"
+    r"\s*/?>"
+)
+_TAG_OR_HEADING_RE = re.compile(HTML_TAG_RE + r"|^#{1,6}\s", re.MULTILINE)
+# Comparison signs are spoken, so a compiled text has no angle brackets (recompiling is a no-op).
+_LESS_RE = re.compile(r"<\s*(?=\d)")
+_GREATER_RE = re.compile(r">\s*(?=\d)")
+
+
+def _strip_markup(text: str) -> str:
+    """Remove markup characters but KEEP the words they wrap ("**Không bảo hành**" is a
+    restriction, not decoration); only HTML tags and heading marks are dropped."""
+    for rx in _UNWRAP_RES:
+        text = rx.sub(r"\1", text)
+    return _TAG_OR_HEADING_RE.sub("", text)
+
+
+def _digits_to_words(digits: str) -> str:
+    return " ".join(_DIGIT_WORD[int(d)] for d in digits if d.isdigit())
+
+
+def _words_of(digits: str) -> str:
+    """Spoken words of a digit string; NEVER raises (absurdly long strings go digit by digit)."""
+    stripped = digits.lstrip("0")
+    if len(stripped) > _MAX_WORDED_DIGITS:
+        return _digits_to_words(digits)
+    return _number_to_words(int(stripped or "0"))
+
+
 def _number_to_words(n: int) -> str:
     """Convert a nonnegative integer to canonical spoken Vietnamese."""
     if n == 0:
         return "không"
+    if n >= 10**_MAX_WORDED_DIGITS:
+        return _digits_to_words(str(n))
     parts: list[str] = []
     group = 0
     while n > 0:
@@ -178,23 +285,35 @@ def _three_digits(n: int) -> str:
     return result
 
 
-def expand_vietnamese_number(value: str) -> str:
+def _fraction_words(fraction: str) -> str:
+    """Fractional digits: "5" -> năm, "25" -> hai mươi lăm; leading zero or 3+ digits are read
+    digit by digit ("05" -> không năm, "125" -> một hai năm)."""
+    if fraction[0] == "0" or len(fraction) > 2:
+        return _digits_to_words(fraction)
+    return _words_of(fraction)
+
+
+def expand_vietnamese_number(value: str, *, comma_decimal: bool = False) -> str:
     """Spoken Vietnamese for a plain number string (task 4.2 numbers).
 
     ``"299"`` -> ``"hai trăm chín mươi chín"``; thousands grouping is
     stripped (``"1.299.000"`` -> 1299000); a decimal (``"12,5"`` or
     ``"12.5"``) becomes ``"mười hai phẩy năm"``.
     """
-    value = value.strip().replace(",", ".")
-    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value):
-        # Thousands grouping: strip the group dots before parsing.
-        return _number_to_words(int(value.replace(".", "")))
+    value = value.strip()
+    if comma_decimal and "," in value:
+        value = value.replace(",", ".", 1)  # next to %/a unit a comma is the decimal mark
+    else:
+        value = value.replace(",", ".")
+        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value) and value[0] != "0":
+            # Thousands grouping: strip the group dots before parsing.
+            return _words_of(value.replace(".", ""))
     if "." in value:
         whole, _, fraction = value.partition(".")
         if not fraction:
-            return _number_to_words(int(whole))
-        return f"{_number_to_words(int(whole))} phẩy {_number_to_words(int(fraction))}"
-    return _number_to_words(int(value))
+            return _words_of(whole)
+        return f"{_words_of(whole)} phẩy {_fraction_words(fraction)}"
+    return _words_of(value)
 
 
 def number_to_vietnamese_words(n: int) -> str:
@@ -223,10 +342,13 @@ def _expand_currency(match: re.Match[str]) -> str:
 
 
 def _expand_percent(match: re.Match[str]) -> str:
-    return f"{expand_vietnamese_number(match.group(1))} phần trăm"
+    return f"{expand_vietnamese_number(match.group(1), comma_decimal=True)} phần trăm"
 
 
 def _expand_bare_number(match: re.Match[str]) -> str:
+    digits = match.group(1)
+    if len(digits) > 1 and digits[0] == "0" and digits.isdigit():
+        return _digits_to_words(digits)  # a group with a leading zero is never a cardinal
     return expand_vietnamese_number(match.group(1))
 
 
@@ -268,7 +390,7 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
             applied.append(nid)
         return new
 
-    text = _MARKUP_RE.sub("", display_text)
+    text = _GREATER_RE.sub("trên ", _LESS_RE.sub("dưới ", _strip_markup(display_text)))
     text = _CONTROL_RE.sub("", text)
     text = _INVISIBLE_SPACE_RE.sub(" ", text)
     text = _changed(display_text, text, "strip_markup_and_controls")
@@ -278,6 +400,8 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
     whitespace_stripped = " ".join(whitespace_stripped.split())
     text = _changed(text, whitespace_stripped, "collapse_whitespace")
 
+    text = _DATE_RE.sub(_read_date, text)
+    text = _RANGE_RE.sub(r"\1 đến \2", text)
     dashes = _DASH_RE.sub(",", text)
     if dashes != text:
         applied.append("punctuation_and_hyphen")
@@ -301,20 +425,45 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
             suffix = f" {'VND' if suffix == 'vnd' else suffix}"
         return f"{spoken}{suffix}"
 
+    def _metres(match: re.Match[str]) -> str:
+        cm = match.group(2)
+        lead = "lẻ " if len(cm) == 2 and cm[0] == "0" else ""
+        return f"{_words_of(match.group(1))} mét {lead}{_words_of(cm)}"
+
     stage_before_currency = text
-    text = _PLAIN_CURRENCY_RE.sub(
-        lambda m: f"{_number_to_words(int(m.group(1)))} {denomination}", text
+    text = _HOTLINE_RE.sub(
+        lambda m: f"{_digits_to_words(m.group(1))} {_digits_to_words(m.group(2))}", text
     )
+    text = _PHONE_RE.sub(
+        lambda m: " ".join(_DIGIT_WORD[int(d)] for d in m.group().lstrip("+")), text
+    )
+    stage_before_percent = text
+    text = _PERCENT_RE.sub(_expand_percent, text)
+    if text != stage_before_percent:
+        applied.append("percent")
+    stage_before_units = text
+    text = _TIME_RE.sub(
+        lambda m: (
+            f"{_words_of(m.group(1))} giờ" + (f" {_words_of(m.group(2))}" if m.group(2) else "")
+        ),
+        text,
+    )
+    text = _METER_CM_RE.sub(_metres, text)
+    text = _MEASURE_RE.sub(
+        lambda m: (
+            f"{expand_vietnamese_number(m.group(1), comma_decimal=True)} "
+            f"{_MEASURE_WORDS[m.group(2)]}"
+        ),
+        text,
+    )
+    if text != stage_before_units:
+        applied.append("number_to_words")
+    text = _PLAIN_CURRENCY_RE.sub(lambda m: f"{_words_of(m.group(1))} {denomination}", text)
     text = _GROUPED_PRICE_RE.sub(_grouped_expand, text)
     text = _COMPACT_CURRENCY_RE.sub(_expand_currency, text)
     # Track provenance against the text as it was BEFORE this stage.
     if text != stage_before_currency:
         applied.append("currency_and_price")
-
-    stage_before_percent = text
-    text = _PERCENT_RE.sub(_expand_percent, text)
-    if text != stage_before_percent:
-        applied.append("percent")
 
     stage_before_number = text
     text = _NUMBER_RE.sub(_expand_bare_number, text)

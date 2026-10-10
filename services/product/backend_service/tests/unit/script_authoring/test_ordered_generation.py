@@ -19,12 +19,16 @@ from backend.application.script_authoring.generation.ordered_units import (
     BoundedLLM,
     LLMDeadlineError,
     ProductBrief,
+    UnitSpec,
+    check_unit_text,
     clean_unit_text,
+    fallback_unit_text,
     plan_units,
     spoken_price,
 )
 from backend.application.script_authoring.models import ScriptState
 from backend.application.script_authoring.service import ScriptAuthoringError
+from backend.application.script_authoring.duration import spoken_duration_ms
 from backend.application.script_authoring.units import split_units
 
 P2_CLAIMS = [
@@ -85,6 +89,8 @@ class FakeLLM:
         if title == "Giới thiệu sản phẩm":
             lead = "Nào, chuyển sang món kế tiếp là " if "lời nối" in prompt else "Mình giới thiệu "
             return f"{lead}{name}, một sản phẩm rất dễ làm quen với cả nhà."
+        if title == "Bảng size":
+            return "Có nhiều size từ nhỏ đến lớn, mọi người nhắn chiều cao cân nặng để mình tư vấn size nhé."
         if title in ("Điểm nổi bật", "Cam kết và lưu ý"):
             return " ".join(items)
         if title == "Giá và ưu đãi":
@@ -198,46 +204,85 @@ async def test_order_agnostic_set_never_bridges_to_neighbours() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_unit_keeps_the_other_units_and_blocks_approval() -> None:
+async def test_failed_unit_becomes_an_extractive_fallback_never_a_placeholder(caplog) -> None:
     llm = FakeLLM(empty_for={("Gel XYZ", "Giá và ưu đãi")})
     service, repos = _service(llm)
     set_id = await _new_set(service)
-    batch_id = await _run(service, repos, set_id)
+    with caplog.at_level("WARNING"):
+        batch_id = await _run(service, repos, set_id)
 
     item, version = await _text(repos, set_id, "P1")
     units = split_units(version.spoken_text)
-    assert item.state is ScriptState.GATE_FAILED and len(units) == 4
-    assert units[2].startswith("<Phần này chưa soạn được")  # visible, gate-failing placeholder
-    assert units[1] == " ".join(P1_CLAIMS)
+    assert item.state is ScriptState.REVIEWABLE and len(units) == 4
+    assert units[2] == "Giá một trăm năm mươi nghìn đồng hoặc hai trăm nghìn đồng."
+    assert "<" not in version.spoken_text and ">" not in version.spoken_text
+    assert units[1] == " ".join(P1_CLAIMS)  # the other units are untouched
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     statuses = {p["product_id"]: p for p in snapshot["products"]}
-    assert snapshot["outcome"] == "partial"
-    assert statuses["P2"]["status"] == "done" and statuses["P1"]["status"] == "failed"
-    assert any(i["unit_index"] == 2 for i in statuses["P1"]["issues"])
-    with pytest.raises(ScriptAuthoringError):
-        await service.approve_product(
-            set_id=set_id,
-            product_id="P1",
-            version_id=version.id,
-            actor="owner",
-            is_human=True,
-            authorized=True,
-        )
+    assert snapshot["outcome"] == "succeeded" and statuses["P1"]["status"] == "done"
+    assert statuses["P1"]["fallback_units"] == [{"unit_index": 2, "reasons": ["guard:empty"]}]
+    assert "fallback_units" not in statuses["P2"]
+    # every failed attempt is logged with product, unit and the machine reason
+    assert "product=P1 unit=2 role=offer attempt=1 reason=empty" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_provider_errors_are_bounded_and_never_crash_the_batch(monkeypatch) -> None:
+async def test_provider_errors_are_bounded_and_fall_back_without_crashing(monkeypatch) -> None:
     monkeypatch.setattr(time, "sleep", lambda _s: None)
     llm = FakeLLM(raises=LLMClientError("boom"))
     service, repos = _service(llm)
     set_id = await _new_set(service)
     batch_id = await _run(service, repos, set_id)
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
-    assert snapshot["outcome"] == "failed"
+    assert snapshot["outcome"] == "succeeded"  # fallback text, flagged for review
     item, version = await _text(repos, set_id, "P2")
-    assert item.state is ScriptState.GATE_FAILED
-    assert all(u.startswith("<Phần này chưa soạn được") for u in split_units(version.spoken_text))
+    assert item.state is ScriptState.REVIEWABLE and "<" not in version.spoken_text
+    entry = next(p for p in snapshot["products"] if p["product_id"] == "P2")
+    assert len(entry["fallback_units"]) == 5
+    assert entry["fallback_units"][0]["reasons"] == ["llm_failed:LLMClientError"]
     assert len(llm.prompts) <= 9 * 2  # <= 2 transport attempts per unit
+
+
+class TruncatingLLM(FakeLLM):
+    """Cuts the highlight reply of Kem ABC mid-word; optionally only the first time."""
+
+    def __init__(self, always=False):
+        super().__init__()
+        self.always = always
+        self.cuts = 0
+
+    def __call__(self, prompt):
+        text = super().__call__(prompt)
+        if "Điểm nổi bật" in prompt and "Kem ABC" in prompt and (self.always or not self.cuts):
+            self.cuts += 1
+            return text[:-12]  # ends mid-word, no sentence punctuation
+        return text
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_is_detected_and_retried_shorter() -> None:
+    llm = TruncatingLLM()
+    service, repos = _service(llm)
+    set_id = await _new_set(service)
+    batch_id = await _run(service, repos, set_id)
+    _item, version = await _text(repos, set_id, "P2")
+    assert P2_CLAIMS[0] in version.spoken_text and P2_CLAIMS[1] in version.spoken_text
+    assert len(llm.prompts) == 10  # exactly one retry
+    assert "NGẮN HƠN" in next(p for p in llm.prompts if p.endswith("kết thúc trọn câu."))
+    snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
+    assert all("fallback_units" not in p for p in snapshot["products"])
+
+
+@pytest.mark.asyncio
+async def test_persistently_truncated_output_falls_back_with_its_reason() -> None:
+    service, repos = _service(TruncatingLLM(always=True))
+    set_id = await _new_set(service)
+    batch_id = await _run(service, repos, set_id)
+    _item, version = await _text(repos, set_id, "P2")
+    assert split_units(version.spoken_text)[2] == " ".join(P2_CLAIMS[:2])  # verbatim claims
+    snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
+    entry = next(p for p in snapshot["products"] if p["product_id"] == "P2")
+    assert entry["fallback_units"] == [{"unit_index": 2, "reasons": ["guard:truncated"]}]
 
 
 @pytest.mark.asyncio
@@ -341,7 +386,7 @@ def test_clean_unit_text_rules() -> None:
     assert clean_unit_text("") is None
     assert clean_unit_text("...") is None
     assert clean_unit_text("x" * 800) is None
-    assert clean_unit_text('"Giá tốt — mời bạn xem nhé"') == "Giá tốt, mời bạn xem nhé"
+    assert clean_unit_text('"Giá tốt — mời bạn xem nhé."') == "Giá tốt, mời bạn xem nhé."
     assert clean_unit_text("- Một ý.\n\nVà ý nữa.") == "Một ý. Và ý nữa."
     # never mention missing data; never hard-sell
     assert clean_unit_text("Hiện chưa có thông tin khuyến mãi nhé cả nhà.") is None
@@ -357,6 +402,230 @@ def test_clean_unit_text_rules() -> None:
     assert "999.000" in clean_unit_text("Giá 999.000đ thôi nhé.", prices=("100000.00 VND",))
     # sizes stay one token
     assert clean_unit_text("Có size X L và X X L nhé cả nhà.") == "Có size XL và XXL nhé cả nhà."
+
+
+@pytest.mark.parametrize(
+    "raw, reason",
+    [
+        ("Quần jean có cân nặng sáu mươi lăm đến bảy mươ", "truncated"),
+        ("Mình tư vấn cho quý vị nhé.", "address"),
+        ("Mời anh chị xem nhé.", "address"),
+        ("Có size M L XL và không phơi ngoài nắng nhé.", "mashup"),
+        ("Hiện chưa có thông tin về mẫu này nhé.", "missing_info"),
+    ],
+)
+def test_unit_guards_report_a_machine_reason(raw, reason) -> None:
+    assert check_unit_text(raw) == (None, reason)
+
+
+def test_one_topic_per_sentence_and_typos_are_fixed() -> None:
+    assert check_unit_text("Có đủ size từ M đến XL. Nên giặt nhẹ và không phơi nắng.")[0]
+    assert (
+        check_unit_text("Mọi người thoải chọn size nhé.")[0] == "Mọi người thoải mái chọn size nhé."
+    )
+
+
+def test_the_full_product_name_is_not_repeated_in_every_unit() -> None:
+    mid = UnitSpec("highlight")
+    kwargs = {"spec": mid, "product_name": "Áo khoác denim"}
+    text = "Áo khoác denim này rất bền nhé."
+    assert check_unit_text(text, name_used_elsewhere=1, **kwargs)[0]
+    assert check_unit_text(text, name_used_elsewhere=2, **kwargs) == (None, "name_repeat")
+    intro = UnitSpec("intro")
+    assert check_unit_text(text, spec=intro, product_name="Áo khoác denim", name_used_elsewhere=5)[
+        0
+    ]
+
+
+def test_only_the_last_unit_may_carry_a_call_to_action() -> None:
+    cta = "Mọi người nhắn mình để đặt hàng nhé."
+    assert check_unit_text(cta, spec=UnitSpec("highlight")) == (None, "cta")
+    assert check_unit_text(cta, spec=UnitSpec("offer", with_cta=True))[0]
+    assert check_unit_text(cta, spec=UnitSpec("closing"))[0]
+
+
+def test_typed_claims_cap_only_decorative_ones_and_count_the_rest() -> None:
+    rows = [
+        f"Cao 1m{50 + i} đến 1m{52 + i}, nặng {45 + i} đến {48 + i} ký: size M." for i in range(12)
+    ]
+    features = [
+        f"Điểm nổi bật số {w} của mẫu này." for w in "một hai ba bốn năm sáu bảy tám".split()
+    ]
+    policy = [f"Chính sách số {w}: đổi trả dễ." for w in "một hai ba bốn năm sáu bảy tám".split()]
+    brief = ProductBrief(
+        product_id="p",
+        name="Áo khoác denim",
+        prices=("100000.00 VND",),
+        claims=tuple(features + rows + policy),
+        claims_by_type=(("feature", tuple(features + rows)), ("shipping", tuple(policy))),
+    )
+    units = plan_units(brief, first=False, last=False)
+    roles = [u.role for u in units]
+    assert roles == ["intro", "highlight", "sizes", "assurance", "assurance", "offer"]
+    by_role = {u.role: u for u in units}
+    assert by_role["sizes"].claims == tuple(rows)  # the whole chart is ONE unit
+    assert len(by_role["highlight"].claims) == 6  # decorative: capped
+    shipping = [c for u in units if u.role == "assurance" for c in u.claims]
+    assert sorted(shipping) == sorted(policy)  # must-keep type: all kept, <= 4 per unit
+    assert all(len(u.claims) <= 4 for u in units if u.role == "assurance")
+    assert [u.with_cta for u in units] == [False] * 5 + [True]
+
+
+def test_untyped_claims_are_never_capped() -> None:
+    claims = tuple(f"Ý số {i} của mẫu này." for i in range(10))
+    units = plan_units(
+        ProductBrief(product_id="p", name="Áo", claims=claims), first=False, last=False
+    )
+    spoken = [c for u in units for c in u.claims]
+    assert sorted(spoken) == sorted(claims) and all(len(u.claims) <= 4 for u in units)
+
+
+def test_typed_limitation_survives_with_many_features() -> None:
+    features = tuple(f"Tính năng số {i} của mẫu này." for i in range(9))
+    restriction = "Chỉ áp dụng cho lỗi sản xuất."
+    brief = ProductBrief(
+        product_id="p",
+        name="Áo",
+        claims=(*features, "Bảo hành một năm.", restriction),
+        claims_by_type=(
+            ("feature", features),
+            ("warranty", ("Bảo hành một năm.",)),
+            ("limitation", (restriction,)),
+        ),
+    )
+    units = plan_units(brief, first=False, last=False)
+    warranty_unit = next(u for u in units if u.role == "assurance")
+    assert warranty_unit.claims == ("Bảo hành một năm.", restriction)  # same unit, warranty first
+    assert restriction in warranty_unit.must
+    assert len(next(u for u in units if u.role == "highlight").claims) == 6
+
+
+def test_32_limitations_become_short_units_within_the_duration_bound() -> None:
+    claims = tuple(
+        f"Không dùng cho trường hợp số {i} vì có thể gây kích ứng da nhạy cảm của người dùng."
+        for i in range(32)
+    )
+    brief = ProductBrief(
+        product_id="p",
+        name="Kem",
+        claims=claims,
+        claims_by_type=(("limitation", claims),),
+    )
+    units = [u for u in plan_units(brief, first=False, last=False) if u.role == "assurance"]
+    assert len(units) == 8 and all(len(u.claims) == 4 for u in units)
+    for unit in units:
+        for paragraph in fallback_unit_text(unit, brief).split("\n\n"):
+            assert spoken_duration_ms(paragraph) / 1000.0 <= 45.0
+            assert paragraph.count("Không dùng") <= 3
+
+
+def test_size_chart_fallback_always_speaks_a_restricted_row() -> None:
+    rows = [
+        f"Cao 1m{50 + i} đến 1m{52 + i}, nặng {45 + i} đến {48 + i} ký: size M." for i in range(30)
+    ]
+    rows[2] = "Cao 1m60 đến 1m62, nặng 55 đến 58 ký: size L, không giặt máy."
+    brief = ProductBrief(product_id="p", name="Quần", claims=tuple(rows))
+    sizes = next(u for u in plan_units(brief, first=False, last=False) if u.role == "sizes")
+    assert rows[2] in sizes.must
+    text = fallback_unit_text(sizes, brief)
+    assert "không giặt máy" in text
+    for paragraph in text.split("\n\n"):
+        assert spoken_duration_ms(paragraph) / 1000.0 <= 45.0
+
+
+def test_numeric_comparisons_are_not_markup() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+    from backend.application.script_authoring.gate.rules.tts_readiness import check_tts_markup
+
+    text = "Bảo quản ở nhiệt độ <5 hoặc >40 thì không tốt."
+    assert "dưới năm hoặc trên bốn mươi" in compile_spoken_text(text).spoken_text
+    assert check_tts_markup(text, None) == []
+    assert check_tts_markup("Có <b>chữ</b> đậm.", None)  # real tags still flagged
+
+
+def test_legacy_unlocked_order_gets_no_first_last_wording() -> None:
+    brief = ProductBrief(product_id="p", name="Áo", claims=("Áo cotton.",))
+    units = plan_units(brief, first=True, last=True, ordered_aware=False)
+    assert not any(u.first_product or u.last_product for u in units)
+    text = "Đây là sản phẩm cuối cùng của buổi live nhé."
+    assert check_unit_text(text, spec=UnitSpec("highlight"), aware=False) == (None, "position")
+    assert check_unit_text(text, spec=UnitSpec("closing"), aware=False)[0]
+    assert check_unit_text(text, spec=UnitSpec("highlight"), aware=True)[0]
+
+
+@pytest.mark.parametrize("claim_text", ["Do not use during pregnancy."])
+def test_claim_coverage_is_lexical_and_numbers_are_exact(claim_text) -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert claim_covered("Bảo hành 1 năm.", "Mọi người yên tâm, bảo hành một năm nhé.")
+    assert not claim_covered("Bảo hành 1 năm.", "Bảo hành hai năm nhé.")
+    assert claim_covered("Chỉ áp dụng cho lỗi sản xuất.", "Chỉ áp dụng cho lỗi sản xuất nhé.")
+    assert not claim_covered(claim_text, "Không dùng trong thời gian mang thai nhé.")
+
+
+class RestrictionDroppingLLM(FakeLLM):
+    """Writes only the first claim of an assurance unit and translates the English one."""
+
+    def __call__(self, prompt):
+        text = super().__call__(prompt)
+        if "Cam kết và lưu ý" in prompt:
+            self.prompts.append("assurance-call")
+            return text.split(". ")[0].rstrip(".") + "."
+        return text
+
+
+@pytest.mark.asyncio
+async def test_missing_qualifier_falls_back_to_verbatim_claims_after_one_retry() -> None:
+    claims = ["Bảo hành một năm.", "Chỉ áp dụng cho lỗi sản xuất.", "Do not use during pregnancy."]
+    brief = {
+        **BRIEF,
+        "product_facts": {
+            "P2": {
+                "product_name": "Kem ABC",
+                "prices": ["100000.00 VND"],
+                "allowed_claims": claims,
+                "claims_by_type": {
+                    "warranty": [claims[0]],
+                    "limitation": [claims[1]],
+                    "compliance": [claims[2]],
+                },
+            },
+            "P1": BRIEF["product_facts"]["P1"],
+        },
+    }
+    llm = RestrictionDroppingLLM()
+    service, repos = _service(llm)
+    set_id = (
+        await service.create_script_set(
+            name="X", transition_policy="ORDER_AWARE", product_ids=["P2", "P1"], brief=brief
+        )
+    )["id"]
+    batch_id = await _run(service, repos, set_id)
+    _item, version = await _text(repos, set_id, "P2")
+    for claim in claims:
+        assert claim in version.spoken_text  # every restriction spoken, verbatim
+    assert sum("BẮT BUỘC" in p for p in llm.prompts) == 1  # exactly one retry
+    snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
+    entry = next(p for p in snapshot["products"] if p["product_id"] == "P2")
+    assert entry["fallback_units"][0]["reasons"] == ["guard:coverage"]
+    assert "claims_not_spoken" not in entry
+
+
+def test_fallback_units_use_only_approved_words_and_no_markup() -> None:
+    brief = ProductBrief(
+        product_id="p",
+        name="Gel XYZ",
+        prices=("150000.00 VND",),
+        claims=("Gel làm sạch nhẹ.", "Chai nhỏ gọn.", "Dùng được lâu.", "Mùi dễ chịu."),
+    )
+    highlight = fallback_unit_text(UnitSpec("highlight", claims=tuple(brief.claims)), brief)
+    # ALL claims, verbatim, in short paragraphs (never truncated to the first few)
+    assert highlight == "Gel làm sạch nhẹ. Chai nhỏ gọn. Dùng được lâu.\n\nMùi dễ chịu."
+    offer = fallback_unit_text(UnitSpec("offer", promos=("Tặng quà nhỏ.",), with_price=True), brief)
+    assert offer == "Giá một trăm năm mươi nghìn đồng. Tặng quà nhỏ."
+    for role in ("opening", "intro", "closing", "assurance", "sizes", "offer"):
+        text = fallback_unit_text(UnitSpec(role), brief)
+        assert text and "<" not in text and ">" not in text
 
 
 def test_bounded_llm_retries_once_then_stops_and_honours_deadline() -> None:
@@ -395,11 +664,17 @@ def test_short_one_sentence_units_pass_role_bounds_and_common_phrases_only_warn(
 
 @pytest.mark.asyncio
 async def test_regeneration_gates_with_the_real_product_facts() -> None:
-    service, repos = _service(FakeLLM(empty_for={("Gel XYZ", "Giá và ưu đãi")}))
+    service, repos = _service(FakeLLM())
     set_id = await _new_set(service)
     await _run(service, repos, set_id)
-    assert (await _text(repos, set_id, "P1"))[0].state is ScriptState.GATE_FAILED
-    # the failed offer unit is rewritten with an authorised price spelt "150k"
+    # the owner edits P1 by hand (DRAFT) and then regenerates its offer unit
+    await service.save_draft(
+        set_id=set_id,
+        product_id="P1",
+        display_text="Bản nháp.",
+        spoken_text="Bản nháp.",
+        revision=None,
+    )
     service._engine_manager._llm_fn = lambda _p: (
         "Gel XYZ đang có giá 150k thôi, bạn nào quan tâm thì nhắn mình một cách thoải mái nhé."
     )
@@ -509,3 +784,215 @@ def test_missing_data_phrase_exception_ignores_whitespace_differences() -> None:
     approved = ("Không có  khuyến mãi cho đơn dưới 200k.\nTheo từng đợt.",)
     sentence = "Lưu ý là không có khuyến mãi cho đơn dưới 200k nhé cả nhà."
     assert clean_unit_text(sentence, approved=approved) is not None
+
+
+def test_restrictions_are_never_dropped_by_a_cap_or_a_fallback() -> None:
+    claims = (
+        "Bảo hành một năm.",
+        "Đổi trả trong bảy ngày.",
+        "Giao hàng toàn quốc.",
+        "Không bảo hành khi giặt máy.",
+    )
+    brief = ProductBrief(product_id="p", name="Áo", claims=claims)
+    spec = next(u for u in plan_units(brief, first=False, last=False) if u.role == "assurance")
+    assert spec.claims[2] == "Không bảo hành khi giặt máy."  # after its warranty claims
+    text = fallback_unit_text(spec, brief)
+    assert all(c in text for c in claims)  # ALL claims, verbatim
+    many = tuple(f"Cam kết số {i}." for i in range(20)) + claims
+    units = plan_units(ProductBrief("p", "Áo", claims=many), first=False, last=False)
+    spoken = [c for u in units if u.role == "assurance" for c in u.claims]
+    assert "Không bảo hành khi giặt máy." in spoken and len(spoken) == len(many)
+
+
+def test_markdown_in_approved_claims_is_unwrapped_never_deleted() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    text = "Bảo hành một năm. **Không bảo hành khi giặt máy.** _Giao nhanh_ và `đổi trả`."
+    assert compile_spoken_text(text).spoken_text == (
+        "Bảo hành một năm. Không bảo hành khi giặt máy. Giao nhanh và đổi trả."
+    )
+    brief = ProductBrief(product_id="p", name="Áo", claims=(text,))
+    out = fallback_unit_text(UnitSpec("assurance", claims=(text,)), brief)
+    assert "Không bảo hành khi giặt máy." in out
+
+
+def test_unparseable_price_never_invents_an_offer() -> None:
+    brief = ProductBrief(
+        product_id="p", name="Áo", prices=("Liên hệ shop",), claims=("Áo cotton.",)
+    )
+    units = plan_units(brief, first=False, last=False)
+    assert [u.role for u in units] == ["intro", "highlight"] and units[-1].with_cta
+    offer = UnitSpec("offer")
+    text = fallback_unit_text(offer, brief)
+    assert not re.search(r"ưu đãi|khuyến mãi|giảm", text)
+    promo = ProductBrief(product_id="p", name="Áo", claims=("Giảm 10% khi mua hai.",))
+    assert [u.role for u in plan_units(promo, first=False, last=False)] == ["intro", "offer"]
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Sản phẩm dành cho trẻ em.",
+        "Áo co giãn và giữ form tốt.",
+        "Áo vải cotton và có thể giặt máy.",
+    ],
+)
+def test_ordinary_descriptions_pass_the_guards(sentence) -> None:
+    assert check_unit_text(sentence, spec=UnitSpec("highlight")) == (sentence, None)
+
+
+@pytest.mark.asyncio
+async def test_batch_counts_exactly_the_claims_the_saved_text_does_not_speak() -> None:
+    service, repos = _service(FakeLLM())
+    features = [f"Điểm nổi bật số {i}." for i in range(10)]
+    many = {
+        "product_name": "Áo ABC",
+        "prices": ["100000.00 VND"],
+        "allowed_claims": features,
+        "claims_by_type": {"feature": features},
+    }
+    brief = {**BRIEF, "product_facts": {"P2": many, "P1": BRIEF["product_facts"]["P1"]}}
+    set_id = (
+        await service.create_script_set(
+            name="X", transition_policy="ORDER_AWARE", product_ids=["P2", "P1"], brief=brief
+        )
+    )["id"]
+    batch_id = await _run(service, repos, set_id)
+    snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
+    entry = {p["product_id"]: p for p in snapshot["products"]}
+    assert entry["P2"]["claims_not_spoken"] == 4  # 6 of 10 decorative claims were spoken
+    assert "claims_not_spoken" not in entry["P1"]
+
+
+@pytest.mark.parametrize(
+    "claim, text, covered",
+    [
+        ("Bảo hành 1 năm.", "Bảo hành một năm nhé.", True),
+        ("Bảo hành 1 năm.", "Bảo hành hai mươi mốt năm nhé.", False),
+        ("Bảo hành 1 năm.", "Bảo hành hai mươi một năm nhé.", False),
+        ("Bảo hành 1 năm.", "Bảo hành 1 năm nhé.", True),
+        ("Đổi trả trong 5 ngày.", "Đổi trả trong năm ngày.", True),
+        ("Đổi trả trong 15 ngày.", "Đổi trả trong mười lăm ngày nhé.", True),
+        ("Đổi trả trong 15 ngày.", "Đổi trả trong năm ngày nhé.", False),
+        ("Đổi trả trong 5 ngày.", "Đổi trả trong mười lăm ngày nhé.", False),
+        ("Giao trong 30 ngày.", "Giao trong ba ngày nhé.", False),
+        ("Giao trong 3 ngày.", "Giao trong ba mươi ngày nhé.", False),
+        ("Giao trong 105 ngày.", "Giao trong một trăm lẻ năm ngày.", True),
+        ("Giảm 20% khi mua hàng.", "Giảm hai mươi phần trăm khi mua hàng.", True),
+        ("Giảm 20% khi mua hàng.", "Giảm hai phần trăm khi mua hàng.", False),
+        ("Dung tích 1,25 lít.", "Dung tích một phẩy hai mươi lăm lít.", True),
+        ("Dung tích 1,25 lít.", "Dung tích 1,25 lít.", True),
+        ("Cao 36-44.", "Cao từ 36 đến 44.", True),
+        ("Cao 36-44.", "Cao từ ba mươi sáu đến bốn mươi bốn.", True),
+        ("Cao 36-44.", "Cao từ ba mươi sáu đến bốn mươi.", False),
+        ("Giá 105 nghìn.", "Giá một trăm lẻ năm nghìn.", True),
+    ],
+)
+def test_number_coverage_uses_the_canonical_spoken_form(claim, text, covered) -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert claim_covered(claim, text) is covered
+
+
+def test_a_second_claim_in_the_same_unit_may_share_a_unit_word() -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    both = ("Bảo hành 1 năm.", "Hạn dùng 2 năm.")
+    text = "Bảo hành một năm, hạn dùng hai năm nhé."
+    assert claim_covered(both[0], text, both) and claim_covered(both[1], text, both)
+
+
+def test_restricted_size_rows_beyond_the_row_cap_are_never_dropped() -> None:
+    rows = [
+        f"Cao 1m{50 + i} đến 1m{52 + i}, nặng {45 + i} đến {48 + i} ký: size M." for i in range(30)
+    ]
+    restricted = [f"Cao 2m{i:02d}, nặng 9{i % 10} ký: size XL, không giặt máy." for i in range(45)]
+    brief = ProductBrief(product_id="p", name="Quần", claims=tuple(rows + restricted))
+    units = [u for u in plan_units(brief, first=False, last=False) if u.role == "sizes"]
+    assert len(units) == 2 and all(len(u.claims) <= 40 for u in units)
+    spoken = {c for u in units for c in u.claims}
+    assert set(restricted) <= spoken  # every restricted row reaches a unit (and the fallback)
+    assert len(spoken & set(rows)) < 30  # plain overflow rows are only counted, not forced
+    text = "\n\n".join(fallback_unit_text(u, brief) for u in units)
+    assert text.count("không giặt máy") == 45
+
+
+def test_one_long_claim_is_split_at_clauses_within_the_bound_without_changing_words() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    clause = "Sản phẩm không dùng được trong trường hợp số {i} vì có thể gây kích ứng nặng"
+    claim = ", ".join(clause.format(i=i) for i in range(14)) + "."
+    assert spoken_duration_ms(compile_spoken_text(claim).spoken_text) / 1000.0 > 45.0
+    brief = ProductBrief(
+        product_id="p", name="Kem", claims=(claim,), claims_by_type=(("limitation", (claim,)),)
+    )
+    spec = next(u for u in plan_units(brief, first=False, last=False) if u.role == "assurance")
+    paragraphs = fallback_unit_text(spec, brief).split("\n\n")
+    assert len(paragraphs) > 1
+    assert all(spoken_duration_ms(p) / 1000.0 <= 45.0 for p in paragraphs)
+    rebuilt = " ".join(paragraphs)
+    assert rebuilt.count("kích ứng nặng") == 14  # nothing dropped
+
+
+@pytest.mark.parametrize(
+    "claim, text, covered",
+    [
+        # negations and restrictions survive
+        ("Không bảo hành khi giặt máy.", "Không bảo hành khi giặt máy nhé.", True),
+        ("Không bảo hành khi giặt máy.", "Có bảo hành khi giặt máy nhé.", False),
+        ("Chỉ áp dụng cho lỗi sản xuất.", "Áp dụng cho lỗi sản xuất nhé.", False),
+        ("Giảm 20% vào thứ Tư đầu tháng.", "Giảm hai mươi phần trăm vào thứ tư đầu tháng.", True),
+        ("Giảm 20% vào thứ Tư đầu tháng.", "Giảm hai mươi phần trăm vào thứ năm đầu tháng.", False),
+        ("Giảm 20% vào thứ Tư đầu tháng.", "Giảm hai mươi phần trăm vào thứ tư nhé.", False),
+        # maximal runs
+        ("Giá 299 nghìn.", "Giá một triệu hai trăm chín mươi chín nghìn.", False),
+        ("Cao 44.", "Cao một trăm bốn mươi bốn.", False),
+        ("Ngày 1.", "Ngày thứ mười một.", False),
+        ("Bảo hành 1 năm.", "Bảo hành mười một năm.", False),
+        # number words in the claim itself behave like digits
+        ("Đổi trả trong bảy ngày.", "Đổi trả trong bảy ngày nhé.", True),
+        ("Đổi trả trong bảy ngày.", "Đổi trả trong hai mươi bảy ngày nhé.", False),
+        ("Bảo hành một năm.", "Bảo hành một năm nhé.", True),
+        ("Bảo hành một năm.", "Bảo hành hai mươi mốt năm nhé.", False),
+        ("Hàng về năm nay.", "Hàng về năm nay nhé.", True),
+        # uppercase sizes are exact
+        ("Có size XL.", "Có size XXL nhé.", False),
+        ("Có size XL.", "Có size XL nhé.", True),
+        ("Có size M, L.", "Có size M nhé.", False),
+    ],
+)
+def test_restrictions_timing_runs_and_sizes_are_preserved(claim, text, covered) -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert claim_covered(claim, text) is covered
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Cao dưới 1m65, 45-60kg: size M.",
+        "Cao 1m70 đến 1m75, nặng 65-72kg: size L, không đổi size.",
+        "Giá 299.000đ cho mỗi hộp.",
+        "Giảm 20% vào thứ Tư đầu tháng.",
+        "Đổi trả trong 7 ngày kể từ khi nhận hàng.",
+        "Bảo hành 12 tháng, chỉ áp dụng cho lỗi sản xuất.",
+        "Dung tích 1,25 lít.",
+        "Có size XL và XXL.",
+        "Bảo quản ở nhiệt độ <5 hoặc >40 độ C.",
+        "Gọi 0901234567 để được tư vấn.",
+    ],
+)
+def test_every_claim_covers_itself(claim) -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert claim_covered(claim, claim)
+    assert claim_covered(claim, f"Mọi người nghe nhé. {claim} Cảm ơn mọi người.")
+
+
+def test_lone_nam_before_a_count_unit_is_the_number_five() -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert not claim_covered("Giảm năm phần trăm.", "Giảm mười phần trăm.")
+    assert claim_covered("Giảm năm phần trăm.", "Giảm năm phần trăm nhé.")
+    assert claim_covered("Bảo hành một năm.", "Bảo hành 1 năm nhé.")  # still the year
+    assert not claim_covered("Bảo hành một năm.", "Bảo hành hai mươi mốt năm nhé.")

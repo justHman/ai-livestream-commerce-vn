@@ -254,14 +254,18 @@ class EngineManager:
         load (Finding 2). /health/ready uses this to report not-ready."""
         return self.llm_load_error is not None
 
-    def get_llm_fn(self):
-        """Return the (text)->str callable for the cloud RenderBackend."""
+    def get_llm_fn(self, max_tokens: int | None = None):
+        """Return the (text)->str callable for the cloud RenderBackend.
+
+        ``max_tokens`` raises the output budget for callers that need longer replies
+        (script units); the configured value is never lowered.
+        """
         if self._llm is None:
             return None
         return to_llm_fn(
             self._llm,
             system_prompt=self._system_prompt,
-            max_tokens=int(self._llm_cfg.get("max_tokens", 512)),
+            max_tokens=max(int(self._llm_cfg.get("max_tokens", 512)), int(max_tokens or 0)),
             temperature=float(self._llm_cfg.get("temperature", 0.7)),
         )
 

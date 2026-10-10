@@ -31,7 +31,9 @@ __all__ = [
 
 # Markdown/HTML markup that a TTS engine may speak literally or choke on.
 _MARKUP_RE = re.compile(
-    r"<[^>]+>|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|^#{1,6}\s", re.MULTILINE
+    r"</?[A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z][A-Za-z0-9_-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\s>]+))?)*"
+    r"\s*/?>|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|^#{1,6}\s",
+    re.MULTILINE,
 )
 
 # URLs and emails.
