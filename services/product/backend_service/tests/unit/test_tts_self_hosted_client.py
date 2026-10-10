@@ -52,6 +52,7 @@ _TTS_STYLE_VARS = (
     "TTS_VOICE_ID",
     "TTS_SAMPLE_RATE",
     "TTS_AUTH_TOKEN",
+    "TTS_TEMPO",
 )
 
 
