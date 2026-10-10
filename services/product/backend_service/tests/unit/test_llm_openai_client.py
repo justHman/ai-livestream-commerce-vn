@@ -154,3 +154,20 @@ def test_chat_path_is_configurable_for_other_providers(monkeypatch):
     llm.chat(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
     assert seen == ["/v1beta/openai/chat/completions"]
     client.close()
+
+
+def test_reasoning_effort_is_sent_only_when_configured(monkeypatch):
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    request = ChatRequest(messages=[ChatMessage(role="user", content="hi")])
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    OpenAICompatibleClient("https://h", model="m", http_client=client).chat(request)
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "low")
+    OpenAICompatibleClient("https://h", model="m", http_client=client).chat(request)
+    client.close()
+    assert "reasoning_effort" not in bodies[0]
+    assert bodies[1]["reasoning_effort"] == "low"
