@@ -527,16 +527,23 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         tasks = {"startups": self._startups, "cleanups": self._cleanups, "reapers": self._reapers}[
             pool
         ]
-        pending = [t for t in tasks if t is not me and not t.done()]
-        if pool == "startups":
+        deadline = time.monotonic() + self._drain_budget(pool)
+        while True:
+            pending = [t for t in tasks if t is not me and not t.done()]
+            if pool == "startups":
+                for t in pending:
+                    t.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=max(0.0, deadline - time.monotonic()))
             for t in pending:
-                t.cancel()
-        if pending:
-            await asyncio.wait(pending, timeout=self._drain_budget(pool))
-        for t in pending:
-            if not t.done():
-                log.error("lemonslice %s task did not finish within its bound", pool)
-                t.cancel()
+                if not t.done():
+                    log.error("lemonslice %s task did not finish within its bound", pool)
+                    t.cancel()
+            # A reaper may spawn another one (a late rollover); wait for those as well.
+            if pool != "reapers" or time.monotonic() >= deadline:
+                break
+            if not [t for t in tasks if t is not me and not t.done()]:
+                break
 
     async def _httpx_async_post(
         self, url: str, headers: dict, body: dict, timeout: float
@@ -1090,8 +1097,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         try:
             await self._wait_avatar_video(sess.room, replacing=old_participant)
         except Exception:
-            await self._end_provider_session(label, sid)  # it never replaced the old avatar
-            return
+            current = sess.room.remote_participants.get(self._s.avatar_identity)
+            if getattr(current, "sid", None) == old_participant:
+                await self._end_provider_session(label, sid)  # it never replaced the old avatar
+                return
+            # The old avatar is already gone (video still pending): the replacement is all left.
+            log.error("lemonslice late replacement joined without video; adopting it")
         if sess.closing:
             await self._end_provider_session(label, sid)
             return
