@@ -1098,7 +1098,10 @@ def test_approving_one_superlative_does_not_allow_another() -> None:
 
 
 def test_urgency_is_hard_sell_but_following_invitation_is_fine_in_the_closing() -> None:
-    assert check_unit_text("Mọi người tranh thủ lên đơn sớm nhé.") == (None, "hard_sell")
+    assert check_unit_text("Mọi người tranh thủ lên đơn sớm nhé.")[
+        0
+    ]  # soft urging is the owner's call
+    assert check_unit_text("Mẫu này sắp hết hàng rồi nhé.") == (None, "hard_sell")  # false scarcity
     closing = UnitSpec("closing")
     text = "Nhấn theo dõi để không bỏ lỡ những buổi live tiếp theo nhé."
     assert check_unit_text(text, spec=closing)[0]

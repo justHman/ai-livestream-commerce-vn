@@ -111,7 +111,7 @@ _STYLE_RULES = (
     "Luôn gọi người xem là 'mọi người' hoặc 'các bạn' (không dùng quý vị, quý khách, anh, "
     "chị, em, bạn nam, bạn nữ) và xưng 'mình' (không xưng em, tôi; không gọi sản phẩm là "
     "'em nó'). Viết đúng chính tả. Chỉ nhắc tên sản phẩm đầy đủ ở phần giới "
-    "thiệu; các phần sau gọi 'mẫu này' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn. Tránh lặp các cụm quen tai ('thật lòng', 'yên tâm', 'có tò mò ... không', 'cực kỳ'): mỗi cụm dùng nhiều nhất một lần trong một phần, đổi cách nói ở các phần khác nhau. Không thúc giục khách đặt sớm."
+    "thiệu; các phần sau gọi 'mẫu này' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn. Tránh lặp các cụm quen tai ('thật lòng', 'yên tâm', 'có tò mò ... không', 'cực kỳ'): mỗi cụm dùng nhiều nhất một lần trong một phần, đổi cách nói ở các phần khác nhau."
 )
 _TRUTH_RULES = (
     "Phần 'Thông tin được phép nói' là SỰ THẬT bạn phải giữ đúng, KHÔNG phải kịch bản để đọc "
@@ -145,8 +145,7 @@ _MISSING_INFO_RE = re.compile(
 )
 _HARD_SELL_RE = re.compile(
     r"chốt đơn ngay|đặt (?:hàng )?ngay|mua ngay|nhanh tay|không bỏ lỡ|đừng bỏ lỡ|số lượng có hạn"
-    r"|chốt ngay|order ngay|tranh thủ (?:lên đơn|đặt|mua|chốt)|lên đơn sớm|kẻo hết"
-    r"|sắp hết hàng|nhanh lên",
+    r"|chốt ngay|order ngay|kẻo hết|sắp hết hàng",
     re.IGNORECASE,
 )
 # Inviting people to follow the channel is not sales pressure (opening/closing only).
