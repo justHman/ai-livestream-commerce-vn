@@ -320,3 +320,27 @@ def test_compile_survives_absurd_digit_strings() -> None:
 
     for digits in ("9" * 22, "1" + "0" * 40, "7" * 5000):
         assert compile_spoken_text(f"Giá {digits} đồng.").spoken_text
+
+
+@pytest.mark.parametrize(
+    "written, spoken",
+    [
+        ("Hỗ trợ 24/7.", "Hỗ trợ hai mươi bốn/bảy."),
+        ("Dùng 1/2 viên.", "Dùng một/hai viên."),
+        ("Mở bán ngày 1/10.", "Mở bán ngày một tháng mười."),
+        (
+            "Hết hạn 01/10/2026.",
+            "Hết hạn ngày một tháng mười năm hai nghìn không trăm hai mươi sáu.",
+        ),
+        ("Gọi 1900 0123.", "Gọi một chín không không không một hai ba."),
+        ("Gọi 1900 1234.", "Gọi một chín không không một hai ba bốn."),
+        ("Gọi 1800 6868.", "Gọi một tám không không sáu tám sáu tám."),
+        ("Gọi 0901234567.", "Gọi không chín không một hai ba bốn năm sáu bảy."),
+    ],
+)
+def test_bare_slashes_and_spaced_hotlines(written, spoken) -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    once = compile_spoken_text(written).spoken_text
+    assert once == spoken
+    assert compile_spoken_text(once).spoken_text == once

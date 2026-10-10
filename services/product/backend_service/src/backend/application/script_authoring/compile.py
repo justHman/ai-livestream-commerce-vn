@@ -105,13 +105,22 @@ def _year_words(year: int) -> str:
     return f"{lead} không trăm {'lẻ ' if rest < 10 else ''}{_number_to_words(rest)}"
 
 
+_DATE_CUES = ("ngày", "hạn", "từ", "đến", "trước", "sau")
+
+
 def _read_date(match: re.Match[str]) -> str:
     day, sep, month, year = match.groups()
     if sep == "-" and not year:
         return match.group()  # "10-12" is a range, not a date
     if not (1 <= int(day) <= 31 and 1 <= int(month) <= 12):
         return match.group()
-    spoken = f"ngày {_number_to_words(int(day))} tháng {_number_to_words(int(month))}"
+    before = match.string[: match.start()].split()
+    cue = before[-1].lower() if before else ""
+    if not year and ((day, month) == ("24", "7") or cue not in _DATE_CUES):
+        # a bare a/b is a date only right after a date cue; "24/7" and "1/2 viên" never are
+        return match.group()
+    lead = "" if cue == "ngày" else "ngày "  # "ngày 1/10" already carries the word
+    spoken = f"{lead}{_number_to_words(int(day))} tháng {_number_to_words(int(month))}"
     return f"{spoken} năm {_year_words(int(year))}" if year else spoken
 
 
@@ -123,6 +132,8 @@ _RANGE_RE = re.compile(
 
 # Vietnamese phone numbers are read digit by digit (the leading zero is a digit).
 _PHONE_RE = re.compile(r"(?<![\w.,])(?:0\d{8,10}|\+?84\d{9,10})(?![\w%]|[.,]\d)")
+# Hotlines 1800/1900 xxxx are read digit by digit.
+_HOTLINE_RE = re.compile(r"(?<![\w.,])(1[89]00)\s(\d{4})(?![\w%]|[.,]\d)")
 _DIGIT_WORD = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
 
 # Compact measurements: "1m65" -> "một mét sáu mươi lăm", "60kg" -> "sáu mươi ki lô gam".
@@ -335,6 +346,9 @@ def _expand_percent(match: re.Match[str]) -> str:
 
 
 def _expand_bare_number(match: re.Match[str]) -> str:
+    digits = match.group(1)
+    if len(digits) > 1 and digits[0] == "0" and digits.isdigit():
+        return _digits_to_words(digits)  # a group with a leading zero is never a cardinal
     return expand_vietnamese_number(match.group(1))
 
 
@@ -417,6 +431,9 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
         return f"{_words_of(match.group(1))} mét {lead}{_words_of(cm)}"
 
     stage_before_currency = text
+    text = _HOTLINE_RE.sub(
+        lambda m: f"{_digits_to_words(m.group(1))} {_digits_to_words(m.group(2))}", text
+    )
     text = _PHONE_RE.sub(
         lambda m: " ".join(_DIGIT_WORD[int(d)] for d in m.group().lstrip("+")), text
     )
