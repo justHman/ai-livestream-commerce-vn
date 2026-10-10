@@ -20,7 +20,10 @@ Two wire contracts are supported, selected by the ``TTS_API_STYLE`` env:
 
 from __future__ import annotations
 
+import logging
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin
@@ -31,6 +34,9 @@ import httpx
 OPENAI_AUDIO_SPEECH_STYLE = "openai_audio_speech"
 DEFAULT_MODEL_ID = "vieneu-v3-turbo"
 DEFAULT_OPENAI_SAMPLE_RATE = 48_000
+
+
+logger = logging.getLogger(__name__)
 
 
 class TTSClientError(RuntimeError):
@@ -53,6 +59,66 @@ def _strip_trailing_slash(url: str) -> str:
 
 def _env_str(name: str) -> str:
     return (os.environ.get(name, "") or "").strip()
+
+
+def _env_tempo() -> float:
+    """``TTS_TEMPO``: playback tempo applied to synthesized speech (1.0 = unchanged).
+
+    The VieNeu GPU server ignores the OpenAI ``speed`` field, so a slower, more natural pace is
+    produced here with ffmpeg ``atempo`` (pitch is kept). Out-of-range or invalid values mean 1.0.
+    """
+    try:
+        value = float(_env_str("TTS_TEMPO") or 1.0)
+    except ValueError:
+        return 1.0
+    return value if 0.5 <= value <= 1.5 else 1.0
+
+
+def change_tempo(pcm16: bytes, rate: int, tempo: float, *, timeout_s: float = 20.0) -> bytes:
+    """PCM s16le mono at ``rate`` played at ``tempo`` (0.92 = 8% slower), pitch preserved.
+
+    Any failure (ffmpeg missing, error, timeout, empty output) returns the input unchanged: speech
+    at the original pace is better than no speech.
+    """
+    if tempo == 1.0 or not pcm16:
+        return pcm16
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        logger.warning("TTS_TEMPO set but ffmpeg is not installed; speech keeps its original pace")
+        return pcm16
+    try:
+        done = subprocess.run(
+            [
+                ffmpeg,
+                "-loglevel",
+                "error",
+                "-f",
+                "s16le",
+                "-ar",
+                str(rate),
+                "-ac",
+                "1",
+                "-i",
+                "pipe:0",
+                "-af",
+                f"atempo={tempo:.3f}",
+                "-f",
+                "s16le",
+                "-ar",
+                str(rate),
+                "-ac",
+                "1",
+                "pipe:1",
+            ],
+            input=pcm16,
+            capture_output=True,
+            timeout=timeout_s,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("TTS tempo change failed; speech keeps its original pace", exc_info=True)
+        return pcm16
+    return done.stdout or pcm16
 
 
 def _env_int(name: str, default: int) -> int:
@@ -86,6 +152,7 @@ class SelfHostedTTSClient:
         self._model_id = _env_str("TTS_MODEL_ID") or DEFAULT_MODEL_ID
         self._voice_id = _env_str("TTS_VOICE_ID")
         self._sample_rate = _env_int("TTS_SAMPLE_RATE", DEFAULT_OPENAI_SAMPLE_RATE)
+        self._tempo = _env_tempo()
 
     def _get_client(self) -> httpx.Client:
         if self._client is None:
@@ -130,7 +197,7 @@ class SelfHostedTTSClient:
         if resolved_voice:
             body["voice"] = resolved_voice
         resp = self._post(client, url, body, self._auth_headers())
-        pcm = resp.content or b""
+        pcm = change_tempo(resp.content or b"", rate, self._tempo)
         duration_ms = int(len(pcm) / (2 * rate) * 1000)
         return TTSResult(
             pcm16=pcm,

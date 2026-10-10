@@ -52,6 +52,7 @@ _TTS_STYLE_VARS = (
     "TTS_VOICE_ID",
     "TTS_SAMPLE_RATE",
     "TTS_AUTH_TOKEN",
+    "TTS_TEMPO",
 )
 
 
@@ -309,3 +310,65 @@ def test_default_style_is_unchanged_when_api_style_unset(monkeypatch):
         }
         assert result.sample_rate == 24_000
         assert result.engine == "tone"
+
+
+# ── TTS_TEMPO: slower, natural pace (the GPU server ignores the `speed` field) ──────────────────
+
+from backend.application.clients.tts import self_hosted as _self_hosted  # noqa: E402
+
+_needs_ffmpeg = pytest.mark.skipif(
+    _self_hosted.shutil.which("ffmpeg") is None, reason="ffmpeg not installed"
+)
+
+
+@_needs_ffmpeg
+def test_change_tempo_makes_speech_longer_by_the_inverse_factor():
+    raw = _pcm16_sine(48_000)  # 1.0 s
+    slowed = _self_hosted.change_tempo(raw, 48_000, 0.92)
+    assert 1.05 < len(slowed) / len(raw) < 1.12
+
+
+def test_change_tempo_one_or_empty_is_a_no_op():
+    raw = _pcm16_sine(4_800)
+    assert _self_hosted.change_tempo(raw, 48_000, 1.0) == raw
+    assert _self_hosted.change_tempo(b"", 48_000, 0.92) == b""
+
+
+def test_change_tempo_without_ffmpeg_keeps_the_original_audio(monkeypatch):
+    monkeypatch.setattr(_self_hosted.shutil, "which", lambda _name: None)
+    raw = _pcm16_sine(4_800)
+    assert _self_hosted.change_tempo(raw, 48_000, 0.92) == raw
+
+
+def test_change_tempo_ffmpeg_failure_keeps_the_original_audio(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise _self_hosted.subprocess.CalledProcessError(1, "ffmpeg")
+
+    monkeypatch.setattr(_self_hosted.shutil, "which", lambda _name: "ffmpeg")
+    monkeypatch.setattr(_self_hosted.subprocess, "run", boom)
+    raw = _pcm16_sine(4_800)
+    assert _self_hosted.change_tempo(raw, 48_000, 0.92) == raw
+
+
+@pytest.mark.parametrize("value", ["", "abc", "0.2", "3"])
+def test_tempo_env_out_of_range_or_invalid_means_unchanged(monkeypatch, value):
+    monkeypatch.setenv("TTS_TEMPO", value)
+    assert _self_hosted._env_tempo() == 1.0
+
+
+def test_tempo_env_valid_value_is_used(monkeypatch):
+    monkeypatch.setenv("TTS_TEMPO", "0.92")
+    assert _self_hosted._env_tempo() == 0.92
+
+
+@_needs_ffmpeg
+def test_openai_style_client_applies_tempo_to_audio_and_duration(monkeypatch):
+    raw = _pcm16_sine(48_000)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw, headers={"content-type": "audio/pcm"})
+
+    engine = _openai_client(handler, monkeypatch, TTS_TEMPO="0.92")
+    result = engine.synthesize("Xin chào", voice="Hải Đăng")
+    assert len(result.pcm16) > len(raw)
+    assert result.duration_ms > 1_040
