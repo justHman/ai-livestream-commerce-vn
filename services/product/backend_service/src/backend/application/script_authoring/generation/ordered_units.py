@@ -18,7 +18,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, replace
 
-from ..compile import compile_spoken_text, expand_vietnamese_number, number_to_vietnamese_words
+from ..compile import compile_spoken_text, number_to_vietnamese_words
 from ..duration import spoken_duration_ms
 from ..gate.rules.commerce_claims import _vnd_amount
 
@@ -193,14 +193,38 @@ def role_title(role: str) -> str:
     return _TITLES[role]
 
 
+_CLAUSE_BREAK_RE = re.compile(r"(?<=[,;])\s+|\s+(?=(?:và|nhưng)\s)")
+
+
+def _duration_s(text: str) -> float:
+    return spoken_duration_ms(compile_spoken_text(text).spoken_text) / 1000.0
+
+
+def _fit_pieces(claim: str, max_s: float) -> list[str]:
+    """One claim as paragraphs within the bound: split only at commas, semicolons, "và" and
+    "nhưng"; a clause that alone exceeds the bound stays verbatim in its own paragraph."""
+    if _duration_s(claim) <= max_s:
+        return [claim]
+    paras: list[str] = []
+    for piece in _CLAUSE_BREAK_RE.split(claim):
+        if paras and _duration_s(f"{paras[-1]} {piece}") <= max_s:
+            paras[-1] = f"{paras[-1]} {piece}"
+        else:
+            paras.append(piece)
+    return paras
+
+
 def _paragraphs(items: list[str], max_s: float) -> list[str]:
     """Short paragraphs: <= 3 claims and within the duration bound (split, never exceed)."""
     paras: list[list[str]] = []
     for item in items:
+        pieces = _fit_pieces(item, max_s)
+        if len(pieces) > 1:
+            paras.extend([piece] for piece in pieces)
+            continue
         cur = paras[-1] if paras else None
         if cur is not None and len(cur) < _MAX_PARAGRAPH_CLAIMS:
-            joined = compile_spoken_text(" ".join([*cur, item])).spoken_text
-            if spoken_duration_ms(joined) / 1000.0 <= max_s:
+            if _duration_s(" ".join([*cur, item])) <= max_s:
                 cur.append(item)
                 continue
         paras.append([item])
@@ -351,17 +375,23 @@ def _cluster_claims(product: ProductBrief) -> dict:
             highlights.append(claim)
     rows = [c for c in highlights if _SIZE_ROW_RE.search(c)]
     sizes: list[str] = []
+    size_overflow: list[str] = []
     if len(rows) >= 3:
         # restricted rows first so the row cap can never remove them; the rest keep their order
-        keep = [r for r in rows if r in must][:_MAX_SIZE_ROWS]
-        keep += [r for r in rows if r not in keep][: _MAX_SIZE_ROWS - len(keep)]
-        sizes = [r for r in rows if r in keep]
+        restricted = [r for r in rows if r in must or _is_condition(r)]
+        others = [r for r in rows if r not in restricted]
+        first = set((restricted[:_MAX_SIZE_ROWS] + others)[:_MAX_SIZE_ROWS])
+        sizes = [r for r in rows if r in first]
+        # restricted rows beyond one unit go to further units; plain overflow rows are only
+        # counted in claims_not_spoken (they reach no unit)
+        size_overflow = restricted[_MAX_SIZE_ROWS:]
         highlights = [c for c in highlights if c not in rows]
     return {
         "typed": typed_mode,
         "kinds": typed,
         "highlights": highlights,
         "sizes": sizes,
+        "size_overflow": size_overflow,
         "assurances": assurances,
         "promos": promos,
         "must": must,
@@ -415,6 +445,7 @@ def plan_units(
         spec("intro", bridge=ordered_aware and not first),
         *(spec("highlight", chunk) for chunk in highlight_chunks),
         *([spec("sizes", c["sizes"])] if c["sizes"] else []),
+        *(spec("sizes", chunk) for chunk in _chunks(c["size_overflow"], _MAX_SIZE_ROWS)),
         *(spec("assurance", chunk) for chunk in _chunks(ordered_assurance, _MAX_MUST_PER_UNIT)),
     ]
     has_price = any(spoken_price(p) for p in product.prices)
@@ -434,36 +465,135 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in folded if unicodedata.category(ch) != "Mn")
 
 
-def claim_covered(claim: str, text: str) -> bool:
-    """Lexical coverage: every number appears exactly (digits or spoken words) and at least
-    60% of the other content tokens appear, after case/diacritic folding."""
-    haystack = _fold(text)
-    tokens = set(re.findall(r"\w+", haystack))
-    for number in re.findall(r"\d[\d.,]*", claim):
-        number = number.rstrip(".,")
-        # spoken digits keep their tone marks ("tám" must not match "tâm")
-        spoken = (
-            expand_vietnamese_number(number).lower()
-            if number.replace(".", "").replace(",", "").isdigit()
-            else ""
+_DIGIT_WORDS = {
+    "một": 1,
+    "hai": 2,
+    "ba": 3,
+    "bốn": 4,
+    "lăm": 5,
+    "sáu": 6,
+    "bảy": 7,
+    "tám": 8,
+    "chín": 9,
+}
+_MULTIPLIERS = {"nghìn": 1000, "ngàn": 1000, "triệu": 1_000_000}
+_TOKEN_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?!\d)|\d+(?:[.,]\d+)?|[^\W\d_]+")
+
+
+def _digit_value(token: str) -> float:
+    if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", token):
+        return float(re.sub(r"[.,]", "", token))
+    return float(token.replace(",", "."))
+
+
+def numbers_in(text: str) -> list[tuple[float, str]]:
+    """(value, following word) of every COMPLETE numeric expression: digit numbers and
+    Vietnamese number-word runs ("hai mươi mốt" is 21, never "một")."""
+    tokens = _TOKEN_RE.findall(text.lower())
+    found: list[tuple[float, str]] = []
+    i = 0
+
+    def word_at(k: int) -> str:
+        return tokens[k] if k < len(tokens) and not tokens[k][0].isdigit() else ""
+
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok[0].isdigit():
+            value, unit = _digit_value(tok), word_at(i + 1)
+            if unit in _MULTIPLIERS:  # "105 nghìn" is 105000
+                value *= _MULTIPLIERS[unit]
+                i += 1
+                unit = word_at(i + 1)
+            found.append((value, unit))
+            i += 1
+            continue
+        nxt = word_at(i + 1)
+        is_num = (
+            tok in _DIGIT_WORDS
+            or tok in ("mười", "mươi", "trăm", *_MULTIPLIERS)
+            or (tok == "năm" and nxt in ("mươi", "trăm", *_MULTIPLIERS))
+            or (tok in ("tư", "mốt") and i > 0 and tokens[i - 1] == "mươi")
         )
-        digits = re.search(r"(?<![0-9])" + re.escape(number) + r"(?![0-9])", haystack)
-        said = spoken and re.search(r"(?<!\w)" + re.escape(spoken) + r"(?!\w)", text.lower())
-        if not digits and not said:
-            return False
-    words = [w for w in re.findall(r"[^\W\d_]{2,}", _fold(claim))]
+        if not is_num:
+            i += 1
+            continue
+        total = hundreds = tens = last = 0.0
+        has_last = False
+        while i < len(tokens) and not tokens[i][0].isdigit():
+            t = tokens[i]
+            after = word_at(i + 1)
+            if t in _DIGIT_WORDS or (t == "năm" and after in ("mươi", "trăm", *_MULTIPLIERS)):
+                last, has_last = _DIGIT_WORDS.get(t, 5), True
+            elif t in ("tư", "mốt") and i > 0 and tokens[i - 1] == "mươi":
+                last, has_last = (4 if t == "tư" else 1), True
+            elif t == "mười":
+                tens = 10
+            elif t == "mươi":
+                tens, has_last = (last if has_last else 1) * 10, False
+            elif t == "trăm":
+                hundreds, has_last = (last if has_last else 1) * 100, False
+            elif t in ("linh", "lẻ"):
+                pass
+            elif t in _MULTIPLIERS:
+                group = hundreds + tens + (last if has_last else 0)
+                total += (group or 1) * _MULTIPLIERS[t]
+                hundreds = tens = last = 0.0
+                has_last = False
+            else:
+                break
+            i += 1
+        value = total + hundreds + tens + (last if has_last else 0)
+        if word_at(i) == "rưỡi":
+            value += 0.5
+            i += 1
+        elif word_at(i) in ("phẩy", "chấm") and word_at(i + 1) in (*_DIGIT_WORDS, "năm"):
+            decimals = ""
+            i += 1
+            while word_at(i) in (*_DIGIT_WORDS, "năm", "không"):
+                decimals += str(_DIGIT_WORDS.get(word_at(i), 5 if word_at(i) == "năm" else 0))
+                i += 1
+            value += float("0." + decimals)
+        found.append((round(value, 3), word_at(i)))
+    return [(round(v, 3), u) for v, u in found]
+
+
+def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
+    """Coverage of one claim by a text.
+
+    Numbers: every number of the claim appears as a COMPLETE expression in the text, and the
+    text adds no different number next to a unit word the claim uses (1 năm is not 21 năm).
+    ``context`` = the other claims allowed to share the text (their numbers are not errors).
+    Words: at least 60% of the other content tokens appear (case/diacritic folded).
+    """
+    wanted = numbers_in(claim)
+    present = numbers_in(text)
+    present_values = {v for v, _u in present}
+    if any(v not in present_values for v, _u in wanted):
+        return False
+    allowed: dict[str, set[float]] = {}
+    for source in (claim, *context):
+        for value, unit in numbers_in(source):
+            allowed.setdefault(unit, set()).add(value)
+    claim_units = {u for _v, u in wanted if u}
+    if any(u in claim_units and v not in allowed.get(u, set()) for v, u in present if u):
+        return False
+    tokens = set(re.findall(r"\w+", _fold(text)))
+    words = re.findall(r"[^\W\d_]{2,}", _fold(claim))
     if not words:
         return True
     return sum(1 for w in words if w in tokens) >= _COVERAGE * len(words)
 
 
-def uncovered_claims(text: str, claims: tuple[str, ...]) -> list[str]:
-    return [c for c in claims if not claim_covered(c, text)]
+def uncovered_claims(
+    text: str, claims: tuple[str, ...], context: tuple[str, ...] = ()
+) -> list[str]:
+    return [c for c in claims if not claim_covered(c, text, context)]
 
 
 def claims_not_spoken(approved: tuple[str, ...], saved_text: str) -> int:
     """Approved claims/discounts that the SAVED script text does not cover (owner-visible)."""
-    return len(uncovered_claims(saved_text, tuple(dict.fromkeys(approved))))
+    unique = tuple(dict.fromkeys(approved))
+    return len(uncovered_claims(saved_text, unique, unique))
 
 
 def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
@@ -533,7 +663,7 @@ def check_unit_text(
                 return None, "mashup"  # unrelated facts joined with "và"
     if not aware and role not in ("opening", "closing", "") and _POSITION_RE.search(text):
         return None, "position"  # legacy unlocked order: no first/last wording
-    if must and uncovered_claims(text, must):
+    if must and uncovered_claims(text, must, (*spec.claims, *spec.promos) if spec else ()):
         return None, "coverage"  # a must-keep claim (restriction, warranty...) was left out
     if product_name and role not in ("intro", "") and name_used_elsewhere >= 2:
         if product_name.lower() in text.lower():

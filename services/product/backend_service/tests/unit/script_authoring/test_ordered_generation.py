@@ -862,3 +862,68 @@ async def test_batch_counts_exactly_the_claims_the_saved_text_does_not_speak() -
     entry = {p["product_id"]: p for p in snapshot["products"]}
     assert entry["P2"]["claims_not_spoken"] == 4  # 6 of 10 decorative claims were spoken
     assert "claims_not_spoken" not in entry["P1"]
+
+
+@pytest.mark.parametrize(
+    "claim, text, covered",
+    [
+        ("Bảo hành 1 năm.", "Bảo hành một năm nhé.", True),
+        ("Bảo hành 1 năm.", "Bảo hành hai mươi mốt năm nhé.", False),
+        ("Bảo hành 1 năm.", "Bảo hành hai mươi một năm nhé.", False),
+        ("Đổi trả trong 15 ngày.", "Đổi trả trong mười lăm ngày nhé.", True),
+        ("Đổi trả trong 15 ngày.", "Đổi trả trong năm ngày nhé.", False),
+        ("Đổi trả trong 5 ngày.", "Đổi trả trong mười lăm ngày nhé.", False),
+        ("Giao trong 3 ngày.", "Giao trong ba mươi ngày nhé.", False),
+        ("Giao trong 30 ngày.", "Giao trong ba ngày nhé.", False),
+        ("Giao trong 30 ngày.", "Giao trong ba mươi ngày nhé.", True),
+        ("Bảo hành 20 năm.", "Bảo hành hai mươi năm nhé.", True),
+        ("Bảo hành 1 năm.", "Bảo hành 1 năm nhé.", True),
+        ("Dung tích 1,5 lít.", "Dung tích một phẩy năm lít nhé.", True),
+        ("Giá 105 nghìn.", "Giá một trăm linh năm nghìn nhé.", True),
+    ],
+)
+def test_number_coverage_compares_whole_numeric_expressions(claim, text, covered) -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    assert claim_covered(claim, text) is covered
+
+
+def test_a_second_claim_in_the_same_unit_may_share_a_unit_word() -> None:
+    from backend.application.script_authoring.generation.ordered_units import claim_covered
+
+    both = ("Bảo hành 1 năm.", "Hạn dùng 2 năm.")
+    text = "Bảo hành một năm, hạn dùng hai năm nhé."
+    assert claim_covered(both[0], text, both) and claim_covered(both[1], text, both)
+    assert not claim_covered(both[0], text)  # alone, the extra "2 năm" is a different number
+
+
+def test_restricted_size_rows_beyond_the_row_cap_are_never_dropped() -> None:
+    rows = [
+        f"Cao 1m{50 + i} đến 1m{52 + i}, nặng {45 + i} đến {48 + i} ký: size M." for i in range(30)
+    ]
+    restricted = [f"Cao 2m{i:02d}, nặng 9{i % 10} ký: size XL, không giặt máy." for i in range(45)]
+    brief = ProductBrief(product_id="p", name="Quần", claims=tuple(rows + restricted))
+    units = [u for u in plan_units(brief, first=False, last=False) if u.role == "sizes"]
+    assert len(units) == 2 and all(len(u.claims) <= 40 for u in units)
+    spoken = {c for u in units for c in u.claims}
+    assert set(restricted) <= spoken  # every restricted row reaches a unit (and the fallback)
+    assert len(spoken & set(rows)) < 30  # plain overflow rows are only counted, not forced
+    text = "\n\n".join(fallback_unit_text(u, brief) for u in units)
+    assert text.count("không giặt máy") == 45
+
+
+def test_one_long_claim_is_split_at_clauses_within_the_bound_without_changing_words() -> None:
+    from backend.application.script_authoring.compile import compile_spoken_text
+
+    clause = "Sản phẩm không dùng được trong trường hợp số {i} vì có thể gây kích ứng nặng"
+    claim = ", ".join(clause.format(i=i) for i in range(14)) + "."
+    assert spoken_duration_ms(compile_spoken_text(claim).spoken_text) / 1000.0 > 45.0
+    brief = ProductBrief(
+        product_id="p", name="Kem", claims=(claim,), claims_by_type=(("limitation", (claim,)),)
+    )
+    spec = next(u for u in plan_units(brief, first=False, last=False) if u.role == "assurance")
+    paragraphs = fallback_unit_text(spec, brief).split("\n\n")
+    assert len(paragraphs) > 1
+    assert all(spoken_duration_ms(p) / 1000.0 <= 45.0 for p in paragraphs)
+    rebuilt = " ".join(paragraphs)
+    assert rebuilt.count("kích ứng nặng") == 14  # nothing dropped
