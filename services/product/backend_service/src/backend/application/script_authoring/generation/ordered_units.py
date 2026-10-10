@@ -150,7 +150,10 @@ _HARD_SELL_RE = re.compile(
     re.IGNORECASE,
 )
 # Inviting people to follow the channel is not sales pressure (opening/closing only).
-_FOLLOW_INVITE_RE = re.compile(r"(?:không|đừng) bỏ lỡ", re.IGNORECASE)
+_FOLLOW_INVITE_RE = re.compile(
+    r"(?:không|đừng) bỏ lỡ (?:những |các |mọi )?(?:buổi|phiên|lần|video|bản tin|thông báo)",
+    re.IGNORECASE,
+)
 _BRIDGE_RE = re.compile(
     r"(?:sản phẩm|món|mẫu)\s+(?:tiếp theo|kế tiếp|tiếp đến)|(?:tiếp theo|kế tiếp) là",
     re.IGNORECASE,
@@ -736,8 +739,12 @@ def check_unit_text(
     sell_text = text
     if spec is not None and spec.role in ("opening", "closing"):
         sell_text = _FOLLOW_INVITE_RE.sub("", text)
-    if _HARD_SELL_RE.search(sell_text):
-        return None, "hard_sell"
+    approved_text = [a.lower() for a in approved]
+    if any(
+        not any(m.group().lower() in a for a in approved_text)
+        for m in _HARD_SELL_RE.finditer(sell_text)
+    ):
+        return None, "hard_sell"  # pressure wording the owner did not write
     lowered = [a.lower() for a in approved]
     if any(not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(text)):
         return None, "hard_sell"  # each superlative must be one the owner wrote

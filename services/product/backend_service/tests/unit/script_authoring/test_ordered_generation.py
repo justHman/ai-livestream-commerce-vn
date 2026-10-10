@@ -1103,3 +1103,12 @@ def test_urgency_is_hard_sell_but_following_invitation_is_fine_in_the_closing() 
     text = "Nhấn theo dõi để không bỏ lỡ những buổi live tiếp theo nhé."
     assert check_unit_text(text, spec=closing)[0]
     assert check_unit_text(text, spec=UnitSpec("highlight")) == (None, "hard_sell")
+
+
+def test_owner_written_pressure_wording_passes_and_follow_exemption_is_narrow() -> None:
+    owner = "Mẫu này sắp hết hàng."
+    assert check_unit_text(owner, approved=(owner,))[0]
+    assert check_unit_text("Mẫu này sắp hết hàng.") == (None, "hard_sell")
+    closing = UnitSpec("closing")
+    assert check_unit_text("Đừng bỏ lỡ ưu đãi nhé mọi người.", spec=closing) == (None, "hard_sell")
+    assert check_unit_text("Nhấn theo dõi để không bỏ lỡ các buổi live sau nhé.", spec=closing)[0]
