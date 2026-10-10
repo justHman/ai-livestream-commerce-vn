@@ -237,3 +237,150 @@ def test_backend_never_uses_agent_session_or_worker_apis():
     assert {"livekit.agents", "livekit.plugins.lemonslice.api"} >= {
         n for n in names if n.startswith("livekit.agents") or n.startswith("livekit.plugins")
     }
+
+
+def _rolling(rollover_after_s=60.0, max_session_s=100.0):
+    now = [1000.0]
+    room = FakeRoom()
+    rest = FakeLemonSlice(room)
+    backend = LemonSliceRenderBackend(
+        settings(max_session_s=max_session_s, rollover_after_s=rollover_after_s, keepalive_s=0),
+        room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
+        http_post=rest,
+        monotonic=lambda: now[0],
+    )
+    return backend, rest, now
+
+
+def test_rollover_replaces_the_provider_session_before_the_cap():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.session_id = "ls-2"
+    backend.stream_audio(sid, win("u1", 0, final=True))
+    assert len(rest.starts) == 2 and rest.starts[1]["livekit_session_id"] == "RM_fake"
+    assert rest.controls == [(f"{BASE}/sessions/ls-1/control", "terminate")]
+    now[0] += 59  # 120 s after the start, but only 59 s after the rollover
+    assert backend.session_status(sid) == "active"
+    rest.session_id = "ls-3"
+    backend.stream_audio(sid, win("u2", 0, final=True))  # the age guard does not refuse it
+    assert len(rest.starts) == 2  # and 59 s old is not due for another rollover
+    backend.stop(sid)
+    assert rest.controls[-1] == (f"{BASE}/sessions/ls-2/control", "terminate")
+    backend.stop_all()
+
+
+def test_rollover_is_off_by_default():
+    backend, rest, now = _rolling(rollover_after_s=0.0)
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 90
+    backend.stream_audio(sid, win("u1", 0, final=True))
+    assert len(rest.starts) == 1 and rest.controls == []
+    backend.stop_all()
+
+
+def test_rollover_waits_for_the_next_utterance_boundary():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    backend.stream_audio(sid, win("u1", 0, final=False))  # utterance u1 is open
+    now[0] += 61
+    backend.stream_audio(sid, win("u1", 1, final=True))  # the same utterance continues
+    assert len(rest.starts) == 1
+    rest.session_id = "ls-2"
+    backend.stream_audio(sid, win("u2", 0, final=True))  # a new utterance: roll over now
+    assert len(rest.starts) == 2
+    backend.stop_all()
+
+
+def test_failed_rollover_keeps_the_session_retries_later_and_the_cap_still_applies():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.start_raise = ConnectionError("provider down")
+    backend.stream_audio(sid, win("u1", 0, final=True))  # keeps speaking on the old session
+    assert len(rest.starts) == 2 and rest.controls == []
+    now[0] += 10
+    backend.stream_audio(sid, win("u2", 0, final=True))
+    assert len(rest.starts) == 2  # not retried inside the pause
+    now[0] += 30  # now 101 s old: past the retry pause and past the cap
+    with pytest.raises(SessionNearCap):
+        backend.stream_audio(sid, win("u3", 0, final=True))
+    assert len(rest.starts) == 3  # one more attempt was made before the guard refused
+    backend.stop_all()
+
+
+def test_rollover_must_start_before_the_age_guard():
+    with pytest.raises(ValueError):
+        settings(rollover_after_s=100.0, max_session_s=100.0)
+
+
+def test_stop_during_a_rollover_ends_the_replacement_too():
+    import threading
+
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.session_id = "ls-2"
+    release = rest.hold()  # the replacement request is parked
+    worker = threading.Thread(
+        target=lambda: _ignoring(lambda: backend.stream_audio(sid, win("u1", 0, final=True)))
+    )
+    worker.start()
+    assert rest.parked.wait(3)
+    stopper = threading.Thread(target=lambda: _ignoring(lambda: backend.stop(sid)))
+    stopper.start()
+    time.sleep(0.2)
+    release.set()
+    worker.join(10)
+    stopper.join(10)
+    backend.stop_all()
+    ended = {url for url, event in rest.controls if event == "terminate"}
+    assert f"{BASE}/sessions/ls-1/control" in ended
+    assert f"{BASE}/sessions/ls-2/control" in ended  # no billable session is left behind
+
+
+def _ignoring(call):
+    try:
+        call()
+    except Exception:  # the stopped session may refuse the late utterance
+        pass
+
+
+def test_rollover_is_skipped_when_there_is_no_avatar_to_replace():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    backend._sessions[sid].room.remote_participants.clear()  # the avatar left the room
+    now[0] += 61
+    _ignoring(lambda: backend.stream_audio(sid, win("u1", 0, final=True)))
+    assert len(rest.starts) == 1 and rest.controls == []
+    backend.stop_all()
+
+
+def test_a_replacement_that_lands_late_and_displaces_the_avatar_is_adopted():
+    now = [1000.0]
+    room = FakeRoom()
+    rest = FakeLemonSlice(room)
+    backend = LemonSliceRenderBackend(
+        settings(
+            max_session_s=100.0,
+            rollover_after_s=60.0,
+            keepalive_s=0,
+            request_timeout_s=0.2,
+            ready_timeout_s=0.3,
+        ),
+        room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
+        http_post=rest,
+        monotonic=lambda: now[0],
+    )
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.session_id = "ls-2"
+    release = rest.hold()  # creation is slower than the rollover waits
+    backend.stream_audio(sid, win("u1", 0, final=True))  # rollover times out: old session speaks on
+    assert backend._sessions[sid].provider_session_id == "ls-1"
+    release.set()  # the replacement lands late, joins and displaces the old avatar
+    assert until(lambda: backend._sessions[sid].provider_session_id == "ls-2")
+    assert until(lambda: (f"{BASE}/sessions/ls-1/control", "terminate") in rest.controls)
+    backend.stop_all()

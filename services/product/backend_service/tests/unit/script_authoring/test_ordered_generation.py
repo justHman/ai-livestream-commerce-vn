@@ -450,7 +450,10 @@ def test_typed_claims_cap_only_decorative_ones_and_count_the_rest() -> None:
     rows = [
         f"Cao 1m{50 + i} đến 1m{52 + i}, nặng {45 + i} đến {48 + i} ký: size M." for i in range(12)
     ]
-    features = [f"Điểm nổi bật số {w} của mẫu này." for w in "a b c d e f g h i j k l m n".split()]
+    features = [
+        f"Điểm nổi bật số {w} của mẫu này."
+        for w in "a b c d e f g h i j k l m n o p q r s t".split()
+    ]
     policy = [f"Chính sách số {w}: đổi trả dễ." for w in "một hai ba bốn năm sáu bảy tám".split()]
     brief = ProductBrief(
         product_id="p",
@@ -461,14 +464,23 @@ def test_typed_claims_cap_only_decorative_ones_and_count_the_rest() -> None:
     )
     units = plan_units(brief, first=False, last=False)
     roles = [u.role for u in units]
-    assert roles == ["intro", "highlight", "highlight", "sizes", "assurance", "assurance", "offer"]
+    assert roles == [
+        "intro",
+        "highlight",
+        "highlight",
+        "highlight",
+        "sizes",
+        "assurance",
+        "assurance",
+        "offer",
+    ]
     by_role = {u.role: u for u in units}
     assert by_role["sizes"].claims == tuple(rows)  # the whole chart is ONE unit
-    assert sum(len(u.claims) for u in units if u.role == "highlight") == 12  # decorative: capped
+    assert sum(len(u.claims) for u in units if u.role == "highlight") == 18  # decorative: capped
     shipping = [c for u in units if u.role == "assurance" for c in u.claims]
     assert sorted(shipping) == sorted(policy)  # must-keep type: all kept, <= 4 per unit
     assert all(len(u.claims) <= 4 for u in units if u.role == "assurance")
-    assert [u.with_cta for u in units] == [False] * 6 + [True]
+    assert [u.with_cta for u in units] == [False] * 7 + [True]
 
 
 def test_untyped_claims_are_never_capped() -> None:
@@ -844,7 +856,7 @@ def test_ordinary_descriptions_pass_the_guards(sentence) -> None:
 @pytest.mark.asyncio
 async def test_batch_counts_exactly_the_claims_the_saved_text_does_not_speak() -> None:
     service, repos = _service(FakeLLM())
-    features = [f"Điểm nổi bật số {i}." for i in range(14)]
+    features = [f"Điểm nổi bật số {i}." for i in range(20)]
     many = {
         "product_name": "Áo ABC",
         "prices": ["100000.00 VND"],
@@ -860,7 +872,7 @@ async def test_batch_counts_exactly_the_claims_the_saved_text_does_not_speak() -
     batch_id = await _run(service, repos, set_id)
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     entry = {p["product_id"]: p for p in snapshot["products"]}
-    assert entry["P2"]["claims_not_spoken"] == 2  # 12 of 14 decorative claims were spoken
+    assert entry["P2"]["claims_not_spoken"] == 2  # 18 of 20 decorative claims were spoken
     assert "claims_not_spoken" not in entry["P1"]
 
 
@@ -1083,3 +1095,23 @@ def test_approving_one_superlative_does_not_allow_another() -> None:
         None,
         "hard_sell",
     )
+
+
+def test_urgency_is_hard_sell_but_following_invitation_is_fine_in_the_closing() -> None:
+    assert check_unit_text("Mọi người tranh thủ lên đơn sớm nhé.")[
+        0
+    ]  # soft urging is the owner's call
+    assert check_unit_text("Mẫu này sắp hết hàng rồi nhé.") == (None, "hard_sell")  # false scarcity
+    closing = UnitSpec("closing")
+    text = "Nhấn theo dõi để không bỏ lỡ những buổi live tiếp theo nhé."
+    assert check_unit_text(text, spec=closing)[0]
+    assert check_unit_text(text, spec=UnitSpec("highlight")) == (None, "hard_sell")
+
+
+def test_owner_written_pressure_wording_passes_and_follow_exemption_is_narrow() -> None:
+    owner = "Mẫu này sắp hết hàng."
+    assert check_unit_text(owner, approved=(owner,))[0]
+    assert check_unit_text("Mẫu này sắp hết hàng.") == (None, "hard_sell")
+    closing = UnitSpec("closing")
+    assert check_unit_text("Đừng bỏ lỡ ưu đãi nhé mọi người.", spec=closing) == (None, "hard_sell")
+    assert check_unit_text("Nhấn theo dõi để không bỏ lỡ các buổi live sau nhé.", spec=closing)[0]

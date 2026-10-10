@@ -76,6 +76,7 @@ _KIND_AUDIO = 1
 
 _CONTROL_PATH = "sessions/{session_id}/control"  # DOC-via-assistant, relative to api_base
 _CAP_WARN_FRACTION = 0.8
+_ROLLOVER_RETRY_S = 30.0  # pause before trying again after a failed rollover
 # A provider session id becomes ONE URL path segment carrying the API key header.
 _SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _TERMINAL_STATUS = frozenset({404, 410})  # the provider session is gone
@@ -106,6 +107,9 @@ class LemonSliceSettings:
     terminate_path: str = _CONTROL_PATH
     keepalive_s: float = 20.0  # reset-idle-timeout period while the avatar is silent; 0 = off
     max_session_s: float = 1500.0  # age guard below the documented 30 min cap; 0 = off
+    # Start a replacement provider session in the SAME room once the current one is this old
+    # (at an utterance boundary), before the age guard would end the live; 0 = off.
+    rollover_after_s: float = 0.0
     keepalive_fail_log_after: int = 3
     playback_margin_s: float = 5.0
     avatar_token_ttl_s: int = 300
@@ -126,6 +130,7 @@ class LemonSliceSettings:
             "request_timeout_s",
             "keepalive_s",
             "max_session_s",
+            "rollover_after_s",
             "playback_margin_s",
             "io_timeout_s",
             "clear_budget_s",
@@ -137,6 +142,12 @@ class LemonSliceSettings:
                 raise ValueError(f"{name} must be a finite, non-negative number")
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be a finite, non-negative number")
+        if (
+            self.rollover_after_s
+            and self.max_session_s
+            and self.rollover_after_s >= self.max_session_s
+        ):
+            raise ValueError("rollover_after_s must be below max_session_s")
         cd = self.control_deadline_s
         if cd is not None and (
             isinstance(cd, bool)
@@ -406,6 +417,11 @@ class _Sess:
     watcher: Any = None  # idle backstop task for 'avatar started publishing audio'
     keepalive: Any = None  # reset-idle-timeout loop task
     started_at: float = 0.0  # monotonic
+    agent_id: str = ""  # kept so a rollover can start the same avatar again
+    room_name: str = ""
+    roll_lock: Any = None  # serializes rollovers of this session (created on the loop)
+    next_roll_at: float = 0.0  # monotonic: earliest retry after a failed rollover
+    rolling: bool = False  # a rollover is in progress: keep-alive results are not judged
     cap_warned: bool = False
     closing: bool = False  # read from the HTTP worker thread: set before any teardown step
     # Serializes control HTTP calls of one session: terminate waits (bounded) for a running
@@ -511,16 +527,23 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         tasks = {"startups": self._startups, "cleanups": self._cleanups, "reapers": self._reapers}[
             pool
         ]
-        pending = [t for t in tasks if t is not me and not t.done()]
-        if pool == "startups":
+        deadline = time.monotonic() + self._drain_budget(pool)
+        while True:
+            pending = [t for t in tasks if t is not me and not t.done()]
+            if pool == "startups":
+                for t in pending:
+                    t.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=max(0.0, deadline - time.monotonic()))
             for t in pending:
-                t.cancel()
-        if pending:
-            await asyncio.wait(pending, timeout=self._drain_budget(pool))
-        for t in pending:
-            if not t.done():
-                log.error("lemonslice %s task did not finish within its bound", pool)
-                t.cancel()
+                if not t.done():
+                    log.error("lemonslice %s task did not finish within its bound", pool)
+                    t.cancel()
+            # A reaper may spawn another one (a late rollover); wait for those as well.
+            if pool != "reapers" or time.monotonic() >= deadline:
+                break
+            if not [t for t in tasks if t is not me and not t.done()]:
+                break
 
     async def _httpx_async_post(
         self, url: str, headers: dict, body: dict, timeout: float
@@ -664,6 +687,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 ),
             )
             sess.started_at = self._mono()
+            sess.agent_id, sess.room_name = agent_id, room_name
             sess.cleared = _BoundedSet(s.history)
             sess.unconfirmed = _BoundedSet(s.history)
             # Single-speaker: no agent_prompt / LLM / TTS fields are ever sent.
@@ -843,7 +867,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             except ProviderCleanupIncomplete:
                 log.error("lemonslice late session cleanup is pending")
 
-    async def _wait_avatar_video(self, room: Any) -> None:
+    async def _wait_avatar_video(self, room: Any, replacing: Any = None) -> None:
+        """Wait for the avatar video; with ``replacing`` (the old participant sid) wait for a
+        DIFFERENT participant, because the same identity may still show the old avatar."""
         try:
             from livekit import rtc  # type: ignore
 
@@ -853,8 +879,13 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         deadline = time.monotonic() + self._s.ready_timeout_s
         while time.monotonic() < deadline:
             p = room.remote_participants.get(self._s.avatar_identity)
-            if p is not None and any(
-                getattr(pub, "kind", None) == kind_video for pub in p.track_publications.values()
+            if (
+                p is not None
+                and (replacing is None or getattr(p, "sid", None) != replacing)
+                and any(
+                    getattr(pub, "kind", None) == kind_video
+                    for pub in p.track_publications.values()
+                )
             ):
                 return
             await asyncio.sleep(0.05)
@@ -897,6 +928,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         if w.utterance_id in sess.cleared:  # late window of an interrupted utterance
             return
         assert w.pcm is not None  # checked in stream_audio
+        if sess.channel.open_utterance != w.utterance_id:  # a new utterance starts here
+            await self._maybe_rollover(sess)
         if self._age_state(sess) == "near_cap" and sess.channel.open_utterance != w.utterance_id:
             raise SessionNearCap()  # a started utterance may still finish
         epoch = sess.epoch
@@ -921,6 +954,178 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if not ok:
                 sess.unconfirmed.add(w.utterance_id)
                 log.warning("avatar playback_unconfirmed utterance=%s", w.utterance_id)
+
+    async def _maybe_rollover(self, sess: _Sess) -> None:
+        s = self._s
+        if s.rollover_after_s <= 0 or sess.closing or not sess.agent_id:
+            return
+
+        def due() -> bool:
+            now = self._mono()
+            return now - sess.started_at >= s.rollover_after_s and now >= sess.next_roll_at
+
+        if not due():
+            return
+        if sess.roll_lock is None:
+            sess.roll_lock = asyncio.Lock()
+        async with sess.roll_lock:
+            if due() and not sess.closing:  # another utterance may have rolled it meanwhile
+                # Its own tracked task: stop_all waits for it (and it ends a replacement that
+                # lands after a stop), even if this utterance is cancelled meanwhile.
+                task = asyncio.ensure_future(self._rollover(sess))
+                self._tasks_add(task)
+                await asyncio.shield(task)
+
+    async def _rollover(self, sess: _Sess) -> None:
+        sess.rolling = True
+        try:
+            await self._rollover_inner(sess)
+        finally:
+            sess.rolling = False
+
+    async def _rollover_inner(self, sess: _Sess) -> None:
+        """Replace the provider session inside the same room, before the age guard ends the live.
+
+        The new avatar joins with the same identity (the audio channel and the egress keep
+        following that identity), so LiveKit replaces the old participant; the old provider
+        session is then ended. Any failure keeps the current session running when it can; it is
+        retried after a pause and the age guard still stops the live at the cap as before.
+        """
+        s = self._s
+        old_sid = sess.provider_session_id
+        old = sess.room.remote_participants.get(s.avatar_identity)
+        old_participant = getattr(old, "sid", None)
+        if old_participant is None:
+            # No avatar to replace: something else is wrong, and replacing blindly could end the
+            # wrong provider session. The normal status/age handling stays in charge.
+            sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
+            log.warning("lemonslice rollover skipped: no avatar participant to replace")
+            return
+        label = (
+            f"{sess.room_name}#roll-{uuid.uuid4().hex[:8]}"  # unique: never shadows a retained id
+        )
+        new_sid = ""
+        post_task: asyncio.Future | None = None
+        try:
+            avatar_token = mint_room_token(
+                api_key=s.livekit_api_key,
+                api_secret=s.livekit_api_secret,
+                room=sess.room_name,
+                identity=s.avatar_identity,
+                name=s.avatar_identity,
+                ttl_sec=s.avatar_token_ttl_s,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
+                kind="agent",
+                attributes={"lk.publish_on_behalf": s.runtime_identity},
+            )
+            room_sid = await self._room_sid(sess.room, sess.room_name)
+            post_task = asyncio.ensure_future(
+                self._request_session(sess.agent_id, avatar_token, room_sid)
+            )
+            try:
+                # Creation may be slow; the new avatar can also join late. Bounded in total.
+                new_sid = await asyncio.wait_for(
+                    asyncio.shield(post_task), s.request_timeout_s + s.ready_timeout_s
+                )
+            except TimeoutError:
+                raise LemonSliceError(
+                    "session_request_failed", "LemonSlice rollover request timed out"
+                ) from None
+            post_task = None
+            if not isinstance(new_sid, str) or not _SAFE_SESSION_ID.fullmatch(new_sid):
+                new_sid = ""
+                raise LemonSliceError("session_id_invalid", "LemonSlice returned an unusable id")
+            await self._wait_avatar_video(sess.room, replacing=old_participant)
+        except BaseException as exc:
+            sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            if not cancelled:
+                log.warning(
+                    "lemonslice rollover failed error_type=%s; keeping the current session",
+                    type(exc).__name__,
+                )
+            if post_task is not None:  # still in flight: decide when it lands
+                self._tasks_add(
+                    asyncio.ensure_future(
+                        self._finish_late_rollover(sess, post_task, old_participant, old_sid, label)
+                    )
+                )
+            elif new_sid and new_sid != old_sid:
+                current = sess.room.remote_participants.get(s.avatar_identity)
+                displaced = getattr(current, "sid", None) != old_participant
+                if displaced and not cancelled and not sess.closing:
+                    # The old avatar is already gone: the new session is all that is left.
+                    log.error("lemonslice rollover: avatar replaced but video not confirmed")
+                    self._adopt_rolled_session(sess, new_sid)
+                    await self._end_provider_session(label, old_sid)
+                else:
+                    await self._end_provider_session(label, new_sid)
+            if cancelled:
+                raise
+            return
+        if sess.closing:  # the live was stopped while the replacement was being created
+            await self._end_provider_session(label, new_sid)
+            return
+        self._adopt_rolled_session(sess, new_sid)
+        log.info("lemonslice session rolled over")
+        if old_sid and old_sid != new_sid:
+            await self._end_provider_session(label, old_sid)
+
+    async def _finish_late_rollover(
+        self,
+        sess: _Sess,
+        post_task: asyncio.Future,
+        old_participant: Any,
+        old_sid: str,
+        label: str,
+    ) -> None:
+        """A replacement whose creation outlived the rollover: it may still join the room and
+        displace the old avatar. Adopt it then; otherwise end it (never leave no avatar)."""
+        try:
+            sid = await asyncio.wait_for(asyncio.shield(post_task), _CREATE_HARD_BOUND_S)
+        except BaseException as exc:
+            post_task.cancel()
+            log.warning("lemonslice late rollover unknown error_type=%s", type(exc).__name__)
+            return
+        if not isinstance(sid, str) or not _SAFE_SESSION_ID.fullmatch(sid) or sid == old_sid:
+            return
+        if sess.closing:
+            await self._end_provider_session(label, sid)
+            return
+        try:
+            await self._wait_avatar_video(sess.room, replacing=old_participant)
+        except Exception:
+            current = sess.room.remote_participants.get(self._s.avatar_identity)
+            if getattr(current, "sid", None) == old_participant:
+                await self._end_provider_session(label, sid)  # it never replaced the old avatar
+                return
+            # The old avatar is already gone (video still pending): the replacement is all left.
+            log.error("lemonslice late replacement joined without video; adopting it")
+        if sess.closing:
+            await self._end_provider_session(label, sid)
+            return
+        log.error("lemonslice late replacement displaced the avatar; adopting it")
+        self._adopt_rolled_session(sess, sid)
+        await self._end_provider_session(label, old_sid)
+
+    def _adopt_rolled_session(self, sess: _Sess, new_sid: str) -> None:
+        sess.provider_session_id = new_sid
+        sess.started_at = self._mono()
+        sess.cap_warned = False
+        sess.degraded = ""
+        keepalive = sess.keepalive
+        if self._s.keepalive_s > 0 and (keepalive is None or keepalive.done()):
+            sess.keepalive = asyncio.ensure_future(self._keepalive(sess))  # it may have ended
+
+    async def _end_provider_session(self, label: str, provider_session_id: str) -> None:
+        try:
+            await self._terminate_and_retain(
+                label, SimpleNamespace(provider_session_id=provider_session_id)
+            )
+        except Exception as exc:  # the idle timeout ends it anyway; never fail the live for it
+            log.warning("lemonslice rollover cleanup failed error_type=%s", type(exc).__name__)
 
     async def _guard_fallback(self, sess: _Sess) -> None:
         if sess.fallback is None and not sess.refused:
@@ -1144,15 +1349,14 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             self._age_state(sess)  # also emits the one-time 80% warning
             if sess.closing:
                 return
-            if sess.channel.broken or sess.channel.open_utterance:
-                continue  # speaking already resets the provider idle timer
+            if sess.channel.broken or sess.channel.open_utterance or sess.rolling:
+                continue  # speaking already resets the provider idle timer; rolling swaps it
             err = ""
             status = 0
+            used = sess.provider_session_id
             try:
                 status = await asyncio.wait_for(
-                    self._control(
-                        sess.provider_session_id, "reset-idle-timeout", _CONTROL_PATH, sess
-                    ),
+                    self._control(used, "reset-idle-timeout", _CONTROL_PATH, sess),
                     s.request_timeout_s + 1,
                 )
                 if status >= 300:
@@ -1164,6 +1368,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if not err:
                 failures = auth_failures = 0
                 continue
+            if sess.rolling or used != sess.provider_session_id:
+                continue  # a rollover replaced the session meanwhile: this failure is not its
             auth_failures = auth_failures + 1 if status in _AUTH_STATUS else 0
             if status in _TERMINAL_STATUS or auth_failures >= max(1, s.keepalive_fail_log_after):
                 sess.degraded = f"status={status}"
@@ -1177,8 +1383,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     def _age_state(self, sess: _Sess) -> str:
         """'ok' | 'near_cap'; logs once at 80% of ``max_session_s``.
 
-        TODO(livento): automatic rollover on near_cap is deliberately not implemented; whether
-        LemonSlice allows a new session right after the cap is unknown (LS4/LS7).
+        With ``rollover_after_s`` set, a replacement session is started before this cap (see
+        ``_rollover``); the guard still ends the live if that keeps failing.
         """
         cap = self._s.max_session_s
         if cap <= 0:

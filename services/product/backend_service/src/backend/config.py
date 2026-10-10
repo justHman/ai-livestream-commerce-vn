@@ -571,6 +571,7 @@ class AppConfig:
     lemonslice_terminate_path: str = "sessions/{session_id}/control"
     lemonslice_keepalive_s: float = 20.0
     lemonslice_max_session_s: float = 1500.0
+    lemonslice_rollover_after_s: float = 0.0
     lemonslice_control_deadline_s: float = 15.0
     avatar_audio_fallback_publish: bool = False
     avatar_render_offset_ms: int = 0
@@ -672,6 +673,7 @@ class AppConfig:
             or "sessions/{session_id}/control",
             lemonslice_keepalive_s=_timer_env("LEMONSLICE_KEEPALIVE_S", "20"),
             lemonslice_max_session_s=_timer_env("LEMONSLICE_MAX_SESSION_S", "1500"),
+            lemonslice_rollover_after_s=_timer_env("LEMONSLICE_ROLLOVER_AFTER_S", "0"),
             lemonslice_control_deadline_s=_positive_timer_env(
                 "LEMONSLICE_CONTROL_DEADLINE_S", "15"
             ),
@@ -855,6 +857,7 @@ class AppConfig:
                 terminate_path=self.lemonslice_terminate_path,
                 keepalive_s=self.lemonslice_keepalive_s,
                 max_session_s=self.lemonslice_max_session_s,
+                rollover_after_s=self.lemonslice_rollover_after_s,
                 control_deadline_s=self.lemonslice_control_deadline_s,
             )
         )
