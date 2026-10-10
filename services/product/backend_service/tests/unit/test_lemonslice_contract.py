@@ -261,9 +261,11 @@ def test_rollover_replaces_the_provider_session_before_the_cap():
     backend.stream_audio(sid, win("u1", 0, final=True))
     assert len(rest.starts) == 2 and rest.starts[1]["livekit_session_id"] == "RM_fake"
     assert rest.controls == [(f"{BASE}/sessions/ls-1/control", "terminate")]
-    now[0] += 60  # 121 s after the start, but only 60 s after the rollover
+    now[0] += 59  # 120 s after the start, but only 59 s after the rollover
     assert backend.session_status(sid) == "active"
+    rest.session_id = "ls-3"
     backend.stream_audio(sid, win("u2", 0, final=True))  # the age guard does not refuse it
+    assert len(rest.starts) == 2  # and 59 s old is not due for another rollover
     backend.stop(sid)
     assert rest.controls[-1] == (f"{BASE}/sessions/ls-2/control", "terminate")
     backend.stop_all()
@@ -311,3 +313,45 @@ def test_failed_rollover_keeps_the_session_retries_later_and_the_cap_still_appli
 def test_rollover_must_start_before_the_age_guard():
     with pytest.raises(ValueError):
         settings(rollover_after_s=100.0, max_session_s=100.0)
+
+
+def test_stop_during_a_rollover_ends_the_replacement_too():
+    import threading
+
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.session_id = "ls-2"
+    release = rest.hold()  # the replacement request is parked
+    worker = threading.Thread(
+        target=lambda: _ignoring(lambda: backend.stream_audio(sid, win("u1", 0, final=True)))
+    )
+    worker.start()
+    assert rest.parked.wait(3)
+    stopper = threading.Thread(target=lambda: _ignoring(lambda: backend.stop(sid)))
+    stopper.start()
+    time.sleep(0.2)
+    release.set()
+    worker.join(10)
+    stopper.join(10)
+    backend.stop_all()
+    ended = {url for url, event in rest.controls if event == "terminate"}
+    assert f"{BASE}/sessions/ls-1/control" in ended
+    assert f"{BASE}/sessions/ls-2/control" in ended  # no billable session is left behind
+
+
+def _ignoring(call):
+    try:
+        call()
+    except Exception:  # the stopped session may refuse the late utterance
+        pass
+
+
+def test_rollover_is_skipped_when_there_is_no_avatar_to_replace():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    backend._sessions[sid].room.remote_participants.clear()  # the avatar left the room
+    now[0] += 61
+    _ignoring(lambda: backend.stream_audio(sid, win("u1", 0, final=True)))
+    assert len(rest.starts) == 1 and rest.controls == []
+    backend.stop_all()
