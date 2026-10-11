@@ -202,6 +202,46 @@ class ContractRejection(ValueError):
         super().__init__(code)
 
 
+def same_avatar_source(before: str, after: str) -> bool:
+    """D1 track SID rotation keeps the room, avatar and audio topology unchanged."""
+    old, new = before.split("/"), after.split("/")
+    if (
+        len(old) != 3
+        or len(new) != 3
+        or old[:2] != new[:2]
+        or not old[0].startswith("lk:")
+        or len(old[0]) <= len("lk:")
+        or not old[1]
+    ):
+        return False
+    old_tracks, new_tracks = old[2].split("+"), new[2].split("+")
+    return (
+        len(old_tracks) == len(new_tracks)
+        and 1 <= len(old_tracks) <= 2
+        and all(track.strip() for track in old_tracks + new_tracks)
+    )
+
+
+def can_renew_media_readiness(state: ExecutionState, media: MediaReadiness | None) -> bool:
+    """Source-only renewal before start intent; twin of the API reducer's check."""
+    old = state.media_readiness
+    return (
+        state.phase == "ready"
+        and state.runtime_ready
+        and not state.start_command_id
+        and not state.opening_turn_id
+        and not state.first_ai_broadcast
+        and not state.first_playable_evidence_id
+        and old is not None
+        and media is not None
+        and old.ready()
+        and media.ready()
+        and old.readiness_id == media.readiness_id
+        and old.destination_id == media.destination_id
+        and same_avatar_source(old.source_id, media.source_id)
+    )
+
+
 _NEXT: dict[str, set[str]] = {
     "preparing": {"ready", "ending", "failed"},
     "ready": {"warming", "ending", "failed"},
@@ -223,7 +263,10 @@ def apply_evidence(state: ExecutionState, event: Evidence) -> ExecutionState:
         raise ContractRejection("already_terminal")
     changes: dict[str, object] = {}
     if event.kind == "runtime_ready":
-        if state.phase != "preparing" or event.phase != "ready":
+        if event.phase != "ready" or (
+            state.phase != "preparing"
+            and not can_renew_media_readiness(state, event.media_readiness)
+        ):
             raise ContractRejection("invalid_lifecycle_state")
         changes["runtime_ready"] = True
         changes["media_readiness"] = event.media_readiness
