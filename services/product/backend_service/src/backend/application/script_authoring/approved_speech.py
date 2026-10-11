@@ -64,18 +64,37 @@ class ApprovedProduct:
         price in a fixed sentence.
         """
         from .compile import compile_spoken_text
-        from .generation.ordered_units import spoken_price
+        from .generation.ordered_units import _CONDITION_CLAIM_RE, spoken_price
 
         facts = json.loads(self.facts_json)
+        promotions = {
+            text
+            for kind, texts in (facts.get("claims_by_type") or {}).items()
+            if kind == "promotion"
+            for text in texts
+        }
         found: list[str] = []
+        conditional: list[str] = []
         for claim in facts.get("allowed_claims", []):
-            if isinstance(claim, str) and claim.strip():
-                found.append(compile_spoken_text(claim.strip()).spoken_text)
+            if not isinstance(claim, str) or not claim.strip():
+                continue
+            spoken = compile_spoken_text(claim.strip()).spoken_text
+            if claim in promotions or _CONDITION_CLAIM_RE.search(claim):
+                conditional.append(spoken)  # never alone: a discount without its condition misleads
+            else:
+                found.append(spoken)
+        if conditional:
+            found.append(" ".join(conditional))
         for price in facts.get("prices", []):
             words = spoken_price(str(price))
             if words:
                 found.append(f"Giá {words}.")
         return tuple(dict.fromkeys(found))
+
+
+def _is_script_text(text: str, product: "ApprovedProduct") -> bool:
+    """The whole approved script, one of its units, or (a viewer question) a whole approved fact."""
+    return text == product.spoken_text or text in product.units or text in product.answers()
 
 
 @dataclass(frozen=True)
@@ -346,6 +365,9 @@ class ApprovedSpeech:
             self.check_start(session_id)
         envelope = await self.resolve(session_id)
         candidates = (envelope.product(product_id),) if product_id else envelope.products
+        generated = (
+            False  # a viewer answer chosen by the model: only a whole approved fact is valid
+        )
         if select_locked:
             whole = envelope.product(product_id)
             if len(whole.units) > 1:
@@ -383,11 +405,12 @@ class ApprovedSpeech:
                 return "".join(parts)
 
             text = await asyncio.to_thread(collect)
+            generated = True
         product = next(
             (
                 p
                 for p in candidates
-                if (text == p.spoken_text or text in p.units or text in p.answers())
+                if (text in p.answers() if generated else _is_script_text(text, p))
             ),
             None,
         )

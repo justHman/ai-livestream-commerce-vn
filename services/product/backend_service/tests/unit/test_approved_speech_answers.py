@@ -28,3 +28,27 @@ def test_blank_and_duplicate_claims_are_dropped_and_nothing_is_invented() -> Non
     product = _product("x", allowed_claims=["  ", "Hàng chính hãng", "Hàng chính hãng"])
     assert product.answers() == ("Hàng chính hãng",)
     assert _product("x").answers() == ()
+
+
+def test_a_phone_number_in_a_claim_is_read_digit_by_digit() -> None:
+    product = _product("x", allowed_claims=["Liên hệ 0901.234.567 để được hỗ trợ"])
+    assert product.answers() == (
+        "Liên hệ không chín không một hai ba bốn năm sáu bảy để được hỗ trợ",
+    )
+
+
+def test_a_promotion_or_condition_is_never_offered_without_its_condition() -> None:
+    product = _product(
+        "x",
+        allowed_claims=["Giảm 20%", "Chỉ áp dụng khi mua hai sản phẩm", "Hàng chính hãng"],
+        claims_by_type={
+            "promotion": ["Giảm 20%"],
+            "limitation": ["Chỉ áp dụng khi mua hai sản phẩm"],
+        },
+    )
+    answers = product.answers()
+    assert "Hàng chính hãng" in answers
+    assert "Giảm hai mươi phần trăm" not in answers
+    assert any(
+        "Giảm hai mươi phần trăm" in a and "Chỉ áp dụng khi mua hai sản phẩm" in a for a in answers
+    )

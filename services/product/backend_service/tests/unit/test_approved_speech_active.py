@@ -283,6 +283,16 @@ async def test_unsupported_claims_never_reach_tts(case_factory, text, route):
 
 
 @pytest.mark.asyncio
+async def test_a_viewer_answer_cannot_be_the_whole_script_or_a_script_unit(case_factory):
+    case = await case_factory()
+    case.llm.output = TEXT  # not one of the whole approved facts offered to the model
+    turn = decision(case, generated=True)
+    await prepare(case, turn)
+    await case.d.coordinator._maybe_speak(case.sid, turn)
+    assert not case.tts.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "change",
     [

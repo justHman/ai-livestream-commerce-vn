@@ -131,7 +131,10 @@ _RANGE_RE = re.compile(
 )
 
 # Vietnamese phone numbers are read digit by digit (the leading zero is a digit).
-_PHONE_RE = re.compile(r"(?<![\w.,])(?:0\d{8,10}|\+?84\d{9,10})(?![\w%]|[.,]\d)")
+_PHONE_RE = re.compile(
+    r"(?<![\w.,])(?:0\d{8,10}|\+?84\d{9,10}"
+    r"|0\d{2,3}[ .-]\d{3}[ .-]\d{3,4})(?![\w%]|[.,]\d)"  # also 0901.234.567, 0901 234 567
+)
 # Hotlines 1800/1900 xxxx are read digit by digit.
 _HOTLINE_RE = re.compile(r"(?<![\w.,])(1[89]00)\s(\d{4})(?![\w%]|[.,]\d)")
 _DIGIT_WORD = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
@@ -435,7 +438,7 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
         lambda m: f"{_digits_to_words(m.group(1))} {_digits_to_words(m.group(2))}", text
     )
     text = _PHONE_RE.sub(
-        lambda m: " ".join(_DIGIT_WORD[int(d)] for d in m.group().lstrip("+")), text
+        lambda m: " ".join(_DIGIT_WORD[int(d)] for d in re.sub(r"\D", "", m.group())), text
     )
     stage_before_percent = text
     text = _PERCENT_RE.sub(_expand_percent, text)
