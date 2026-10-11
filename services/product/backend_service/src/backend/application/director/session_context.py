@@ -142,7 +142,9 @@ class DirectorRuntime:
     ) -> dict:
         """Atomically accept profile, catalog, plan, and runtime configuration."""
         existing = self._sessions.get(session_id)
-        base_cfg = cfg or (existing.director.cfg if existing is not None else StreamConfig())
+        base_cfg = cfg or (
+            existing.director.cfg if existing is not None else StreamConfig.from_env()
+        )
         runtime_values = dict(runtime_config or {})
         known_fields = set(type(base_cfg).__dataclass_fields__)
         director_values = {

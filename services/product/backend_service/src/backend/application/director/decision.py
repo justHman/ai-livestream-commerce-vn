@@ -407,7 +407,7 @@ class Director:
                 # The legacy size gate drops every singleton, which is how a
                 # lone high-value or safety question used to be lost (BR-QA-001).
                 # It is relaxed for high-value clusters only.
-                if item.cluster.size < 2 and not high:
+                if item.cluster.size < c.qa_min_cluster_size and not high:
                     continue
                 product_id = item.cluster.product_id or cur.product_id
                 topic_key = f"{product_id}:{item.cluster.intent}"

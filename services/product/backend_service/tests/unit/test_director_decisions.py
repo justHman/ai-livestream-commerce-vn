@@ -736,3 +736,50 @@ def test_locked_intro_prevents_director_from_consuming_comments(
         coordinator.stop(session_id)
 
     asyncio.run(run())
+
+
+def _lone_usage_question() -> list[Comment]:
+    return [
+        Comment(
+            id="P004-solo",
+            text="mặc size L được không ạ",
+            embedding=[1.0, 0.0],
+            t=500.0,
+            intent="usage",
+            product_id="P004",
+        )
+    ]
+
+
+def _open_qna_window(director: Director) -> None:
+    director.state.qa_window_open = True
+    director.state.qa_window_started_at = 500.0
+    director.state.qa_window_stage_index = 2
+
+
+def test_a_lone_question_is_ignored_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+    director = _cross_product_director()
+    _open_qna_window(director)
+    decision = director.decide(_lone_usage_question(), now=500.0)
+    assert decision.action not in {"answer_fact", "answer_cluster"}
+
+
+def test_a_lone_question_is_answered_when_the_minimum_cluster_size_is_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+    director = _cross_product_director()
+    director.cfg.qa_min_cluster_size = 1
+    _open_qna_window(director)
+    decision = director.decide(_lone_usage_question(), now=500.0)
+    assert decision.action in {"answer_fact", "answer_cluster"}
+
+
+def test_minimum_cluster_size_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DIRECTOR_QA_MIN_CLUSTER_SIZE", raising=False)
+    assert StreamConfig.from_env().qa_min_cluster_size == 2
+    monkeypatch.setenv("DIRECTOR_QA_MIN_CLUSTER_SIZE", "1")
+    assert StreamConfig.from_env().qa_min_cluster_size == 1
+    monkeypatch.setenv("DIRECTOR_QA_MIN_CLUSTER_SIZE", "abc")
+    assert StreamConfig.from_env().qa_min_cluster_size == 2
