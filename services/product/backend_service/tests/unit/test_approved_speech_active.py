@@ -36,8 +36,12 @@ class LLM:
         self.release = threading.Event()
         self.release.set()
         self.complete = False
+        self.judge = "OK"
 
     def stream_chunks(self, request, **kwargs):
+        if "giám khảo" in request.messages[0]["content"]:
+            yield SimpleNamespace(text=self.judge)
+            return
         self.started.set()
         midpoint = len(self.output) // 2
         yield SimpleNamespace(text=self.output[:midpoint])
@@ -663,3 +667,16 @@ async def test_a_natural_answer_keeps_the_approved_numbers(case_factory, output,
     await prepare(case, turn)
     await case.d.coordinator._maybe_speak(case.sid, turn)
     assert "".join(case.tts.calls) == (output if accepted else DEFLECTION)
+
+
+@pytest.mark.asyncio
+async def test_a_natural_answer_the_judge_refuses_is_not_spoken(case_factory):
+    from backend.application.script_authoring.approved_speech import DEFLECTION
+
+    case = await case_factory()
+    case.llm.output = "Bên mình giao hàng trong ba ngày nhé mọi người."
+    case.llm.judge = "NO"
+    turn = decision(case, generated=True)
+    await prepare(case, turn)
+    await case.d.coordinator._maybe_speak(case.sid, turn)
+    assert "".join(case.tts.calls) == DEFLECTION

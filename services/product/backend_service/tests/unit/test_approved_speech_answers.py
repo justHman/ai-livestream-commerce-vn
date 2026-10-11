@@ -66,3 +66,27 @@ def test_a_hyphenated_phone_number_is_read_digit_by_digit() -> None:
 
     spoken = compile_spoken_text("Gọi 0901-234-567 nhé").spoken_text
     assert spoken == "Gọi không chín không một hai ba bốn năm sáu bảy nhé"
+
+
+def test_a_price_inside_a_bigger_number_is_not_the_stated_price() -> None:
+    product = _product("Giá một trăm tám mươi nghìn đồng nhé.", prices=["180000 VND", "80000 VND"])
+    assert product.answers() == ("Giá một trăm tám mươi nghìn đồng.",)
+
+
+def test_a_condition_stays_with_its_promotion_even_if_the_script_omits_it() -> None:
+    product = _product(
+        "Đang giảm hai mươi phần trăm nhé.",
+        allowed_claims=["Giảm 20%", "Chỉ áp dụng khi mua hai sản phẩm"],
+        claims_by_type={"promotion": ["Giảm 20%"]},
+    )
+    (answer,) = product.answers()
+    assert "hai mươi phần trăm" in answer and "Chỉ áp dụng khi mua hai sản phẩm" in answer
+
+
+def test_a_natural_number_must_be_a_whole_number_of_the_facts() -> None:
+    from backend.application.script_authoring.approved_speech import _validate_natural
+
+    product = _product("x", prices=["180000 VND"], allowed_claims=[])
+    facts = ["Giá một trăm tám mươi nghìn đồng."]
+    assert _validate_natural("Giá một trăm tám mươi nghìn đồng nhé.", product, facts)
+    assert _validate_natural("Giá tám mươi nghìn đồng nhé.", product, facts) is None
