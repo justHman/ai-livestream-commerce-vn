@@ -289,6 +289,8 @@ async def record_execution_evidence(
                 envelope = await d.approved_speech.resolve(session_id)
                 if not d.coordinator or not d.coordinator.has(session_id):
                     raise SpeechRejected("session_not_attached")
+                if state.runtime_ready and state.approved_envelope_hash != envelope.fingerprint:
+                    raise SpeechRejected("approved_envelope_changed")
                 state = state.model_copy(update={"approved_envelope_hash": envelope.fingerprint})
             except SpeechRejected as exc:
                 raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
