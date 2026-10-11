@@ -398,3 +398,20 @@ def test_no_replacement_starts_while_the_old_session_is_not_confirmed_ended():
     assert backend._sessions[sid].provider_session_id == "ls-1"  # a stop still retries it
     rest.control_raise = None
     backend.stop_all()
+
+
+def test_a_vanished_avatar_is_replaced_while_the_host_is_silent():
+    room = FakeRoom()
+    rest = FakeLemonSlice(room)
+    backend = LemonSliceRenderBackend(
+        settings(max_session_s=1500.0, rollover_after_s=60.0, keepalive_s=0.05),
+        room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
+        http_post=rest,
+    )
+    sid = backend.start(StartOptions()).session_id
+    room.remote_participants.clear()  # the avatar left while nobody was speaking
+    rest.session_id = "ls-2"
+    assert until(lambda: len(rest.starts) == 2)  # no utterance needed: the keepalive heals it
+    assert backend._sessions[sid].provider_session_id == "ls-2"
+    backend.stop_all()

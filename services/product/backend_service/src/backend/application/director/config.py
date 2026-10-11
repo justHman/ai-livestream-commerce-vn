@@ -82,13 +82,21 @@ class StreamConfig:
 
     @classmethod
     def from_env(cls) -> "StreamConfig":
-        """Defaults with the deployment's overrides (DIRECTOR_QA_MIN_CLUSTER_SIZE)."""
+        """Defaults with the deployment's overrides (DIRECTOR_QA_MIN_CLUSTER_SIZE,
+        DIRECTOR_PREPARED_TURN_DEPTH)."""
         raw = os.environ.get("DIRECTOR_QA_MIN_CLUSTER_SIZE", "").strip()
         try:
             size = int(raw) if raw else cls.qa_min_cluster_size
         except ValueError:
             size = cls.qa_min_cluster_size
-        return cls(qa_min_cluster_size=max(1, size))
+        raw_depth = os.environ.get("DIRECTOR_PREPARED_TURN_DEPTH", "").strip()
+        try:
+            depth = int(raw_depth) if raw_depth else 1
+        except ValueError:
+            depth = 1
+        # Approved units are prepared in milliseconds, so one turn ahead hides no latency; a
+        # deeper queue only delays a viewer's answer behind several script units.
+        return cls(qa_min_cluster_size=max(1, size), prepared_turn_depth=max(1, depth))
 
     @classmethod
     def from_json(cls, path: str | Path) -> "StreamConfig":

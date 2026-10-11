@@ -558,7 +558,7 @@ async def test_prepared_units_ahead_do_not_repeat(case_factory):
     await case.d.coordinator._fill_prepared(case.sid)
     await asyncio.sleep(0.2)
     queued = [t.prepared_script for t in case.d.coordinator._speech_queue[case.sid]]
-    assert queued == B_UNITS[1:4]
+    assert queued == B_UNITS[1:2]  # one turn ahead: a viewer answer waits for at most one unit
 
 
 @pytest.mark.asyncio

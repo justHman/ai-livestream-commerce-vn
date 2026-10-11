@@ -1121,6 +1121,18 @@ class DirectorCoordinator:
                 }
                 self._decision_queue[session_id].append(decision)
                 projection.mark_spoken(decision)
+                logger.info(
+                    "director decision session=%s turn=%s action=%s product=%s stage=%s unit=%s "
+                    "topic=%s queued_ahead=%d",
+                    session_id,
+                    decision.turn_id,
+                    decision.action,
+                    decision.product_id,
+                    decision.stage,
+                    decision.unit_index,
+                    decision.topic,
+                    len(prepared),
+                )
                 await self._emit(
                     session_id,
                     {"type": "director.decision", **_decision_to_event(decision)},
