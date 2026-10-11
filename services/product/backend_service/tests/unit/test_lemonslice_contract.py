@@ -298,8 +298,9 @@ def test_failed_rollover_keeps_the_session_retries_later_and_the_cap_still_appli
     sid = backend.start(StartOptions()).session_id
     now[0] += 61
     rest.start_raise = ConnectionError("provider down")
-    backend.stream_audio(sid, win("u1", 0, final=True))  # keeps speaking on the old session
-    assert len(rest.starts) == 2 and rest.controls == []
+    backend.stream_audio(sid, win("u1", 0, final=True))  # the old avatar was ended first
+    assert len(rest.starts) == 2
+    assert rest.controls == [(f"{BASE}/sessions/ls-1/control", "terminate")]
     now[0] += 10
     backend.stream_audio(sid, win("u2", 0, final=True))
     assert len(rest.starts) == 2  # not retried inside the pause
@@ -347,17 +348,18 @@ def _ignoring(call):
         pass
 
 
-def test_rollover_is_skipped_when_there_is_no_avatar_to_replace():
+def test_a_vanished_avatar_is_replaced_even_before_the_session_is_old():
     backend, rest, now = _rolling()
     sid = backend.start(StartOptions()).session_id
     backend._sessions[sid].room.remote_participants.clear()  # the avatar left the room
-    now[0] += 61
-    _ignoring(lambda: backend.stream_audio(sid, win("u1", 0, final=True)))
-    assert len(rest.starts) == 1 and rest.controls == []
+    rest.session_id = "ls-2"
+    backend.stream_audio(sid, win("u1", 0, final=True))
+    assert len(rest.starts) == 2
+    assert backend._sessions[sid].provider_session_id == "ls-2"
     backend.stop_all()
 
 
-def test_a_replacement_that_lands_late_and_displaces_the_avatar_is_adopted():
+def test_a_replacement_that_lands_late_is_adopted():
     now = [1000.0]
     room = FakeRoom()
     rest = FakeLemonSlice(room)
@@ -378,9 +380,9 @@ def test_a_replacement_that_lands_late_and_displaces_the_avatar_is_adopted():
     now[0] += 61
     rest.session_id = "ls-2"
     release = rest.hold()  # creation is slower than the rollover waits
-    backend.stream_audio(sid, win("u1", 0, final=True))  # rollover times out: old session speaks on
-    assert backend._sessions[sid].provider_session_id == "ls-1"
-    release.set()  # the replacement lands late, joins and displaces the old avatar
+    backend.stream_audio(sid, win("u1", 0, final=True))  # the wait runs out: old one is ended
+    assert (f"{BASE}/sessions/ls-1/control", "terminate") in rest.controls
+    release.set()  # the replacement lands late and joins the room
     assert until(lambda: backend._sessions[sid].provider_session_id == "ls-2")
-    assert until(lambda: (f"{BASE}/sessions/ls-1/control", "terminate") in rest.controls)
+    assert until(lambda: backend._sessions[sid].started_at == now[0])  # age clock restarted
     backend.stop_all()
