@@ -135,6 +135,7 @@ _PHONE_RE = re.compile(
     r"(?<![\w.,])(?:0\d{8,10}|\+?84\d{9,10}"
     r"|0\d{2,3}[ .-]\d{3}[ .-]\d{3,4})(?![\w%]|[.,]\d)"  # also 0901.234.567, 0901 234 567
 )
+_PHONE_HYPHEN_RE = re.compile(r"(?<![\w.,])0\d{2,3}-\d{3}-\d{3,4}(?![\w%]|[.,]\d)")
 # Hotlines 1800/1900 xxxx are read digit by digit.
 _HOTLINE_RE = re.compile(r"(?<![\w.,])(1[89]00)\s(\d{4})(?![\w%]|[.,]\d)")
 _DIGIT_WORD = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
@@ -403,6 +404,8 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
     whitespace_stripped = " ".join(whitespace_stripped.split())
     text = _changed(text, whitespace_stripped, "collapse_whitespace")
 
+    # 0901-234-567 must be a phone before the hyphen rules turn it into commas or a range.
+    text = _PHONE_HYPHEN_RE.sub(lambda m: re.sub(r"\D", "", m.group()), text)
     text = _DATE_RE.sub(_read_date, text)
     text = _RANGE_RE.sub(r"\1 đến \2", text)
     dashes = _DASH_RE.sub(",", text)

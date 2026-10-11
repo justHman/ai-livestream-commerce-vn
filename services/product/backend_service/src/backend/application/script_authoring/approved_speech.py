@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 from typing import Any, Callable
 
 from .fingerprints import ApprovalDependencies, approval_dependency_hash
@@ -64,7 +65,7 @@ class ApprovedProduct:
         price in a fixed sentence.
         """
         from .compile import compile_spoken_text
-        from .generation.ordered_units import _CONDITION_CLAIM_RE, spoken_price
+        from .generation.ordered_units import _CONDITION_CLAIM_RE, claim_covered, spoken_price
 
         facts = json.loads(self.facts_json)
         promotions = {
@@ -78,6 +79,8 @@ class ApprovedProduct:
         for claim in facts.get("allowed_claims", []):
             if not isinstance(claim, str) or not claim.strip():
                 continue
+            if not claim_covered(claim, self.spoken_text):
+                continue  # not part of what the owner approved: a changed fact must not slip in
             spoken = compile_spoken_text(claim.strip()).spoken_text
             if claim in promotions or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # never alone: a discount without its condition misleads
@@ -85,9 +88,10 @@ class ApprovedProduct:
                 found.append(spoken)
         if conditional:
             found.append(" ".join(conditional))
+        script_words = compile_spoken_text(self.spoken_text).spoken_text.lower()
         for price in facts.get("prices", []):
             words = spoken_price(str(price))
-            if words:
+            if words and words.lower() in script_words:  # the approved script states this price
                 found.append(f"Giá {words}.")
         return tuple(dict.fromkeys(found))
 
@@ -95,6 +99,92 @@ class ApprovedProduct:
 def _is_script_text(text: str, product: "ApprovedProduct") -> bool:
     """The whole approved script, one of its units, or (a viewer question) a whole approved fact."""
     return text == product.spoken_text or text in product.units or text in product.answers()
+
+
+# Said when the approved facts cannot answer a viewer: fixed bytes, no facts of its own.
+DEFLECTION = "Phần này mình chưa có thông tin chính xác, bạn nhắn mình để shop hỗ trợ thêm nhé."
+_NATURAL_MAX_CHARS = 360
+_NATURAL_SYSTEM = (
+    "Bạn là MC livestream bán hàng Việt Nam. Trả lời câu hỏi của khán giả bằng 1 đến 3 câu ngắn, "
+    "thân thiện, tự nhiên như người nói thật; xưng 'mình', gọi khán giả là 'mọi người' hoặc 'các "
+    "bạn'. CHỈ dùng thông tin trong 'facts': số, giá, kích cỡ phải lấy đúng từ facts và viết "
+    "bằng chữ, không viết chữ số; không thêm thông tin, không hứa hẹn, không thúc giục mua. Nếu "
+    "facts không đủ để trả lời câu hỏi, trả về chuỗi rỗng. Chỉ trả về lời thoại."
+)
+# Number words that are ordinary words on their own ("không", "một chút", "tư vấn").
+_PLAIN_NUMBER_RUNS = frozenset({("không",), ("một",), ("không", "một")})
+# After one of these a lone "một" IS a quantity ("trong một giờ"), not "một chút".
+_QUANTITY_UNITS = frozenset(
+    "ngày giờ tuần tháng phút năm đôi chiếc cái màu size lần đồng nghìn triệu sản phần".split()
+)
+# Words that carry no claim: politeness, pronouns, connectors. Everything else a natural answer
+# says must come from the approved facts (a reverse-grounding check).
+_FUNCTION_WORDS = frozenset(
+    (
+        "và là của có cho với các những này đó nhé nha ạ à ơi thì mà để khi nếu cũng rất khá luôn "
+        "lắm thôi được nên vì do tại trong ở từ đến tới như thế nào ai gì sao bạn mình mọi người "
+        "bên shop nhà em anh chị ơi vâng dạ vậy rồi đang sẽ đã vẫn còn hơn nữa thêm cùng nhiều "
+        "ít vài mấy chút tí cả hết đều chỉ cứ hãy nhớ lưu ý xin cảm ơn hỏi câu hỏi trả lời "
+        "thông tin sản phẩm mẫu này kia đây ấy thể bị phải nói biết thấy xem hiểu hỗ trợ giúp "
+        "tư vấn cần muốn đặt nhắn gửi liền ngay luôn giờ lúc bây hay hoặc còn nhưng tuy nhiên "
+        "vừa đủ phù hợp tốt đẹp ổn okay ok"
+    ).split()
+)
+_RESTRICTION_WORDS = frozenset(("không chưa chẳng chỉ trừ nếu tối đa thiểu miễn").split())
+
+
+def _validate_natural(raw: str, product: "ApprovedProduct", facts: list[str]) -> str | None:
+    """A model-written answer, or None. It goes through the script's own guards (prices, hard
+    sell, address, truncation...), may not contain a digit, and every run of number words must
+    occur in the approved facts as the very same run (so no changed size, price or duration)."""
+    from .generation.ordered_units import _NUMBER_WORDS, UnitSpec, check_unit_text
+
+    data = json.loads(product.facts_json)
+    approved = (
+        *(str(c) for c in data.get("allowed_claims", ())),
+        *(str(d) for d in data.get("discounts", ())),
+    )
+    text, _why = check_unit_text(
+        raw,
+        spec=UnitSpec("assurance"),
+        prices=tuple(str(p) for p in data.get("prices", ())),
+        approved=approved,
+        product_name=str(data.get("product_name") or ""),
+    )
+    if text is None or len(text) > _NATURAL_MAX_CHARS or re.search(r"\d", text):
+        return None
+    fact_words = re.findall(r"\w+", " ".join(facts).lower())
+    words = re.findall(r"\w+", text.lower())
+    i = 0
+    while i < len(words):
+        if words[i] not in _NUMBER_WORDS:
+            i += 1
+            continue
+        j = i
+        while j < len(words) and words[j] in _NUMBER_WORDS:
+            j += 1
+        run = tuple(words[i:j])
+        after = words[j] if j < len(words) else ""
+        plain = (run in _PLAIN_NUMBER_RUNS and after not in _QUANTITY_UNITS) or (
+            run == ("tư",) and after == "vấn"
+        )
+        year = run == ("năm",) and (
+            after in ("nay", "ngoái", "sau", "mới") or (i and words[i - 1] == "hàng")
+        )
+        n = len(run)
+        found = any(tuple(fact_words[k : k + n]) == run for k in range(len(fact_words) - n + 1))
+        if not (plain or year or found):
+            return None
+        i = j
+    # Reverse grounding: the claims of the answer must come from the facts, so an invented
+    # promise ("bảo hành trọn đời", "giao trong một giờ", "chữa mọi bệnh") is not a paraphrase.
+    fact_set = set(fact_words)
+    content = [w for w in words if w not in _FUNCTION_WORDS and w not in _NUMBER_WORDS]
+    if content and sum(1 for w in content if w in fact_set) < 0.8 * len(content):
+        return None
+    if any(w in _RESTRICTION_WORDS and w not in fact_set for w in words):
+        return None  # a negation or restriction the facts do not contain
+    return text
 
 
 @dataclass(frozen=True)
@@ -365,9 +455,8 @@ class ApprovedSpeech:
             self.check_start(session_id)
         envelope = await self.resolve(session_id)
         candidates = (envelope.product(product_id),) if product_id else envelope.products
-        generated = (
-            False  # a viewer answer chosen by the model: only a whole approved fact is valid
-        )
+        generated = False  # chosen by the model: it must be one whole approved fact
+        trusted = False  # checked natural answer or the fixed deflection
         if select_locked:
             whole = envelope.product(product_id)
             if len(whole.units) > 1:
@@ -378,42 +467,34 @@ class ApprovedSpeech:
         elif generate:
             if llm is None or getattr(llm, "name", "none") == "none":
                 raise SpeechRejected("generation_unavailable")
-            from llm.engines.base import LLMRequest
-
             answers = [answer for p in candidates for answer in p.answers()]
             if not answers:
-                raise SpeechRejected("no_approved_answer")
-            prompt = _json({"question": text[:4000], "approved_answers": answers})
-            request = LLMRequest.from_prompt(
-                prompt,
-                system_prompt=(
-                    "Select exactly one complete approved_answers string that answers the question. "
-                    "Return it byte for byte, without additions. If unsupported return an empty string."
+                text, trusted = DEFLECTION, True  # nothing approved to say: never improvise
+            else:
+                natural = None
+                if len(candidates) == 1:
+                    natural = await self._compose(
+                        llm, session_id, epoch, live, candidates[0], text, answers
+                    )
+                if natural is not None:
+                    text, trusted = natural, True
+                else:
+                    text = await self._select(llm, session_id, epoch, live, text, answers)
+                    if text in answers:
+                        generated = True  # only a whole approved fact is valid
+                    else:
+                        text, trusted = DEFLECTION, True
+        if trusted:
+            product = candidates[0]
+        else:
+            product = next(
+                (
+                    p
+                    for p in candidates
+                    if (text in p.answers() if generated else _is_script_text(text, p))
                 ),
+                None,
             )
-
-            def collect():
-                parts = []
-                size = 0
-                for chunk in llm.stream_chunks(request, session_id=session_id):
-                    if epoch != self._epochs.get(session_id, 0) or not live():
-                        raise SpeechRejected("cancelled_speech")
-                    size += len(chunk.text)
-                    if size > 16000:
-                        raise SpeechRejected("generated_unit_too_large")
-                    parts.append(chunk.text)
-                return "".join(parts)
-
-            text = await asyncio.to_thread(collect)
-            generated = True
-        product = next(
-            (
-                p
-                for p in candidates
-                if (text in p.answers() if generated else _is_script_text(text, p))
-            ),
-            None,
-        )
         if product is None:
             raise SpeechRejected("unsupported_content")
         speech = ValidatedSpeech(envelope, product, text, epoch, route)
@@ -421,6 +502,50 @@ class ApprovedSpeech:
         if route != "director":
             self.check_start(session_id)
         return speech
+
+    async def _run_llm(self, llm, request, session_id, epoch, live) -> str:
+        def collect():
+            parts = []
+            size = 0
+            for chunk in llm.stream_chunks(request, session_id=session_id):
+                if epoch != self._epochs.get(session_id, 0) or not live():
+                    raise SpeechRejected("cancelled_speech")
+                size += len(chunk.text)
+                if size > 16000:
+                    raise SpeechRejected("generated_unit_too_large")
+                parts.append(chunk.text)
+            return "".join(parts)
+
+        return await asyncio.to_thread(collect)
+
+    async def _select(self, llm, session_id, epoch, live, question, answers) -> str:
+        from llm.engines.base import LLMRequest
+
+        request = LLMRequest.from_prompt(
+            _json({"question": question[:4000], "approved_answers": answers}),
+            system_prompt=(
+                "Select exactly one complete approved_answers string that answers the question. "
+                "Return it byte for byte, without additions. If unsupported return an empty string."
+            ),
+        )
+        return await self._run_llm(llm, request, session_id, epoch, live)
+
+    async def _compose(self, llm, session_id, epoch, live, product, question, facts) -> str | None:
+        """A natural answer from the approved facts, or None (then the caller selects a fact)."""
+        from llm.engines.base import LLMRequest
+
+        name = json.loads(product.facts_json).get("product_name") or product.product_id
+        request = LLMRequest.from_prompt(
+            _json({"question": question[:2000], "product": name, "facts": facts}),
+            system_prompt=_NATURAL_SYSTEM,
+        )
+        try:
+            raw = await self._run_llm(llm, request, session_id, epoch, live)
+        except SpeechRejected:
+            raise
+        except Exception:  # a failing model must not silence the viewer: fall back to a fact
+            return None
+        return _validate_natural(raw, product, facts) if raw.strip() else None
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
         if speech.envelope.session_id in self._runtime_failed:

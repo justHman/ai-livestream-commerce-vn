@@ -249,6 +249,13 @@ async def test_generated_speech_buffered_before_any_audio(case_factory, cloud):
     assert (case.backend.calls if cloud else case.tts.calls) == [CLAIM]
 
 
+def _only_deflection(case) -> bool:
+    """Unsupported text is never spoken; the fixed deflection is the only thing that may be."""
+    from backend.application.script_authoring.approved_speech import DEFLECTION
+
+    return "".join(case.tts.calls) in ("", DEFLECTION)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "text",
@@ -279,7 +286,7 @@ async def test_unsupported_claims_never_reach_tts(case_factory, text, route):
             case.llm.output = text
         await prepare(case, turn)
         await case.d.coordinator._maybe_speak(case.sid, turn)
-    assert not case.tts.calls
+    assert _only_deflection(case)
 
 
 @pytest.mark.asyncio
@@ -289,7 +296,7 @@ async def test_a_viewer_answer_cannot_be_the_whole_script_or_a_script_unit(case_
     turn = decision(case, generated=True)
     await prepare(case, turn)
     await case.d.coordinator._maybe_speak(case.sid, turn)
-    assert not case.tts.calls
+    assert _only_deflection(case)
 
 
 @pytest.mark.asyncio
@@ -614,3 +621,45 @@ async def test_late_rejection_drops_the_units_queued_behind_it(case_factory):
     assert await co._maybe_speak(sid, first)
     assert not case.tts.calls  # nothing reached media
     assert not co._speech_queue[sid]  # the later unit did not stay queued behind the rejection
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "spoken"),
+    [
+        (CLAIM, [CLAIM]),
+        ("", ["DEFLECTION"]),
+        ("Giá chỉ 999000 VND.", ["DEFLECTION"]),
+    ],
+)
+async def test_a_viewer_answer_is_a_fact_or_the_fixed_deflection(case_factory, output, spoken):
+    from backend.application.script_authoring.approved_speech import DEFLECTION
+
+    case = await case_factory()
+    case.llm.output = output
+    turn = decision(case, generated=True)
+    await prepare(case, turn)
+    await case.d.coordinator._maybe_speak(case.sid, turn)
+    assert "".join(case.tts.calls) == "".join(
+        DEFLECTION if s == "DEFLECTION" else s for s in spoken
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "accepted"),
+    [
+        ("Bên mình giao hàng trong ba ngày nhé mọi người.", True),
+        ("Bên mình giao hàng trong năm ngày nhé mọi người.", False),
+        ("Giao hàng trong 3 ngày nhé.", False),
+    ],
+)
+async def test_a_natural_answer_keeps_the_approved_numbers(case_factory, output, accepted):
+    from backend.application.script_authoring.approved_speech import DEFLECTION
+
+    case = await case_factory()
+    case.llm.output = output
+    turn = decision(case, generated=True)
+    await prepare(case, turn)
+    await case.d.coordinator._maybe_speak(case.sid, turn)
+    assert "".join(case.tts.calls) == (output if accepted else DEFLECTION)
