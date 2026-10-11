@@ -90,3 +90,16 @@ def test_a_natural_number_must_be_a_whole_number_of_the_facts() -> None:
     facts = ["Giá một trăm tám mươi nghìn đồng."]
     assert _validate_natural("Giá một trăm tám mươi nghìn đồng nhé.", product, facts)
     assert _validate_natural("Giá tám mươi nghìn đồng nhé.", product, facts) is None
+
+
+def test_a_typed_limitation_stays_with_the_promotion_whatever_its_wording() -> None:
+    product = _product(
+        "Đang giảm hai mươi phần trăm nhé.",
+        allowed_claims=["Giảm 20%", "Áp dụng cho đơn từ 500000 đồng"],
+        claims_by_type={
+            "promotion": ["Giảm 20%"],
+            "limitation": ["Áp dụng cho đơn từ 500000 đồng"],
+        },
+    )
+    (answer,) = product.answers()
+    assert "hai mươi phần trăm" in answer and "Áp dụng cho đơn từ" in answer

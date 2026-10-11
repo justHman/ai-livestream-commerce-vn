@@ -74,13 +74,19 @@ class ApprovedProduct:
             if kind == "promotion"
             for text in texts
         }
+        limitations = {
+            text
+            for kind, texts in (facts.get("claims_by_type") or {}).items()
+            if kind == "limitation"
+            for text in texts
+        }
         found: list[str] = []
         conditional: list[str] = []
         for claim in facts.get("allowed_claims", []):
             if not isinstance(claim, str) or not claim.strip():
                 continue
             spoken = compile_spoken_text(claim.strip()).spoken_text
-            if _CONDITION_CLAIM_RE.search(claim):
+            if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # a condition only restricts: never dropped
             elif not claim_covered(claim, self.spoken_text):
                 continue  # not part of what the owner approved: a changed fact must not slip in
@@ -302,7 +308,8 @@ class ApprovedSpeech:
         self.source = source
         self._pinned: dict[str, ExecutionEnvelope] = {}
         self._epochs: dict[str, int] = {}
-        self._said_ok: dict[str, set[str]] = {}  # natural answers already judged, per session
+        # natural answers already judged: (product id, text) per session
+        self._said_ok: dict[str, set[tuple[str, str]]] = {}
         # P0-FB-016 start fence: "held", "closing" or "ending". Unlike the
         # epoch it never cancels the current utterance; it refuses new turns.
         self._blocked: dict[str, str] = {}
@@ -526,14 +533,22 @@ class ApprovedSpeech:
                         generated = True  # only a whole approved fact is valid
                     else:
                         text, trusted = DEFLECTION, True
-        if not (select_locked or generate) and (
-            text == DEFLECTION or text in self._said_ok.get(session_id, ())
-        ):
-            trusted = True  # replayed by the Director: it was judged when first produced
-        if trusted:
+        replay = None
+        if not (select_locked or generate):
+            replay = next(
+                (
+                    p
+                    for p in candidates
+                    if text == DEFLECTION
+                    or (p.product_id, text) in self._said_ok.get(session_id, ())
+                ),
+                None,
+            )  # replayed by the Director: it was judged when first produced
+        if trusted or replay is not None:
             if generate and text != DEFLECTION:
-                self._said_ok.setdefault(session_id, set()).add(text)
-            product = candidates[0]
+                self._fence(session_id, epoch, live)  # a cancelled turn must not fill the cache
+                self._said_ok.setdefault(session_id, set()).add((candidates[0].product_id, text))
+            product = replay or candidates[0]
         else:
             product = next(
                 (
