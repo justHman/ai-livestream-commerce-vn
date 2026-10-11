@@ -386,3 +386,15 @@ def test_a_replacement_that_lands_late_is_adopted():
     assert until(lambda: backend._sessions[sid].provider_session_id == "ls-2")
     assert until(lambda: backend._sessions[sid].started_at == now[0])  # age clock restarted
     backend.stop_all()
+
+
+def test_no_replacement_starts_while_the_old_session_is_not_confirmed_ended():
+    backend, rest, now = _rolling()
+    sid = backend.start(StartOptions()).session_id
+    now[0] += 61
+    rest.control_raise = ConnectionError("control endpoint down")
+    _ignoring(lambda: backend.stream_audio(sid, win("u1", 0, final=True)))
+    assert len(rest.starts) == 1  # a second avatar would coexist with the first
+    assert backend._sessions[sid].provider_session_id == "ls-1"  # a stop still retries it
+    rest.control_raise = None
+    backend.stop_all()
