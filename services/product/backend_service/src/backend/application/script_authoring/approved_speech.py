@@ -624,11 +624,11 @@ class ApprovedSpeech:
             return None
         answer = _validate_natural(raw, product, facts) if raw.strip() else None
         if answer is None:
+            # No text: a model that echoes a viewer's phone number or address must not leak it.
             logger.info(
-                "natural answer refused by validation session=%s empty=%s text=%r",
+                "natural answer refused by validation session=%s chars=%d",
                 session_id,
-                not raw.strip(),
-                raw[:160],
+                len(raw.strip()),
             )
             return None
         self._fence(session_id, epoch, live)

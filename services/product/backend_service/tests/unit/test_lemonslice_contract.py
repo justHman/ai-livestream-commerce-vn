@@ -415,3 +415,20 @@ def test_a_vanished_avatar_is_replaced_while_the_host_is_silent():
     assert until(lambda: len(rest.starts) == 2)  # no utterance needed: the keepalive heals it
     assert backend._sessions[sid].provider_session_id == "ls-2"
     backend.stop_all()
+
+
+def test_a_vanished_avatar_is_replaced_after_the_host_finished_speaking():
+    room = FakeRoom()
+    rest = FakeLemonSlice(room)
+    backend = LemonSliceRenderBackend(
+        settings(max_session_s=1500.0, rollover_after_s=60.0, keepalive_s=0.05),
+        room_factory=lambda: room,
+        session_client_factory=rest.client_factory,
+        http_post=rest,
+    )
+    sid = backend.start(StartOptions()).session_id
+    backend.stream_audio(sid, win("u1", 0, final=True))  # the utterance id stays open afterwards
+    room.remote_participants.clear()
+    rest.session_id = "ls-2"
+    assert until(lambda: len(rest.starts) == 2)
+    backend.stop_all()
