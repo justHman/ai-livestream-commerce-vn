@@ -1192,6 +1192,13 @@ class DirectorCoordinator:
             self._record_cancelled(session_id, decision, "preparation_cancelled")
             raise
         except SpeechRejected as exc:
+            logger.warning(
+                "speech rejected session=%s turn=%s action=%s reason=%s",
+                session_id,
+                decision.turn_id,
+                decision.action,
+                exc.code,
+            )
             self._note_rejected(session_id, decision)
             self._record_cancelled(session_id, decision, exc.code)
             if decision.unit_index is not None:
@@ -1334,6 +1341,13 @@ class DirectorCoordinator:
                     raise SpeechRejected("altered_prepared_text")
                 await self.approved_speech.revalidate(speech, live=live)
             except SpeechRejected as exc:
+                logger.warning(
+                    "speech rejected session=%s turn=%s action=%s reason=%s",
+                    session_id,
+                    decision.turn_id,
+                    decision.action,
+                    exc.code,
+                )
                 st.skips += 1
                 self._note_rejected(session_id, decision)
                 self._record_cancelled(session_id, decision, exc.code)
@@ -1583,6 +1597,13 @@ class DirectorCoordinator:
             if self.runtime_failures is not None:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):
+                    logger.warning(
+                        "speech rejected session=%s turn=%s action=%s reason=%s",
+                        session_id,
+                        decision.turn_id,
+                        decision.action,
+                        exc.code,
+                    )
                     st.skips += 1
                     self._note_rejected(session_id, decision)
                     self._record_cancelled(session_id, decision, exc.code)

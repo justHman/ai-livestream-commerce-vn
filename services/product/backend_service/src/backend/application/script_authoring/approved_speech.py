@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
-import re
 from typing import Any, Callable
 
 from .fingerprints import ApprovalDependencies, approval_dependency_hash
@@ -55,13 +54,28 @@ class ApprovedProduct:
         return split_units(self.spoken_text)
 
     def answers(self) -> tuple[str, ...]:
-        # No substring fragments, negation removal, price templates or free
-        # connectors. The complete claim must be an artifact sentence too.
+        """Whole approved fact sentences a viewer's question may be answered with, byte for byte.
+
+        The facts are approved together with the script (the facts version is part of the approval
+        hash), so a claim does not have to appear verbatim in the script: scripts are rewritten
+        in the host's own words and almost never contain a claim as one exact sentence. Still no
+        fragments, negation removal or free connectors; the model only chooses one whole string.
+        Numbers are written as words (what the voice reads); a price is only ever the approved
+        price in a fixed sentence.
+        """
+        from .compile import compile_spoken_text
+        from .generation.ordered_units import spoken_price
+
         facts = json.loads(self.facts_json)
-        claims = facts.get("allowed_claims", [])
-        sentences = self.spoken_text.splitlines()
-        sentences = [s for line in sentences for s in re.split(r"(?<=[.!?])\s+", line)]
-        return tuple(c for c in claims if isinstance(c, str) and c in sentences and c.strip())
+        found: list[str] = []
+        for claim in facts.get("allowed_claims", []):
+            if isinstance(claim, str) and claim.strip():
+                found.append(compile_spoken_text(claim.strip()).spoken_text)
+        for price in facts.get("prices", []):
+            words = spoken_price(str(price))
+            if words:
+                found.append(f"Giá {words}.")
+        return tuple(dict.fromkeys(found))
 
 
 @dataclass(frozen=True)
