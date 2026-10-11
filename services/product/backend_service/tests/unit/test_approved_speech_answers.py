@@ -23,7 +23,7 @@ def test_the_price_is_only_the_approved_price_in_a_fixed_sentence() -> None:
     product = _product(
         "Hôm nay giá một trăm tám mươi nghìn đồng nhé.", prices=["180000.00 VND"], allowed_claims=[]
     )
-    assert product.answers() == ("Giá một trăm tám mươi nghìn đồng.",)
+    assert product.answers() == ("Giá một trăm tám mươi nghìn đồng nhé mọi người.",)
 
 
 def test_blank_and_duplicate_claims_are_dropped_and_nothing_is_invented() -> None:
@@ -70,7 +70,7 @@ def test_a_hyphenated_phone_number_is_read_digit_by_digit() -> None:
 
 def test_a_price_inside_a_bigger_number_is_not_the_stated_price() -> None:
     product = _product("Giá một trăm tám mươi nghìn đồng nhé.", prices=["180000 VND", "80000 VND"])
-    assert product.answers() == ("Giá một trăm tám mươi nghìn đồng.",)
+    assert product.answers() == ("Giá một trăm tám mươi nghìn đồng nhé mọi người.",)
 
 
 def test_a_condition_stays_with_its_promotion_even_if_the_script_omits_it() -> None:

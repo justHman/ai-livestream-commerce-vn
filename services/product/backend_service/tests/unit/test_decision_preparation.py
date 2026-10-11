@@ -259,7 +259,8 @@ async def test_transient_turn_exhaustion_does_not_advance_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_prepares_upcoming_turns_during_active_playback() -> None:
+async def test_pipeline_prepares_upcoming_turns_during_active_playback(monkeypatch) -> None:
+    monkeypatch.setenv("DIRECTOR_PREPARED_TURN_DEPTH", "3")
     backend = _BlockingCloudBackend()
     runtime = DirectorRuntime(backend=backend, embedder=HashingEmbedder())
     coordinator = DirectorCoordinator(runtime=runtime, llm=None, tts=None, backend=backend)
@@ -793,3 +794,14 @@ async def test_cluster_snapshot_reuses_runtime_embedder_cache_and_session_config
     finally:
         coordinator.stop(session_id)
         await asyncio.sleep(0)
+
+
+def test_prepared_depth_defaults_to_one_and_can_be_overridden(monkeypatch) -> None:
+    from backend.application.director.config import StreamConfig
+
+    monkeypatch.delenv("DIRECTOR_PREPARED_TURN_DEPTH", raising=False)
+    assert StreamConfig.from_env().prepared_turn_depth == 1
+    monkeypatch.setenv("DIRECTOR_PREPARED_TURN_DEPTH", "3")
+    assert StreamConfig.from_env().prepared_turn_depth == 3
+    monkeypatch.setenv("DIRECTOR_PREPARED_TURN_DEPTH", "oops")
+    assert StreamConfig.from_env().prepared_turn_depth == 1

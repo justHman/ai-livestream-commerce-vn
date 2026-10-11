@@ -558,7 +558,7 @@ async def test_prepared_units_ahead_do_not_repeat(case_factory):
     await case.d.coordinator._fill_prepared(case.sid)
     await asyncio.sleep(0.2)
     queued = [t.prepared_script for t in case.d.coordinator._speech_queue[case.sid]]
-    assert queued == B_UNITS[1:4]
+    assert queued == B_UNITS[1:2]  # one turn ahead: a viewer answer waits for at most one unit
 
 
 @pytest.mark.asyncio
@@ -680,3 +680,16 @@ async def test_a_natural_answer_the_judge_refuses_is_not_spoken(case_factory):
     await prepare(case, turn)
     await case.d.coordinator._maybe_speak(case.sid, turn)
     assert "".join(case.tts.calls) == DEFLECTION
+
+
+@pytest.mark.asyncio
+async def test_the_last_approved_unit_finishes_as_a_close_turn(case_factory):
+    # the API ends the live when the Runtime reports speak_finished(action=close): it must happen
+    case = await case_factory(source=MultiSource({"product-b": B_UNITS, "product-a": A_UNITS}))
+    await open_session(case)
+    for _ in range(len(B_UNITS) + len(A_UNITS) - 1):
+        await play_next(case)
+    history = list(case.d.coordinator._completed_history[case.sid])
+    assert spoken(case)[-1] == A_UNITS[-1]
+    assert history[-1]["action"] == "close" and history[-1]["state"] == "completed"
+    assert all(item["action"] != "close" for item in history[:-1])

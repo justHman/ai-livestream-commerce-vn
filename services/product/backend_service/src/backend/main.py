@@ -5,7 +5,20 @@ Usage:
     # or: python -m backend.main
 """
 
+import logging
+import os
+
 from .bootstrap import create_app
+
+_level = os.getenv("LOG_LEVEL", "INFO").upper()
+# Without this the root logger only shows WARNING+: decisions, speech timing and rollovers were
+# invisible in production. Chatty client libraries stay at WARNING.
+logging.basicConfig(
+    level=_level if _level in logging.getLevelNamesMapping() else "INFO",
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+for _noisy in ("httpx", "httpcore", "livekit", "uvicorn.access", "asyncio"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 app = create_app()
 

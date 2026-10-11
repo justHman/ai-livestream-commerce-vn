@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import re
 from typing import Any, Callable
 
@@ -23,6 +24,7 @@ from .units import split_units
 from .session_binding import RuntimePlan, validate_binding, _source_current_dependencies
 
 CAPABILITY = "content.approved_speech.v1"
+logger = logging.getLogger(__name__)
 
 
 class SpeechRejected(ValueError):
@@ -100,7 +102,10 @@ class ApprovedProduct:
         for price in facts.get("prices", []):
             words = spoken_price(str(price))
             if words and _states_number(script_words, words):  # the script states this price
-                found.append(f"Giá {words}.")
+                name = str(facts.get("product_name") or "").strip()
+                found.append(
+                    f"{name} giá {words} nhé mọi người." if name else f"Giá {words} nhé mọi người."
+                )
         return tuple(dict.fromkeys(found))
 
 
@@ -612,10 +617,19 @@ class ApprovedSpeech:
             raw = await self._run_llm(llm, request, session_id, epoch, live)
         except SpeechRejected:
             raise
-        except Exception:  # a failing model must not silence the viewer: fall back to a fact
+        except Exception as exc:  # a failing model must not silence the viewer: fall back to a fact
+            logger.warning(
+                "natural answer failed session=%s error_type=%s", session_id, type(exc).__name__
+            )
             return None
         answer = _validate_natural(raw, product, facts) if raw.strip() else None
         if answer is None:
+            # No text: a model that echoes a viewer's phone number or address must not leak it.
+            logger.info(
+                "natural answer refused by validation session=%s chars=%d",
+                session_id,
+                len(raw.strip()),
+            )
             return None
         self._fence(session_id, epoch, live)
         judge = LLMRequest.from_prompt(
@@ -629,7 +643,15 @@ class ApprovedSpeech:
             raise
         except Exception:
             return None
-        return answer if verdict.strip().strip(".").upper() == "OK" else None
+        accepted = verdict.strip().strip(".").upper() == "OK"
+        logger.info(
+            "natural answer judged session=%s accepted=%s verdict=%r text=%r",
+            session_id,
+            accepted,
+            verdict[:20],
+            answer[:160],
+        )
+        return answer if accepted else None
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
         if speech.envelope.session_id in self._runtime_failed:

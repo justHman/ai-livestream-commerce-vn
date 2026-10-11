@@ -417,6 +417,9 @@ class _Sess:
     refused: bool = False  # avatar audio was detected while the fallback ran: fail closed
     watcher: Any = None  # idle backstop task for 'avatar started publishing audio'
     keepalive: Any = None  # reset-idle-timeout loop task
+    last_stream_at: float = (
+        0.0  # when the host last pushed audio (an open utterance id outlives it)
+    )
     started_at: float = 0.0  # monotonic
     agent_id: str = ""  # kept so a rollover can start the same avatar again
     room_name: str = ""
@@ -933,6 +936,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             await self._maybe_rollover(sess)
         if self._age_state(sess) == "near_cap" and sess.channel.open_utterance != w.utterance_id:
             raise SessionNearCap()  # a started utterance may still finish
+        sess.last_stream_at = self._mono()
         epoch = sess.epoch
         await self._guard_fallback(sess)  # avatar audio appeared after start: never two speakers
         out = await sess.channel.send(
@@ -1360,7 +1364,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 or sess.rolling
                 or not sess.provider_session_id
             ):
+                streaming = self._mono() - sess.last_stream_at < s.keepalive_s * 2
+                if not sess.rolling and not sess.channel.broken and not streaming:
+                    await self._heal_idle(sess)  # no provider session left: recreate it now
                 continue  # speaking already resets the provider idle timer; rolling swaps it
+            if await self._heal_idle(sess):
+                continue
             err = ""
             status = 0
             used = sess.provider_session_id
@@ -1389,6 +1398,17 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             log.warning("lemonslice keepalive failed consecutive=%d %s", failures, err)
             if failures == s.keepalive_fail_log_after:
                 log.error("lemonslice keepalive failing; idle_timeout may end the session")
+
+    async def _heal_idle(self, sess: _Sess) -> bool:
+        """While the host is silent nothing calls _maybe_rollover: a vanished or expired avatar
+        would stay gone until the media watchdog fails the live. True when a swap ran."""
+        before = sess.provider_session_id
+        try:
+            await self._maybe_rollover(sess)
+        except Exception as exc:  # never end the keepalive for it
+            log.warning("lemonslice idle heal failed error_type=%s", type(exc).__name__)
+            return False
+        return sess.provider_session_id != before
 
     def _age_state(self, sess: _Sess) -> str:
         """'ok' | 'near_cap'; logs once at 80% of ``max_session_s``.
