@@ -9,6 +9,7 @@ portable (same object Colab -> AWS).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
@@ -60,6 +61,10 @@ class StreamConfig:
     demand_pivot_exit_share: float = 0.45
     demand_pivot_min_comments: int = 5
     demand_pivot_score_margin: float = 0.15
+    # Smallest cluster of similar comments the Director answers (high-value intents always
+    # qualify). 2 keeps a single stray comment from interrupting the script on a busy stream;
+    # on a small live every viewer matters, so 1 answers each question.
+    qa_min_cluster_size: int = 2
 
     def validate_runtime(self) -> None:
         if not 0.2 <= self.traffic_high_threshold <= 5.0:
@@ -72,6 +77,18 @@ class StreamConfig:
             raise ValueError("pivot shares must satisfy 0 < exit < enter <= 1")
         if self.demand_pivot_min_comments < 1 or self.demand_pivot_score_margin < 0:
             raise ValueError("pivot gates must be non-negative")
+        if self.qa_min_cluster_size < 1:
+            raise ValueError("qa_min_cluster_size must be at least 1")
+
+    @classmethod
+    def from_env(cls) -> "StreamConfig":
+        """Defaults with the deployment's overrides (DIRECTOR_QA_MIN_CLUSTER_SIZE)."""
+        raw = os.environ.get("DIRECTOR_QA_MIN_CLUSTER_SIZE", "").strip()
+        try:
+            size = int(raw) if raw else cls.qa_min_cluster_size
+        except ValueError:
+            size = cls.qa_min_cluster_size
+        return cls(qa_min_cluster_size=max(1, size))
 
     @classmethod
     def from_json(cls, path: str | Path) -> "StreamConfig":

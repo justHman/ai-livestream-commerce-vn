@@ -289,6 +289,8 @@ class FakeLemonSlice:
         self.calls.append((url, headers, body))
         assert "event" in body, "session start must go through the plugin client, not raw REST"
         self.controls.append((url, body["event"]))
+        if body["event"] == "terminate":  # the provider session ends: its avatar leaves the room
+            self.room.remote_participants.pop(AVATAR, None)
         if self.control_raise is not None:
             raise self.control_raise
         return self.control_status, {}
