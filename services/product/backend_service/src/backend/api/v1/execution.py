@@ -306,6 +306,9 @@ async def record_execution_evidence(
             await _settle_usage(d, staged, saved=False, failure=exc)
             raise
         await _settle_usage(d, staged, saved=True)
+        phase_setter = getattr(getattr(d, "backend", None), "set_session_phase", None)
+        if phase_setter is not None:
+            phase_setter(session_id, updated.phase)
     return {"state": updated.model_dump(mode="json")}
 
 

@@ -48,7 +48,8 @@ def test_terminate_waits_for_an_in_flight_keepalive_and_nothing_follows_it():
         http_post=post, keepalive_s=0.03, request_timeout_s=3.0, playback_margin_s=0.3
     )
     holder.append(rest)
-    backend.start(StartOptions())
+    sid = backend.start(StartOptions()).session_id
+    backend.set_session_phase(sid, "selling")
     assert parked.wait(3)
     t, _ = bg(backend.stop_all)
     time.sleep(0.4)  # teardown has run: terminate must still be waiting for the parked call
@@ -67,6 +68,7 @@ def test_gone_session_stops_keepalive_and_is_degraded(status, caplog):
     backend, room, rest = make(keepalive_s=0.03)
     rest.control_status = status
     sid = backend.start(StartOptions()).session_id
+    backend.set_session_phase(sid, "selling")
     assert until(lambda: backend.session_status(sid) == "degraded")
     n = len(rest.controls)
     time.sleep(0.25)
@@ -80,6 +82,7 @@ def test_repeated_auth_failures_are_terminal_but_one_is_not():
     backend, room, rest = make(keepalive_s=0.03, keepalive_fail_log_after=3)
     rest.control_status = 401
     sid = backend.start(StartOptions()).session_id
+    backend.set_session_phase(sid, "selling")
     assert until(lambda: backend.session_status(sid) == "degraded")
     assert len(rest.controls) == 3
     rest.control_status = 200
@@ -90,6 +93,7 @@ def test_transient_5xx_keeps_retrying_and_the_session_stays_active():
     backend, room, rest = make(keepalive_s=0.03)
     rest.control_status = 503
     sid = backend.start(StartOptions()).session_id
+    backend.set_session_phase(sid, "selling")
     assert until(lambda: len(rest.controls) >= 6)
     assert backend.session_status(sid) == "active"
     rest.control_status = 200
@@ -414,7 +418,8 @@ def test_real_httpx_keepalive_is_cancelled_before_terminate_and_nothing_follows(
         session_client_factory=FakeLemonSlice(room).client_factory,
     )
     try:
-        backend.start(StartOptions())
+        sid = backend.start(StartOptions()).session_id
+        backend.set_session_phase(sid, "selling")
         assert until(lambda: any(e == "reset-idle-timeout" for _, e in srv.log))
         t0 = time.monotonic()
         backend.stop_all()
@@ -480,7 +485,8 @@ def test_terminate_waits_for_the_cancelled_keepalive_to_finish_aborting():
         async_http_post=post,
         http_post=lambda *a: (200, {}),
     )
-    backend.start(StartOptions())
+    sid = backend.start(StartOptions()).session_id
+    backend.set_session_phase(sid, "selling")
     time.sleep(0.2)
     backend.stop_all()
     assert order == ["keepalive-aborted", "terminate"]
