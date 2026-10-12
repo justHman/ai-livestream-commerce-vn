@@ -7,7 +7,7 @@ the whole refactor completes.
 
 Engine selection (the production seam):
   RENDER_BACKEND   cloud_liveavatar | self_host_avatarforcing_half |
-                   self_host_echoavatar_full | mock
+                   self_host_echoavatar_full | static_avatar (free test avatar) | mock
   SESSION_STORE    memory(Colab) | redis(AWS)
   LLM_ENGINE       vllm | llamacpp | sglang | hf | openai_compat | none(default echo)
   TTS_ENGINE       transformers(default) | vieneu | cosyvoice | tone |
@@ -560,6 +560,12 @@ class AppConfig:
     # Backend audio publish to LiveKit SFU (stub until SDK wired).
     livekit_publish: bool = False
     # cloud_lemonslice (P0-FB-010). Empty/off by default; see clients/avatar/lemonslice.py.
+    # static_avatar: still image + TTS in LiveKit, no provider (testing only).
+    static_avatar_image: str = ""
+    static_avatar_width: int = 1280
+    static_avatar_height: int = 720
+    static_avatar_fps: int = 10
+    static_avatar_sample_rate: int = 24000
     lemonslice_api_key: str = field(default="", repr=False)
     lemonslice_api_base: str = "https://lemonslice.com/api/liveai"
     lemonslice_agent_id: str = ""
@@ -662,6 +668,11 @@ class AppConfig:
             database_url=os.environ.get("DATABASE_URL", ""),
             livekit_publish=os.environ.get("LIVEKIT_PUBLISH", "0").lower()
             in ("1", "true", "on", "yes"),
+            static_avatar_image=os.environ.get("STATIC_AVATAR_IMAGE", ""),
+            static_avatar_width=_int_env("STATIC_AVATAR_WIDTH", "1280", 16),
+            static_avatar_height=_int_env("STATIC_AVATAR_HEIGHT", "720", 16),
+            static_avatar_fps=_int_env("STATIC_AVATAR_FPS", "10", 1),
+            static_avatar_sample_rate=_int_env("STATIC_AVATAR_SAMPLE_RATE", "24000", 8000),
             lemonslice_api_key=os.environ.get("LEMONSLICE_API_KEY", ""),
             lemonslice_api_base=os.environ.get("LEMONSLICE_API_BASE")
             or "https://lemonslice.com/api/liveai",
@@ -772,6 +783,8 @@ class AppConfig:
             )
         if self.render_backend == "cloud_lemonslice":
             return self._build_lemonslice_backend()
+        if self.render_backend == "static_avatar":
+            return self._build_static_avatar_backend()
         if self.render_backend in (
             "cloud_liveavatar",
             "self_host_avatarforcing_half",
@@ -814,7 +827,43 @@ class AppConfig:
         raise ValueError(
             "unknown RENDER_BACKEND "
             f"{self.render_backend!r}; expected cloud_liveavatar, cloud_lemonslice, "
-            "self_host_avatarforcing_half, self_host_echoavatar_full, or mock"
+            "self_host_avatarforcing_half, self_host_echoavatar_full, static_avatar, or mock"
+        )
+
+    def _build_static_avatar_backend(self):
+        """A free stand-in avatar; refused in production so it can never go live by accident."""
+        if self.is_production:
+            raise ValueError("static_avatar is for testing only; refused in production")
+        missing = [
+            name
+            for name, value in (
+                ("LIVEKIT_URL", self.livekit_url),
+                ("LIVEKIT_API_KEY", self.livekit_api_key),
+                ("LIVEKIT_API_SECRET", self.livekit_api_secret),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError("static_avatar requires " + ", ".join(missing))
+        if self.livekit_publish:
+            raise ValueError("static_avatar refuses LIVEKIT_PUBLISH=true (double audio)")
+        from backend.application.clients.avatar.static_avatar import (
+            StaticAvatarRenderBackend,
+            StaticAvatarSettings,
+        )
+
+        return StaticAvatarRenderBackend(
+            StaticAvatarSettings(
+                livekit_url=self.livekit_url,
+                livekit_api_key=self.livekit_api_key,
+                livekit_api_secret=self.livekit_api_secret,
+                avatar_identity=self.lemonslice_avatar_identity,
+                image_path=self.static_avatar_image,
+                width=self.static_avatar_width,
+                height=self.static_avatar_height,
+                fps=self.static_avatar_fps,
+                audio_sample_rate=self.static_avatar_sample_rate,
+            )
         )
 
     def _build_lemonslice_backend(self):
