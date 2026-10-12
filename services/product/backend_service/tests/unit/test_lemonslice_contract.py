@@ -56,7 +56,7 @@ def test_terminate_path_override_still_sends_the_terminate_event():
 def test_keepalive_resets_idle_timeout_while_silent_and_stops_on_stop():
     backend, room, rest = make(keepalive_s=0.05)
     sid = backend.start(StartOptions()).session_id
-    backend.set_session_phase(sid, "selling")
+    backend.set_session_phase(sid, "ready")
     assert until(lambda: sum(e == "reset-idle-timeout" for _, e in rest.controls) >= 2)
     backend.stop(sid)
     n = len(rest.controls)
@@ -77,7 +77,7 @@ def test_keepalive_failures_are_logged_by_class_and_never_break_audio(caplog):
     backend, room, rest = make(keepalive_s=0.03)
     rest.control_raise = ConnectionError(f"{BASE} X-API-Key={LS_KEY}")
     sid = backend.start(StartOptions()).session_id
-    backend.set_session_phase(sid, "selling")
+    backend.set_session_phase(sid, "ready")
     with caplog.at_level(logging.WARNING):
         assert until(lambda: "keepalive failing" in caplog.text)
     assert "ConnectionError" in caplog.text and LS_KEY not in caplog.text
@@ -91,7 +91,7 @@ def test_keepalive_skips_while_an_utterance_is_open():
     backend, room, rest = make(keepalive_s=0.03)
     room.auto = False  # the utterance stays open: no playback_finished
     sid = backend.start(StartOptions()).session_id
-    backend.set_session_phase(sid, "selling")
+    backend.set_session_phase(sid, "ready")
     time.sleep(0.15)  # silent: keepalives flow
     backend.stream_audio(sid, win("u1", 0, final=False))
     time.sleep(0.1)  # let an in-flight tick land

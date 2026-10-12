@@ -8,16 +8,17 @@ those paths. The supplied counts are incident context, not independently measure
 
 ## Runtime behavior
 
-- Keepalive/heal runs only in `live`, `warming`, `selling`, `closing`, or within 120 seconds
-  of an utterance. A session waiting in preparing/ready sends no idle resets and no background
-  replacements. Its configured LemonSlice idle timeout applies. A new utterance recreates an
-  absent avatar even when timed rollover is disabled. Active PCM/playback is never rolled over.
-- `RUNTIME_READY_TTL_S=1800` expires a Runtime that has never spoken or entered an on-air
-  phase. Zero disables this TTL. Provider rollover never resets the Runtime creation time.
-  A lifespan-owned watcher checks every five seconds, independently of the optional failure
-  monitor. It fences speech, persists the existing failed execution shape, then uses the full
-  stop path (comment reconciliation, avatar termination, publisher, director, terminal/usage
-  persistence, metadata). Cleanup failures retain retry work with a 60-second pause.
+- Preparing/ready sessions preserve their existing avatar with idle resets until
+  `RUNTIME_READY_TTL_S=1200` (20 minutes). They never heal/recreate or roll over in the
+  background, even when rollover age is exceeded. On-air (`live`, `warming`, `selling`,
+  `closing`, or recent speech) retains heal/rollover behavior. First utterance can recreate
+  a missing avatar. Active PCM/playback is never replaced.
+- TTL counts from initial creation, never renewed by ready transitions/provider rollover.
+  Twenty minutes accommodates observed 110-second preparation and operator preview while
+  bounding unattended cost. Zero disables TTL explicitly. At deadline both keepalive loop
+  and dispatch guard stop resets independently of the five-second watcher. The watcher fences
+  speech, persists failed execution, then owns full stop: reconciliation, avatar/publisher/
+  director, terminal/usage and metadata. Cleanup retry pauses 60 seconds.
 - `LEMONSLICE_DAILY_AVATAR_MINUTES=0` disables the additional limit by default. A positive
   value uses `REDIS_URL` as a shared ledger, partitioned by a SHA256 fingerprint of the
   LemonSlice API key. UTC calendar days; simultaneous avatars sum their elapsed wall minutes.
@@ -55,13 +56,25 @@ callbacks/terminal convergence replace the detail with `execution_failed` or
 and direct upstream errors, but cannot be promised for background rollover exhaustion. The
 user explicitly chose to keep API unchanged after this lossy path was reported.
 
+### TTL notice without API changes
+
+After full cleanup, Runtime retains at most128 TTL diagnostic tombstones for one hour.
+GET execution for a deleted session returns ordinary HTTP404 with a short string detail
+beginning `RUNTIME_READY_TTL_EXPIRED` and an instruction to prepare again. Existing ai-connector
+GetExecution/upstream-error handler and Web transport preserve that detail. Web scopes notices
+to tenant/stream/runtime and rechecks during preparation and60s after terminal status.
+No enum/schema or API repo changes. Terminal convergence still loses custom details from
+stream.failure_reason; the notice uses the existing execution-error route. After Runtime
+restart, history expiry/eviction or long cleanup outage, generic fallback remains. Logs retain
+an understandable TTL reason. Valid failed execution stays readable until cleanup completes.
+
 ## GoLive/readiness and deferred creation proposal
 
-Initial avatar creation stays eager in this patch. Allowing a ready avatar to idle out has an
-existing-flow consequence: Facebook `PrepareGoLive` checks actual avatar tracks before the
-opening utterance is permitted. A formerly ready session whose avatar expired can fail
-GoLive until preparation is restarted. Generic readiness polling/token minting must not be
-given billable side effects, because that would recreate the original unattended-spend loop.
+Initial creation stays eager. The prior candidate's no-reset rule was a readiness regression:
+S2 idle timeout 30s ended the avatar before observed 110s preparation/media join. This revision
+preserves that source while pre-live TTL is valid. Provider/network/GPU failures can still end
+it: pre-live missing avatars do not heal automatically; failed readiness remains recoverable
+through operator preparation, rather than uncontrolled paid resurrection.
 
 Proposed follow-up (design only): explicit owner-triggered **GoLive preflight** with an
 idempotency key and execution generation. Create one avatar immediately before launch;
@@ -78,9 +91,12 @@ It is deliberately not implemented as part of these two independent PRs.
 
 ## Verification
 
-New tests cover ready idle gating/first utterance recreation, on-air silence/recent speech,
-partial-speech interruption, TTL disable/live exclusion, P0 terminal cleanup retry, daily
-UTC overlap/shared admission/restart/idle lease, invalid env values, HTTP marker preservation,
-creation/rollover/control 402, and 402 during Redis cleanup failure. Existing live keepalive
-tests now explicitly mark their test sessions on air. All provider tests use protocol doubles.
-No live provider request, merge or deployment is needed for these checks.
+A fake-clock journey runs the actual keepalive task against a double enforcing idle30s:
+silent preparing140s, ready preview240s, warming/GoLive120s, first utterance at t=500.
+Assertions: one creation, same participant/video/audio, 25 resets at20s intervals. Counterfactual
+no-reset loses the avatar at31s. API EvaluateAvatarSource is checked independently against
+journey snapshots without API commits. These doubles do not prove live-network availability.
+
+Tests retain actual preparing/ready phases for legacy reset/teardown/error cases, and cover
+missing-avatar/no-rollover, exact TTL reset cutoff, TTL disable/on-air exclusion, cleanup retry,
+bounded TTL history, shared UTC/restart budget, 402 and ledger failures. No provider spend.

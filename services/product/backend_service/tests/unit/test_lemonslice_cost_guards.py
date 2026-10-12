@@ -7,14 +7,19 @@ from backend.application.render.engines_base import StartOptions
 from .test_lemonslice_backend import make, win
 
 
-def test_ready_never_keeps_alive_or_heals_missing_avatar():
+@pytest.mark.parametrize("phase", ["preparing", "ready"])
+def test_pre_live_keeps_existing_avatar_but_never_heals_or_rolls_over(phase):
     backend, room, rest = make(keepalive_s=0.01, rollover_after_s=60)
     sid = backend.start(StartOptions()).session_id
     try:
+        backend.set_session_phase(sid, phase)
+        backend._sessions[sid].started_at -= 120
+        time.sleep(0.05)
+        assert len(rest.starts) == 1
+        assert any(event == "reset-idle-timeout" for _, event in rest.controls)
         room.remote_participants.clear()
         time.sleep(0.12)
         assert len(rest.starts) == 1
-        assert rest.controls == []
         backend.stream_audio(sid, win("first", 0, final=True))
         assert len(rest.starts) == 2
     finally:
@@ -93,12 +98,13 @@ def test_402_circuit_and_fixed_error_survive_accounting_cleanup_failure():
         backend.stop_all()
 
 
-def test_keepalive_402_is_terminal_with_no_more_resets():
+@pytest.mark.parametrize("phase", ["preparing", "ready"])
+def test_keepalive_402_is_terminal_with_no_more_resets(phase):
     backend, _, rest = make(keepalive_s=0.01)
     sid = backend.start(StartOptions()).session_id
     try:
         rest.control_status = 402
-        backend.set_session_phase(sid, "selling")
+        backend.set_session_phase(sid, phase)
         time.sleep(0.08)
         assert len(rest.controls) == 1
         assert backend.lifecycle_status(sid, 1800) == "LEMONSLICE_CREDIT_EXHAUSTED"

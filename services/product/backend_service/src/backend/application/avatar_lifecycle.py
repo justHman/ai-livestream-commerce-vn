@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 
 class AvatarLifecycle:
-    def __init__(self, container, ready_ttl_s: float = 1800.0, poll_s: float = 5.0):
+    def __init__(self, container, ready_ttl_s: float = 1200.0, poll_s: float = 5.0):
         self.d = container
         self.ready_ttl_s, self.poll_s = ready_ttl_s, poll_s
         self.tasks: dict[str, asyncio.Task] = {}
@@ -41,6 +41,8 @@ class AvatarLifecycle:
                 return
             self.pending[session_id] = reason
             log.warning("avatar safety stop session=%s reason=%s", session_id, reason)
+            if reason == "RUNTIME_READY_TTL_EXPIRED":
+                log.warning("Phiên chuẩn bị đã hết thời gian chờ lên sóng; hãy chuẩn bị lại")
             # Fence producers before persistence. Provider I/O runs outside this short lock.
             d.approved_speech.block(session_id, "ending")
             d.approved_speech.cancel(session_id)
@@ -71,6 +73,8 @@ class AvatarLifecycle:
         # Existing stop owns reconciliation, publisher, durable terminal/usage and metadata.
         # It acquires a fresh lock after the failure state was committed above.
         await stop_session_internal(d, session_id)
+        if reason == "RUNTIME_READY_TTL_EXPIRED":
+            d.backend.remember_ready_expiry(session_id)
         self.pending.pop(session_id, None)
         self.next_attempt.pop(session_id, None)
 

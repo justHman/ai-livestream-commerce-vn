@@ -50,6 +50,7 @@ async def test_abandoned_ready_session_ttl_releases_avatar_and_runtime_metadata(
         assert any(event == "terminate" for _, event in rest.controls)
         assert await d.store.get(sid) is None
         assert d.approved_speech.canceled
+        assert backend.stop_reason(sid).startswith("RUNTIME_READY_TTL_EXPIRED:")
     finally:
         backend.stop_all()
 
@@ -71,7 +72,7 @@ async def test_ttl_never_stops_on_air(phase):
 
 @pytest.mark.asyncio
 async def test_zero_ttl_disables_expiry_and_recent_speech_prevents_expiry():
-    backend, _, _ = make(keepalive_s=0)
+    backend, _, _ = make(keepalive_s=0, ready_ttl_s=0)
     sid = backend.start(StartOptions()).session_id
     d = container(backend)
     await d.store.set(sid, {"status": "active"})
@@ -121,10 +122,50 @@ async def test_p0_ttl_persists_terminal_and_retries_failed_provider_cleanup():
         stored = await d.store.get(sid)
         assert stored["execution_contract"]["phase"] == "failed"
         assert service.pending[sid] == "RUNTIME_READY_TTL_EXPIRED"
+        assert backend.stop_reason(sid) == ""  # no diagnostic tombstone before durable cleanup
         rest.control_status = 200
         await service.check(sid)
         assert await d.store.get(sid) is None
         assert len(pg.stored) == 1 and not service.pending
+        assert "chuẩn bị" in backend.stop_reason(sid)
     finally:
         rest.control_status = 200
         backend.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_ttl_execution_error_has_fixed_marker_only_after_cleanup():
+    from fastapi import HTTPException, Request
+    from backend.api.v1.execution import get_execution
+
+    backend, _, _ = make(keepalive_s=0)
+    sid = backend.start(StartOptions()).session_id
+    d = container(backend)
+    await d.store.set(sid, {"status": "active"})
+    backend._sessions[sid].created_at -= 1201
+    request = Request({"type": "http", "app": SimpleNamespace(state=SimpleNamespace(container=d))})
+    try:
+        await AvatarLifecycle(d).check(sid)
+        with pytest.raises(HTTPException) as error:
+            await get_execution(sid, request, None)
+        assert error.value.status_code == 404
+        assert error.value.detail.startswith("RUNTIME_READY_TTL_EXPIRED:")
+        assert "Hãy bắt đầu chuẩn bị lại" in error.value.detail
+        assert len(error.value.detail) < 256
+        for n in range(130):
+            backend.remember_ready_expiry(f"expired-{n}")
+        assert len(backend._stop_reasons) == 128
+        assert (
+            backend.stop_reason(sid) == ""
+        )  # bounded eviction preserves ordinary unknown fallback
+        backend._mono = lambda: float("inf")
+        assert backend.stop_reason("expired-129") == ""
+    finally:
+        backend.stop_all()
+
+
+def test_default_ttl_is_twenty_minutes(monkeypatch):
+    from backend.config import AppConfig
+
+    monkeypatch.delenv("RUNTIME_READY_TTL_S", raising=False)
+    assert AppConfig.from_env().runtime_ready_ttl_s == 1200
