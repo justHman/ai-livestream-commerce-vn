@@ -290,3 +290,76 @@ def test_failed_startup_cleanup_is_retried_by_stop_all():
     assert not room.disconnected
     backend.stop_all()
     assert room.disconnected and len(attempts) == 2
+
+
+def test_stop_all_cancels_a_startup_the_loop_has_not_registered_yet():
+    room = FakeRoom()
+
+    async def media(_room, _s, _frame):
+        async def pump():
+            await asyncio.sleep(3600)
+
+        return FakeAudio(), pump
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16), room_factory=lambda: room, media_factory=media
+    )
+    loop = backend._ensure_loop()
+    release = threading.Event()
+    asyncio.run_coroutine_threadsafe(_block(release), loop)  # the loop is busy
+    result = {}
+
+    def go():
+        try:
+            result["r"] = backend.start(StartOptions())
+        except BaseException as exc:
+            result["r"] = exc
+
+    t = threading.Thread(target=go)
+    t.start()
+    time.sleep(0.1)  # start() has submitted its startup; the loop has not run it
+    release_later = threading.Timer(0.2, release.set)
+    release_later.start()
+    backend.stop_all()
+    t.join(5)
+    time.sleep(0.2)
+    assert not backend._sessions and not isinstance(result["r"], type(None))
+    assert not hasattr(result["r"], "session_id")
+
+
+async def _block(release):
+    release.wait(5)  # blocks the whole loop on purpose: nothing else can run
+
+
+def test_cancellation_during_startup_cleanup_keeps_the_room_owned():
+    room, calls = FakeRoom(), []
+
+    async def hanging_disconnect():
+        calls.append(1)
+        if len(calls) == 1:
+            await asyncio.Event().wait()  # never returns: only a cancellation ends it
+        room.disconnected = True
+
+    room.disconnect = hanging_disconnect
+
+    async def media(_room, _s, _frame):
+        raise RuntimeError("publish failed")
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16), room_factory=lambda: room, media_factory=media
+    )
+    t = threading.Thread(target=lambda: _swallow(backend.start, StartOptions()))
+    t.start()
+    deadline = time.time() + 3
+    while not calls and time.time() < deadline:
+        time.sleep(0.01)
+    backend.stop_all()  # cancels the startup while it is inside disconnect
+    t.join(5)
+    assert room.disconnected and len(calls) == 2 and not backend._orphans
+
+
+def _swallow(fn, *args):
+    try:
+        fn(*args)
+    except BaseException:
+        pass

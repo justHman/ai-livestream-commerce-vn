@@ -62,6 +62,16 @@ class _Sess:
     closing: bool = False
 
 
+@dataclass(eq=False)  # identity-hashed: kept in a set
+class _Startup:
+    """One in-flight start(). Every field is read and written under the backend lock."""
+
+    abandoned: bool = False  # the caller gave up, or stop_all ran: never register a session
+    sid: str | None = None  # set when the session was registered
+    fut: Any = None
+    task: Any = None  # the asyncio task, once its body started
+
+
 def render_frame(settings: StaticAvatarSettings) -> bytes:
     """RGBA bytes of the still image, letterboxed to width x height."""
     from PIL import Image, ImageDraw
@@ -87,7 +97,7 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
         self._sessions: dict[str, _Sess] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
-        self._starting: set[asyncio.Future] = set()  # owned until registered or cancelled
+        self._starting: set[_Startup] = set()  # in flight until the task body has finished
         self._orphans: list[Any] = []  # rooms whose cleanup failed; stop_all retries them
 
     # ---- livekit seams (replaced in tests) --------------------------
@@ -126,45 +136,59 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
         return _AudioIO(audio, capture), pump
 
     # ---- loop thread ------------------------------------------------
-    def _run(self, coro: Any, timeout: float | None = None) -> Any:
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._lock:
             if self._loop is None:
                 loop = asyncio.new_event_loop()
                 threading.Thread(target=loop.run_forever, daemon=True, name="static-avatar").start()
                 self._loop = loop
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
+            return self._loop
+
+    def _run(self, coro: Any, timeout: float | None = None) -> Any:
+        return asyncio.run_coroutine_threadsafe(coro, self._ensure_loop()).result(timeout)
 
     # ---- RenderBackend ---------------------------------------------
     def start(self, opts: StartOptions) -> StartResult:
-        mine: list[asyncio.Future] = []
+        st = _Startup()
+        with self._lock:  # owned from here on, before the loop has seen it
+            self._starting.add(st)
         try:
-            return self._run(self._start_owned(mine), self._s.connect_timeout_s + 10)
+            loop = self._ensure_loop()
+            st.fut = asyncio.run_coroutine_threadsafe(self._start(st), loop)
+            return st.fut.result(self._s.connect_timeout_s + 10)
         except BaseException:
-            # The caller gave up (or failed): only ITS startup is cancelled, never another's.
-            self._run(self._abort_startups(tuple(mine)), 15)
+            self._abandon(st)
             raise
+        finally:
+            with self._lock:
+                if st.task is None:  # the body never began: nothing else will discard it
+                    self._starting.discard(st)
 
-    async def _start_owned(self, mine: list[asyncio.Future]) -> StartResult:
-        task = asyncio.ensure_future(self._start())
-        mine.append(task)
-        self._starting.add(task)
-        task.add_done_callback(self._starting.discard)
-        return await asyncio.shield(task)
+    def _abandon(self, st: _Startup) -> None:
+        """The caller gave up: only ITS startup is cancelled, and a session it never saw is closed."""
+        with self._lock:
+            st.abandoned = True
+            sid = st.sid
+        if st.fut is not None:
+            st.fut.cancel()
+        if sid:
+            try:
+                self.stop(sid)
+            except Exception as exc:  # still owned in _sessions: stop_all retries it
+                log.error("static_avatar cleanup failed error_type=%s", type(exc).__name__)
 
-    async def _abort_startups(self, tasks: tuple[asyncio.Future, ...]) -> None:
-        for task in tasks:
-            task.cancel()
-        for result in await asyncio.gather(*tasks, return_exceptions=True):
-            if isinstance(result, StartResult):  # finished just before the cancel landed
-                sess = self._sessions.get(result.session_id)
-                if sess is not None:
-                    try:
-                        await self._close(sess)
-                        self._sessions.pop(result.session_id, None)
-                    except Exception as exc:  # still owned: stop_all retries it
-                        log.error("static_avatar cleanup failed error_type=%s", type(exc).__name__)
+    async def _start(self, st: _Startup) -> StartResult:
+        try:
+            with self._lock:
+                st.task = asyncio.current_task()
+                if st.abandoned:
+                    raise asyncio.CancelledError
+            return await self._start_inner(st)
+        finally:
+            with self._lock:
+                self._starting.discard(st)
 
-    async def _start(self) -> StartResult:
+    async def _start_inner(self, st: _Startup) -> StartResult:
         s = self._s
         room_name = f"rt_{uuid.uuid4().hex}"
         room = self._room_factory()
@@ -189,9 +213,16 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             await self._disconnect(room)
             raise
         sess = _Sess(room, audio)
+        with self._lock:  # check + register together: stop_all/_abandon cannot slip in between
+            abandoned = st.abandoned
+            if not abandoned:
+                self._sessions[room_name] = sess
+                st.sid = room_name
+        if abandoned:
+            await self._disconnect(room)
+            raise asyncio.CancelledError
         sess.video_task = asyncio.ensure_future(pump())
         sess.video_task.add_done_callback(lambda t: self._video_done(sess, t))
-        self._sessions[room_name] = sess
         viewer = mint_room_token(
             api_key=s.livekit_api_key,
             api_secret=s.livekit_api_secret,
@@ -292,21 +323,37 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
         await asyncio.wait_for(sess.room.disconnect(), 10)
 
     async def _disconnect(self, room: Any) -> None:
-        # Failed startup: the original error matters more than a failed cleanup, but the room
-        # stays owned (retried by stop_all) so a failed disconnect is never forgotten.
+        # Failed/abandoned startup: the room is owned (an orphan) BEFORE the attempt and released
+        # only when it succeeded, so an error or a cancellation can never forget it.
+        self._orphans.append(room)
         try:
             await asyncio.wait_for(room.disconnect(), 10)
         except Exception as exc:
-            self._orphans.append(room)
             log.warning("static_avatar disconnect failed error_type=%s", type(exc).__name__)
+        else:
+            if room in self._orphans:
+                self._orphans.remove(room)
+
+    async def _join(self, tasks: tuple[Any, ...]) -> None:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def stop_all(self) -> None:
-        self._run(self._abort_startups(tuple(self._starting)), 15)
+        with self._lock:  # snapshot + flag together with the same lock that registers sessions
+            pending = tuple(self._starting)
+            for st in pending:
+                st.abandoned = True
+            tasks = tuple(st.task for st in pending if st.task is not None)
+        for st in pending:
+            if st.fut is not None:
+                st.fut.cancel()
+        if tasks:  # let each cancelled startup finish its own cleanup first
+            self._run(self._join(tasks), 20)
         failed = 0
         for room in tuple(self._orphans):
             try:
                 self._run(asyncio.wait_for(room.disconnect(), 10), 15)
-                self._orphans.remove(room)
+                if room in self._orphans:
+                    self._orphans.remove(room)
             except Exception as exc:
                 failed += 1
                 log.error("static_avatar orphan cleanup failed error_type=%s", type(exc).__name__)
