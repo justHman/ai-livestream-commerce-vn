@@ -1,6 +1,7 @@
 """static_avatar: the free test avatar publishes the avatar identity and plays TTS in order."""
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -223,3 +224,69 @@ def test_startup_that_outlives_the_caller_is_cleaned_up():
     backend.stop_all()
     time.sleep(0.5)
     assert not backend._sessions and room.disconnected
+
+
+def test_failed_startup_does_not_cancel_another_callers_startup():
+    rooms, calls = [], []
+
+    def room_factory():
+        rooms.append(FakeRoom())
+        return rooms[-1]
+
+    async def media(_room, _s, _frame):
+        calls.append(1)
+        if len(calls) == 1:  # the first caller fails while the second is still publishing
+            await asyncio.sleep(0.05)
+            raise RuntimeError("publish failed")
+        await asyncio.sleep(0.3)
+
+        async def pump():
+            await asyncio.sleep(3600)
+
+        return FakeAudio(), pump
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16), room_factory=room_factory, media_factory=media
+    )
+    results = {}
+
+    def go(name):
+        try:
+            results[name] = backend.start(StartOptions()).session_id
+        except Exception as exc:
+            results[name] = exc
+
+    a = threading.Thread(target=go, args=("a",))
+    a.start()
+    time.sleep(0.02)
+    b = threading.Thread(target=go, args=("b",))
+    b.start()
+    a.join(5)
+    b.join(5)
+    assert isinstance(results["a"], RuntimeError) and isinstance(results["b"], str)
+    assert not rooms[1].disconnected and results["b"] in backend._sessions
+    backend.stop_all()
+
+
+def test_failed_startup_cleanup_is_retried_by_stop_all():
+    room, attempts = FakeRoom(), []
+
+    async def flaky_disconnect():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("down")
+        room.disconnected = True
+
+    room.disconnect = flaky_disconnect
+
+    async def media(_room, _s, _frame):
+        raise RuntimeError("publish failed")
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16), room_factory=lambda: room, media_factory=media
+    )
+    with pytest.raises(RuntimeError):
+        backend.start(StartOptions())
+    assert not room.disconnected
+    backend.stop_all()
+    assert room.disconnected and len(attempts) == 2

@@ -88,6 +88,7 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
         self._starting: set[asyncio.Future] = set()  # owned until registered or cancelled
+        self._orphans: list[Any] = []  # rooms whose cleanup failed; stop_all retries them
 
     # ---- livekit seams (replaced in tests) --------------------------
     @staticmethod
@@ -135,28 +136,33 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
 
     # ---- RenderBackend ---------------------------------------------
     def start(self, opts: StartOptions) -> StartResult:
+        mine: list[asyncio.Future] = []
         try:
-            return self._run(self._start_owned(), self._s.connect_timeout_s + 10)
+            return self._run(self._start_owned(mine), self._s.connect_timeout_s + 10)
         except BaseException:
-            # The caller gave up (or failed): a late startup must not outlive it unowned.
-            self._run(self._abort_startups(), 15)
+            # The caller gave up (or failed): only ITS startup is cancelled, never another's.
+            self._run(self._abort_startups(tuple(mine)), 15)
             raise
 
-    async def _start_owned(self) -> StartResult:
+    async def _start_owned(self, mine: list[asyncio.Future]) -> StartResult:
         task = asyncio.ensure_future(self._start())
+        mine.append(task)
         self._starting.add(task)
         task.add_done_callback(self._starting.discard)
         return await asyncio.shield(task)
 
-    async def _abort_startups(self) -> None:
-        tasks = tuple(self._starting)
+    async def _abort_startups(self, tasks: tuple[asyncio.Future, ...]) -> None:
         for task in tasks:
             task.cancel()
         for result in await asyncio.gather(*tasks, return_exceptions=True):
             if isinstance(result, StartResult):  # finished just before the cancel landed
-                sess = self._sessions.pop(result.session_id, None)
+                sess = self._sessions.get(result.session_id)
                 if sess is not None:
-                    await self._close(sess)
+                    try:
+                        await self._close(sess)
+                        self._sessions.pop(result.session_id, None)
+                    except Exception as exc:  # still owned: stop_all retries it
+                        log.error("static_avatar cleanup failed error_type=%s", type(exc).__name__)
 
     async def _start(self) -> StartResult:
         s = self._s
@@ -285,17 +291,25 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             await asyncio.gather(sess.video_task, return_exceptions=True)
         await asyncio.wait_for(sess.room.disconnect(), 10)
 
-    @staticmethod
-    async def _disconnect(room: Any) -> None:
-        # Failed startup: the original error matters more than a failed cleanup.
+    async def _disconnect(self, room: Any) -> None:
+        # Failed startup: the original error matters more than a failed cleanup, but the room
+        # stays owned (retried by stop_all) so a failed disconnect is never forgotten.
         try:
             await asyncio.wait_for(room.disconnect(), 10)
         except Exception as exc:
+            self._orphans.append(room)
             log.warning("static_avatar disconnect failed error_type=%s", type(exc).__name__)
 
     def stop_all(self) -> None:
-        self._run(self._abort_startups(), 15)
+        self._run(self._abort_startups(tuple(self._starting)), 15)
         failed = 0
+        for room in tuple(self._orphans):
+            try:
+                self._run(asyncio.wait_for(room.disconnect(), 10), 15)
+                self._orphans.remove(room)
+            except Exception as exc:
+                failed += 1
+                log.error("static_avatar orphan cleanup failed error_type=%s", type(exc).__name__)
         for sid in tuple(self._sessions):
             try:
                 self.stop(sid)
