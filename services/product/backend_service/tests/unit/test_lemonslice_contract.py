@@ -417,7 +417,12 @@ def test_a_vanished_avatar_is_replaced_while_the_host_is_silent():
     room.remote_participants.clear()  # the avatar left while nobody was speaking
     rest.session_id = "ls-2"
     assert until(lambda: len(rest.starts) == 2)  # no utterance needed: the keepalive heals it
-    assert backend._sessions[sid].provider_session_id == "ls-2"
+    assert until(
+        lambda: (
+            backend._sessions[sid].provider_session_id == "ls-2"
+            and not backend._sessions[sid].rolling
+        )
+    )  # request-start is not proof the asynchronous replacement finished
     backend.stop_all()
 
 

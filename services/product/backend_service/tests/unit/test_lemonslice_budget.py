@@ -7,6 +7,12 @@ import pytest
 from backend.application.clients.avatar.lemonslice_budget import DailyAvatarBudget
 
 
+@pytest.fixture(autouse=True)
+def deterministic_redis_utc_time(monkeypatch):
+    # Redis TIME in the double must not land at midnight while a test builds its history.
+    monkeypatch.setattr("time.time", lambda: 864000 + 3600.0)
+
+
 def ledger(redis, limit=60):
     return DailyAvatarBudget("redis://unused", "fake-account", limit, redis=redis)
 
