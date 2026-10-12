@@ -58,11 +58,11 @@ user explicitly chose to keep API unchanged after this lossy path was reported.
 
 ### TTL notice without API changes
 
-After full cleanup, Runtime retains at most128 TTL diagnostic tombstones for one hour.
+After full cleanup, Runtime retains at most 128 TTL diagnostic tombstones for one hour.
 GET execution for a deleted session returns ordinary HTTP404 with a short string detail
 beginning `RUNTIME_READY_TTL_EXPIRED` and an instruction to prepare again. Existing ai-connector
 GetExecution/upstream-error handler and Web transport preserve that detail. Web scopes notices
-to tenant/stream/runtime and rechecks during preparation and60s after terminal status.
+to tenant/stream/runtime and rechecks during preparation and four minutes after terminal status.
 No enum/schema or API repo changes. Terminal convergence still loses custom details from
 stream.failure_reason; the notice uses the existing execution-error route. After Runtime
 restart, history expiry/eviction or long cleanup outage, generic fallback remains. Logs retain
@@ -91,10 +91,10 @@ It is deliberately not implemented as part of these two independent PRs.
 
 ## Verification
 
-A fake-clock journey runs the actual keepalive task against a double enforcing idle30s:
-silent preparing140s, ready preview240s, warming/GoLive120s, first utterance at t=500.
-Assertions: one creation, same participant/video/audio, 25 resets at20s intervals. Counterfactual
-no-reset loses the avatar at31s. API EvaluateAvatarSource is checked independently against
+A fake-clock journey runs the actual keepalive task against a double enforcing idle 30s:
+silent preparing 140s, ready preview 240s, warming/GoLive 120s, first utterance at t=500.
+Assertions: one creation, same participant/video/audio, 25 resets at 20s intervals. Counterfactual
+no-reset loses the avatar at 31s. API EvaluateAvatarSource is checked independently against
 journey snapshots without API commits. These doubles do not prove live-network availability.
 
 Tests retain actual preparing/ready phases for legacy reset/teardown/error cases, and cover
