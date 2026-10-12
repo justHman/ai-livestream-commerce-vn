@@ -1,6 +1,7 @@
 """static_avatar: the free test avatar publishes the avatar identity and plays TTS in order."""
 
 import asyncio
+import time
 
 import pytest
 
@@ -149,3 +150,76 @@ def test_config_refuses_second_audio_publisher(monkeypatch):
     _env(monkeypatch, APP_ENV="dev", LIVEKIT_PUBLISH="1")
     with pytest.raises(ValueError, match="LIVEKIT_PUBLISH"):
         AppConfig.from_env().build_render_backend()
+
+
+def test_capture_failure_leaves_no_playback_evidence(started):
+    backend, _room, audio, _pumps, sid = started
+
+    async def boom(_pcm):
+        raise RuntimeError("capture failed")
+
+    audio.capture = boom
+    with pytest.raises(RuntimeError):
+        backend.stream_audio(sid, win("u1", 0))
+    info = backend.playback_info(sid, "u1")
+    assert info == {"playback_started_at": None, "playback_unconfirmed": True}
+
+
+def test_stop_failure_keeps_ownership_and_can_retry(started):
+    backend, room, _audio, _pumps, sid = started
+    calls = []
+
+    async def failing():
+        calls.append(1)
+        raise OSError("down")
+
+    real, room.disconnect = room.disconnect, failing
+    with pytest.raises(OSError):
+        backend.stop(sid)
+    assert backend.session_status(sid) == "active"  # still owned
+    room.disconnect = real
+    backend.stop(sid)
+    assert room.disconnected and len(calls) == 1
+
+
+def test_dead_video_pump_is_reported():
+    room, audio = FakeRoom(), FakeAudio()
+
+    async def media(_room, _s, _frame):
+        async def pump():
+            raise RuntimeError("encoder died")
+
+        return audio, pump
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16), room_factory=lambda: room, media_factory=media
+    )
+    sid = backend.start(StartOptions()).session_id
+    deadline = time.time() + 3
+    while backend.session_status(sid) == "active" and time.time() < deadline:
+        time.sleep(0.01)
+    assert backend.session_status(sid) == "video_failed"
+    backend.stop_all()
+
+
+def test_startup_that_outlives_the_caller_is_cleaned_up():
+    room = FakeRoom()
+
+    async def slow_media(_room, _s, _frame):
+        await asyncio.sleep(0.3)  # the publish finishes after the caller's deadline
+
+        async def pump():
+            await asyncio.sleep(3600)
+
+        return FakeAudio(), pump
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16, connect_timeout_s=0.05),
+        room_factory=lambda: room,
+        media_factory=slow_media,
+    )
+    with pytest.raises(TimeoutError):
+        backend.start(StartOptions())
+    backend.stop_all()
+    time.sleep(0.5)
+    assert not backend._sessions and room.disconnected

@@ -57,6 +57,8 @@ class _Sess:
     cleared: set[str] = field(default_factory=set)
     resamplers: dict[str, UtteranceResampler] = field(default_factory=dict)
     playback_started_at: OrderedDict[str, float] = field(default_factory=OrderedDict)
+    unconfirmed: set[str] = field(default_factory=set)  # no audio was accepted for these
+    video_failed: bool = False
     closing: bool = False
 
 
@@ -85,6 +87,7 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
         self._sessions: dict[str, _Sess] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
+        self._starting: set[asyncio.Future] = set()  # owned until registered or cancelled
 
     # ---- livekit seams (replaced in tests) --------------------------
     @staticmethod
@@ -132,7 +135,28 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
 
     # ---- RenderBackend ---------------------------------------------
     def start(self, opts: StartOptions) -> StartResult:
-        return self._run(self._start(), self._s.connect_timeout_s + 10)
+        try:
+            return self._run(self._start_owned(), self._s.connect_timeout_s + 10)
+        except BaseException:
+            # The caller gave up (or failed): a late startup must not outlive it unowned.
+            self._run(self._abort_startups(), 15)
+            raise
+
+    async def _start_owned(self) -> StartResult:
+        task = asyncio.ensure_future(self._start())
+        self._starting.add(task)
+        task.add_done_callback(self._starting.discard)
+        return await asyncio.shield(task)
+
+    async def _abort_startups(self) -> None:
+        tasks = tuple(self._starting)
+        for task in tasks:
+            task.cancel()
+        for result in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(result, StartResult):  # finished just before the cancel landed
+                sess = self._sessions.pop(result.session_id, None)
+                if sess is not None:
+                    await self._close(sess)
 
     async def _start(self) -> StartResult:
         s = self._s
@@ -151,15 +175,16 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             kind="agent",
         )
         try:
-            await asyncio.wait_for(room.connect(s.livekit_url, token), s.connect_timeout_s)
-            audio, pump = await self._media_factory(
-                room, s, await asyncio.to_thread(render_frame, s)
-            )
+            async with asyncio.timeout(s.connect_timeout_s):  # connect AND both publishes
+                await room.connect(s.livekit_url, token)
+                frame = await asyncio.to_thread(render_frame, s)
+                audio, pump = await self._media_factory(room, s, frame)
         except BaseException:
             await self._disconnect(room)
             raise
         sess = _Sess(room, audio)
         sess.video_task = asyncio.ensure_future(pump())
+        sess.video_task.add_done_callback(lambda t: self._video_done(sess, t))
         self._sessions[room_name] = sess
         viewer = mint_room_token(
             api_key=s.livekit_api_key,
@@ -179,6 +204,14 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             mode="STATIC",
         )
 
+    @staticmethod
+    def _video_done(sess: _Sess, task: asyncio.Future) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            sess.video_failed = True
+            log.error(
+                "static_avatar video pump died error_type=%s", type(task.exception()).__name__
+            )
+
     def stream_audio(self, session_id: str, audio_window: AudioWindow):
         sess = self._sessions.get(session_id)
         if sess is None:
@@ -191,23 +224,35 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
     async def _stream(self, sess: _Sess, w: AudioWindow) -> None:
         if sess.closing or w.utterance_id in sess.cleared:
             return
+        try:
+            await self._send(sess, w)
+        except BaseException:
+            if w.utterance_id not in sess.playback_started_at:
+                sess.unconfirmed.add(w.utterance_id)
+            raise
+
+    async def _send(self, sess: _Sess, w: AudioWindow) -> None:
         rate = self._s.audio_sample_rate
-        rs = sess.resamplers.setdefault(w.utterance_id, UtteranceResampler(w.sample_rate, rate))
+        rs = sess.resamplers.get(w.utterance_id)
+        if rs is None:
+            rs = sess.resamplers[w.utterance_id] = UtteranceResampler(w.sample_rate, rate)
         pcm = rs.push(w.pcm)
         if w.is_final:
             pcm += rs.flush()
             sess.resamplers.pop(w.utterance_id, None)
         sess.open_utterance = w.utterance_id
-        sess.playback_started_at.setdefault(w.utterance_id, time.time())
-        while len(sess.playback_started_at) > _HISTORY:
-            sess.playback_started_at.popitem(last=False)
         epoch, step = sess.epoch, rate * 2 * _CHUNK_MS // 1000
         for i in range(0, len(pcm), step):
             if epoch != sess.epoch or sess.closing:
                 return  # interrupted: drop the rest
             await sess.audio_source.capture(pcm[i : i + step])
+            if w.utterance_id not in sess.playback_started_at:  # only after audio was accepted
+                sess.playback_started_at[w.utterance_id] = time.time()
+                while len(sess.playback_started_at) > _HISTORY:
+                    sess.playback_started_at.popitem(last=False)
         if w.is_final:
-            sess.open_utterance = ""
+            if sess.open_utterance == w.utterance_id:  # a newer utterance may own it by now
+                sess.open_utterance = ""
             if epoch == sess.epoch:
                 await asyncio.wait_for(sess.audio_source.wait_for_playout(), 30)
 
@@ -226,32 +271,47 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
         sess.audio_source.clear_queue()
 
     def stop(self, session_id: str) -> None:
-        sess = self._sessions.pop(session_id, None)
-        if sess is not None:
-            self._run(self._close(sess), 15)
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            return
+        # Ownership is kept until the room is really gone, so a failed teardown can be retried.
+        self._run(self._close(sess), 15)
+        self._sessions.pop(session_id, None)
 
     async def _close(self, sess: _Sess) -> None:
         sess.closing = True
         if sess.video_task is not None:
             sess.video_task.cancel()
-        await self._disconnect(sess.room)
+            await asyncio.gather(sess.video_task, return_exceptions=True)
+        await asyncio.wait_for(sess.room.disconnect(), 10)
 
     @staticmethod
     async def _disconnect(room: Any) -> None:
+        # Failed startup: the original error matters more than a failed cleanup.
         try:
             await asyncio.wait_for(room.disconnect(), 10)
-        except Exception as exc:  # teardown must not mask the real failure
+        except Exception as exc:
             log.warning("static_avatar disconnect failed error_type=%s", type(exc).__name__)
 
     def stop_all(self) -> None:
+        self._run(self._abort_startups(), 15)
+        failed = 0
         for sid in tuple(self._sessions):
-            self.stop(sid)
+            try:
+                self.stop(sid)
+            except Exception as exc:
+                failed += 1
+                log.error(
+                    "static_avatar stop failed session=%s error_type=%s", sid, type(exc).__name__
+                )
+        if failed:
+            raise RuntimeError(f"static_avatar teardown incomplete for {failed} session(s)")
 
     def session_status(self, session_id: str) -> str:
         sess = self._sessions.get(session_id)
         if sess is None:
             raise KeyError(session_id)
-        return "active"
+        return "video_failed" if sess.video_failed else "active"
 
     def playback_info(self, session_id: str, utterance_id: str) -> dict[str, Any] | None:
         sess = self._sessions.get(session_id)
@@ -259,7 +319,7 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             return None
         return {
             "playback_started_at": sess.playback_started_at.get(utterance_id),
-            "playback_unconfirmed": False,
+            "playback_unconfirmed": utterance_id in sess.unconfirmed,
         }
 
 
