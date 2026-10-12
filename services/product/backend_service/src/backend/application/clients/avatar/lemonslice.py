@@ -127,7 +127,7 @@ class LemonSliceSettings:
     on_air_recent_s: float = 120.0
     daily_avatar_minutes: float = 0.0  # 0 = off; shared Redis ledger when enabled
     budget_redis_url: str = field(default="", repr=False)
-    credit_backoff_s: float = 3600.0
+    payment_backoff_s: float = 3600.0
 
     def __post_init__(self) -> None:
         # Negative/NaN/inf timers would silently disable a safeguard: refuse them (0 = off where
@@ -145,15 +145,15 @@ class LemonSliceSettings:
             "audio_probe_s",
             "on_air_recent_s",
             "daily_avatar_minutes",
-            "credit_backoff_s",
+            "payment_backoff_s",
         ):
             v = getattr(self, name)
             if isinstance(v, bool) or not isinstance(v, int | float):
                 raise ValueError(f"{name} must be a finite, non-negative number")
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be a finite, non-negative number")
-        if self.credit_backoff_s < 300:
-            raise ValueError("credit_backoff_s must be >= 300")
+        if self.payment_backoff_s < 300:
+            raise ValueError("payment_backoff_s must be >= 300")
         if self.daily_avatar_minutes > 0 and not self.budget_redis_url:
             raise ValueError("daily_avatar_minutes requires budget_redis_url")
         if self.daily_avatar_minutes > 0 and self.idle_timeout_s <= 0:
@@ -516,11 +516,11 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         return LemonSliceError(_CREDIT_CODE, f"{_CREDIT_CODE}: LemonSlice hết credit")
 
     def _trip_credit(self) -> None:
-        self._credit_until = self._mono() + self._s.credit_backoff_s
+        self._credit_until = self._mono() + self._s.payment_backoff_s
         log.error(
             "%s: LemonSlice hết credit; creation paused for %.0fs",
             _CREDIT_CODE,
-            self._s.credit_backoff_s,
+            self._s.payment_backoff_s,
         )
         for sess in self._sessions.values():
             sess.fatal_code = _CREDIT_CODE

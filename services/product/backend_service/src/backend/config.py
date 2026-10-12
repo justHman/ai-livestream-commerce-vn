@@ -867,7 +867,7 @@ class AppConfig:
                 control_deadline_s=self.lemonslice_control_deadline_s,
                 daily_avatar_minutes=self.lemonslice_daily_avatar_minutes,
                 budget_redis_url=self.redis_url,
-                credit_backoff_s=self.lemonslice_payment_backoff_s,
+                payment_backoff_s=self.lemonslice_payment_backoff_s,
             )
         )
 
