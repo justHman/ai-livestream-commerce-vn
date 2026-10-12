@@ -359,6 +359,24 @@ async def _stop_runtime_failures(container: BootstrapContainer) -> None:
     await asyncio.gather(*tuple(service.flush_tasks), return_exceptions=True)
 
 
+def _start_avatar_lifecycle(container: BootstrapContainer) -> None:
+    from backend.application.avatar_lifecycle import AvatarLifecycle
+    from backend.application.clients.avatar.lemonslice import LemonSliceRenderBackend
+
+    if isinstance(container.backend, LemonSliceRenderBackend):
+        service = AvatarLifecycle(container, container.config.runtime_ready_ttl_s)
+        container.avatar_lifecycle_task = asyncio.create_task(
+            service.run_loop(), name="avatar-lifecycle"
+        )
+
+
+async def _stop_avatar_lifecycle(container: BootstrapContainer) -> None:
+    task = getattr(container, "avatar_lifecycle_task", None)
+    if task is not None:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def _connect_authoring(container: BootstrapContainer) -> None:
     """Connect the Change B authoring repositories with bounded retries.
 
@@ -616,6 +634,7 @@ async def _shutdown(container: BootstrapContainer) -> None:
     # close stages so no owned task races the pool close (HIGH-1).
     await drain_authoring()
     stages = (
+        ("avatar.lifecycle", lambda: _stop_avatar_lifecycle(container)),
         ("runtime.failures", lambda: _stop_runtime_failures(container)),
         # First: a stopping process must not turn its own teardown into control_lost.
         ("budget.lease", lambda: _stop_budget_lease(container)),
@@ -652,6 +671,7 @@ def build_lifespan(container: BootstrapContainer):
             _start_reducer_loop(container)
             await _start_budget_lease(container)
             await _start_runtime_failures(container)
+            _start_avatar_lifecycle(container)
         except Exception:
             # Production startup is fail-fast: tear down any partially
             # initialized resource before the boot error propagates.

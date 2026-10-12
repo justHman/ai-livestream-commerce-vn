@@ -82,6 +82,13 @@ _ROLLOVER_LEAVE_WAIT_S = 8.0  # how long an ended avatar gets to leave the room
 _SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _TERMINAL_STATUS = frozenset({404, 410})  # the provider session is gone
 _AUTH_STATUS = frozenset({401, 403})  # terminal only when repeated
+_CREDIT_CODE = "LEMONSLICE_CREDIT_EXHAUSTED"
+_DAILY_CODE = "LEMONSLICE_DAILY_LIMIT_EXCEEDED"
+_READY_CODE = "RUNTIME_READY_TTL_EXPIRED"
+_READY_MESSAGE = (
+    "RUNTIME_READY_TTL_EXPIRED: Phiên chuẩn bị đã hết thời gian chờ lên sóng. "
+    "Hãy bắt đầu chuẩn bị lại."
+)
 _MAX_OWNED_SESSIONS = 128  # retain every unresolved provider id; refuse starts at capacity
 
 
@@ -122,6 +129,11 @@ class LemonSliceSettings:
     fallback_max_queue: int = 512  # bounded fallback buffer (chunks)
     history: int = 256  # bounded playback-history collections
     terminate_attempts: int = 2
+    on_air_recent_s: float = 120.0
+    ready_ttl_s: float = 1200.0  # preserve readiness, but bound forgotten pre-live sessions
+    daily_avatar_minutes: float = 0.0  # 0 = off; shared Redis ledger when enabled
+    budget_redis_url: str = field(default="", repr=False)
+    payment_backoff_s: float = 3600.0
 
     def __post_init__(self) -> None:
         # Negative/NaN/inf timers would silently disable a safeguard: refuse them (0 = off where
@@ -137,12 +149,22 @@ class LemonSliceSettings:
             "clear_budget_s",
             "audio_recheck_s",
             "audio_probe_s",
+            "on_air_recent_s",
+            "ready_ttl_s",
+            "daily_avatar_minutes",
+            "payment_backoff_s",
         ):
             v = getattr(self, name)
             if isinstance(v, bool) or not isinstance(v, int | float):
                 raise ValueError(f"{name} must be a finite, non-negative number")
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be a finite, non-negative number")
+        if self.payment_backoff_s < 300:
+            raise ValueError("payment_backoff_s must be >= 300")
+        if self.daily_avatar_minutes > 0 and not self.budget_redis_url:
+            raise ValueError("daily_avatar_minutes requires budget_redis_url")
+        if self.daily_avatar_minutes > 0 and self.idle_timeout_s <= 0:
+            raise ValueError("daily_avatar_minutes requires positive idle_timeout_s")
         if (
             self.rollover_after_s
             and self.max_session_s
@@ -421,6 +443,13 @@ class _Sess:
         0.0  # when the host last pushed audio (an open utterance id outlives it)
     )
     started_at: float = 0.0  # monotonic
+    created_at: float = 0.0  # Runtime lifetime, never reset by a provider rollover
+    has_streamed: bool = False
+    phase: str = "preparing"
+    fatal_code: str = ""
+    speech_active: int = 0
+    speech_pending: bool = False
+    ever_on_air: bool = False
     agent_id: str = ""  # kept so a rollover can start the same avatar again
     room_name: str = ""
     roll_lock: Any = None  # serializes rollovers of this session (created on the loop)
@@ -478,6 +507,103 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._stop_tasks: dict[str, asyncio.Task] = {}  # repeated stop waits for the same teardown
         self._reapers: set[asyncio.Task] = set()  # late-REST-session cleanups (loop thread)
         self._loop_lock = threading.Lock()
+        self._credit_until = 0.0
+        self._budget = None
+        self._budget_tokens: dict[str, str] = {}
+        self._stop_reasons: OrderedDict[str, float] = OrderedDict()
+        if settings.daily_avatar_minutes > 0:
+            from .lemonslice_budget import DailyAvatarBudget
+
+            self._budget = DailyAvatarBudget(
+                settings.budget_redis_url,
+                settings.lemonslice_api_key,
+                settings.daily_avatar_minutes * 60,
+            )
+
+    def _credit_error(self) -> LemonSliceError:
+        return LemonSliceError(_CREDIT_CODE, f"{_CREDIT_CODE}: LemonSlice hết credit")
+
+    def _trip_credit(self) -> None:
+        self._credit_until = self._mono() + self._s.payment_backoff_s
+        log.error(
+            "%s: LemonSlice hết credit; creation paused for %.0fs",
+            _CREDIT_CODE,
+            self._s.payment_backoff_s,
+        )
+        for sess in self._sessions.values():
+            sess.fatal_code = _CREDIT_CODE
+
+    def _check_creation(self) -> None:
+        if self._mono() < self._credit_until:
+            raise self._credit_error()
+
+    def _on_air(self, sess: _Sess) -> bool:
+        return sess.phase in {"live", "warming", "selling", "closing"} or (
+            sess.has_streamed and self._mono() - sess.last_stream_at < self._s.on_air_recent_s
+        )
+
+    def set_session_phase(self, session_id: str, phase: str) -> None:
+        sess = self._sessions.get(session_id)
+        if sess is not None:
+            sess.phase = phase
+            if phase in {"live", "warming", "selling", "closing"}:
+                sess.ever_on_air = True
+
+    def session_ids(self) -> tuple[str, ...]:
+        return tuple(self._sessions)
+
+    def remember_ready_expiry(self, session_id: str) -> None:
+        """Bounded diagnostic tombstones only, after durable cleanup; no paid session remains."""
+        self._stop_reasons[session_id] = self._mono() + 3600
+        self._stop_reasons.move_to_end(session_id)
+        while len(self._stop_reasons) > _MAX_OWNED_SESSIONS:
+            self._stop_reasons.popitem(last=False)
+
+    def stop_reason(self, session_id: str) -> str:
+        deadline = self._stop_reasons.get(session_id, 0)
+        if deadline > self._mono():
+            return _READY_MESSAGE
+        self._stop_reasons.pop(session_id, None)
+        return ""
+
+    def _ready_expired(self, sess: _Sess, ttl: float | None = None) -> bool:
+        ttl = self._s.ready_ttl_s if ttl is None else ttl
+        return (
+            ttl > 0
+            and not sess.ever_on_air
+            and not sess.has_streamed
+            and not self._on_air(sess)
+            and self._mono() - sess.created_at >= ttl
+        )
+
+    def _reset_allowed(self, sess: _Sess) -> bool:
+        # Recheck at dispatch: a parked control worker must not extend an expired ready session.
+        return not (sess.closing or sess.fatal_code or self._ready_expired(sess))
+
+    def lifecycle_status(self, session_id: str, ready_ttl_s: float) -> str:
+        return self._run(self._lifecycle_status(session_id, ready_ttl_s))
+
+    async def _lifecycle_status(self, session_id: str, ready_ttl_s: float) -> str:
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            return ""
+        if sess.fatal_code:
+            return sess.fatal_code
+        if self._mono() < self._credit_until:
+            sess.fatal_code = _CREDIT_CODE
+            return _CREDIT_CODE
+        if self._budget is not None:
+            try:
+                exceeded = await self._budget.exceeded()
+            except Exception:
+                exceeded = True  # no spending while shared accounting is unavailable
+            if exceeded:
+                sess.fatal_code = _DAILY_CODE
+                log.error("%s: avatar daily budget reached or ledger unavailable", _DAILY_CODE)
+                return _DAILY_CODE
+        if self._ready_expired(sess, ready_ttl_s):
+            return _READY_CODE
+        return ""
 
     # ---- loop thread ------------------------------------------------
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
@@ -564,6 +690,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         return r.status_code, data if isinstance(data, dict) else {}
 
     async def _close_client(self) -> None:
+        if self._budget is not None:
+            await self._budget.close()
         client, self._client = self._client, None
         if client is not None:
             try:
@@ -635,6 +763,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         return self._s.agent_id
 
     async def _start(self, agent_id: str) -> StartResult:
+        self._check_creation()
         # The tracked current startup already occupies one slot. Never evict an unpaid
         # cleanup identity to admit another billable provider session.
         if (
@@ -691,6 +820,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 ),
             )
             sess.started_at = self._mono()
+            sess.created_at = sess.started_at
             sess.agent_id, sess.room_name = agent_id, room_name
             sess.cleared = _BoundedSet(s.history)
             sess.unconfirmed = _BoundedSet(s.history)
@@ -770,22 +900,44 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     async def _request_session(self, agent_id: str, avatar_token: str, room_sid: str) -> Any:
         """Start the provider session through the plugin client; errors carry no body/URL/key."""
         s = self._s
+        self._check_creation()
+        budget_token = ""
+        if self._budget is not None:
+            try:
+                budget_token = await self._budget.begin(_CREATE_HARD_BOUND_S + s.idle_timeout_s)
+            except Exception:
+                log.error("%s: avatar creation refused by daily budget", _DAILY_CODE)
+                raise LemonSliceError(
+                    _DAILY_CODE, f"{_DAILY_CODE}: Avatar daily budget reached or unavailable"
+                ) from None
         failure: Exception | None = None
         try:
             async with self._session_client() as client:
-                return await client.start_agent_session(
+                sid = await client.start_agent_session(
                     livekit_url=s.livekit_url,
                     livekit_token=avatar_token,
                     livekit_session_id=room_sid,
                     agent_id=agent_id,
                     idle_timeout=s.idle_timeout_s,
                 )
+                if budget_token and isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):
+                    self._budget_tokens[sid] = budget_token
+                return sid
         except (asyncio.CancelledError, LemonSliceError):
             raise
         except Exception as exc:
             failure = exc
         # raised outside the except block: no __context__/__cause__, never the original message
         status = getattr(failure, "status_code", None)
+        if status == 402:
+            self._trip_credit()  # independent of accounting cleanup availability
+        if budget_token and isinstance(status, int) and 400 <= status < 500:
+            try:
+                await self._budget.finish(budget_token)
+            except Exception:
+                log.error("lemonslice rejected request charge retained until idle expiry")
+        if status == 402:
+            raise self._credit_error()
         detail = (
             f"status={status}"
             if isinstance(status, int)
@@ -929,15 +1081,39 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         return iter(())
 
     async def _stream(self, sess: _Sess, w: AudioWindow) -> None:
+        sess.speech_active += 1
+        try:
+            await self._stream_inner(sess, w)
+        except BaseException:
+            sess.speech_pending = False
+            raise
+        finally:
+            sess.speech_active -= 1
+
+    async def _stream_inner(self, sess: _Sess, w: AudioWindow) -> None:
+        if sess.closing:
+            raise LemonSliceError("session_closing")
+        if self._ready_expired(sess):
+            raise LemonSliceError(_READY_CODE, _READY_MESSAGE)
+        if sess.fatal_code:
+            raise LemonSliceError(sess.fatal_code, f"{sess.fatal_code}: Avatar creation stopped")
+        self._check_creation()
         if w.utterance_id in sess.cleared:  # late window of an interrupted utterance
             return
         assert w.pcm is not None  # checked in stream_audio
+        sess.has_streamed = True
+        sess.last_stream_at = self._mono()
         if sess.channel.open_utterance != w.utterance_id:  # a new utterance starts here
             await self._maybe_rollover(sess)
         if self._age_state(sess) == "near_cap" and sess.channel.open_utterance != w.utterance_id:
             raise SessionNearCap()  # a started utterance may still finish
         sess.last_stream_at = self._mono()
         epoch = sess.epoch
+        sess.speech_pending = not w.is_final
+        await self._extend_charge(
+            sess.provider_session_id,
+            sess.channel.sent_ms / 1000 + w.duration_ms / 1000 + self._s.playback_margin_s,
+        )
         await self._guard_fallback(sess)  # avatar audio appeared after start: never two speakers
         out = await sess.channel.send(
             w.pcm,
@@ -962,7 +1138,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
 
     async def _maybe_rollover(self, sess: _Sess) -> None:
         s = self._s
-        if s.rollover_after_s <= 0 or sess.closing or not sess.agent_id:
+        if sess.closing or sess.fatal_code or not sess.agent_id:
             return
 
         def due() -> bool:
@@ -972,9 +1148,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             # The session is old enough, or its avatar vanished from the room (a swap that went
             # wrong): bring a fresh one back before the live is declared lost.
             return (
-                now - sess.started_at >= s.rollover_after_s
-                or s.avatar_identity not in sess.room.remote_participants
-            )
+                s.rollover_after_s > 0 and now - sess.started_at >= s.rollover_after_s
+            ) or s.avatar_identity not in sess.room.remote_participants
 
         if not due():
             return
@@ -1058,6 +1233,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         except BaseException as exc:
             sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
             cancelled = isinstance(exc, asyncio.CancelledError)
+            if isinstance(exc, LemonSliceError) and exc.code in {_CREDIT_CODE, _DAILY_CODE}:
+                sess.fatal_code = exc.code
             if not cancelled:
                 log.warning(
                     "lemonslice rollover failed error_type=%s; the next utterance retries",
@@ -1074,6 +1251,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 )
             if cancelled:
                 raise
+            if sess.fatal_code:
+                raise LemonSliceError(
+                    sess.fatal_code, f"{sess.fatal_code}: Avatar creation stopped"
+                )
             return
         if sess.closing:  # the live was stopped while the replacement was being created
             sess.provider_session_id = ""
@@ -1151,6 +1332,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._run(self._interrupt(sess))
 
     async def _interrupt(self, sess: _Sess) -> None:
+        sess.speech_pending = False
         open_id = sess.channel.open_utterance
         if open_id:
             sess.cleared.add(open_id)
@@ -1275,10 +1457,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         terminate waits for the lock a bounded time and then proceeds regardless.
         """
         s = self._s
+        if event == "reset-idle-timeout":
+            await self._extend_charge(provider_session_id, self._deadline())
         rel = path.format(session_id=quote(provider_session_id, safe="")).lstrip("/")
         url = f"{s.api_base.rstrip('/')}/{rel}"
         if self._async_post is not None:
-            if guard is not None and guard.closing and event != "terminate":
+            if guard is not None and event != "terminate" and not self._reset_allowed(guard):
                 raise _SessionClosing()
             status, _ = await asyncio.wait_for(
                 self._async_post(
@@ -1306,7 +1490,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     if got:
                         guard.ctl_lock.release()
             with guard.ctl_lock:
-                if guard.closing:  # checked after any park, immediately before the send
+                if not self._reset_allowed(guard):  # checked after any park, before the send
                     raise _SessionClosing()
                 return send()
 
@@ -1314,6 +1498,17 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         fut.add_done_callback(lambda f: f.cancelled() or f.exception())  # never "not retrieved"
         status, _ = await asyncio.shield(fut)
         return status
+
+    async def _extend_charge(self, provider_session_id: str, extra_s: float = 0) -> None:
+        token = self._budget_tokens.get(provider_session_id)
+        if token and self._budget is not None:
+            try:
+                await self._budget.touch(token, self._s.idle_timeout_s + extra_s)
+            except Exception:
+                log.error("%s: avatar billing lease renewal refused", _DAILY_CODE)
+                raise LemonSliceError(
+                    _DAILY_CODE, f"{_DAILY_CODE}: Avatar budget unavailable"
+                ) from None
 
     def _deadline(self) -> float:
         d = self._s.control_deadline_s
@@ -1338,6 +1533,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     + (s.request_timeout_s + 1 if self._async_post is None and guard else 0),
                 )
                 if 200 <= status < 300 or status in _TERMINAL_STATUS:
+                    token = self._budget_tokens.get(sess.provider_session_id)
+                    if token and self._budget is not None:
+                        await self._budget.finish(token)
+                        self._budget_tokens.pop(sess.provider_session_id, None)
                     return
                 err = f"status={status}"
             except Exception as exc:
@@ -1347,6 +1546,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         log.error("lemonslice session NOT terminated after retries; idle_timeout applies")
         raise ProviderCleanupIncomplete()
 
+    async def _wait_keepalive(self) -> None:
+        await asyncio.sleep(self._s.keepalive_s)
+
     async def _keepalive(self, sess: _Sess) -> None:
         """Send reset-idle-timeout while the avatar is silent. Never touches the speech path:
         it is its own task, each call is bounded, failures are only counted and logged."""
@@ -1354,21 +1556,27 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         failures = 0
         auth_failures = 0
         while not sess.channel.broken and not sess.closing:
-            await asyncio.sleep(s.keepalive_s)
+            await self._wait_keepalive()
             self._age_state(sess)  # also emits the one-time 80% warning
             if sess.closing:
                 return
-            if (
-                sess.channel.broken
-                or sess.channel.open_utterance
-                or sess.rolling
-                or not sess.provider_session_id
-            ):
+            if sess.fatal_code:
+                return
+            if self._ready_expired(sess):
+                log.warning(
+                    "RUNTIME_READY_TTL_EXPIRED: phiên chuẩn bị hết thời gian chờ GoLive; "
+                    "stopping idle resets"
+                )
+                return  # lifecycle cleanup owns termination and durable terminal outcomes
+            on_air = self._on_air(sess)
+            if sess.speech_active or sess.speech_pending:
+                continue  # never replace the avatar while PCM/playback is in flight
+            if sess.channel.broken or sess.rolling or not sess.provider_session_id:
                 streaming = self._mono() - sess.last_stream_at < s.keepalive_s * 2
-                if not sess.rolling and not sess.channel.broken and not streaming:
+                if on_air and not sess.rolling and not sess.channel.broken and not streaming:
                     await self._heal_idle(sess)  # no provider session left: recreate it now
                 continue  # speaking already resets the provider idle timer; rolling swaps it
-            if await self._heal_idle(sess):
+            if on_air and await self._heal_idle(sess):
                 continue
             err = ""
             status = 0
@@ -1387,6 +1595,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if not err:
                 failures = auth_failures = 0
                 continue
+            if status == 402:
+                self._trip_credit()
+                sess.fatal_code = _CREDIT_CODE
+                return
             if sess.rolling or used != sess.provider_session_id:
                 continue  # a rollover replaced the session meanwhile: this failure is not its
             auth_failures = auth_failures + 1 if status in _AUTH_STATUS else 0
@@ -1403,6 +1615,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         """While the host is silent nothing calls _maybe_rollover: a vanished or expired avatar
         would stay gone until the media watchdog fails the live. True when a swap ran."""
         before = sess.provider_session_id
+        if not self._on_air(sess) or sess.fatal_code:
+            return False
         try:
             await self._maybe_rollover(sess)
         except Exception as exc:  # never end the keepalive for it

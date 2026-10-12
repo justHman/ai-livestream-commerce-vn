@@ -82,6 +82,7 @@ class BootstrapContainer:
     # P0-FB-020 R1 (default off): no capability or readiness gate.
     runtime_failures: Any = None
     runtime_failures_task: Any = None
+    avatar_lifecycle_task: Any = None
 
     # -- P0-FB-017 durable signed usage evidence (default OFF, fail closed) --
     # UsageEvidence or None. Set by the lifespan only when USAGE_EVIDENCE_ENABLED and a

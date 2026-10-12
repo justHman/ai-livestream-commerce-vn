@@ -48,6 +48,7 @@ dev = [
     "asyncpg>=0.31.0",
     # UtteranceResampler / LemonSlice audio path import livekit-rtc; CI syncs only --group dev.
     "livekit",
+    "fakeredis>=2.39.0",
 ]
 
 [build-system]

@@ -245,7 +245,14 @@ async def get_execution(
     session_id: str, request: Request, _: None = Depends(viewer_auth)
 ) -> dict[str, Any]:
     d = container_from_request(request)
-    meta, state = await _load(d.store, session_id)
+    try:
+        meta, state = await _load(d.store, session_id)
+    except HTTPException as exc:
+        reason_fn = getattr(getattr(d, "backend", None), "stop_reason", None)
+        reason = reason_fn(session_id) if exc.status_code == 404 and reason_fn else ""
+        if reason:
+            raise HTTPException(status_code=404, detail=reason) from exc
+        raise
     if state.phase == "closing" and session_id not in _closing_tasks:
         # Recovery: the in-process closing task was lost (restart). Closing has
         # no spoken content at P0, so completing it here is the same transition.
@@ -306,6 +313,9 @@ async def record_execution_evidence(
             await _settle_usage(d, staged, saved=False, failure=exc)
             raise
         await _settle_usage(d, staged, saved=True)
+        phase_setter = getattr(getattr(d, "backend", None), "set_session_phase", None)
+        if phase_setter is not None:
+            phase_setter(session_id, updated.phase)
     return {"state": updated.model_dump(mode="json")}
 
 
