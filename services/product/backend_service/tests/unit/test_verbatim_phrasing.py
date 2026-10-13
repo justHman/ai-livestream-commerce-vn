@@ -163,6 +163,14 @@ def _prefetch_threads() -> list[str]:
     return [t.name for t in threading.enumerate() if t.name.startswith("tts-prefetch")]
 
 
+async def _no_prefetch_threads(timeout: float = 3.0) -> bool:
+    """The worker exits right after shutdown(wait=False), not at the same instant: poll, bounded."""
+    deadline = time.monotonic() + timeout
+    while _prefetch_threads() and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    return not _prefetch_threads()
+
+
 @pytest.mark.asyncio
 async def test_cancel_returns_promptly_while_the_lookahead_is_blocked() -> None:
     tts = _GatedTTS(block_on="Cảm")
@@ -178,7 +186,7 @@ async def test_cancel_returns_promptly_while_the_lookahead_is_blocked() -> None:
     tts.gate.set()  # the hung request finally returns: its audio must be discarded
     await asyncio.sleep(0.3)
     assert [w.text_span.strip()[:6] for w in backend.windows] == ["Trường"]
-    assert _prefetch_threads() == []  # no worker left behind
+    assert await _no_prefetch_threads()  # no worker left behind
 
 
 @pytest.mark.asyncio
@@ -190,7 +198,7 @@ async def test_synthesis_error_propagates_without_requesting_the_next_phrase() -
         await orch.speak_verbatim("s", LONG)
     assert time.monotonic() - started < 2
     assert tts.started == ["Trường"]  # phrase 2 was never requested
-    assert _prefetch_threads() == []
+    assert await _no_prefetch_threads()
 
 
 @pytest.mark.asyncio
@@ -208,7 +216,7 @@ async def test_delivery_error_does_not_wait_for_the_blocked_lookahead() -> None:
     assert time.monotonic() - started < 2  # phrase 2 is still blocked in TTS
     tts.gate.set()
     await asyncio.sleep(0.3)
-    assert _prefetch_threads() == []
+    assert await _no_prefetch_threads()
 
 
 @pytest.mark.asyncio
