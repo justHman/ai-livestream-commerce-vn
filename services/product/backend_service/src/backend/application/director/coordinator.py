@@ -72,6 +72,10 @@ logger = logging.getLogger(__name__)
 CLOSE_REJECT_BACKOFF_SEC = 5.0
 CLOSE_REJECT_BACKOFF_MAX_SEC = 60.0
 
+# A slow or stuck /ws/control subscriber must never stall a Director turn: one hub emit may take
+# at most this long.
+HUB_EMIT_TIMEOUT_SEC = 2.0
+
 
 def _decision_to_event(decision: Decision) -> dict:
     """Delegate to the canonical events module (OpenSpec 1.21)."""
@@ -259,9 +263,14 @@ class DirectorCoordinator:
         if self._hub is None:
             return
         try:
-            await self._hub.emit(session_id, event)
-        except Exception:
-            logger.debug("hub.emit failed for %s", session_id, exc_info=True)
+            await asyncio.wait_for(self._hub.emit(session_id, event), HUB_EMIT_TIMEOUT_SEC)
+        except Exception as exc:  # incl. TimeoutError; never the event payload
+            logger.warning(
+                "hub emit failed session=%s event=%s error=%s",
+                session_id,
+                event.get("type"),
+                type(exc).__name__,
+            )
 
     def _register_speaking(
         self, session_id: str, orchestrator: StreamOrchestrator, queue: BoundedVideoQueue
