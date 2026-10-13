@@ -67,12 +67,7 @@ class ApprovedProduct:
         price in a fixed sentence.
         """
         from .compile import compile_spoken_text
-        from .generation.ordered_units import (
-            _ASSURANCE_RE,
-            _CONDITION_CLAIM_RE,
-            claim_covered,
-            spoken_price,
-        )
+        from .generation.ordered_units import _CONDITION_CLAIM_RE, claim_covered, spoken_price
 
         facts = json.loads(self.facts_json)
         promotions = {
@@ -89,38 +84,10 @@ class ApprovedProduct:
         }
         found: list[str] = []
         conditional: list[str] = []
-        claims = [c for c in facts.get("allowed_claims", []) if isinstance(c, str) and c.strip()]
-        # The promotion the script itself states, and the script sentences that state it.
-        stated = [c for c in claims if c in promotions and claim_covered(c, self.spoken_text)]
-        promo_sentences = [
-            s
-            for s in re.split(r"(?<=[.!?])\s+", self.spoken_text)
-            if any(claim_covered(c, s) for c in stated)
-        ]
-
-        def qualifies(claim: str) -> bool:
-            """A condition goes with the promotion unless it is a plain return/shipping policy.
-
-            A policy is only left out when nothing ties it to the discount: not typed as a
-            limitation, no applicability or discount wording, not said in the promotion's own
-            sentence. Anything that might qualify the discount stays with it."""
-            return (
-                claim in limitations
-                or not _ASSURANCE_RE.search(claim)
-                or bool(_QUALIFIER_RE.search(claim))
-                or any(claim_covered(claim, s) for s in promo_sentences)
-            )
-
-        promo_stated = bool(stated)
-        promo_tail: list[str] = []  # that promotion and the conditions that go with it
-        for claim in claims:
+        for claim in facts.get("allowed_claims", []):
+            if not isinstance(claim, str) or not claim.strip():
+                continue
             spoken = compile_spoken_text(claim.strip()).spoken_text
-            if claim in stated:
-                promo_tail.append(spoken)
-            elif claim not in promotions and (
-                claim in limitations or (_CONDITION_CLAIM_RE.search(claim) and qualifies(claim))
-            ):
-                promo_tail.append(spoken)
             if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # a condition only restricts: never dropped
             elif not claim_covered(claim, self.spoken_text):
@@ -131,6 +98,18 @@ class ApprovedProduct:
                 found.append(spoken)
         if conditional:
             found.append(" ".join(conditional))
+        # A price question also gets the promotion, in the script's own sentence(s) that state it
+        # (verbatim, in script order): whatever condition the owner wrote travels with it.
+        stated = [
+            c
+            for c in promotions
+            if isinstance(c, str) and c.strip() and claim_covered(c, self.spoken_text)
+        ]
+        promo_sentences = dict.fromkeys(
+            s
+            for s in re.split(r"(?<=[.!?])\s+", self.spoken_text.strip())
+            if s and any(claim_covered(c, s) for c in stated)
+        )
         script_words = re.findall(r"\w+", compile_spoken_text(self.spoken_text).spoken_text.lower())
         for price in facts.get("prices", []):
             words = spoken_price(str(price))
@@ -139,19 +118,8 @@ class ApprovedProduct:
                 sentence = (
                     f"{name} giá {words} nhé mọi người." if name else f"Giá {words} nhé mọi người."
                 )
-                if promo_stated:
-                    # A price question gets the promotion too, still with every condition it has.
-                    sentence = f"{sentence} {' '.join(promo_tail)}"
-                found.append(sentence)
+                found.append(" ".join((sentence, *promo_sentences)))
         return tuple(dict.fromkeys(found))
-
-
-# Wording that makes a claim qualify a discount rather than state a policy of its own.
-_QUALIFIER_RE = re.compile(
-    r"áp dụng|điều kiện|miễn là|\bnếu\b|\bchỉ\b|ngoại trừ|\btrừ\b|\bđơn (?:hàng )?từ\b"
-    r"|giảm|ưu đãi|khuyến mãi|tặng|quà|voucher",
-    re.IGNORECASE,
-)
 
 
 def _states_number(script_words: list[str], phrase: str) -> bool:
