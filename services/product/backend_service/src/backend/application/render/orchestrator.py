@@ -57,6 +57,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any
 
@@ -105,7 +106,8 @@ class StreamingControllerConfig:
 # A scripted (verbatim) turn has all its text up front, so there is no latency pressure to cut a
 # sentence early: the 80-char live cap split clauses inside a word pair ("thoải | mái") and every cut
 # became a separate TTS request with its own silence. Sentences up to this size stay whole; only a
-# longer one is cut, at its best comma/cue boundary.
+# longer one is cut, at its best comma/cue boundary. It is THE verbatim cap, not a floor: a larger
+# configured live cap does not make scripted chunks bigger.
 VERBATIM_MAX_CHARS = 200
 
 
@@ -299,7 +301,7 @@ class StreamOrchestrator:
                 utterance_id=utterance_id,
                 min_chars=self._min_chars,
                 target_chars=self._target_chars,
-                max_chars=max(self._max_chars, VERBATIM_MAX_CHARS),
+                max_chars=VERBATIM_MAX_CHARS,
                 policy=self.chunk_policy,
                 telemetry=self._telemetry,
             )
@@ -320,23 +322,29 @@ class StreamOrchestrator:
             # Delivery blocks until the audio is (almost) played, and LiveKit buffers only ~1 s, so
             # synthesizing phrase N+1 AFTER delivering N left a gap of (synthesis time - 1 s) at
             # every boundary. One worker synthesizes the next phrase while the current one plays.
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-prefetch") as pool:
+            # Cancel, error and stop never wait for an in-flight synthesis: it may finish in the
+            # background (at most one per turn, bounded by the TTS client timeout) and its audio is
+            # discarded, so this turn releases the coordinator lock at once.
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-prefetch")
+            try:
                 ahead = (
                     pool.submit(self._synthesize_phrase, phrases[0], session_id, utterance_id)
                     if phrases
                     else None
                 )
                 for index in range(len(phrases)):
-                    windows, error = ahead.result()
+                    made = self._await_phrase(ahead)
+                    if made is None or self._cancel_event.is_set():
+                        break
+                    windows, error = made
+                    # Nothing more is requested once this phrase failed or the turn is cancelled.
                     ahead = (
                         pool.submit(
                             self._synthesize_phrase, phrases[index + 1], session_id, utterance_id
                         )
-                        if index + 1 < len(phrases)
+                        if error is None and index + 1 < len(phrases)
                         else None
                     )
-                    if self._cancel_event.is_set():
-                        break
                     # A mid-call TTS error still delivers the audio already made (non-final, so the
                     # publication guard decides about it), then propagates.
                     self._deliver_phrase_windows(
@@ -347,8 +355,19 @@ class StreamOrchestrator:
                     )
                     if error is not None:
                         raise error
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
         finally:
             bridge.put(_BRIDGE_SENTINEL)
+
+    def _await_phrase(self, future: Any) -> tuple[list[AudioWindow], BaseException | None] | None:
+        """The in-flight synthesis result, or None as soon as the turn is cancelled."""
+        while True:
+            try:
+                return future.result(timeout=0.05)
+            except FutureTimeoutError:
+                if self._cancel_event.is_set():
+                    return None
 
     def _synthesize_phrase(
         self, phrase: TextChunk, session_id: str, utterance_id: str
@@ -360,6 +379,8 @@ class StreamOrchestrator:
         """
         windows: list[AudioWindow] = []
         error: BaseException | None = None
+        if self._cancel_event.is_set():
+            return windows, error
         t0 = time.perf_counter()
         try:
             for audio_window in self._tts.stream_audio(

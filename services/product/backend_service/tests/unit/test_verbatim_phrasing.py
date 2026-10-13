@@ -141,13 +141,89 @@ async def test_tts_failure_in_the_prefetched_phrase_propagates() -> None:
         await orch.speak_verbatim("s", LONG)
 
 
+class _GatedTTS(_TimedTTS):
+    """The phrase starting with ``block_on`` waits on ``gate`` (a hung TTS request)."""
+
+    def __init__(self, block_on: str, *, fail_on: str = "") -> None:
+        super().__init__()
+        self.block_on, self.fail_on = block_on, fail_on
+        self.gate = threading.Event()
+        self.started: list[str] = []
+
+    def stream_audio(self, phrase, **kw):
+        self.started.append(phrase.text.strip()[:6])
+        if self.fail_on and phrase.text.strip().startswith(self.fail_on):
+            raise TimeoutError("tts down")
+        if phrase.text.strip().startswith(self.block_on):
+            self.gate.wait(5)
+        yield from super().stream_audio(phrase, **kw)
+
+
+def _prefetch_threads() -> list[str]:
+    return [t.name for t in threading.enumerate() if t.name.startswith("tts-prefetch")]
+
+
 @pytest.mark.asyncio
-async def test_cancel_stops_before_delivering_more_phrases() -> None:
-    backend = _SlowPlayback(0.3)
-    orch = _orchestrator(_TimedTTS(), backend)
+async def test_cancel_returns_promptly_while_the_lookahead_is_blocked() -> None:
+    tts = _GatedTTS(block_on="Cảm")
+    backend = _SlowPlayback(0.5)
+    orch = _orchestrator(tts, backend)
+    started = time.monotonic()
     task = asyncio.create_task(orch.speak_verbatim("s", LONG))
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.2)  # phrase 1 is playing, phrase 2 is blocked in TTS
+    assert tts.started == ["Trường", "Cảm ơn"]
     await orch.cancel("s")
-    await asyncio.wait_for(task, 5)
-    assert len(backend.windows) <= 1
-    assert threading.active_count() < 50  # the prefetch worker is not leaked
+    await asyncio.wait_for(task, 3)
+    assert time.monotonic() - started < 2  # the gate holds the lookahead for 5 s
+    tts.gate.set()  # the hung request finally returns: its audio must be discarded
+    await asyncio.sleep(0.3)
+    assert [w.text_span.strip()[:6] for w in backend.windows] == ["Trường"]
+    assert _prefetch_threads() == []  # no worker left behind
+
+
+@pytest.mark.asyncio
+async def test_synthesis_error_propagates_without_requesting_the_next_phrase() -> None:
+    tts = _GatedTTS(block_on="Cảm", fail_on="Trường")
+    orch = _orchestrator(tts, _SlowPlayback(0.0))
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await orch.speak_verbatim("s", LONG)
+    assert time.monotonic() - started < 2
+    assert tts.started == ["Trường"]  # phrase 2 was never requested
+    assert _prefetch_threads() == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_error_does_not_wait_for_the_blocked_lookahead() -> None:
+    tts = _GatedTTS(block_on="Cảm")
+
+    class _Reject(_SlowPlayback):
+        def stream_audio(self, session_id, audio_window):
+            raise ConnectionError("publication guard")
+
+    orch = _orchestrator(tts, _Reject(0.0))
+    started = time.monotonic()
+    with pytest.raises(ConnectionError):
+        await orch.speak_verbatim("s", LONG)
+    assert time.monotonic() - started < 2  # phrase 2 is still blocked in TTS
+    tts.gate.set()
+    await asyncio.sleep(0.3)
+    assert _prefetch_threads() == []
+
+
+@pytest.mark.asyncio
+async def test_a_larger_configured_cap_does_not_enlarge_scripted_chunks() -> None:
+    long_clause = "Mọi người " + "diện đi làm hay đi chơi đều rất hợp " * 8 + "nha."
+    tts = _TimedTTS()
+    orch = StreamOrchestrator(
+        llm=_NoLLM(),
+        tts=tts,
+        backend=_SlowPlayback(0.0),
+        queue=BoundedVideoQueue(max_size=20),
+        metrics=CoordinatorMetrics(),
+        fixed_config=FixedChunkPolicyConfig(min_chars=12, target_chars=40, max_chars=500),
+    )
+    orch._backend.start(StartOptions())
+    await orch.speak_verbatim("s", long_clause)
+    assert len(long_clause) > 200
+    assert all(len(text) <= 200 for text, _, _ in tts.calls)
