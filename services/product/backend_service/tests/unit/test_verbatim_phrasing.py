@@ -12,6 +12,7 @@ request that is held for 10 s.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from typing import Callable, Iterator
@@ -145,6 +146,20 @@ async def _no_prefetch_threads(timeout: float = 5.0) -> bool:
     return True
 
 
+@contextlib.asynccontextmanager
+async def _released(tts: _FakeTTS, task: asyncio.Task | None = None):
+    """Whatever the test does (or fails to do), the held TTS request is released at the end and the
+    worker is awaited (bounded), so a failed assertion cannot leak a blocked thread into the next
+    test's thread-exit checks."""
+    try:
+        yield
+    finally:
+        tts.gate.set()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        await _no_prefetch_threads()
+
+
 @pytest.mark.asyncio
 async def test_sentence_longer_than_the_live_cap_is_not_cut_inside_a_phrase() -> None:
     tts = _FakeTTS()
@@ -189,30 +204,32 @@ async def test_cancel_returns_promptly_while_the_lookahead_is_blocked() -> None:
     backend = _Playback(play_s=0.5)
     orch = _orchestrator(tts, backend)
     task = asyncio.create_task(orch.speak_verbatim("s", LONG))
-    # Handshake: phrase 1 is playing AND the lookahead for phrase 2 really started and is held.
-    assert await asyncio.to_thread(backend.playing.wait, 5)
-    assert await asyncio.to_thread(tts.wait_begun, SECOND)
-    assert not tts.has_ended(SECOND)
-    cancelled_at = time.monotonic()
-    await orch.cancel("s")
-    await asyncio.wait_for(task, HELD_S)
-    assert time.monotonic() - cancelled_at < PROMPT_S  # did not wait for the held request
-    tts.gate.set()  # the hung request finally returns: its audio must be discarded
-    assert await asyncio.to_thread(tts.wait_ended, SECOND)
-    assert [w.text_span.strip()[:6] for w in backend.windows] == [FIRST]
-    assert await _no_prefetch_threads()
+    async with _released(tts, task):
+        # Handshake: phrase 1 is playing AND the lookahead for phrase 2 really started and is held.
+        assert await asyncio.to_thread(backend.playing.wait, 5)
+        assert await asyncio.to_thread(tts.wait_begun, SECOND)
+        assert not tts.has_ended(SECOND)
+        cancelled_at = time.monotonic()
+        await orch.cancel("s")
+        await asyncio.wait_for(task, HELD_S)
+        assert time.monotonic() - cancelled_at < PROMPT_S  # did not wait for the held request
+        tts.gate.set()  # the hung request finally returns: its audio must be discarded
+        assert await asyncio.to_thread(tts.wait_ended, SECOND)
+        assert [w.text_span.strip()[:6] for w in backend.windows] == [FIRST]
+        assert await _no_prefetch_threads()
 
 
 @pytest.mark.asyncio
 async def test_synthesis_error_propagates_without_requesting_the_next_phrase() -> None:
     tts = _FakeTTS(block_on=SECOND, fail_on=FIRST)
     orch = _orchestrator(tts, _Playback())
-    started = time.monotonic()
-    with pytest.raises(TimeoutError):
-        await orch.speak_verbatim("s", LONG)
-    assert time.monotonic() - started < PROMPT_S
-    assert tts.has_begun(FIRST) and not tts.has_begun(SECOND)  # phrase 2 was never requested
-    assert await _no_prefetch_threads()
+    async with _released(tts):
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await orch.speak_verbatim("s", LONG)
+        assert time.monotonic() - started < PROMPT_S
+        assert tts.has_begun(FIRST) and not tts.has_begun(SECOND)  # phrase 2 never requested
+        assert await _no_prefetch_threads()
 
 
 @pytest.mark.asyncio
@@ -226,14 +243,15 @@ async def test_delivery_error_does_not_wait_for_the_blocked_lookahead() -> None:
         raise ConnectionError("publication guard")
 
     orch = _orchestrator(tts, _Playback(on_first=reject))
-    started = time.monotonic()
-    with pytest.raises(ConnectionError):
-        await orch.speak_verbatim("s", LONG)
-    assert time.monotonic() - started < PROMPT_S
-    assert tts.has_begun(SECOND) and not tts.has_ended(SECOND)  # still held in TTS
-    tts.gate.set()
-    assert await asyncio.to_thread(tts.wait_ended, SECOND)
-    assert await _no_prefetch_threads()
+    async with _released(tts):
+        started = time.monotonic()
+        with pytest.raises(ConnectionError):
+            await orch.speak_verbatim("s", LONG)
+        assert time.monotonic() - started < PROMPT_S
+        assert tts.has_begun(SECOND) and not tts.has_ended(SECOND)  # still held in TTS
+        tts.gate.set()
+        assert await asyncio.to_thread(tts.wait_ended, SECOND)
+        assert await _no_prefetch_threads()
 
 
 @pytest.mark.asyncio
