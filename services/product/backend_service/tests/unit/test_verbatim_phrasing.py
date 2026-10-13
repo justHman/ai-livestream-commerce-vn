@@ -271,3 +271,67 @@ async def test_a_larger_configured_cap_does_not_enlarge_scripted_chunks() -> Non
     assert tts.calls  # not vacuous: the text really went through TTS
     assert len(tts.calls) >= 2  # it needed more than one chunk
     assert all(len(text) <= 200 for text in tts.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_index", [0, 1, 2])
+async def test_typed_tts_failure_skips_only_failed_phrase(failed_index, caplog):
+    from backend.application.clients.tts.self_hosted import TTSClientError
+
+    class FailingTTS(_FakeTTS):
+        def stream_audio(self, phrase, **kwargs):
+            if phrase.seq == failed_index:
+                # Even partial audio from a failed phrase must be discarded.
+                yield from super().stream_audio(phrase, **kwargs)
+                raise TTSClientError("private synthesis error")
+            yield from super().stream_audio(phrase, **kwargs)
+
+    backend = _Playback()
+    text = LONG + " Thank you for joining us today."
+    await _orchestrator(FailingTTS(), backend).speak_verbatim("session-stall", text)
+    assert len(backend.windows) == 2
+    assert all(w.seq != failed_index + 1 for w in backend.windows)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "session_id=session-stall" in errors[0].getMessage()
+    assert f"phrase_index={failed_index}" in errors[0].getMessage()
+    assert "private synthesis error" not in caplog.text
+    assert text not in caplog.text
+    assert sum(w.is_final for w in backend.windows) == (0 if failed_index == 2 else 1)
+
+
+@pytest.mark.asyncio
+async def test_lookahead_cap_skips_stuck_phrase_and_continues(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "backend.application.render.orchestrator.phrase_wait_budget_s", lambda _: 0.3
+    )
+    tts = _FakeTTS(block_on=FIRST)
+    backend = _Playback()
+    task = asyncio.create_task(_orchestrator(tts, backend).speak_verbatim("session-cap", LONG))
+    async with _released(tts, task):
+        assert await asyncio.to_thread(tts.wait_begun, FIRST)
+        started = time.monotonic()
+        await asyncio.wait_for(asyncio.shield(task), 3)
+        assert time.monotonic() - started < 2
+        assert not tts.has_ended(FIRST)  # Worker remains blocked; later phrase still played.
+        assert [w.text_span.strip()[:6] for w in backend.windows] == [SECOND]
+        assert "session_id=session-cap phrase_index=0" in caplog.text
+        assert LONG not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_approved_speech_rejection_still_aborts_remaining_phrases():
+    from backend.application.script_authoring.approved_speech import SpeechRejected
+
+    class RejectedTTS(_FakeTTS):
+        def stream_audio(self, phrase, **kwargs):
+            if phrase.seq == 0:
+                raise SpeechRejected("altered_approved_chunk")
+            yield from super().stream_audio(phrase, **kwargs)
+
+    tts = RejectedTTS()
+    backend = _Playback()
+    with pytest.raises(SpeechRejected, match="altered_approved_chunk"):
+        await _orchestrator(tts, backend).speak_verbatim("s", LONG)
+    assert not tts.calls
+    assert not backend.windows

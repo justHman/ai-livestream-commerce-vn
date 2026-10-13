@@ -51,6 +51,7 @@ Exactly-once finality (tasks 6.1-6.5):
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import threading
 import time
@@ -61,6 +62,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any
 
+from backend.application.clients.tts.self_hosted import TTSClientError, phrase_wait_budget_s
 from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
 from backend.application.contracts.tts_engines import TTSEngine
 from .llm_stream_controller import (
@@ -80,6 +82,13 @@ from ..text_chunker import (
     TextChunk,
     TextChunker,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class _PhraseWaitTimeout(TTSClientError):
+    """Lookahead worker exceeded its synthesis budget."""
+
 
 _BRIDGE_SENTINEL = object()
 AudioWindowCallback = Callable[[AudioWindow], Awaitable[None]]
@@ -333,11 +342,28 @@ class StreamOrchestrator:
                     else None
                 )
                 for index in range(len(phrases)):
-                    made = self._await_phrase(ahead)
+                    made = self._await_phrase(ahead, len(phrases[index].text))
                     if made is None or self._cancel_event.is_set():
                         break
                     windows, error = made
-                    # Nothing more is requested once this phrase failed or the turn is cancelled.
+                    if isinstance(error, TTSClientError):
+                        logger.error(
+                            "TTS phrase skipped session_id=%s phrase_index=%s reason=%s",
+                            session_id,
+                            index,
+                            "lookahead_deadline"
+                            if isinstance(error, _PhraseWaitTimeout)
+                            else "synthesis_failure",
+                        )
+                        if isinstance(error, _PhraseWaitTimeout):
+                            # A stuck worker must not hold all subsequent phrases in its queue.
+                            pool.shutdown(wait=False, cancel_futures=True)
+                            pool = ThreadPoolExecutor(
+                                max_workers=1, thread_name_prefix="tts-prefetch"
+                            )
+                        windows = []
+                        error = None
+                    # Validation and publication errors still abort the turn.
                     ahead = (
                         pool.submit(
                             self._synthesize_phrase, phrases[index + 1], session_id, utterance_id
@@ -360,11 +386,20 @@ class StreamOrchestrator:
         finally:
             bridge.put(_BRIDGE_SENTINEL)
 
-    def _await_phrase(self, future: Any) -> tuple[list[AudioWindow], BaseException | None] | None:
-        """The in-flight synthesis result, or None as soon as the turn is cancelled."""
+    def _await_phrase(
+        self, future: Any, char_count: int
+    ) -> tuple[list[AudioWindow], BaseException | None] | None:
+        """Wait within the retry/tempo budget, or return None on cancellation."""
+        deadline = time.monotonic() + phrase_wait_budget_s(char_count)
         while True:
+            if self._cancel_event.is_set():
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                future.cancel()
+                return [], _PhraseWaitTimeout("TTS lookahead deadline exceeded")
             try:
-                return future.result(timeout=0.05)
+                return future.result(timeout=min(0.05, remaining))
             except FutureTimeoutError:
                 if self._cancel_event.is_set():
                     return None
@@ -374,8 +409,8 @@ class StreamOrchestrator:
     ) -> tuple[list[AudioWindow], BaseException | None]:
         """Synthesize one phrase to its audio windows (nothing is delivered here).
 
-        A mid-call error is returned with the windows made so far, not raised: the caller delivers
-        them and raises it in order, as the per-phrase lookahead did.
+        Errors are returned with any windows made so far. Typed TTS transport failures discard
+        the phrase; other errors deliver partial windows non-final and propagate.
         """
         windows: list[AudioWindow] = []
         error: BaseException | None = None
