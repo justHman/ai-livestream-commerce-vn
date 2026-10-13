@@ -670,6 +670,18 @@ async def test_a_natural_answer_keeps_the_approved_numbers(case_factory, output,
 
 
 @pytest.mark.asyncio
+async def test_a_refused_natural_answer_logs_why_without_its_text(case_factory, caplog):
+    case = await case_factory()
+    case.llm.output = "Bên mình giao hàng trong năm ngày nhé mọi người."
+    turn = decision(case, generated=True)
+    with caplog.at_level("INFO"):
+        await prepare(case, turn)
+    line = next(r.getMessage() for r in caplog.records if "refused by validation" in r.getMessage())
+    assert "reason=number_not_in_facts" in line
+    assert "năm ngày" not in line
+
+
+@pytest.mark.asyncio
 async def test_a_natural_answer_the_judge_refuses_is_not_spoken(case_factory):
     from backend.application.script_authoring.approved_speech import DEFLECTION
 
