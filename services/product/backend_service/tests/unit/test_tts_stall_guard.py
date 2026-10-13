@@ -1,7 +1,8 @@
-"""Bounded HTTP body reads against a loopback socket; no TTS service required."""
+"""Bounded HTTP header/body reads against a loopback socket; no TTS service required."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import socketserver
 import threading
@@ -21,14 +22,14 @@ SECRET_TOKEN = "private-bearer-token"
 def deadlines(monkeypatch):
     monkeypatch.setenv("TTS_API_STYLE", "openai_audio_speech")
     monkeypatch.delenv("TTS_TEMPO", raising=False)
-    monkeypatch.setattr(tts, "FIRST_BYTE_DEADLINE_S", 0.2)
-    monkeypatch.setattr(tts, "TOTAL_DEADLINE_MIN_S", 0.3)
-    monkeypatch.setattr(tts, "TOTAL_DEADLINE_MAX_S", 0.3)
-    monkeypatch.setattr(tts, "_RETRY_DELAYS_S", (0.0, 0.0))
+    monkeypatch.setattr(tts, "FIRST_BYTE_DEADLINE_S", 0.4)
+    monkeypatch.setattr(tts, "TOTAL_DEADLINE_MIN_S", 0.6)
+    monkeypatch.setattr(tts, "TOTAL_DEADLINE_MAX_S", 0.6)
+    monkeypatch.setattr(tts, "_RETRY_DELAYS_S", (0.02, 0.03))
 
 
 @contextmanager
-def stalled_endpoint(mode, *, recover=False):
+def stalled_endpoint(mode, *, recover=False, request_started=None):
     stop = threading.Event()
     connections = []
     finished = []
@@ -57,9 +58,20 @@ def stalled_endpoint(mode, *, recover=False):
                 done = threading.Event()
                 finished.append(done)
                 chunk_counts.append(0)
+            if request_started is not None:
+                request_started.set()
             try:
                 if recover and index > 0:
                     self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n\x01\x00")
+                    return
+                if mode == "silent-connect":
+                    assert self.request.recv(1) == b""
+                    return
+                if mode == "header-trickle":
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                    while not stop.wait(0.025):
+                        self.request.sendall(b"x")
+                        chunk_counts[index] += 1
                     return
                 self.request.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
                 if mode != "silent":
@@ -95,13 +107,18 @@ def stalled_endpoint(mode, *, recover=False):
         assert all(done.wait(3) for done in finished)
 
 
-@pytest.mark.parametrize("mode", ["silent", "unfinished", "trickle"])
+@pytest.mark.parametrize(
+    "mode", ["silent", "unfinished", "trickle", "header-trickle", "silent-connect"]
+)
+@pytest.mark.parametrize("owned", [False, True])
 @pytest.mark.parametrize("recover", [False, True])
-def test_stalled_body_is_bounded_and_retries_a_fresh_connection(mode, recover, caplog):
+def test_stalled_request_is_bounded_and_retries_a_fresh_connection(mode, recover, owned, caplog):
     with stalled_endpoint(mode, recover=recover) as (url, connections, finished, counts):
         # Exercise an injected real pool too: retries must not reuse its failed connection.
         with httpx.Client() as http_client:
-            client = tts.SelfHostedTTSClient(url, api_key=SECRET_TOKEN, http_client=http_client)
+            client = tts.SelfHostedTTSClient(
+                url, api_key=SECRET_TOKEN, http_client=None if owned else http_client
+            )
             started = time.monotonic()
             with caplog.at_level(logging.WARNING, logger=tts.__name__):
                 if recover:
@@ -114,10 +131,10 @@ def test_stalled_body_is_bounded_and_retries_a_fresh_connection(mode, recover, c
         assert len(connections) == attempts
         assert len({id(conn) for conn in connections}) == attempts
         assert all(done.wait(3) for done in finished)
-        assert elapsed < 3.0  # Generous scheduling margin, much less than an unbounded read.
-        if mode == "trickle":
+        assert elapsed < 4.0  # Generous scheduling margin, much less than an unbounded read.
+        if mode in ("trickle", "header-trickle"):
             assert counts[0] >= 2
-            assert elapsed >= 0.3
+            assert elapsed >= (0.6 if mode == "trickle" else 0.4)
         warnings = [
             r for r in caplog.records if r.name == tts.__name__ and r.levelno == logging.WARNING
         ]
@@ -139,10 +156,10 @@ def test_transient_failure_then_success(failure, caplog):
     def handler(request):
         calls.append(request)
         assert request.extensions["timeout"] == {
-            "connect": 0.3,
-            "read": 0.2,
-            "write": 0.3,
-            "pool": 0.3,
+            "connect": 0.6,
+            "read": 0.4,
+            "write": 0.6,
+            "pool": 0.6,
         }
         assert request.headers["connection"] == "close"
         if len(calls) == 1:
@@ -228,8 +245,54 @@ def test_watchdog_interrupts_a_read_before_the_next_chunk(send_first_chunk, capl
         with pytest.raises(tts.TTSClientError):
             client.synthesize(SECRET_TEXT)
         elapsed = time.monotonic() - started
-    assert elapsed < 2
-    assert elapsed >= (0.9 if send_first_chunk else 0.6)
+    assert elapsed < 3
+    assert elapsed >= (1.8 if send_first_chunk else 1.2)
     assert len(sockets) == 3
     assert all(sock.interrupted.is_set() for sock in sockets)
     assert all(stream.closed for stream in streams)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["header-trickle", "silent"])
+@pytest.mark.parametrize("abandon", [False, True])
+async def test_stalled_synthesis_worker_exits_and_starts_no_request_after_failure(
+    mode, abandon, monkeypatch
+):
+    from backend.application.clients.composition import RemoteHttpTTSEngine
+    from .test_verbatim_phrasing import LONG, _no_prefetch_threads, _orchestrator, _Playback
+
+    if abandon:
+        # Force the safety net during the first attempt. The worker must finish
+        # that request by its deadline and suppress the two remaining retries.
+        monkeypatch.setattr(tts, "FIRST_BYTE_DEADLINE_S", 0.6)
+        monkeypatch.setattr(
+            "backend.application.render.orchestrator.phrase_wait_budget_s", lambda _: 0.3
+        )
+    request_started = threading.Event()
+    with stalled_endpoint(mode, request_started=request_started) as (url, connections, done, _):
+        client = tts.SelfHostedTTSClient(url)  # Owned client: real transport and engine seam.
+        backend = _Playback()
+        orch = _orchestrator(RemoteHttpTTSEngine(client), backend)
+        started = time.monotonic()
+        task = asyncio.create_task(orch.speak_verbatim("stalled", LONG))
+        try:
+            assert await asyncio.to_thread(request_started.wait, 3)
+            with pytest.raises(tts.TTSClientError):
+                await asyncio.wait_for(asyncio.shield(task), 4)
+            attempts = len(tts._RETRY_DELAYS_S) + 1
+            count_at_failure = len(connections)
+            if abandon:
+                assert not done[0].is_set()  # The worker is genuinely still in the request.
+                with pytest.raises(tts.TTSClientError, match="Previous TTS synthesis"):
+                    await asyncio.wait_for(orch.speak_verbatim("next", LONG), 3)
+            assert await _no_prefetch_threads(3)
+            assert time.monotonic() - started < (
+                tts.request_deadline_s(len(LONG)) * attempts + sum(tts._RETRY_DELAYS_S) + 2
+            )
+            assert len(connections) == count_at_failure == (1 if abandon else attempts)
+            assert all(event.wait(3) for event in done)
+            assert backend.windows == []  # No later phrase, fabricated final, or script success.
+        finally:
+            await asyncio.gather(task, return_exceptions=True)
+            assert await _no_prefetch_threads(3)
+            client.close()

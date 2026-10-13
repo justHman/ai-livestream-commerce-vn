@@ -56,13 +56,19 @@ import queue
 import threading
 import time
 import uuid
+import weakref
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from backend.application.clients.tts.self_hosted import TTSClientError, phrase_wait_budget_s
+from backend.application.clients.tts.self_hosted import (
+    TTSClientError,
+    phrase_wait_budget_s,
+    synthesis_cancellation,
+)
 from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
 from backend.application.contracts.tts_engines import TTSEngine
 from .llm_stream_controller import (
@@ -88,6 +94,13 @@ logger = logging.getLogger(__name__)
 
 class _PhraseWaitTimeout(TTSClientError):
     """Lookahead worker exceeded its synthesis budget."""
+
+
+# The coordinator constructs a fresh orchestrator for each turn (including a new
+# approved-speech TTS wrapper). Keep the session's active synthesis slot shared
+# until the worker releases it, without retaining ended sessions indefinitely.
+_SESSION_SYNTHESIS_LOCKS: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
+_SESSION_SYNTHESIS_REGISTRY_LOCK = threading.Lock()
 
 
 _BRIDGE_SENTINEL = object()
@@ -157,6 +170,7 @@ class StreamOrchestrator:
         self._flush_timeout_ms = self._controller_config.flush_timeout_ms
         self._flush_timeout_s = self._flush_timeout_ms / 1000.0
         self._cancel_event = threading.Event()
+        self._synthesis_lock = threading.Lock()
         self._running_session: str | None = None
         self._audio_window_callback = audio_window_callback
         self._telemetry = telemetry
@@ -334,10 +348,17 @@ class StreamOrchestrator:
             # Cancel, error and stop never wait for an in-flight synthesis: it may finish in the
             # background (at most one per turn, bounded by the TTS client timeout) and its audio is
             # discarded, so this turn releases the coordinator lock at once.
+            synthesis_stop = threading.Event()
             pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-prefetch")
             try:
                 ahead = (
-                    pool.submit(self._synthesize_phrase, phrases[0], session_id, utterance_id)
+                    pool.submit(
+                        self._synthesize_phrase,
+                        phrases[0],
+                        session_id,
+                        utterance_id,
+                        synthesis_stop,
+                    )
                     if phrases
                     else None
                 )
@@ -346,27 +367,13 @@ class StreamOrchestrator:
                     if made is None or self._cancel_event.is_set():
                         break
                     windows, error = made
-                    if isinstance(error, TTSClientError):
-                        logger.error(
-                            "TTS phrase skipped session_id=%s phrase_index=%s reason=%s",
-                            session_id,
-                            index,
-                            "lookahead_deadline"
-                            if isinstance(error, _PhraseWaitTimeout)
-                            else "synthesis_failure",
-                        )
-                        if isinstance(error, _PhraseWaitTimeout):
-                            # A stuck worker must not hold all subsequent phrases in its queue.
-                            pool.shutdown(wait=False, cancel_futures=True)
-                            pool = ThreadPoolExecutor(
-                                max_workers=1, thread_name_prefix="tts-prefetch"
-                            )
-                        windows = []
-                        error = None
-                    # Validation and publication errors still abort the turn.
                     ahead = (
                         pool.submit(
-                            self._synthesize_phrase, phrases[index + 1], session_id, utterance_id
+                            self._synthesize_phrase,
+                            phrases[index + 1],
+                            session_id,
+                            utterance_id,
+                            synthesis_stop,
                         )
                         if error is None and index + 1 < len(phrases)
                         else None
@@ -382,6 +389,7 @@ class StreamOrchestrator:
                     if error is not None:
                         raise error
             finally:
+                synthesis_stop.set()
                 pool.shutdown(wait=False, cancel_futures=True)
         finally:
             bridge.put(_BRIDGE_SENTINEL)
@@ -397,20 +405,44 @@ class StreamOrchestrator:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 future.cancel()
-                return [], _PhraseWaitTimeout("TTS lookahead deadline exceeded")
+                raise _PhraseWaitTimeout("TTS lookahead deadline exceeded")
             try:
                 return future.result(timeout=min(0.05, remaining))
             except FutureTimeoutError:
                 if self._cancel_event.is_set():
                     return None
 
+    @contextmanager
+    def _synthesis_slot(self, session_id: str):
+        if not self._synthesis_lock.acquire(blocking=False):
+            raise _PhraseWaitTimeout("Previous TTS synthesis is still running")
+        try:
+            with _SESSION_SYNTHESIS_REGISTRY_LOCK:
+                shared = _SESSION_SYNTHESIS_LOCKS.get(session_id)
+                if shared is None:
+                    shared = threading.Lock()
+                    _SESSION_SYNTHESIS_LOCKS[session_id] = shared
+            if not shared.acquire(blocking=False):
+                raise _PhraseWaitTimeout("Previous TTS synthesis is still running")
+            try:
+                yield
+            finally:
+                shared.release()
+        finally:
+            self._synthesis_lock.release()
+
     def _synthesize_phrase(
-        self, phrase: TextChunk, session_id: str, utterance_id: str
+        self,
+        phrase: TextChunk,
+        session_id: str,
+        utterance_id: str,
+        synthesis_stop: threading.Event,
     ) -> tuple[list[AudioWindow], BaseException | None]:
         """Synthesize one phrase to its audio windows (nothing is delivered here).
 
-        Errors are returned with any windows made so far. Typed TTS transport failures discard
-        the phrase; other errors deliver partial windows non-final and propagate.
+        Errors are returned with any windows made so far and propagate from the delivery loop.
+        A previous abandoned worker retains the lock until its transport exits; a new turn
+        fails fast rather than starting another concurrent synthesis request.
         """
         windows: list[AudioWindow] = []
         error: BaseException | None = None
@@ -418,12 +450,13 @@ class StreamOrchestrator:
             return windows, error
         t0 = time.perf_counter()
         try:
-            for audio_window in self._tts.stream_audio(
-                phrase, session_id=session_id, utterance_id=utterance_id
-            ):
-                if self._cancel_event.is_set():
-                    break
-                windows.append(audio_window)
+            with self._synthesis_slot(session_id), synthesis_cancellation(synthesis_stop):
+                for audio_window in self._tts.stream_audio(
+                    phrase, session_id=session_id, utterance_id=utterance_id
+                ):
+                    if synthesis_stop.is_set() or self._cancel_event.is_set():
+                        break
+                    windows.append(audio_window)
         except BaseException as exc:  # noqa: BLE001 - re-raised by the delivery loop
             error = exc
         self._record_tts_timing(time.perf_counter() - t0, sum(w.duration_ms for w in windows))
@@ -531,23 +564,24 @@ class StreamOrchestrator:
             t0 = time.perf_counter()
             audio_duration_ms = 0
             try:
-                for audio_window in self._tts.stream_audio(
-                    phrase,
-                    session_id=session_id,
-                    utterance_id=utterance_id,
-                ):
-                    if self._cancel_event.is_set():
-                        return
-                    audio_duration_ms += audio_window.duration_ms
-                    if pending is not None:
-                        self._deliver_audio_window(
-                            pending,
-                            is_final=False,
-                            text_span=pending.text_span,
-                            session_id=session_id,
-                            bridge=bridge,
-                        )
-                    pending = audio_window
+                with self._synthesis_slot(session_id):
+                    for audio_window in self._tts.stream_audio(
+                        phrase,
+                        session_id=session_id,
+                        utterance_id=utterance_id,
+                    ):
+                        if self._cancel_event.is_set():
+                            return
+                        audio_duration_ms += audio_window.duration_ms
+                        if pending is not None:
+                            self._deliver_audio_window(
+                                pending,
+                                is_final=False,
+                                text_span=pending.text_span,
+                                session_id=session_id,
+                                bridge=bridge,
+                            )
+                        pending = audio_window
             except BaseException:
                 # Mid-call TTS error: the partial window is still real audio —
                 # deliver it non-final, then propagate (no fabricated final).

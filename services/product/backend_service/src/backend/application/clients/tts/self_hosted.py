@@ -27,6 +27,8 @@ import socket
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin
@@ -67,6 +69,21 @@ def phrase_wait_budget_s(char_count: int) -> float:
 
 class TTSClientError(RuntimeError):
     """Typed transport failure for a TTS client."""
+
+
+_synthesis_cancel: ContextVar[threading.Event | None] = ContextVar(
+    "tts_synthesis_cancel", default=None
+)
+
+
+@contextmanager
+def synthesis_cancellation(event: threading.Event):
+    """Let an abandoned worker finish its attempt, but never start another retry."""
+    token = _synthesis_cancel.set(event)
+    try:
+        yield
+    finally:
+        _synthesis_cancel.reset(token)
 
 
 @dataclass
@@ -228,7 +245,10 @@ class SelfHostedTTSClient:
         """Bound each attempt and discard its connection, including on incomplete bodies."""
         char_count = len(body["input"])
         budget = request_deadline_s(char_count)
+        cancelled = _synthesis_cancel.get()
         for attempt in range(len(_RETRY_DELAYS_S) + 1):
+            if cancelled is not None and cancelled.is_set():
+                raise TTSClientError("TTS synthesis abandoned")
             started = time.monotonic()
             deadline = started + budget
             first_deadline = min(deadline, started + FIRST_BYTE_DEADLINE_S)
@@ -241,36 +261,63 @@ class SelfHostedTTSClient:
             # Owned clients have a separate pool per attempt. Connection: close also prevents
             # reuse when a client is injected (e.g. by tests), even after a successful response.
             owned = self._client is None
-            client = self._client if not owned else httpx.Client(timeout=timeout)
-            timer = None
+            client = None
+            socket_holder = [None]
+            socket_lock = threading.Lock()
+            expired = threading.Event()
+
+            def interrupt_read() -> None:
+                # shutdown wakes a blocking recv on Windows; close alone need not.
+                with socket_lock:
+                    expired.set()
+                    sock = socket_holder[0]
+                    if sock is not None:
+                        try:
+                            sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+
+            def capture_socket(stream) -> None:
+                if stream is None:
+                    return
+                with socket_lock:
+                    sock = stream.get_extra_info("socket")
+                    socket_holder[0] = sock
+                    # The deadline can expire before connect completes. Do not let the
+                    # newly connected socket enter an unbounded header read in that case.
+                    if expired.is_set() and sock is not None:
+                        try:
+                            sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+
+            def trace(event: str, info: dict) -> None:
+                if event in ("connection.connect_tcp.complete", "connection.start_tls.complete"):
+                    capture_socket(info["return_value"])
+
+            def arm(end: float) -> threading.Timer:
+                watchdog = threading.Timer(max(0.0, end - time.monotonic()), interrupt_read)
+                watchdog.daemon = True
+                watchdog.start()
+                return watchdog
+
+            # Arm before creating the client or entering stream(): headers are part of
+            # the first-body-byte budget, not a separate per-read timeout allowance.
+            timer = arm(first_deadline)
             try:
+                client = self._client if not owned else httpx.Client(timeout=timeout)
                 with client.stream(
                     "POST",
                     url,
                     json=body,
                     headers={**self._auth_headers(), "Connection": "close"},
                     timeout=timeout,
+                    extensions={"trace": trace},
                 ) as response:
+                    capture_socket(response.extensions.get("network_stream"))
+                    if expired.is_set() or time.monotonic() >= first_deadline:
+                        raise httpx.ReadTimeout("TTS response deadline exceeded")
                     response.raise_for_status()
-                    stream = response.extensions.get("network_stream")
-                    sock = stream.get_extra_info("socket") if stream is not None else None
-
-                    def interrupt_read() -> None:
-                        # close() alone need not interrupt a blocking recv on Windows. shutdown
-                        # wakes it; the response context then closes/discards the connection.
-                        if sock is not None:
-                            try:
-                                sock.shutdown(socket.SHUT_RDWR)
-                            except OSError:
-                                pass
-
-                    def arm(end: float) -> threading.Timer:
-                        watchdog = threading.Timer(max(0.0, end - time.monotonic()), interrupt_read)
-                        watchdog.daemon = True
-                        watchdog.start()
-                        return watchdog
-
-                    timer = arm(first_deadline)
                     chunks = []
                     first = True
                     for chunk in response.iter_bytes():
@@ -310,9 +357,13 @@ class SelfHostedTTSClient:
                 if timer is not None:
                     timer.cancel()
                     timer.join()
-                if owned:
+                if owned and client is not None:
                     client.close()
-            time.sleep(_RETRY_DELAYS_S[attempt])
+            if cancelled is not None:
+                if cancelled.wait(_RETRY_DELAYS_S[attempt]):
+                    raise TTSClientError("TTS synthesis abandoned")
+            else:
+                time.sleep(_RETRY_DELAYS_S[attempt])
         raise AssertionError("unreachable")
 
     def _synthesize_openai_audio_speech(self, text: str, *, voice: str = "") -> TTSResult:
