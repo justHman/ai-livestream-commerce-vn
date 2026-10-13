@@ -35,6 +35,7 @@ LONG = (
 FIRST, SECOND = "Trường", "Cảm ơn"  # the first six characters identify a phrase
 HELD_S = 10  # how long a "hung" TTS request is held
 PROMPT_S = 3  # a call that does not wait for the held request returns well inside this
+TEARDOWN_S = 5  # upper bound for each teardown wait (task finished, worker exited)
 
 
 class _NoLLM(LLMEngine):
@@ -154,10 +155,17 @@ async def _released(tts: _FakeTTS, task: asyncio.Task | None = None):
     try:
         yield
     finally:
-        tts.gate.set()
+        tts.gate.set()  # first: nothing below can then wait on a held request
+        task_hung = False
         if task is not None:
-            await asyncio.gather(task, return_exceptions=True)
-        await _no_prefetch_threads()
+            try:  # on timeout wait_for cancels the gather and with it the task
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), TEARDOWN_S)
+            except asyncio.TimeoutError:
+                task_hung = True
+        worker_exited = await _no_prefetch_threads(TEARDOWN_S)
+        if task_hung:
+            pytest.fail(f"teardown: the speaking task did not finish within {TEARDOWN_S} s")
+        assert worker_exited, f"teardown: tts-prefetch worker still alive after {TEARDOWN_S} s"
 
 
 @pytest.mark.asyncio
