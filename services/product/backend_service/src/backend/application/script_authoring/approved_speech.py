@@ -107,9 +107,11 @@ class ApprovedProduct:
         ]
         promo_sentences = dict.fromkeys(
             s
-            for s in re.split(r"(?<=[.!?])\s+", self.spoken_text.strip())
-            if s and any(claim_covered(c, s) for c in stated)
+            for s in _script_sentences(self.spoken_text)
+            if any(claim_covered(c, s) for c in stated)
         )
+        if any(_ELLIPSIS_END.search(s) for s in promo_sentences):
+            promo_sentences = {}  # the sentence trails off: its end is unknown, so say no tail
         script_words = re.findall(r"\w+", compile_spoken_text(self.spoken_text).spoken_text.lower())
         for price in facts.get("prices", []):
             words = spoken_price(str(price))
@@ -118,8 +120,23 @@ class ApprovedProduct:
                 sentence = (
                     f"{name} giá {words} nhé mọi người." if name else f"Giá {words} nhé mọi người."
                 )
-                found.append(" ".join((sentence, *promo_sentences)))
+                with_promo = " ".join((sentence, *promo_sentences))
+                found.append(with_promo if len(with_promo) <= _NATURAL_MAX_CHARS else sentence)
         return tuple(dict.fromkeys(found))
+
+
+_ELLIPSIS_END = re.compile(r"(?:\.{2,}|…)$")
+
+
+def _script_sentences(text: str) -> list[str]:
+    """The script's sentences. An ellipsis is not a sentence end: what follows it still belongs."""
+    out: list[str] = []
+    for piece in re.split(r"(?<=[.!?…])\s+", text.strip()):
+        if out and _ELLIPSIS_END.search(out[-1]):
+            out[-1] = f"{out[-1]} {piece}"
+        elif piece:
+            out.append(piece)
+    return out
 
 
 def _states_number(script_words: list[str], phrase: str) -> bool:

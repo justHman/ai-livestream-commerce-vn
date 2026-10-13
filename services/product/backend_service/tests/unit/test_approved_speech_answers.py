@@ -251,3 +251,48 @@ def test_no_promotion_sentence_in_the_script_leaves_the_price_sentence_alone() -
     assert (
         _price_answer(product) == "Áo khoác denim giá một trăm tám mươi nghìn đồng nhé mọi người."
     )
+
+
+def test_an_ellipsis_does_not_end_the_promotion_sentence() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé. "
+        "Giảm mười phần trăm... nhưng chỉ áp dụng cho đơn giao hàng nội thành.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 10%", "Áp dụng cho đơn giao hàng nội thành"],
+        claims_by_type={"promotion": ["Giảm 10%"]},
+    )
+    price = _price_answer(product)
+    assert "Giảm mười phần trăm" in price
+    assert "nhưng chỉ áp dụng cho đơn giao hàng nội thành" in price
+
+
+def test_a_promotion_sentence_that_trails_off_leaves_the_price_sentence_alone() -> None:
+    for ending in ("Giảm mười phần trăm...", "Giảm mười phần trăm…"):
+        product = _product(
+            f"Giá một trăm tám mươi nghìn đồng nhé. {ending}",
+            product_name="Áo khoác denim",
+            prices=["180000 VND"],
+            allowed_claims=["Giảm 10%"],
+            claims_by_type={"promotion": ["Giảm 10%"]},
+        )
+        assert _price_answer(product) == (
+            "Áo khoác denim giá một trăm tám mươi nghìn đồng nhé mọi người."
+        ), ending
+
+
+def test_a_promotion_tail_that_would_exceed_the_natural_limit_is_dropped() -> None:
+    from backend.application.script_authoring.approved_speech import _NATURAL_MAX_CHARS
+
+    long_sentence = "Giảm mười phần trăm " + "cho mọi đơn hàng của các bạn " * 14 + "nhé."
+    assert len(long_sentence) > _NATURAL_MAX_CHARS
+    product = _product(
+        f"Giá một trăm tám mươi nghìn đồng nhé. {long_sentence}",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 10%"],
+        claims_by_type={"promotion": ["Giảm 10%"]},
+    )
+    assert (
+        _price_answer(product) == "Áo khoác denim giá một trăm tám mươi nghìn đồng nhé mọi người."
+    )
