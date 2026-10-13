@@ -205,26 +205,29 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             can_publish_data=True,
             kind="agent",
         )
+        sess = _Sess(room, None)
+        self._watch_room(room, room_name, sess)  # before connect: a drop during startup is seen too
         try:
             async with asyncio.timeout(s.connect_timeout_s):  # connect AND both publishes
                 await room.connect(s.livekit_url, token)
                 frame = await asyncio.to_thread(render_frame, s)
                 audio, pump = await self._media_factory(room, s, frame)
         except BaseException:
+            sess.closing = True  # our own teardown, not a lost room
             await self._disconnect(room)
             raise
-        sess = _Sess(room, audio)
+        sess.audio_source = audio
         with self._lock:  # check + register together: stop_all/_abandon cannot slip in between
             abandoned = st.abandoned
             if not abandoned:
                 self._sessions[room_name] = sess
                 st.sid = room_name
         if abandoned:
+            sess.closing = True
             await self._disconnect(room)
             raise asyncio.CancelledError
         sess.video_task = asyncio.ensure_future(pump())
         sess.video_task.add_done_callback(lambda t: self._video_done(sess, t))
-        self._watch_room(room, room_name, sess)
         viewer = mint_room_token(
             api_key=s.livekit_api_key,
             api_secret=s.livekit_api_secret,

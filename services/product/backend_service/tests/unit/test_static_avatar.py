@@ -213,6 +213,11 @@ class EventRoom(FakeRoom):
     def on(self, event, callback):
         self.handlers[event] = callback
 
+    async def disconnect(self):
+        await super().disconnect()
+        if "disconnected" in self.handlers:  # livekit fires the event for our own disconnect too
+            self.handlers["disconnected"](None)
+
 
 def _backend_with(room):
     audio = FakeAudio()
@@ -245,11 +250,61 @@ def test_our_own_stop_is_not_reported_as_a_lost_room(caplog):
     backend = _backend_with(room)
     sid = backend.start(StartOptions()).session_id
     sess = backend._sessions[sid]
-    backend.stop(sid)
     with caplog.at_level("ERROR"):
-        room.handlers["disconnected"](None)  # the event our own disconnect() triggers
+        backend.stop(sid)  # the fake room fires "disconnected" from inside disconnect()
+    assert room.disconnected is True
     assert sess.room_lost is False
     assert "room disconnected" not in caplog.text
+
+
+def test_failed_startup_teardown_is_not_reported_as_a_lost_room(caplog):
+    room = EventRoom()
+
+    async def media(_room, _s, _frame):
+        raise RuntimeError("publish failed")
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16), room_factory=lambda: room, media_factory=media
+    )
+    with caplog.at_level("ERROR"):
+        with pytest.raises(RuntimeError):
+            backend.start(StartOptions())
+    assert room.disconnected is True
+    assert "room disconnected" not in caplog.text
+
+
+def test_drop_during_startup_is_still_reported(caplog):
+    room = EventRoom()
+    audio = FakeAudio()
+
+    async def media(_room, _s, _frame):
+        room.handlers["disconnected"](3)  # the room dies while the tracks are being published
+
+        async def pump():
+            await asyncio.sleep(3600)
+
+        return audio, pump
+
+    backend = StaticAvatarRenderBackend(
+        settings(width=16, height=16), room_factory=lambda: room, media_factory=media
+    )
+    with caplog.at_level("ERROR"):
+        sid = backend.start(StartOptions()).session_id
+    assert backend.session_status(sid) == "room_lost"
+    assert "room disconnected" in caplog.text
+    backend.stop_all()
+
+
+def test_reconnect_events_are_logged(caplog):
+    room = EventRoom()
+    backend = _backend_with(room)
+    sid = backend.start(StartOptions()).session_id
+    with caplog.at_level("WARNING"):
+        room.handlers["reconnecting"]()
+        room.handlers["reconnected"]()
+    assert "reconnecting" in caplog.text and "reconnected" in caplog.text
+    assert backend.session_status(sid) == "active"  # a reconnect is not a loss
+    backend.stop_all()
 
 
 def test_startup_that_outlives_the_caller_is_cleaned_up():
