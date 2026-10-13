@@ -204,3 +204,43 @@ def test_an_approved_price_written_in_digits_is_read_once() -> None:
         "Mẫu này giá 180 nghìn đồng nha mọi người.", product, list(product.answers())
     )
     assert text == "Mẫu này giá một trăm tám mươi nghìn đồng nha mọi người."
+
+
+def _price_answer(product: ApprovedProduct) -> str:
+    (price,) = [a for a in product.answers() if a.startswith("Áo khoác denim giá")]
+    return price
+
+
+def test_a_shipping_condition_of_the_promotion_stays_in_the_price_answer() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé. Giảm mười phần trăm. "
+        "Chỉ áp dụng khi giao hàng nội thành.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 10%", "Chỉ áp dụng khi giao hàng nội thành"],
+        claims_by_type={"promotion": ["Giảm 10%"]},
+    )
+    price = _price_answer(product)
+    assert "mười phần trăm" in price and "giao hàng nội thành" in price
+
+
+def test_a_condition_said_in_the_promotions_own_sentence_stays_with_it() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé. Giảm mười phần trăm khi giao hàng nội thành.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 10%", "Khi giao hàng nội thành"],
+        claims_by_type={"promotion": ["Giảm 10%"]},
+    )
+    assert "giao hàng nội thành" in _price_answer(product)
+
+
+def test_a_typed_limitation_stays_with_the_promotion_even_with_policy_words() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé. Giảm mười phần trăm.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 10%", "Không đổi trả khi dùng mã"],
+        claims_by_type={"promotion": ["Giảm 10%"], "limitation": ["Không đổi trả khi dùng mã"]},
+    )
+    assert "Không đổi trả khi dùng mã" in _price_answer(product)
