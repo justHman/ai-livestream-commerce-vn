@@ -26,7 +26,7 @@ from .lifespan import build_lifespan
 logger = logging.getLogger(__name__)
 
 
-def _build_director_pipeline(config, backend, engine_manager):
+def _build_director_pipeline(config, backend, engine_manager, hub=None):
     """Construct the agentic Director pipeline (P0-01).
 
     Returns ``(runtime, coordinator, reducer)`` or ``(None, None, None)`` when
@@ -53,6 +53,9 @@ def _build_director_pipeline(config, backend, engine_manager):
         # The coordinator consults the reducer ONLY for sessions in reducer
         # mode (P0-FB-014); a legacy session never sees it.
         reducer=reducer,
+        # The container's hub: without it every coordinator.* event (speak_finished, the API's
+        # auto-end trigger) is silently dropped.
+        hub=hub,
     )
     return runtime, coordinator, reducer
 
@@ -72,9 +75,15 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
     from backend.application.safety_gate import SafetyGate
     from backend.application.publishing import LiveKitPublisherRegistry, publish_enabled
 
-    director, coordinator, reducer = _build_director_pipeline(config, backend, engine_manager)
+    from backend.api.v1.hub import ControlHub
+
+    hub = ControlHub()
+    director, coordinator, reducer = _build_director_pipeline(
+        config, backend, engine_manager, hub=hub
+    )
 
     return create_container(
+        hub=hub,
         backend=backend,
         store=store,
         config=config,
