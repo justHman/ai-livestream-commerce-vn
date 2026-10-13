@@ -133,8 +133,10 @@ _NATURAL_SYSTEM = (
     "Bạn là MC livestream bán hàng Việt Nam. Trả lời câu hỏi của khán giả bằng 1 đến 3 câu ngắn, "
     "thân thiện, tự nhiên như người nói thật; xưng 'mình', gọi khán giả là 'mọi người' hoặc 'các "
     "bạn'. CHỈ dùng thông tin trong 'facts': số, giá, kích cỡ phải lấy đúng từ facts và viết "
-    "bằng chữ, không viết chữ số; không thêm thông tin, không hứa hẹn, không thúc giục mua. Nếu "
-    "facts không đủ để trả lời câu hỏi, trả về chuỗi rỗng. Chỉ trả về lời thoại."
+    "bằng chữ, không viết chữ số; không thêm thông tin, không hứa hẹn, không thúc giục mua. Dùng "
+    "lại đúng từ ngữ của facts, không thêm tính từ hay lời khen, không dùng các từ 'không', 'chỉ', "
+    "'tối đa' nếu facts không có (trừ 'giá chỉ' + đúng giá), không đổi cách gọi địa danh hay tên "
+    "riêng. Nếu facts không đủ để trả lời câu hỏi, trả về chuỗi rỗng. Chỉ trả về lời thoại."
 )
 # Number words that are ordinary words on their own ("không", "một chút", "tư vấn").
 _PLAIN_NUMBER_RUNS = frozenset({("không",), ("một",), ("không", "một")})
@@ -184,25 +186,37 @@ _JUDGE_SYSTEM = (
 
 
 def _validate_natural(raw: str, product: "ApprovedProduct", facts: list[str]) -> str | None:
-    """A model-written answer, or None. It goes through the script's own guards (prices, hard
-    sell, address, truncation...), may not contain a digit, and every run of number words must
-    occur in the approved facts as the very same run (so no changed size, price or duration)."""
-    from .generation.ordered_units import _NUMBER_WORDS, UnitSpec, check_unit_text
+    return _natural_verdict(raw, product, facts)[0]
+
+
+def _natural_verdict(
+    raw: str, product: "ApprovedProduct", facts: list[str]
+) -> tuple[str | None, str]:
+    """(answer, "") or (None, reason code: fixed vocabulary, never any text of the answer).
+
+    A model-written answer goes through the script's own guards (prices, hard sell, address,
+    truncation...), may not contain a digit, and every run of number words must occur in the
+    approved facts as the very same run (so no changed size, price or duration)."""
+    from .generation.ordered_units import _NUMBER_WORDS, UnitSpec, check_unit_text, spoken_price
 
     data = json.loads(product.facts_json)
     approved = (
         *(str(c) for c in data.get("allowed_claims", ())),
         *(str(d) for d in data.get("discounts", ())),
     )
-    text, _why = check_unit_text(
+    text, why = check_unit_text(
         raw,
         spec=UnitSpec("assurance"),
         prices=tuple(str(p) for p in data.get("prices", ())),
         approved=approved,
         product_name=str(data.get("product_name") or ""),
     )
-    if text is None or len(text) > _NATURAL_MAX_CHARS or re.search(r"\d", text):
-        return None
+    if text is None:
+        return None, f"guard_{why}"
+    if len(text) > _NATURAL_MAX_CHARS:
+        return None, "too_long"
+    if re.search(r"\d", text):
+        return None, "digit"
     fact_words = re.findall(r"\w+", " ".join(facts).lower())
     fact_runs = _number_runs(fact_words)
     words = re.findall(r"\w+", text.lower())
@@ -224,17 +238,33 @@ def _validate_natural(raw: str, product: "ApprovedProduct", facts: list[str]) ->
         )
         found = run in fact_runs  # a whole number of the facts, not a piece of a bigger one
         if not (plain or year or found):
-            return None
+            return None, "number_not_in_facts"
         i = j
     # Reverse grounding: the claims of the answer must come from the facts, so an invented
     # promise ("bảo hành trọn đời", "giao trong một giờ", "chữa mọi bệnh") is not a paraphrase.
     fact_set = set(fact_words)
     content = [w for w in words if w not in _FUNCTION_WORDS and w not in _NUMBER_WORDS]
     if content and sum(1 for w in content if w in fact_set) < 0.8 * len(content):
-        return None
-    if any(w in _RESTRICTION_WORDS and w not in fact_set for w in words):
-        return None  # a negation or restriction the facts do not contain
-    return text
+        return None, "ungrounded_words"
+    price_phrases = [
+        re.findall(r"\w+", spoken.lower())
+        for spoken in (spoken_price(str(p)) for p in data.get("prices", ()))
+        if spoken
+    ]
+
+    def states_the_price(k: int) -> bool:
+        # "giá chỉ <the approved price>" is how a price is said, not a restriction of its own.
+        rest = words[k + 1 :]
+        return k > 0 and words[k - 1] == "giá" and any(rest[: len(p)] == p for p in price_phrases)
+
+    for k, w in enumerate(words):
+        if (
+            w in _RESTRICTION_WORDS
+            and w not in fact_set
+            and not (w == "chỉ" and states_the_price(k))
+        ):
+            return None, "restriction_word"  # a negation or restriction the facts do not contain
+    return text, ""
 
 
 @dataclass(frozen=True)
@@ -622,13 +652,14 @@ class ApprovedSpeech:
                 "natural answer failed session=%s error_type=%s", session_id, type(exc).__name__
             )
             return None
-        answer = _validate_natural(raw, product, facts) if raw.strip() else None
+        answer, reason = _natural_verdict(raw, product, facts) if raw.strip() else (None, "empty")
         if answer is None:
             # No text: a model that echoes a viewer's phone number or address must not leak it.
             logger.info(
-                "natural answer refused by validation session=%s chars=%d",
+                "natural answer refused by validation session=%s chars=%d reason=%s",
                 session_id,
                 len(raw.strip()),
+                reason,
             )
             return None
         self._fence(session_id, epoch, live)

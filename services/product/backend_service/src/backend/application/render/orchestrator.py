@@ -56,6 +56,8 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any
 
@@ -99,6 +101,14 @@ class StreamingControllerConfig:
     def __post_init__(self) -> None:
         if self.flush_timeout_ms < 0:
             raise ValueError(f"flush_timeout_ms must be >= 0, got {self.flush_timeout_ms}")
+
+
+# A scripted (verbatim) turn has all its text up front, so there is no latency pressure to cut a
+# sentence early: the 80-char live cap split clauses inside a word pair ("thoải | mái") and every cut
+# became a separate TTS request with its own silence. Sentences up to this size stay whole; only a
+# longer one is cut, at its best comma/cue boundary. It is THE verbatim cap, not a floor: a larger
+# configured live cap does not make scripted chunks bigger.
+VERBATIM_MAX_CHARS = 200
 
 
 class StreamOrchestrator:
@@ -291,35 +301,116 @@ class StreamOrchestrator:
                 utterance_id=utterance_id,
                 min_chars=self._min_chars,
                 target_chars=self._target_chars,
-                max_chars=self._max_chars,
+                max_chars=VERBATIM_MAX_CHARS,
                 policy=self.chunk_policy,
                 telemetry=self._telemetry,
             )
             hints = self._telemetry.to_runtime_hints() if self._telemetry is not None else None
             phrases = chunker.feed(text, runtime_hints=hints)
             phrases.extend(chunker.finalize(runtime_hints=hints))
-            for index, phrase in enumerate(phrases):
-                if self._cancel_event.is_set():
-                    break
-                if index == len(phrases) - 1:
-                    phrase = TextChunk(
-                        session_id=phrase.session_id,
-                        utterance_id=phrase.utterance_id,
-                        seq=phrase.seq,
-                        text=phrase.text,
-                        is_final=True,
-                        id=phrase.id,
-                        decision_reason=phrase.decision_reason,
-                    )
-                self._render_phrase_with_lookahead(
-                    phrase,
-                    session_id=session_id,
-                    utterance_id=utterance_id,
-                    bridge=bridge,
-                    stamp_final=index == len(phrases) - 1,
+            if phrases:
+                last = phrases[-1]
+                phrases[-1] = TextChunk(
+                    session_id=last.session_id,
+                    utterance_id=last.utterance_id,
+                    seq=last.seq,
+                    text=last.text,
+                    is_final=True,
+                    id=last.id,
+                    decision_reason=last.decision_reason,
                 )
+            # Delivery blocks until the audio is (almost) played, and LiveKit buffers only ~1 s, so
+            # synthesizing phrase N+1 AFTER delivering N left a gap of (synthesis time - 1 s) at
+            # every boundary. One worker synthesizes the next phrase while the current one plays.
+            # Cancel, error and stop never wait for an in-flight synthesis: it may finish in the
+            # background (at most one per turn, bounded by the TTS client timeout) and its audio is
+            # discarded, so this turn releases the coordinator lock at once.
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-prefetch")
+            try:
+                ahead = (
+                    pool.submit(self._synthesize_phrase, phrases[0], session_id, utterance_id)
+                    if phrases
+                    else None
+                )
+                for index in range(len(phrases)):
+                    made = self._await_phrase(ahead)
+                    if made is None or self._cancel_event.is_set():
+                        break
+                    windows, error = made
+                    # Nothing more is requested once this phrase failed or the turn is cancelled.
+                    ahead = (
+                        pool.submit(
+                            self._synthesize_phrase, phrases[index + 1], session_id, utterance_id
+                        )
+                        if error is None and index + 1 < len(phrases)
+                        else None
+                    )
+                    # A mid-call TTS error still delivers the audio already made (non-final, so the
+                    # publication guard decides about it), then propagates.
+                    self._deliver_phrase_windows(
+                        windows,
+                        stamp_final=error is None and index == len(phrases) - 1,
+                        session_id=session_id,
+                        bridge=bridge,
+                    )
+                    if error is not None:
+                        raise error
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
         finally:
             bridge.put(_BRIDGE_SENTINEL)
+
+    def _await_phrase(self, future: Any) -> tuple[list[AudioWindow], BaseException | None] | None:
+        """The in-flight synthesis result, or None as soon as the turn is cancelled."""
+        while True:
+            try:
+                return future.result(timeout=0.05)
+            except FutureTimeoutError:
+                if self._cancel_event.is_set():
+                    return None
+
+    def _synthesize_phrase(
+        self, phrase: TextChunk, session_id: str, utterance_id: str
+    ) -> tuple[list[AudioWindow], BaseException | None]:
+        """Synthesize one phrase to its audio windows (nothing is delivered here).
+
+        A mid-call error is returned with the windows made so far, not raised: the caller delivers
+        them and raises it in order, as the per-phrase lookahead did.
+        """
+        windows: list[AudioWindow] = []
+        error: BaseException | None = None
+        if self._cancel_event.is_set():
+            return windows, error
+        t0 = time.perf_counter()
+        try:
+            for audio_window in self._tts.stream_audio(
+                phrase, session_id=session_id, utterance_id=utterance_id
+            ):
+                if self._cancel_event.is_set():
+                    break
+                windows.append(audio_window)
+        except BaseException as exc:  # noqa: BLE001 - re-raised by the delivery loop
+            error = exc
+        self._record_tts_timing(time.perf_counter() - t0, sum(w.duration_ms for w in windows))
+        return windows, error
+
+    def _deliver_phrase_windows(
+        self,
+        windows: list[AudioWindow],
+        *,
+        stamp_final: bool,
+        session_id: str,
+        bridge: queue.Queue[VideoWindow | object],
+    ) -> None:
+        """Deliver a phrase's windows; only the last one may carry the utterance final."""
+        for i, window in enumerate(windows):
+            self._deliver_audio_window(
+                window,
+                is_final=stamp_final and i == len(windows) - 1,
+                text_span=window.text_span,
+                session_id=session_id,
+                bridge=bridge,
+            )
 
     def _run_sync(
         self,
@@ -541,69 +632,6 @@ class StreamOrchestrator:
                     controller.stop()
             finally:
                 bridge.put(_BRIDGE_SENTINEL)
-
-    def _render_phrase_with_lookahead(
-        self,
-        phrase: TextChunk,
-        *,
-        session_id: str,
-        utterance_id: str,
-        bridge: queue.Queue[VideoWindow | object],
-        stamp_final: bool,
-    ) -> None:
-        """Synthesize one phrase and deliver its windows with one-window lookahead.
-
-        The TTS seam marks the last window of EVERY call final
-        (tts/engines/base.py), so per-call finals are meaningless across
-        calls. Within one call each window is delivered carrying the NEXT
-        window's finality (non-final), and the call's last window is
-        delivered final only when ``stamp_final`` (the utterance's final
-        phrase). Errors deliver the partial window non-final then propagate;
-        cancellation returns early without delivering.
-        """
-        pending: AudioWindow | None = None
-        t0 = time.perf_counter()
-        audio_duration_ms = 0
-        try:
-            for audio_window in self._tts.stream_audio(
-                phrase,
-                session_id=session_id,
-                utterance_id=utterance_id,
-            ):
-                if self._cancel_event.is_set():
-                    return
-                audio_duration_ms += audio_window.duration_ms
-                if pending is not None:
-                    self._deliver_audio_window(
-                        pending,
-                        is_final=False,
-                        text_span=pending.text_span,
-                        session_id=session_id,
-                        bridge=bridge,
-                    )
-                pending = audio_window
-        except BaseException:
-            # Mid-call TTS error: the partial window is still real audio —
-            # deliver it non-final, then propagate (no fabricated final).
-            if pending is not None:
-                self._deliver_audio_window(
-                    pending,
-                    is_final=False,
-                    text_span=pending.text_span,
-                    session_id=session_id,
-                    bridge=bridge,
-                )
-            self._record_tts_timing(time.perf_counter() - t0, audio_duration_ms)
-            raise
-        self._record_tts_timing(time.perf_counter() - t0, audio_duration_ms)
-        if pending is not None:
-            self._deliver_audio_window(
-                pending,
-                is_final=stamp_final,
-                text_span=pending.text_span,
-                session_id=session_id,
-                bridge=bridge,
-            )
 
     def _record_playback_depth(self) -> None:
         """Estimate and record the queued-but-undelivered playback depth (ms).

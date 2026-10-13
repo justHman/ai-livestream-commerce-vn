@@ -72,6 +72,10 @@ logger = logging.getLogger(__name__)
 CLOSE_REJECT_BACKOFF_SEC = 5.0
 CLOSE_REJECT_BACKOFF_MAX_SEC = 60.0
 
+# A slow or stuck /ws/control subscriber must never stall a Director turn: one hub emit may take
+# at most this long.
+HUB_EMIT_TIMEOUT_SEC = 2.0
+
 
 def _decision_to_event(decision: Decision) -> dict:
     """Delegate to the canonical events module (OpenSpec 1.21)."""
@@ -170,6 +174,8 @@ class DirectorCoordinator:
         self._decision_queue: dict[str, deque[Decision]] = {}
         self._speech_queue: dict[str, deque[Decision]] = {}
         self._current_speech: dict[str, Decision] = {}
+        # Popped by the playback loop, not speaking yet (revalidation await): in neither queue.
+        self._popped: dict[str, Decision] = {}
         self._completed_speech: dict[str, dict] = {}
         self._completed_history: dict[str, deque[dict]] = {}
         self._completed_history_size = completed_history_size
@@ -257,9 +263,14 @@ class DirectorCoordinator:
         if self._hub is None:
             return
         try:
-            await self._hub.emit(session_id, event)
-        except Exception:
-            logger.debug("hub.emit failed for %s", session_id, exc_info=True)
+            await asyncio.wait_for(self._hub.emit(session_id, event), HUB_EMIT_TIMEOUT_SEC)
+        except Exception as exc:  # incl. TimeoutError; never the event payload
+            logger.warning(
+                "hub emit failed session=%s event=%s error=%s",
+                session_id,
+                event.get("type"),
+                type(exc).__name__,
+            )
 
     def _register_speaking(
         self, session_id: str, orchestrator: StreamOrchestrator, queue: BoundedVideoQueue
@@ -392,6 +403,7 @@ class DirectorCoordinator:
         self._decision_locks.pop(session_id, None)
         self._playback_events.pop(session_id, None)
         self._current_speech.pop(session_id, None)
+        self._popped.pop(session_id, None)
         self._completed_speech.pop(session_id, None)
         self._completed_history.pop(session_id, None)
         self._stats.pop(session_id, None)
@@ -1053,6 +1065,9 @@ class DirectorCoordinator:
         current = self._current_speech.get(session_id)
         if current is not None and current.turn_id not in completed_ids:
             projection.mark_spoken(current)
+        popped = self._popped.get(session_id)
+        if popped is not None and popped is not current and popped.turn_id not in completed_ids:
+            projection.mark_spoken(popped)  # else the prefetch decides this unit a second time
         for decision in self._decision_queue.get(session_id, ()):
             projection.mark_spoken(decision)
         for decision in self._speech_queue.get(session_id, ()):
@@ -1287,7 +1302,11 @@ class DirectorCoordinator:
                     ):
                         self._record_cancelled(session_id, decision, "generation_revision")
                         continue
-                    consumed = await self._maybe_speak(session_id, decision)
+                    self._popped[session_id] = decision
+                    try:
+                        consumed = await self._maybe_speak(session_id, decision)
+                    finally:
+                        self._popped.pop(session_id, None)
                     if not consumed:
                         queue.appendleft(decision)
                         await asyncio.sleep(self._cfg.tick_ms / 1000.0)

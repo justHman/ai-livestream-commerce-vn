@@ -345,7 +345,8 @@ def _speak_approved_prices(text: str, prices: tuple[str, ...]) -> str:
             return f"{number_to_vietnamese_words(amount)} đồng"
         return match.group()
 
-    return _PRICE_TOKEN_RE.sub(swap, text)
+    # "180 nghìn đồng": the token stops at "nghìn", so the swap would read "đồng đồng".
+    return re.sub(r"\bđồng(?:\s+đồng)+\b", "đồng", _PRICE_TOKEN_RE.sub(swap, text))
 
 
 @dataclass(frozen=True)

@@ -103,3 +103,125 @@ def test_a_typed_limitation_stays_with_the_promotion_whatever_its_wording() -> N
     )
     (answer,) = product.answers()
     assert "hai mươi phần trăm" in answer and "Áp dụng cho đơn từ" in answer
+
+
+def test_a_promotion_the_script_does_not_state_stays_out_of_the_price_answer() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 50% khi mua hai sản phẩm"],
+        claims_by_type={"promotion": ["Giảm 50% khi mua hai sản phẩm"]},
+    )
+    assert "Áo khoác denim giá một trăm tám mươi nghìn đồng nhé mọi người." in product.answers()
+    assert not any("năm mươi phần trăm" in a and "giá" in a for a in product.answers())
+
+
+def _live_like_product() -> ApprovedProduct:
+    return _product(
+        "Giao hàng toàn quốc từ hai đến ba ngày, nội thành H C M và H N ship hỏa tốc trong một "
+        "ngày. Mẫu này có giá chỉ một trăm tám mươi nghìn đồng thôi nha. Khi mua hai sản phẩm sẽ "
+        "được giảm mười phần trăm tổng hóa đơn. Miễn phí đổi trả trong mười lăm ngày đầu kể từ "
+        "khi nhận hàng.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=[
+            "Giao hàng toàn quốc từ 2 đến 3 ngày, nội thành HCM và HN ship hỏa tốc trong 1 ngày",
+            "Mua 2 sản phẩm giảm 10% tổng hóa đơn",
+            "Miễn phí đổi trả trong 15 ngày đầu kể từ khi nhận hàng",
+        ],
+        claims_by_type={"promotion": ["Mua 2 sản phẩm giảm 10% tổng hóa đơn"]},
+    )
+
+
+def test_giá_chỉ_with_the_approved_price_is_not_a_restriction() -> None:
+    from backend.application.script_authoring.approved_speech import _natural_verdict
+
+    product = _live_like_product()
+    facts = list(product.answers())
+    ok = "Áo khoác denim giá chỉ một trăm tám mươi nghìn đồng thôi nha mọi người."
+    assert _natural_verdict(ok, product, facts) == (ok, "")
+
+
+def test_a_restriction_the_facts_do_not_contain_is_still_refused() -> None:
+    from backend.application.script_authoring.approved_speech import _natural_verdict
+
+    product = _live_like_product()
+    facts = list(product.answers())
+    for invented in (
+        "Mẫu này chỉ còn hai sản phẩm thôi nha mọi người.",  # invented scarcity
+        "Áo khoác denim giá chỉ hai mươi nghìn đồng thôi nha mọi người.",  # not the approved price
+        "Giao hàng toàn quốc từ hai đến ba ngày, không mất phí nha mọi người.",  # invented negation
+    ):
+        text, reason = _natural_verdict(invented, product, facts)
+        assert text is None and reason in {"restriction_word", "number_not_in_facts"}, invented
+
+
+def test_the_refusal_reason_is_a_fixed_code_never_the_text() -> None:
+    from backend.application.script_authoring.approved_speech import _natural_verdict
+
+    product = _live_like_product()
+    facts = list(product.answers())
+    for raw, reason in (
+        ("Mẫu này giá 190 nghìn đồng nha.", "digit"),  # not the approved price: stays digits
+        ("Bạn nào muốn đặt hàng thì nhắn mình nhé.", "guard_cta"),
+        ("Giao hàng trong năm ngày nhé mọi người.", "number_not_in_facts"),
+        ("Nội thành Hồ Chí Minh và Hà Nội ship hỏa tốc nhé mọi người.", "ungrounded_words"),
+    ):
+        assert _natural_verdict(raw, product, facts) == (None, reason), raw
+
+
+def test_an_approved_price_written_in_digits_is_read_once() -> None:
+    from backend.application.script_authoring.approved_speech import _natural_verdict
+
+    product = _live_like_product()
+    text, _ = _natural_verdict(
+        "Mẫu này giá 180 nghìn đồng nha mọi người.", product, list(product.answers())
+    )
+    assert text == "Mẫu này giá một trăm tám mươi nghìn đồng nha mọi người."
+
+
+def _price_answer(product: ApprovedProduct) -> str:
+    (price,) = [a for a in product.answers() if a.startswith("Áo khoác denim giá")]
+    return price
+
+
+PRICE_ONLY = "Áo khoác denim giá một trăm tám mươi nghìn đồng nhé mọi người."
+
+
+def test_the_price_answer_never_mentions_the_promotion_so_no_condition_can_be_dropped() -> None:
+    for script, claims in (
+        (
+            "Giá một trăm tám mươi nghìn đồng nhé. "
+            "Giảm mười phần trăm tại TP. HCM, nhưng chỉ áp dụng cho đơn từ hai sản phẩm.",
+            ["Giảm 10% tại TP. HCM", "Chỉ áp dụng cho đơn từ 2 sản phẩm"],
+        ),
+        (
+            "Giá một trăm tám mươi nghìn đồng nhé. "
+            "Giảm mười phần trăm... nhưng chỉ áp dụng cho đơn giao hàng nội thành.",
+            ["Giảm 10%", "Áp dụng cho đơn giao hàng nội thành"],
+        ),
+    ):
+        product = _product(
+            script,
+            product_name="Áo khoác denim",
+            prices=["180000 VND"],
+            allowed_claims=claims,
+            claims_by_type={"promotion": [claims[0]]},
+        )
+        assert _price_answer(product) == PRICE_ONLY, script
+        combined = [a for a in product.answers() if a.startswith("Giảm")]
+        assert combined and "mười phần trăm" in combined[0]
+
+
+def test_the_combined_promotion_answer_keeps_the_promotion_with_its_condition() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé. "
+        "Giảm mười phần trăm tại TP. HCM, nhưng chỉ áp dụng cho đơn từ hai sản phẩm.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 10% tại TP. HCM", "Chỉ áp dụng cho đơn từ 2 sản phẩm"],
+        claims_by_type={"promotion": ["Giảm 10% tại TP. HCM"]},
+    )
+    (combined,) = [a for a in product.answers() if a.startswith("Giảm")]
+    assert "mười phần trăm" in combined and "hai sản phẩm" in combined
