@@ -170,6 +170,8 @@ class DirectorCoordinator:
         self._decision_queue: dict[str, deque[Decision]] = {}
         self._speech_queue: dict[str, deque[Decision]] = {}
         self._current_speech: dict[str, Decision] = {}
+        # Popped by the playback loop, not speaking yet (revalidation await): in neither queue.
+        self._popped: dict[str, Decision] = {}
         self._completed_speech: dict[str, dict] = {}
         self._completed_history: dict[str, deque[dict]] = {}
         self._completed_history_size = completed_history_size
@@ -392,6 +394,7 @@ class DirectorCoordinator:
         self._decision_locks.pop(session_id, None)
         self._playback_events.pop(session_id, None)
         self._current_speech.pop(session_id, None)
+        self._popped.pop(session_id, None)
         self._completed_speech.pop(session_id, None)
         self._completed_history.pop(session_id, None)
         self._stats.pop(session_id, None)
@@ -1053,6 +1056,9 @@ class DirectorCoordinator:
         current = self._current_speech.get(session_id)
         if current is not None and current.turn_id not in completed_ids:
             projection.mark_spoken(current)
+        popped = self._popped.get(session_id)
+        if popped is not None and popped is not current and popped.turn_id not in completed_ids:
+            projection.mark_spoken(popped)  # else the prefetch decides this unit a second time
         for decision in self._decision_queue.get(session_id, ()):
             projection.mark_spoken(decision)
         for decision in self._speech_queue.get(session_id, ()):
@@ -1287,7 +1293,11 @@ class DirectorCoordinator:
                     ):
                         self._record_cancelled(session_id, decision, "generation_revision")
                         continue
-                    consumed = await self._maybe_speak(session_id, decision)
+                    self._popped[session_id] = decision
+                    try:
+                        consumed = await self._maybe_speak(session_id, decision)
+                    finally:
+                        self._popped.pop(session_id, None)
                     if not consumed:
                         queue.appendleft(decision)
                         await asyncio.sleep(self._cfg.tick_ms / 1000.0)

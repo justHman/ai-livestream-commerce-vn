@@ -103,3 +103,34 @@ def test_a_typed_limitation_stays_with_the_promotion_whatever_its_wording() -> N
     )
     (answer,) = product.answers()
     assert "hai mươi phần trăm" in answer and "Áp dụng cho đơn từ" in answer
+
+
+def test_the_price_answer_carries_the_scripts_promotion_with_its_condition() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé. Giảm mười phần trăm khi mua hai sản phẩm. "
+        "Giao hàng toàn quốc hai đến ba ngày.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 10% khi mua hai sản phẩm", "Giao hàng toàn quốc 2 đến 3 ngày"],
+        claims_by_type={"promotion": ["Giảm 10% khi mua hai sản phẩm"]},
+    )
+    answers = product.answers()
+    (price,) = [a for a in answers if a.startswith("Áo khoác denim giá")]
+    assert "một trăm tám mươi nghìn đồng" in price
+    assert "mười phần trăm" in price and "khi mua hai sản phẩm" in price
+    assert not any(
+        a == "Áo khoác denim giá một trăm tám mươi nghìn đồng nhé mọi người." for a in answers
+    )
+    assert any(a.startswith("Giao hàng toàn quốc") and "giảm" not in a.lower() for a in answers)
+
+
+def test_a_promotion_the_script_does_not_state_stays_out_of_the_price_answer() -> None:
+    product = _product(
+        "Giá một trăm tám mươi nghìn đồng nhé.",
+        product_name="Áo khoác denim",
+        prices=["180000 VND"],
+        allowed_claims=["Giảm 50% khi mua hai sản phẩm"],
+        claims_by_type={"promotion": ["Giảm 50% khi mua hai sản phẩm"]},
+    )
+    assert "Áo khoác denim giá một trăm tám mươi nghìn đồng nhé mọi người." in product.answers()
+    assert not any("năm mươi phần trăm" in a and "giá" in a for a in product.answers())

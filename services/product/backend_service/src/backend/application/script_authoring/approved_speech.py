@@ -84,10 +84,13 @@ class ApprovedProduct:
         }
         found: list[str] = []
         conditional: list[str] = []
+        promo_stated = False  # the script itself states a promotion
         for claim in facts.get("allowed_claims", []):
             if not isinstance(claim, str) or not claim.strip():
                 continue
             spoken = compile_spoken_text(claim.strip()).spoken_text
+            if claim in promotions and claim_covered(claim, self.spoken_text):
+                promo_stated = True
             if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # a condition only restricts: never dropped
             elif not claim_covered(claim, self.spoken_text):
@@ -103,9 +106,13 @@ class ApprovedProduct:
             words = spoken_price(str(price))
             if words and _states_number(script_words, words):  # the script states this price
                 name = str(facts.get("product_name") or "").strip()
-                found.append(
+                sentence = (
                     f"{name} giá {words} nhé mọi người." if name else f"Giá {words} nhé mọi người."
                 )
+                if promo_stated and conditional:
+                    # A price question gets the promotion too, still with every condition it has.
+                    sentence = f"{sentence} {' '.join(conditional)}"
+                found.append(sentence)
         return tuple(dict.fromkeys(found))
 
 
