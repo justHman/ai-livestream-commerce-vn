@@ -59,6 +59,7 @@ class _Sess:
     playback_started_at: OrderedDict[str, float] = field(default_factory=OrderedDict)
     unconfirmed: set[str] = field(default_factory=set)  # no audio was accepted for these
     video_failed: bool = False
+    room_lost: bool = False  # LiveKit dropped the avatar without stop()
     closing: bool = False
 
 
@@ -223,6 +224,7 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             raise asyncio.CancelledError
         sess.video_task = asyncio.ensure_future(pump())
         sess.video_task.add_done_callback(lambda t: self._video_done(sess, t))
+        self._watch_room(room, room_name, sess)
         viewer = mint_room_token(
             api_key=s.livekit_api_key,
             api_secret=s.livekit_api_secret,
@@ -240,6 +242,23 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             livekit_client_token=viewer,
             mode="STATIC",
         )
+
+    @staticmethod
+    def _watch_room(room: Any, sid: str, sess: _Sess) -> None:
+        """Log why LiveKit drops the avatar: it used to vanish silently and leave a dead room."""
+        on = getattr(room, "on", None)
+        if on is None:  # test doubles
+            return
+
+        def lost(reason: Any = None) -> None:
+            if sess.closing:  # our own stop()
+                return
+            sess.room_lost = True
+            log.error("static_avatar room disconnected session=%s reason=%s", sid, _reason(reason))
+
+        on("disconnected", lost)
+        on("reconnecting", lambda *_: log.warning("static_avatar reconnecting session=%s", sid))
+        on("reconnected", lambda *_: log.warning("static_avatar reconnected session=%s", sid))
 
     @staticmethod
     def _video_done(sess: _Sess, task: asyncio.Future) -> None:
@@ -372,6 +391,8 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
         sess = self._sessions.get(session_id)
         if sess is None:
             raise KeyError(session_id)
+        if sess.room_lost:
+            return "room_lost"
         return "video_failed" if sess.video_failed else "active"
 
     def playback_info(self, session_id: str, utterance_id: str) -> dict[str, Any] | None:
@@ -382,6 +403,15 @@ class StaticAvatarRenderBackend(StreamingAvatarBackend):
             "playback_started_at": sess.playback_started_at.get(utterance_id),
             "playback_unconfirmed": utterance_id in sess.unconfirmed,
         }
+
+
+def _reason(reason: Any) -> str:
+    try:
+        from livekit import rtc  # type: ignore
+
+        return rtc.DisconnectReason.Name(reason)
+    except Exception:
+        return str(reason)
 
 
 class _AudioIO:
