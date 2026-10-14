@@ -100,6 +100,7 @@ class ScriptAuthoringService(Protocol):
         product_id: str,
         segment_index: int,
         idempotency_key: str,
+        expected_version_id: str | None = None,
     ) -> dict[str, Any] | None: ...
 
     async def fix_with_ai(
@@ -142,9 +143,14 @@ class ScriptAuthoringService(Protocol):
         target_duration_s: int,
         idempotency_key: str,
         ordered_units: bool = False,
+        replace_existing: bool = False,
     ) -> dict[str, Any] | None: ...
 
     async def get_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None: ...
+
+    async def get_workflow(
+        self, *, set_id: str, product_id: str, workflow_id: str
+    ) -> dict[str, Any]: ...
 
     async def cancel_batch(self, *, set_id: str, batch_id: str) -> dict[str, Any] | None: ...
 

@@ -6,6 +6,8 @@ fail. GREEN once ``PostgresAuthoringRepositories`` implements the interfaces.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from backend.application.db.postgres_store import PostgresRuntimeStore
@@ -38,6 +40,29 @@ async def _connect(pg_url: str):
     repos = PostgresAuthoringRepositories(pg_url)
     await repos.connect()
     return repos
+
+
+@pytest.mark.asyncio
+async def test_model_dispatch_budget_is_atomic_and_survives_reconnect(pg_url: str):
+    repos = await _connect(pg_url)
+    s = _set()
+    await repos.script_sets.insert(s)
+    batch = GenerationBatch(id=new_id("batch"), script_set_id=s.id)
+    await repos.batches.insert(batch, state=BatchState(batch_id=batch.id, script_set_id=s.id))
+    try:
+        accepted = await asyncio.gather(
+            *(repos.model_budget.reserve(batch.id, "p1", 1) for _ in range(10))
+        )
+        assert sum(accepted) == 2
+    finally:
+        await repos.close()
+    repos = await _connect(pg_url)
+    try:
+        assert not await repos.model_budget.reserve(batch.id, "p1", 1)
+        assert await repos.model_budget.reserve(batch.id, "p1", 1, operation_id="repair-one")
+        assert await repos.model_budget.reserve(batch.id, "p1", 1, operation_id="repair-two")
+    finally:
+        await repos.close()
 
 
 def _set(title: str = "t") -> ScriptSet:

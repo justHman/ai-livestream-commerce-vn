@@ -173,6 +173,7 @@ class RegenerateReq(BaseModel):
     """Explicit human action: regenerate one segment as a new immutable version."""
 
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_version_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class FixReq(BaseModel):
@@ -197,6 +198,7 @@ class BatchGenerateReq(BaseModel):
     # opening, per product intro/selling points/offer/trust/CTA, closing. Empty
     # ``product_ids`` then means every product of the set.
     ordered_units: bool = False
+    replace_existing: bool = False
 
 
 class ApproveBatchReq(BaseModel):
@@ -406,6 +408,18 @@ async def generate_product(
     return result
 
 
+@_router.get("/script-sets/{set_id}/products/{product_id}/workflows/{workflow_id}")
+async def workflow_status(
+    set_id: str, product_id: str, workflow_id: str, request: Request, _: None = Depends(viewer_auth)
+) -> dict:
+    try:
+        return await _service(request).get_workflow(
+            set_id=set_id, product_id=product_id, workflow_id=workflow_id
+        )
+    except ScriptAuthoringError as exc:
+        raise _raise_domain(exc) from exc
+
+
 @_router.post(
     "/script-sets/{set_id}/products/{product_id}/segments/{segment_index}/regenerate",
     status_code=status.HTTP_202_ACCEPTED,
@@ -431,6 +445,7 @@ async def regenerate_segment(
             product_id=product_id,
             segment_index=segment_index,
             idempotency_key=key,
+            **({"expected_version_id": req.expected_version_id} if req.expected_version_id else {}),
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc
@@ -527,6 +542,7 @@ async def generate_batch(
             idempotency_key=key,
             # Only sent when asked for, so a service without the option keeps working.
             **({"ordered_units": True} if req.ordered_units else {}),
+            **({"replace_existing": True} if req.replace_existing else {}),
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc

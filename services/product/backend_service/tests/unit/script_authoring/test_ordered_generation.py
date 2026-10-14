@@ -128,7 +128,7 @@ async def _run(service, repos, set_id, key="k1"):
     started = await service.start_batch_generation(
         set_id=set_id,
         product_ids=[],
-        target_duration_s=600,
+        target_duration_s=60,
         idempotency_key=key,
         ordered_units=True,
     )
@@ -315,7 +315,7 @@ async def test_idempotency_key_rejects_a_different_request_and_foreign_batches()
     again = await service.start_batch_generation(
         set_id=set_id,
         product_ids=[],
-        target_duration_s=600,
+        target_duration_s=60,
         idempotency_key="same",
         ordered_units=True,
     )

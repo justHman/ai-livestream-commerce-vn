@@ -127,9 +127,18 @@ class WorkflowDriver:
     # error class); units that ended on the fallback are listed in ``fallback_units``.
     unit_reasons: dict = field(default_factory=dict)
     fallback_units: dict = field(default_factory=dict)
+    previous_version_id: str | None = None
+    previous_state: str | None = None
+    replacement_failed: bool = False
 
     def is_terminal(self) -> bool:
         return self.workflow.item.state in _TERMINAL
+
+    def cancel(self) -> None:
+        if self.previous_version_id and self.previous_state:
+            self.workflow.item.current_version_id = self.previous_version_id
+            self.workflow.item.state = ScriptState(self.previous_state)
+            self.persist(self.workflow.item)
 
     def step(self) -> bool:
         """Advance exactly one finite phase; False at terminal."""
@@ -332,8 +341,14 @@ class WorkflowDriver:
 
     def _compile_and_gate(self) -> None:
         wf = self.workflow
-        wf.compile_and_full_gate()
+        result = wf.compile_and_full_gate()
+        if not result.passed and self.previous_version_id and self.previous_state:
+            self.replacement_failed = True
+            wf.item.current_version_id = self.previous_version_id
+            wf.item.state = ScriptState(self.previous_state)
+            self.persist(wf.item)
         if wf.current_version is not None:
+            wf.current_version.plan_version = self.plan_version
             self.persist(wf.current_version)
         if wf.last_gate_run is not None:
             self.persist(wf.last_gate_run)
@@ -358,6 +373,10 @@ class WorkflowDriver:
             ],
             "version_ids": [v.id for v in wf.versions],
             "fallback_units": {str(i): list(r)[:8] for i, r in self.fallback_units.items()},
+            "previous_version_id": self.previous_version_id,
+            "previous_state": self.previous_state,
+            "replacement_failed": self.replacement_failed,
+            "plan_version": self.plan_version,
         }
 
     def restore(self, state: dict) -> None:
@@ -375,6 +394,10 @@ class WorkflowDriver:
         wf.plan_segment_count = state.get("plan_segment_count")
         wf.target_duration_s = state.get("target_duration_s")
         wf.semantic_calls = int(state.get("semantic_calls", 0))
+        self.previous_version_id = state.get("previous_version_id")
+        self.previous_state = state.get("previous_state")
+        self.replacement_failed = bool(state.get("replacement_failed", False))
+        self.plan_version = int(state.get("plan_version", self.plan_version))
         self.fallback_units = {
             int(i): list(r) for i, r in (state.get("fallback_units") or {}).items()
         }

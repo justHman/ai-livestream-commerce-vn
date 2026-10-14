@@ -305,11 +305,24 @@ CREATE TABLE IF NOT EXISTS script_generation_jobs (
 );
 
 ALTER TABLE script_generation_jobs
+    ADD COLUMN IF NOT EXISTS input_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS error_code TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS lease_owner TEXT,
     ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_script_jobs_batch_id ON script_generation_jobs (batch_id);
+
+-- Reserve semantic writes before provider dispatch. Restarting a worker cannot
+-- reset the per-part cost ceiling or spend another round on the same operation.
+CREATE TABLE IF NOT EXISTS script_model_write_budget (
+    batch_id TEXT NOT NULL REFERENCES script_generation_batches(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL,
+    unit_index INT NOT NULL CHECK (unit_index >= 0),
+    operation_id TEXT NOT NULL,
+    writes INT NOT NULL CHECK (writes BETWEEN 1 AND 2),
+    PRIMARY KEY (batch_id, product_id, unit_index, operation_id)
+);
 CREATE INDEX IF NOT EXISTS idx_script_jobs_item_id ON script_generation_jobs (script_item_id);
 
 -- Batch idempotency fingerprint -> batch_id (survives restart; first wins).

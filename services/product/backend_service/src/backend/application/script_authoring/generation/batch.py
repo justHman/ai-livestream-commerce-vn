@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, TypeVar
 
@@ -132,6 +133,7 @@ class BatchState(BaseModel):
     # Ordered-units generation (fixed roles per product, owner order); recovery
     # must rebuild the same kind of workflow.
     ordered_units: bool = False
+    replace_existing: bool = False
     # Wall-clock start (epoch s) of the whole job; None on rows written before it existed.
     started_at: Optional[float] = None
     products: dict[str, ProductWorkflowState] = Field(default_factory=dict)
@@ -173,6 +175,7 @@ class BatchRequest:
     model_fingerprint: str  # model/skill/rules fingerprint (Decision 12)
     client_key: str = ""  # client Idempotency-Key
     ordered_units: bool = False
+    replace_existing: bool = False
     # (product_id, number of fixed unit roles) when ``ordered_units``.
     unit_counts: tuple[tuple[str, int], ...] = ()
 
@@ -188,6 +191,7 @@ def request_fingerprint(req: BatchRequest) -> str:
         str(req.max_attempts),
         req.model_fingerprint,
         req.client_key,
+        *(["replace_existing"] if req.replace_existing else []),
         # Appended only when set so fingerprints of long-form batches never change.
         *(
             ["ordered_units:" + ",".join(f"{p}:{n}" for p, n in req.unit_counts)]
@@ -345,6 +349,7 @@ class BatchScriptGenerationOrchestrator:
             requested_products=list(req.requested_products),
             target_durations=dict(req.target_durations),
             ordered_units=req.ordered_units,
+            replace_existing=req.replace_existing,
             started_at=time.time(),
             preview={
                 "products": preview_products,
@@ -387,14 +392,30 @@ class BatchScriptGenerationOrchestrator:
                 {"batch_id": self._state.batch_id, "product_id": workflow.product_id},
             )
 
-        for workflow in self._scheduler.active():
-            self._step_workflow(workflow)
+        active = self._scheduler.active()
+        # Only provider/FSM work runs concurrently. Aggregate counters, release
+        # slots, emit batch events and persist snapshots on this one owner thread.
+        if len(active) > 1:
+            with ThreadPoolExecutor(max_workers=self._config.max_product_concurrency) as pool:
+                outcomes = list(pool.map(self._advance_workflow, active))
+            for workflow, outcome in zip(active, outcomes):
+                self._step_workflow(workflow, outcome)
+        else:
+            for workflow in active:
+                self._step_workflow(workflow)
 
         self._finalize_if_done()
         self._persist_state()
         return self._state
 
-    def _step_workflow(self, workflow: TWorkflow) -> None:
+    @staticmethod
+    def _advance_workflow(workflow):
+        try:
+            return workflow.step(), None
+        except Exception as exc:
+            return False, exc
+
+    def _step_workflow(self, workflow: TWorkflow, outcome=None) -> None:
         """Run one finite step of an active workflow with retry policy.
 
         Only ``TransportError`` is retried (up to ``max_attempts``) against
@@ -405,15 +426,14 @@ class BatchScriptGenerationOrchestrator:
         state = self._product_state(workflow.product_id)
         if state.status in ("completed", "failed", "cancelled"):
             return
-        try:
-            more = workflow.step()
-        except TransportError:
+        more, error = outcome if outcome is not None else self._advance_workflow(workflow)
+        if isinstance(error, TransportError):
             state.transport_attempts += 1
             if state.transport_attempts >= self._config.max_attempts:
                 self._fail_product(workflow, "transport failure exceeded max_attempts")
             return  # same input will be retried on the next round
-        except Exception as exc:  # content/gate or unexpected failure
-            self._fail_product(workflow, str(exc) or type(exc).__name__)
+        if error is not None:  # content/gate or unexpected failure
+            self._fail_product(workflow, str(error) or type(error).__name__)
             return
 
         self._sync_workflow_state(workflow, state)
@@ -513,11 +533,17 @@ class BatchScriptGenerationOrchestrator:
         for workflow in self._scheduler.drain_queued():
             state = self._product_state(workflow.product_id)
             if state.status == "queued":
+                if hasattr(workflow, "cancel"):
+                    workflow.cancel()
+                self._sync_workflow_state(workflow, state)
                 state.status = "cancelled"
                 self._state.cancelled += 1
         for workflow in self._scheduler.active():
             state = self._product_state(workflow.product_id)
             if state.status not in ("completed", "failed"):
+                if hasattr(workflow, "cancel"):
+                    workflow.cancel()
+                self._sync_workflow_state(workflow, state)
                 state.status = "cancelled"
                 self._state.cancelled += 1
             self._scheduler.release(workflow)

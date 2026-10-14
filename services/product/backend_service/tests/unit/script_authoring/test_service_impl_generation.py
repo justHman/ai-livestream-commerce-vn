@@ -195,6 +195,9 @@ class _FakePlanRepo:
     async def insert(self, plan, *, conn=None) -> None:
         self.rows[plan.id] = plan
 
+    async def get(self, plan_id, *, conn=None):
+        return self.rows.get(plan_id)
+
     async def get_latest(self, item_id: str, *, conn=None):
         for plan in self.rows.values():
             if plan.script_item_id == item_id:

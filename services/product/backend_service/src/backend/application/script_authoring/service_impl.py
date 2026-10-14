@@ -193,6 +193,7 @@ class _OrderedBatch:
     products: dict[str, ProductBrief]
     roles: dict[str, list[UnitSpec]]
     llm: BoundedLLM
+    reserve_write: Callable[[str, int], bool] | None = None
 
 
 class _SkippedWorkflow:
@@ -308,6 +309,9 @@ class _EventEmittingDriver:
 
     def is_terminal(self) -> bool:
         return self._driver.is_terminal()
+
+    def cancel(self) -> None:
+        self._driver.cancel()
 
     def snapshot(self) -> dict:
         return self._driver.snapshot()
@@ -509,7 +513,8 @@ class ScriptAuthoringServiceImpl:
             prices=tuple(str(v) for v in raw.get("prices", ())),
             discounts=tuple(str(v) for v in raw.get("discounts", ())),
             skus=tuple(str(v) for v in raw.get("skus", ())),
-            allowed_claims=tuple(str(v) for v in raw.get("allowed_claims", ())),
+            allowed_claims=tuple(str(v) for v in raw.get("allowed_claims", ()))
+            + tuple(f"{label}: {value}" for label, value in _product_info(raw.get("product_info"))),
         )
 
     def _segment_constraints(self) -> list[str]:
@@ -1255,6 +1260,7 @@ class ScriptAuthoringServiceImpl:
         script_set: ScriptSet,
         llm_fn: Callable[[str], str] | None,
         started_at: float | None = None,
+        target_duration_s: float = 0,
     ) -> _OrderedBatch:
         """Owner order, fixed roles and authoritative facts of every product of the set.
 
@@ -1277,7 +1283,7 @@ class ScriptAuthoringServiceImpl:
                 name=name[pid],
                 prices=facts[pid].prices,
                 discounts=facts[pid].discounts,
-                claims=facts[pid].allowed_claims,
+                claims=tuple(str(v) for v in raw.get("allowed_claims", ())),
                 claims_by_type=_claims_by_type(raw.get("claims_by_type")),
                 info=_product_info(raw.get("product_info")),
                 previous_name=name[ordered_ids[i - 1]] if aware and i > 0 else None,
@@ -1287,6 +1293,7 @@ class ScriptAuthoringServiceImpl:
                 first=i == 0,
                 last=i == len(ordered_ids) - 1,
                 ordered_aware=aware,
+                target_duration_s=target_duration_s,
             )
         cfg = self._config
         return _OrderedBatch(
@@ -1300,7 +1307,9 @@ class ScriptAuthoringServiceImpl:
             roles=roles,
             llm=BoundedLLM(
                 llm_fn,
-                attempts=cfg.unit_llm_attempts,
+                # Content repair owns the shared two-write budget. Retrying
+                # transport here would multiply dispatches and ambiguous bills.
+                attempts=1,
                 call_timeout_s=cfg.unit_llm_call_timeout_s,
                 # Recovery must not extend the whole-job deadline: count from the first start.
                 job_deadline_s=cfg.unit_job_deadline_s
@@ -1314,6 +1323,17 @@ class ScriptAuthoringServiceImpl:
             return self._engine_manager.get_llm_fn(max_tokens=_UNIT_MAX_TOKENS)
         except Exception:  # noqa: BLE001 - fakes/older managers take no argument
             return None
+
+    def _bind_model_budget(self, ordered: _OrderedBatch | None, batch_id: str) -> None:
+        repo = getattr(self._repos, "model_budget", None)
+        if ordered is None or repo is None:
+            return
+        from .generation.write_budget import reserve_from_worker
+
+        loop = asyncio.get_running_loop()
+        ordered.reserve_write = lambda pid, index: reserve_from_worker(
+            repo, loop, batch_id, pid, index
+        )
 
     def _build_ordered_driver(
         self, item, script_set, workflow, ordered: _OrderedBatch, bridge, *, emit, batch_id, loaders
@@ -1346,12 +1366,37 @@ class ScriptAuthoringServiceImpl:
         )
 
         name_units: set[int] = set()  # units that already carry the full product name
+        unit_writes: dict[int, int] = {}
 
         def write(index: int, prompt: str, continuity: ContinuityState) -> SegmentStepOutcome:
             # Up to two writes per unit; the second asks for a shorter text after a cut/overlong
             # reply. Every failed attempt is logged with its machine reason.
             reason = "empty"
             for attempt in (1, 2):
+                # Guard retry and gate repair share ONE semantic budget, instead
+                # of nesting two-by-two calls for the same part.
+                if unit_writes.get(index, 0) >= 2:
+                    return SegmentStepOutcome(
+                        index=index, state=continuity, error="semantic_budget_exhausted"
+                    )
+                if ordered.reserve_write is not None:
+                    try:
+                        reserved = ordered.reserve_write(pid, index)
+                    except Exception as exc:
+                        logger.warning(
+                            "script model budget unavailable product=%s unit=%s class=%s",
+                            pid,
+                            index,
+                            type(exc).__name__,
+                        )
+                        return SegmentStepOutcome(
+                            index=index, state=continuity, error="model_budget_unavailable"
+                        )
+                    if not reserved:
+                        return SegmentStepOutcome(
+                            index=index, state=continuity, error="semantic_budget_exhausted"
+                        )
+                unit_writes[index] = unit_writes.get(index, 0) + 1
                 try:
                     raw = ordered.llm(prompt)
                 except Exception as exc:  # noqa: BLE001 - provider/transport failure of this unit
@@ -1556,6 +1601,7 @@ class ScriptAuthoringServiceImpl:
         intent: ScriptIntent,
         target_duration_s: int,
         idempotency_key: str,
+        input_snapshot: dict | None = None,
     ) -> tuple[GenerationJob, int]:
         """Insert a minimal batch row + the job row, claiming the job's
         recovery lease in the SAME transaction (HIGH-1: no window where a
@@ -1586,6 +1632,7 @@ class ScriptAuthoringServiceImpl:
             target_duration_s=target_duration_s,
             fingerprint=self._generation_fingerprint(),
             idempotency_key=idempotency_key,
+            input_snapshot=input_snapshot or {},
         )
         async with self._repos.transaction() as conn:
             await self._repos.batches.insert(batch, state=batch_state, conn=conn)
@@ -1709,15 +1756,32 @@ class ScriptAuthoringServiceImpl:
                 gate_by_item[item.id] = {
                     "state": "passed" if run.passed else "gate_failed",
                     "violations": [
-                        {"rule_id": v.rule_id, "severity": v.severity, "message": v.message}
+                        {
+                            "rule_id": v.rule_id,
+                            "severity": v.severity,
+                            "message": v.message,
+                            "segment_index": v.segment_index,
+                        }
                         for v in run.violations
                     ],
                 }
             else:
                 gate_by_item[item.id] = None
-        return self._set_wire(
+        wire = self._set_wire(
             script_set, items, versions_by_id=versions_by_id, gate_by_item=gate_by_item
         )
+        for item in items:
+            version = versions_by_id.get(item.current_version_id)
+            if version is not None and version.segment_version_ids:
+                selected = [
+                    await self._repos.segments.get(sid) for sid in version.segment_version_ids
+                ]
+                wire["items"][item.product_id]["current_version"]["parts"] = [
+                    {"segment_index": s.segment_index, "display_text": s.display_text}
+                    for s in selected
+                    if s is not None
+                ]
+        return wire
 
     async def get_script_set(self, *, set_id: str) -> dict[str, Any] | None:
         script_set = await self._repos.script_sets.get(set_id)
@@ -2103,6 +2167,7 @@ class ScriptAuthoringServiceImpl:
         product_id: str,
         segment_index: int,
         idempotency_key: str,
+        expected_version_id: str | None = None,
     ) -> dict[str, Any] | None:
         self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
@@ -2111,7 +2176,12 @@ class ScriptAuthoringServiceImpl:
         item = await self._repos.items.get_by_product(set_id, product_id)
         if item is None:
             self._raise_not_found("product script", product_id)
-        if item.state not in (ScriptState.GATE_FAILED, ScriptState.DRAFT):
+        if expected_version_id is not None and expected_version_id != item.current_version_id:
+            raise ScriptAuthoringError(
+                "stale_revision",
+                "Kịch bản đã thay đổi. Tải lại bản hiện tại trước khi soạn lại phần này.",
+            )
+        if item.state not in (ScriptState.GATE_FAILED, ScriptState.DRAFT, ScriptState.REVIEWABLE):
             raise ScriptAuthoringError(
                 "illegal_transition",
                 f"cannot regenerate segment {segment_index} in state {item.state.name}",
@@ -2131,10 +2201,26 @@ class ScriptAuthoringServiceImpl:
         plan = await self._repos.plans.get_latest(item.id)
         target = plan.target_duration_s if plan is not None else self._config.min_target_duration_s
         job, _lease_epoch = await self._create_job(
-            item, set_id, product_id, op_intent, target, idempotency_key
+            item,
+            set_id,
+            product_id,
+            op_intent,
+            target,
+            idempotency_key,
+            input_snapshot={
+                "source_version_id": expected_version_id,
+                "segment_index": segment_index,
+                "script_set_id": set_id,
+            }
+            if expected_version_id
+            else None,
         )
         self._spawn(
-            self._run_regenerate_job(job, item, script_set, segment_index, llm_fn),
+            (
+                self._run_regenerate_part_job(job, item, script_set, llm_fn)
+                if expected_version_id
+                else self._run_regenerate_job(job, item, script_set, segment_index, llm_fn)
+            ),
             name=f"sa-regen:{job.id}",
         )
         return {
@@ -2199,6 +2285,7 @@ class ScriptAuthoringServiceImpl:
         target_duration_s: int,
         idempotency_key: str,
         ordered_units: bool = False,
+        replace_existing: bool = False,
     ) -> dict[str, Any] | None:
         self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
@@ -2219,7 +2306,7 @@ class ScriptAuthoringServiceImpl:
         existing_batch = await self._repos.batches.find_by_idempotency(set_id, idempotency_key)
         if existing_batch is not None:
             await self._require_same_batch_request(
-                existing_batch, product_ids, target_duration_s, ordered_units
+                existing_batch, product_ids, target_duration_s, ordered_units, replace_existing
             )
             return {
                 "batch_id": existing_batch.id,
@@ -2228,9 +2315,28 @@ class ScriptAuthoringServiceImpl:
                 "idempotent": True,
             }
         llm_fn = self._require_llm()
+        previous_versions = {}
+        next_plan_versions = {}
+        if replace_existing:
+            if not ordered_units or any(
+                item.state is ScriptState.APPROVED for item in items.values()
+            ):
+                raise ScriptAuthoringError(
+                    "illegal_transition", "Không thể thay kịch bản đã duyệt."
+                )
+            for pid, item in items.items():
+                previous_versions[pid] = await self._repos.versions.list_by_item(item.id)
+                prior_plan = await self._repos.plans.get_latest(item.id)
+                next_plan_versions[pid] = prior_plan.version + 1 if prior_plan else 1
         ordered = None
         if ordered_units:
-            ordered = self._ordered_batch(script_set, llm_fn, started_at=time.time())
+            if not 60 <= target_duration_s <= 7200:
+                raise ScriptAuthoringError(
+                    "invalid_duration", "Thời lượng mỗi sản phẩm phải từ 1 đến 120 phút."
+                )
+            ordered = self._ordered_batch(
+                script_set, llm_fn, started_at=time.time(), target_duration_s=target_duration_s
+            )
         else:
             self._calibration().segment_count_for(target_duration_s)  # bounds check
         req = BatchRequest(
@@ -2243,6 +2349,7 @@ class ScriptAuthoringServiceImpl:
             model_fingerprint=self._model_fingerprint(),
             client_key=idempotency_key,
             ordered_units=ordered_units,
+            replace_existing=replace_existing,
             unit_counts=tuple((pid, len(ordered.roles[pid])) for pid in product_ids)
             if ordered is not None
             else (),
@@ -2277,9 +2384,13 @@ class ScriptAuthoringServiceImpl:
 
         def create_workflow(product_id: str, target: float):
             item = items[product_id]
-            if ordered is not None and item.state is not ScriptState.EMPTY:
+            if ordered is not None and item.state is not ScriptState.EMPTY and not replace_existing:
                 return _SkippedWorkflow(product_id)  # keep owner/approved content
-            return self._build_driver(
+            source_version, source_state = item.current_version_id, item.state.value
+            if replace_existing:
+                item = item.model_copy(deep=True)
+                item.state = ScriptState.EMPTY
+            driver = self._build_driver(
                 item,
                 script_set,
                 int(target),
@@ -2290,6 +2401,13 @@ class ScriptAuthoringServiceImpl:
                 loaders=self._make_loaders(items, {}, {}),
                 ordered=ordered,
             )
+            if replace_existing:
+                inner = driver._driver
+                inner.workflow.versions = list(previous_versions[product_id])
+                inner.plan_version = next_plan_versions[product_id]
+                inner.previous_version_id = source_version
+                inner.previous_state = source_state if source_version else None
+            return driver
 
         orch = BatchScriptGenerationOrchestrator(
             create_workflow,
@@ -2304,6 +2422,7 @@ class ScriptAuthoringServiceImpl:
         )
         state, created = orch.start(req)
         batch_holder["batch_id"] = state.batch_id
+        self._bind_model_budget(ordered, state.batch_id)
         self._event_ring(state.batch_id)  # ensure the ring exists for SSE
         batch = GenerationBatch(
             id=state.batch_id,
@@ -2343,6 +2462,7 @@ class ScriptAuthoringServiceImpl:
         product_ids: list[str],
         target_duration_s: int,
         ordered_units: bool,
+        replace_existing: bool = False,
     ) -> None:
         """An idempotency key may only ever replay the SAME request."""
         stored = await self._repos.batches.get(existing.id)
@@ -2351,6 +2471,7 @@ class ScriptAuthoringServiceImpl:
             state is None
             or (
                 state.ordered_units == ordered_units
+                and state.replace_existing == replace_existing
                 and all(
                     int(state.target_durations.get(pid, -1)) == int(target_duration_s)
                     for pid in product_ids
@@ -2391,6 +2512,7 @@ class ScriptAuthoringServiceImpl:
                 status = (
                     "failed"
                     if item_state in (ScriptState.GATE_FAILED, ScriptState.FAILED)
+                    or (progress.workflow_snapshot or {}).get("replacement_failed")
                     else "done"
                 )
             entry: dict[str, Any] = {
@@ -2399,6 +2521,8 @@ class ScriptAuthoringServiceImpl:
                 "item_state": item_state.name if item_state is not None else None,
                 "error": progress.error if progress else "",
             }
+            if progress and (progress.workflow_snapshot or {}).get("replacement_failed"):
+                entry["kept_previous_version"] = True
             if plan is not None and pid in plan.products and item is not None:
                 saved = (
                     await self._repos.versions.get(item.current_version_id)
@@ -2464,39 +2588,9 @@ class ScriptAuthoringServiceImpl:
         # persisted by ANY replica (idempotent). A non-owner NEVER reconstructs
         # a runner, claims the lease, or writes progress/artifacts.
         await self._repos.batches.request_cancel(batch_id)
-        is_owner = batch_id in self._leased_batches or batch_id in self._active_orchestrators
-        if is_owner:
-            # Low-latency in-memory signal (R8.4 allowed optimization, NOT a
-            # second semantic path): the owner loop polls the durable request
-            # and persists the terminal CANCELLED under its own fence.
-            orch = self._active_orchestrators.get(batch_id)
-            if orch is not None:
-                try:
-                    orch.cancel()
-                except Exception:
-                    pass
-            # The cancelled snapshot (and any queued step snapshots) are
-            # persisted by _drain_batch_persists under the owner's fence.
-            persist_queue = self._batch_persist_queues.get(batch_id)
-            if persist_queue is not None:
-                try:
-                    await self._drain_batch_persists(batch_id, persist_queue)
-                except Exception:
-                    pass
-            # Drain any enqueued artifact writes so the item rows reflect cancels.
-            bridge = self._batch_artifact_bridges.get(batch_id)
-            if bridge is not None:
-                try:
-                    revisions = await self._current_item_revisions(batch_id)
-                    await self._drain_artifacts(
-                        bridge,
-                        revisions,
-                        set(),
-                        batch_id=batch_id,
-                        batch_lease=self._batch_lease(batch_id),
-                    )
-                except Exception:
-                    pass
+        # The owner observes this durable request at a completed scheduler round.
+        # Never mutate its FSM or drain its artifact queue from the API thread
+        # while provider workers are still running.
         return {"batch_id": batch_id, "status": "cancelling"}
 
     async def get_batch_events_snapshot(self, *, set_id: str, batch_id: str) -> str | None:
@@ -2579,6 +2673,21 @@ class ScriptAuthoringServiceImpl:
 
     async def _resume_job(self, job: GenerationJob) -> None:
         """Dispatch recovery for one durable job by its intent (R6.3)."""
+        if job.intent == ScriptIntent.REGENERATE_SEGMENT and job.input_snapshot.get(
+            "source_version_id"
+        ):
+            item = await self._repos.items.get(job.script_item_id)
+            script_set = await self._repos.script_sets.get(job.input_snapshot.get("script_set_id"))
+            if item is None or script_set is None:
+                await self._fail_job(job, "part_source_missing")
+                return
+            try:
+                llm = self._require_llm()
+            except ScriptAuthoringError:
+                await self._fail_job(job, "part_provider_unavailable")
+                return
+            await self._run_regenerate_part_job(job, item, script_set, llm)
+            return
         if job.intent != ScriptIntent.GENERATE_LONG_FORM:
             # regenerate/fix jobs cannot be safely resumed without their exact
             # input parameters (target segment index / failed-rule context),
@@ -2593,6 +2702,7 @@ class ScriptAuthoringServiceImpl:
     async def _fail_job(self, job: GenerationJob, message: str) -> None:
         """Land a durable job FAILED so it is not left RUNNING forever."""
         job.status = GenerationJobStatus.FAILED
+        job.error_code = message if re.fullmatch(r"[a-z_]{1,64}", message) else "generation_failed"
         try:
             await self._repos.jobs.update(
                 job,
@@ -2884,6 +2994,178 @@ class ScriptAuthoringServiceImpl:
         existing_versions: set[str] = set()
         await self._drive_generation(job, driver, bridge, revisions, existing_versions)
 
+    async def get_workflow(self, *, set_id: str, product_id: str, workflow_id: str) -> dict:
+        job = await self._repos.jobs.get(workflow_id)
+        if job is None or job.product_id != product_id:
+            self._raise_not_found("workflow", workflow_id)
+        if await self._batch_of_set(set_id, job.batch_id) is None:
+            self._raise_not_found("workflow", workflow_id)
+        return {
+            "workflow_id": job.id,
+            "product_id": job.product_id,
+            "status": job.status.value,
+            "error_code": job.error_code,
+        }
+
+    async def _run_regenerate_part_job(self, job, item, script_set, llm_fn) -> None:
+        """One selected immutable segment, with siblings pinned to the displayed version."""
+
+        bridge = _SyncPersistBridge()
+        revisions = {item.id: item.revision}
+        index = int(job.input_snapshot["segment_index"])
+        source_id = job.input_snapshot["source_version_id"]
+        try:
+            if item.current_version_id != source_id or item.state is ScriptState.APPROVED:
+                await self._fail_job(job, "part_source_changed")
+                return
+            source = await self._repos.versions.get(source_id)
+            if source is None or not source.segment_version_ids:
+                await self._fail_job(job, "part_source_missing")
+                return
+            selected = [await self._repos.segments.get(sid) for sid in source.segment_version_ids]
+            if any(s is None for s in selected):
+                await self._fail_job(job, "part_source_missing")
+                return
+            current = next((s for s in selected if s.segment_index == index), None)
+            if current is None:
+                await self._fail_job(job, "part_not_found")
+                return
+            plan = await self._repos.plans.get(current.plan_id)
+            if plan is None:
+                await self._fail_job(job, "part_source_missing")
+                return
+            ordered = self._ordered_batch(
+                script_set, llm_fn, target_duration_s=plan.target_duration_s
+            )
+            roles = ordered.roles[item.product_id]
+            if index >= len(roles):
+                await self._fail_job(job, "part_source_changed")
+                return
+            product = ordered.products[item.product_id]
+            spec = roles[index]
+            facts = self._product_facts(script_set.brief, item.product_id)
+            prior_rows = await self._repos.segments.list_by_plan(plan.id)
+            row_version = max(s.version for s in prior_rows if s.segment_index == index)
+            prompt = build_unit_prompt(ordered.session, product, roles, index)
+            prompt += (
+                "\nChỉ soạn lại phần được chọn, giữ đúng vai trò và các thông tin được phép. Bản đang có:\n"
+                + current.spoken_text
+            )
+            new_segment = None
+            for attempt in (1, 2):
+                budget = getattr(self._repos, "model_budget", None)
+                if budget is not None:
+                    try:
+                        reserved = await budget.reserve(
+                            job.batch_id, item.product_id, index, operation_id=job.id
+                        )
+                    except Exception:
+                        await self._fail_job(job, "part_budget_unavailable")
+                        return
+                    if not reserved:
+                        await self._fail_job(job, "part_model_budget_exhausted")
+                        return
+                raw = await self._with_lease_heartbeat(lambda: ordered.llm(prompt), job=job)
+                text, why = check_unit_text(
+                    raw,
+                    spec=spec,
+                    prices=product.prices,
+                    allow_bridge=spec.bridge,
+                    approved=(*product.claims, *product.discounts),
+                    must=spec.must,
+                    aware=script_set.brief.transition_policy == "ORDER_AWARE",
+                )
+                if text is None:
+                    prompt += (
+                        f"\nBản trước không đạt kiểm tra: {why}. Sửa đúng lỗi, kết thúc trọn câu."
+                    )
+                    continue
+                low, high = role_bounds_s(spec.role)
+                result = self._gate.run_segment(
+                    text,
+                    ScriptGateContext(
+                        facts=facts,
+                        transition_policy=script_set.brief.transition_policy,
+                        target_min_seconds=low,
+                        target_max_seconds=high,
+                    ),
+                )
+                if not result.passed:
+                    prompt = build_unit_repair_prompt(
+                        ordered.session,
+                        product,
+                        roles,
+                        index,
+                        failed_text=text,
+                        problems=[v.message for v in result.violations],
+                    )
+                    continue
+                new_segment = ScriptSegment(
+                    **{
+                        **current.model_dump(exclude={"created_at"}),
+                        "id": new_id("segment"),
+                        "version": row_version + 1,
+                        "display_text": text,
+                        "spoken_text": text,
+                        "status": ScriptState.DRAFT,
+                    }
+                )
+                break
+            if new_segment is None:
+                await self._fail_job(job, "part_content_rejected")
+                return
+            selected = [new_segment if s.id == current.id else s for s in selected]
+            result = self._gate.run_full_script(
+                [s.spoken_text for s in selected],
+                ScriptGateContext(
+                    facts=facts,
+                    transition_policy=script_set.brief.transition_policy,
+                    total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
+                ),
+            )
+            run = GateRun(
+                id=new_id("gate_run"),
+                script_item_id=item.id,
+                full=True,
+                passed=result.passed,
+                violations=[_to_gate_violation(v) for v in result.violations],
+                rule_set_fingerprint=result.fingerprint.hexdigest,
+            )
+            versions = await self._repos.versions.list_by_item(item.id)
+            state = ScriptState.REVIEWABLE if result.passed else ScriptState.GATE_FAILED
+            version = ScriptVersion(
+                id=new_id("script_version"),
+                script_item_id=item.id,
+                version=len(versions) + 1,
+                state=state,
+                source=ScriptSource.AI_REGENERATE,
+                display_text="\n\n".join(s.display_text for s in selected),
+                spoken_text="\n\n".join(s.spoken_text for s in selected),
+                segment_version_ids=[s.id for s in selected],
+                gate_run_id=run.id,
+                plan_version=source.plan_version,
+            )
+            item.current_version_id, item.state = version.id, state
+            for artifact in (new_segment, run, version, item):
+                bridge(artifact)
+            await self._drain_artifacts(bridge, revisions, set(), job=job)
+            job.status = GenerationJobStatus.COMPLETED
+            job.error_code = "" if result.passed else "script_needs_review"
+            await self._repos.jobs.update(
+                job,
+                lease_owner=job.lease_owner,
+                lease_epoch=job.lease_epoch,
+                lease_duration_s=self._config.recovery_lease_seconds,
+            )
+        except LeaseLostError:
+            return
+        except TimeoutError:
+            await self._fail_job(job, "part_provider_timeout")
+        except ScriptAuthoringError:
+            await self._fail_job(job, "part_source_changed")
+        except Exception:
+            await self._fail_job(job, "part_provider_unavailable")
+
     async def _run_regenerate_job(
         self, job, item: ScriptItem, script_set: ScriptSet, segment_index: int, llm_fn
     ) -> None:
@@ -3169,6 +3451,15 @@ class ScriptAuthoringServiceImpl:
                 items[pid] = item
         segments: dict[str, ScriptSegment] = {}
         versions: dict[str, ScriptVersion] = {}
+        prior_versions = {}
+        next_plan_versions = {}
+        if state.replace_existing:
+            for pid, item in items.items():
+                prior_versions[pid] = await self._repos.versions.list_by_item(item.id)
+                for version in prior_versions[pid]:
+                    versions[version.id] = version
+                plan = await self._repos.plans.get_latest(item.id)
+                next_plan_versions[pid] = plan.version + 1 if plan else 1
         for product_state in state.products.values():
             snap = product_state.workflow_snapshot or {}
             for entry in snap.get("segment_versions", []):
@@ -3184,14 +3475,24 @@ class ScriptAuthoringServiceImpl:
         persist_queue: queue.Queue[BatchState] = queue.Queue()
         ring = self._event_ring(batch_id)
         ordered = (
-            self._ordered_batch(script_set, llm_fn, started_at=state.started_at)
+            self._ordered_batch(
+                script_set,
+                llm_fn,
+                started_at=state.started_at,
+                target_duration_s=next(iter(state.target_durations.values()), 0),
+            )
             if state.ordered_units
             else None
         )
+        self._bind_model_budget(ordered, batch_id)
 
         def create_workflow(product_id: str, target: float):
             item = items[product_id]
-            return self._build_driver(
+            source_version, source_state = item.current_version_id, item.state.value
+            if state.replace_existing:
+                item = item.model_copy(deep=True)
+                item.state = ScriptState.EMPTY
+            driver = self._build_driver(
                 item,
                 script_set,
                 int(target),
@@ -3202,6 +3503,13 @@ class ScriptAuthoringServiceImpl:
                 loaders=self._make_loaders(items, segments, versions),
                 ordered=ordered,
             )
+            if state.replace_existing:
+                inner = driver._driver
+                inner.workflow.versions = list(prior_versions[product_id])
+                inner.plan_version = next_plan_versions[product_id]
+                inner.previous_version_id = source_version
+                inner.previous_state = source_state if source_version else None
+            return driver
 
         orch = BatchScriptGenerationOrchestrator(
             create_workflow,

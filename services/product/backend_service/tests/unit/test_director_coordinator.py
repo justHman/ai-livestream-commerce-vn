@@ -173,6 +173,53 @@ def _make_coordinator(
 # ---------- tests ----------
 
 
+async def test_new_question_replaces_prefetched_sales_at_safe_boundary(monkeypatch):
+    from backend.application.director.state import Phase
+    from backend.application.director.clustering import Comment
+
+    monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")
+    sid = "fresh-boundary"
+    coord, runtime, _, backend = _make_coordinator(session_id=sid)
+    coord.start(sid, _make_products())
+    try:
+        ds = runtime.get_session(sid)
+        state = ds.director.state
+        state.phase = Phase.SELLING
+        state.cursor.opening_completed = True
+        ds.director.cfg.qa_min_cluster_size = 1
+        product = state.current_product()
+        product.units = ("Giới thiệu.", "Phần đang chờ.", "Phần tiếp theo.")
+        product.next_unit = 1
+        product.is_introduced = True
+        state.rolling_comments = [
+            Comment(
+                id="c",
+                text="Giá bao nhiêu?",
+                embedding=[1.0, 0.0],
+                t=ds.now(),
+                product_id=product.product_id,
+                intent="price",
+            )
+        ]
+        queued = Decision(
+            action="sell_product",
+            product_id=product.product_id,
+            unit_index=1,
+            prepared_script=product.units[1],
+        )
+        coord._speech_queue[sid].append(queued)
+        coord._current_speech[sid] = Decision(action="sell_product")
+        assert not await coord._refresh_at_boundary(sid)
+        coord._current_speech.pop(sid)
+        assert await coord._refresh_at_boundary(sid)
+        assert product.next_unit == 1
+        assert queued.is_cancelled
+        assert coord._decision_queue[sid][0].action in ("answer_fact", "answer_cluster")
+    finally:
+        coord.stop(sid)
+        backend.stop_all()
+
+
 async def test_start_ingest_and_emit_decision(monkeypatch: pytest.MonkeyPatch):
     """start(sid) -> ingest 5 comments -> wait a few ticks -> coordinator emits >= 1 decision."""
     monkeypatch.setenv("DIRECTOR_EMBEDDER", "hash")

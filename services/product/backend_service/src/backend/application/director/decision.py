@@ -491,7 +491,7 @@ class Director:
 
         if cur is not None and (
             not s.qa_window_open
-            and cur.stage_turn_index >= 2
+            and ((cur.units and cur.is_introduced) or cur.stage_turn_index >= 2)
             and s.qa_window_stage_index != cur.stage_turn_index
         ):
             s.qa_window_open = True

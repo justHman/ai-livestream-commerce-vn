@@ -12,6 +12,7 @@ guards below decide whether a text may be kept.
 from __future__ import annotations
 
 import re
+import math
 import time
 import unicodedata
 from collections.abc import Callable
@@ -382,6 +383,8 @@ class UnitSpec:
     first_product: bool = False
     last_product: bool = False
     must: tuple[str, ...] = ()  # claims of this unit the text MUST cover (checked)
+    target_seconds: float = 0.0
+    revisit: bool = False
 
 
 _KIND_RANK = {"warranty": 0, "limitation": 1, "compliance": 2}
@@ -452,7 +455,12 @@ def _cluster_claims(product: ProductBrief) -> dict:
 
 
 def plan_units(
-    product: ProductBrief, *, first: bool, last: bool, ordered_aware: bool = False
+    product: ProductBrief,
+    *,
+    first: bool,
+    last: bool,
+    ordered_aware: bool = False,
+    target_duration_s: float = 0,
 ) -> list[UnitSpec]:
     """Adaptive, ordered units of one product from its available facts.
 
@@ -505,10 +513,19 @@ def plan_units(
     promo_chunks = _chunks(c["promos"], _MAX_PROMOS_PER_UNIT) or ([()] if has_price else [])
     for i, chunk in enumerate(promo_chunks):
         units.append(spec("offer", promos=chunk, with_price=has_price and i == 0))
+    # One spaced revisit per factual part, no repeated opening/intro/closing or
+    # additional CTA. A longer request expands known information, never invents it.
+    candidates = [u for u in units if u.claims and u.role not in ("opening", "intro")]
+    wanted = max(0, math.ceil(target_duration_s / 35) - len(units) - int(last))
+    revisits = [replace(u, revisit=True, with_cta=False) for u in candidates[:wanted]]
+    units.extend(revisits)
     body = [i for i, u in enumerate(units) if u.role != "opening"]
     units[body[-1]] = replace(units[body[-1]], with_cta=True)
     if last:
         units.append(spec("closing"))
+    if target_duration_s:
+        per_part = target_duration_s / len(units)
+        units = [replace(u, target_seconds=min(per_part, role_bounds_s(u.role)[1])) for u in units]
     return units
 
 
@@ -800,6 +817,8 @@ def _facts_block(product: ProductBrief, spec: UnitSpec, used: list[str]) -> str:
                     "áp dụng hôm nay, KHÔNG thúc giục."
                 )
     if used:
+        used = [c for c in used if not spec.revisit or c not in (*spec.claims, *spec.promos)]
+    if used:
         lines.append("Đã nói ở các phần trước, TUYỆT ĐỐI không nhắc lại: " + " | ".join(used))
     return "\n".join(lines)
 
@@ -849,6 +868,21 @@ def build_unit_prompt(
         f"Vai trò của phần này ({index + 1}/{len(specs)}): {role_title(spec.role)}. "
         f"{_GUIDE[spec.role]}"
     )
+    if spec.target_seconds:
+        # Match the Studio's measured voice pace (9 characters/second).
+        # This is prompt calibration, not a second gate duration estimator.
+        low = max(120, int(spec.target_seconds * 9 * 0.85))
+        high = min(850, max(low, int(spec.target_seconds * 9 * 1.15)))
+        parts.append(
+            f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự tiếng Việt. "
+            "Mở rộng bằng giải thích dễ nghe và câu hỏi gợi mở; không thêm sự thật mới."
+        )
+    if spec.revisit:
+        parts.append(
+            "Đây là phần nhắc lại cho người mới vào: diễn đạt KHÁC phần trước, "
+            "dẫn vào bằng một câu tư vấn hoặc tóm tắt; giữ nguyên số liệu, điều kiện. "
+            "Không giả vờ rằng có bình luận hay khách đặt mua nếu chưa có dữ liệu."
+        )
     position = _position_line(product, spec)
     if position:
         parts.append(position)
@@ -926,7 +960,12 @@ class BoundedLLM:
                 return self._call_once(prompt, min(self._call_timeout_s, remaining))
             except Exception as exc:  # noqa: BLE001 - any provider failure is a transport failure
                 last = exc
-                if isinstance(exc, LLMDeadlineError) or attempt + 1 >= self._attempts:
+                # A timed-out sync request may already be billed and still running.
+                # Do not overlap another paid request; use the safe unit fallback.
+                if (
+                    isinstance(exc, (LLMDeadlineError, TimeoutError))
+                    or attempt + 1 >= self._attempts
+                ):
                     break
                 self._sleep(self._backoff_s * (attempt + 1))
         assert last is not None

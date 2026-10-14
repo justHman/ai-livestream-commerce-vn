@@ -1288,6 +1288,39 @@ class DirectorCoordinator:
                 except ValueError:
                     pass
 
+    async def _refresh_at_boundary(self, session_id: str) -> bool:
+        """Reconsider prefetched selling text against demand that arrived during playback.
+
+        This runs only between completed turns. The actual cursor has not consumed
+        queued text, so discarding that preparation neither loses nor repeats a unit.
+        The normal Director still owns Q&A cooldowns, relevance and selling fairness.
+        """
+        async with self._decision_locks[session_id]:
+            queue = self._speech_queue.get(session_id)
+            ds = self._runtime._sessions.get(session_id)
+            if (
+                not queue
+                or ds is None
+                or self._frozen(session_id)
+                or queue[0].action not in ("sell_product", "introduce_product", "close")
+                or self._current_speech.get(session_id) is not None
+            ):
+                return False
+            projection = copy.deepcopy(ds.director)
+            store = self._reducer_store(session_id)
+            candidate = (
+                self._decide_from_reducer(projection, session_id, store, ds.now())
+                if store is not None
+                else projection.decide(projection.state.rolling_comments, now=ds.now())
+            )
+            if candidate.action not in ("answer_fact", "answer_cluster") or self._backed_off(
+                session_id, candidate
+            ):
+                return False
+            self._invalidate_queued(session_id, reason="fresh_question_at_boundary")
+        await self._fill_prepared(session_id)
+        return True
+
     async def _playback_loop(self, session_id: str) -> None:
         event = self._playback_events[session_id]
         try:
@@ -1296,6 +1329,8 @@ class DirectorCoordinator:
                 event.clear()
                 queue = self._speech_queue.get(session_id)
                 while queue and not self._frozen(session_id):
+                    if await self._refresh_at_boundary(session_id):
+                        break
                     decision = queue.popleft()
                     if decision.revision_token != self._runtime.current_generation_token(
                         session_id
@@ -1324,11 +1359,33 @@ class DirectorCoordinator:
         )
 
     async def _prepare_approved(self, session_id: str, decision: Decision):
+        reactive = decision.action in ("answer_fact", "answer_cluster")
+        refresh_answer = reactive and (
+            decision.prepared_script is None or decision.cache_variant_index is not None
+        )
+        completed_text = ""
+        future_text = ""
+        ds = self._runtime._sessions.get(session_id)
+        if reactive and ds is not None:
+            product = next(
+                (p for p in ds.director.state.products if p.product_id == decision.product_id), None
+            )
+            if product is not None:
+                completed_text = "\n\n".join(product.units[: product.next_unit])
+                future_text = "\n\n".join(product.units[product.next_unit :])
         return await self.approved_speech.prepare(
             session_id,
-            decision.prepared_script or decision.prompt or decision.text or "",
+            (
+                " | ".join(decision.cluster_members[:5])
+                if refresh_answer and decision.cluster_members
+                else decision.prepared_script or decision.prompt or decision.text or ""
+            ),
             llm=self._llm,
-            generate=decision.prompt is not None and decision.prepared_script is None,
+            generate=refresh_answer
+            or (decision.prompt is not None and decision.prepared_script is None),
+            completed_text=completed_text,
+            future_text=future_text,
+            question_text=" | ".join(decision.cluster_members[:5]) if refresh_answer else None,
             product_id=decision.product_id,
             select_locked=(
                 decision.prepared_script is None

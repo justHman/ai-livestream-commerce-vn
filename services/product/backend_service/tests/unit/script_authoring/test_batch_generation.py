@@ -114,6 +114,29 @@ def _request(
     )
 
 
+def test_provider_work_really_overlaps_but_aggregation_stays_on_owner_thread():
+    import threading
+
+    barrier = threading.Barrier(3)
+    owner = threading.get_ident()
+    events = []
+
+    class ConcurrentWorkflow(_FakeWorkflow):
+        def step(self):
+            barrier.wait(timeout=2)
+            assert threading.get_ident() != owner
+            return super().step()
+
+    orch = BatchScriptGenerationOrchestrator(
+        lambda pid, target: ConcurrentWorkflow(pid),
+        event_sink=lambda event, payload: events.append(threading.get_ident()),
+    )
+    orch.start(_request(["a", "b", "c"]))
+    state = orch.step()
+    assert state.completed == 3 and state.failed == 0
+    assert set(events) == {owner}
+
+
 def _orchestrator(
     factory: _FakeWorkflowFactory,
     *,
