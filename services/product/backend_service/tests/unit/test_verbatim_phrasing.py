@@ -271,3 +271,104 @@ async def test_a_larger_configured_cap_does_not_enlarge_scripted_chunks() -> Non
     assert tts.calls  # not vacuous: the text really went through TTS
     assert len(tts.calls) >= 2  # it needed more than one chunk
     assert all(len(text) <= 200 for text in tts.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_index", [0, 1, 2])
+async def test_typed_tts_failure_propagates_without_faking_completion(failed_index):
+    from backend.application.clients.tts.self_hosted import TTSClientError
+
+    error = TTSClientError("synthesis failed")
+
+    class FailingTTS(_FakeTTS):
+        def stream_audio(self, phrase, **kwargs):
+            yield from super().stream_audio(phrase, **kwargs)
+            if phrase.seq == failed_index:
+                raise error
+
+    tts = FailingTTS()
+    backend = _Playback()
+    text = LONG + " Thank you for joining us today."
+    with pytest.raises(TTSClientError) as caught:
+        await _orchestrator(tts, backend).speak_verbatim("s", text)
+    assert caught.value is error
+    assert len(tts.calls) == failed_index + 1
+    assert len(backend.windows) == failed_index + 1  # Partial audio remains non-final.
+    assert not any(w.is_final for w in backend.windows)
+    assert await _no_prefetch_threads()
+
+
+@pytest.mark.asyncio
+async def test_all_phrases_failing_propagates_the_first_typed_error():
+    from backend.application.clients.tts.self_hosted import TTSClientError
+
+    error = TTSClientError("tts unavailable")
+    attempted = []
+
+    class FailingTTS(_FakeTTS):
+        def stream_audio(self, phrase, **kwargs):
+            attempted.append(phrase.text)
+            raise error
+            yield  # Keep the streaming interface without making any audio.
+
+    backend = _Playback()
+    with pytest.raises(TTSClientError) as caught:
+        await _orchestrator(FailingTTS(), backend).speak_verbatim("s", LONG)
+    assert caught.value is error
+    assert len(attempted) == 1
+    assert backend.windows == []
+    assert await _no_prefetch_threads()
+
+
+@pytest.mark.asyncio
+async def test_lookahead_cap_fails_turn_and_blocks_a_second_worker(monkeypatch):
+    from backend.application.clients.tts.self_hosted import TTSClientError
+
+    monkeypatch.setattr(
+        "backend.application.render.orchestrator.phrase_wait_budget_s", lambda _: 0.3
+    )
+    tts = _FakeTTS(block_on=FIRST)
+    backend = _Playback()
+    orch = _orchestrator(tts, backend)
+    task = asyncio.create_task(orch.speak_verbatim("session-cap", LONG))
+    async with _released(tts, task):
+        assert await asyncio.to_thread(tts.wait_begun, FIRST)
+        with pytest.raises(TTSClientError, match="lookahead deadline"):
+            await asyncio.wait_for(asyncio.shield(task), 3)
+        assert not tts.has_ended(FIRST)
+        assert not tts.has_begun(SECOND)
+        assert backend.windows == []
+        with pytest.raises(TTSClientError, match="Previous TTS synthesis"):
+            await asyncio.wait_for(orch.speak_verbatim("next-turn", LONG), 3)
+        # Coordinator turns use a fresh orchestrator and may wrap the TTS engine.
+        # Session-level exclusion must work even when neither object is reused.
+        other_tts = _FakeTTS()
+        with pytest.raises(TTSClientError, match="Previous TTS synthesis"):
+            await _orchestrator(other_tts, _Playback()).speak_verbatim("session-cap", LONG)
+        assert other_tts.calls == []
+        assert len(_prefetch_threads()) == 1
+        assert not tts.has_begun(SECOND)
+        tts.gate.set()
+        assert await asyncio.to_thread(tts.wait_ended, FIRST)
+        assert await _no_prefetch_threads()
+        # Once the abandoned worker exits, the same orchestrator can speak again.
+        assert await orch.speak_verbatim("recovered", LONG) == LONG
+        assert [w.is_final for w in backend.windows] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_approved_speech_rejection_still_aborts_remaining_phrases():
+    from backend.application.script_authoring.approved_speech import SpeechRejected
+
+    class RejectedTTS(_FakeTTS):
+        def stream_audio(self, phrase, **kwargs):
+            if phrase.seq == 0:
+                raise SpeechRejected("altered_approved_chunk")
+            yield from super().stream_audio(phrase, **kwargs)
+
+    tts = RejectedTTS()
+    backend = _Playback()
+    with pytest.raises(SpeechRejected, match="altered_approved_chunk"):
+        await _orchestrator(tts, backend).speak_verbatim("s", LONG)
+    assert not tts.calls
+    assert not backend.windows
