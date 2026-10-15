@@ -33,7 +33,12 @@ def _topic_of(question: str) -> str | None:
     """ "price" / "shipping" when every comment of the cluster is exactly such a question."""
     topics = set()
     for part in question.lower().split("|"):
-        part = re.sub(r"[,.\s]*(?:(?:em|mình|tôi)\s+)?ở(?:\s+\w+){1,4}\s*[?.!]*$", "", part)
+        # The viewer's own place only ("em ở Hồ Chí Minh"), never a question about the shop's.
+        part = re.sub(
+            r"[,.\s]*(?:em|mình|tôi|nhà em)\s+ở(?!\s+(?:đâu|nào|gì))(?:\s+\w+){1,4}\s*[?.!]*$",
+            "",
+            part,
+        )
         words = [w for w in re.findall(r"\w+", part) if w not in _FILLER]
         text = " ".join(words)
         if _PRICE_Q.fullmatch(text):
