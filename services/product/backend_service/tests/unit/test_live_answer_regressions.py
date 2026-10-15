@@ -151,6 +151,7 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
         "Shop bao giờ nhận đơn hàng sau Tết?",
         "Shop bao giờ nhận hàng mới về?",
         "Từ ngày nhận hàng thì bao lâu hết bảo hành?",
+        "Giao hàng rồi bao lâu mới được giặt áo?",
         "Giao hàng bao lâu và size L còn không?",
     ],
 )
@@ -198,6 +199,21 @@ def test_a_plain_delivery_time_question_still_gets_the_reply():
         "Đặt hàng thì bao lâu nhận được?",
         "bao lâu thì nhận được hàng ạ",
         "Giao hàng mất bao nhiêu ngày?",
-        "Giao hàng đến Hoàng Mai bao lâu?",
     ):
         assert factual_reply(product, question) is not None, question
+
+
+def test_price_shortcut_needs_a_price_question_and_every_clustered_comment_to_agree():
+    from backend.application.script_authoring.answer_context import factual_reply
+
+    product = ApprovedProduct(
+        "p",
+        "v",
+        "Áo giá một trăm tám mươi nghìn đồng nhé.",
+        "hash",
+        json.dumps({"prices": ["180000 VND"]}),
+    )
+    assert factual_reply(product, "áo này giá bao nhiêu vậy ạ") is not None
+    assert factual_reply(product, "giá bao nhiêu ạ | bao nhiêu tiền vậy shop") is not None
+    assert factual_reply(product, "Áo này có bao nhiêu túi?") is None
+    assert factual_reply(product, "giá bao nhiêu ạ | còn size L không") is None

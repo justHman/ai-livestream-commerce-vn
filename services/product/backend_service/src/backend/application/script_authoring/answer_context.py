@@ -8,48 +8,56 @@ import zlib
 from .generation.ordered_units import claim_covered
 
 
-_TIME = r"bao lâu|mấy ngày|bao nhiêu ngày|bao giờ|khi nào|thời gian"
-# Receiving the GOODS ("nhận được hàng"), never "nhận tiền / khoản bồi thường".
-_DELIVERY = (
-    r"(?<!xác\s)nhận(?:\s+được)?(?=\s*(?:hàng|áo|đồ|sản phẩm|món|ạ|nhỉ|vậy|[?.!,]|$))"
-    r"|giao|ship|vận chuyển"
+# A closed grammar, not a keyword hunt: the shortcut only answers a question that IS, word for
+# word, one of these shapes once greetings and the viewer's city are dropped. Anything else
+# (warranty, washing, stock, refunds, "shop nhận đơn"...) takes the validated semantic path.
+_FILLER = frozenset(
+    "ạ nhé nha nhỉ vậy ơi shop ad admin cho hỏi xin em mình bạn anh chị à hả thế".split()
 )
-_DELIVERY_TIME_RE = re.compile(
-    rf"(?:{_TIME}).{{0,30}}(?:{_DELIVERY})|(?:{_DELIVERY}).{{0,30}}(?:{_TIME})", re.I
+_GOODS = r"(?:áo|sản phẩm|mẫu|món|cái|chiếc)"
+_PRICE_Q = re.compile(
+    rf"(?:{_GOODS}\s+)?(?:này\s+|đó\s+|kia\s+)?"
+    r"(?:(?:có\s+)?giá(?:\s+cả)?(?:\s+là)?(?:\s+(?:bao nhiêu|nhiêu|sao|thế nào))?"
+    r"|(?:bao nhiêu|nhiêu) tiền|mấy đồng)"
 )
-_NOT_DELIVERY_RE = re.compile(
-    r"(?<!\w)(?:phí|freeship|miễn phí|giá|bao nhiêu tiền|tiền|hoàn|trả|đưa|thanh toán|cod"
-    r"|hàng lại|còn hàng|bồi thường|trở lại|xác nhận|mới về|hàng mới|nhập|bảo hành|hết hạn|đổi|hạn dùng)(?!\w)|(?<!\w)shop\s+(?:\w+\s+){0,2}nhận",
-    re.I,
+_HOW_LONG = r"(?:bao lâu|mấy ngày|bao nhiêu ngày)"
+_SHIP_Q = re.compile(
+    rf"(?:thời gian\s+)?(?:giao hàng|giao|ship|vận chuyển)(?:\s+mất)?\s+{_HOW_LONG}"
+    rf"|(?:đặt hàng\s+|đặt\s+|mua\s+)?(?:thì\s+|rồi\s+)?(?:bao lâu|mấy ngày|khi nào|bao giờ)\s+"
+    r"(?:thì\s+|sẽ\s+)?(?:nhận|giao|ship)(?:\s+được)?(?:\s+hàng)?(?:\s+(?:tới|đến))?"
+    rf"|(?:nhận|giao)(?:\s+được)?\s+hàng(?:\s+mất)?\s+{_HOW_LONG}"
 )
+
+
+def _topic_of(question: str) -> str | None:
+    """ "price" / "shipping" when every comment of the cluster is exactly such a question."""
+    topics = set()
+    for part in question.lower().split("|"):
+        part = re.sub(r"[,.\s]*(?:(?:em|mình|tôi)\s+)?ở(?:\s+\w+){1,4}\s*[?.!]*$", "", part)
+        words = [w for w in re.findall(r"\w+", part) if w not in _FILLER]
+        text = " ".join(words)
+        if _PRICE_Q.fullmatch(text):
+            topics.add("price")
+        elif _SHIP_Q.fullmatch(text):
+            topics.add("shipping")
+        else:
+            return None
+    return topics.pop() if len(topics) == 1 else None
 
 
 def factual_reply(product, question: str, completed_text: str = "") -> str | None:
-    """Only unambiguous price/delivery questions use this zero-model path.
+    """Only exact price / delivery-time questions use this zero-model path.
 
     Other questions retain semantic retrieval and validation. Never infer a delivery
     promise for an individual address from a general policy, or omit its conditions.
     """
-    from backend.application.director.routing import matched_intents, route_hints
-
-    intent = route_hints(question, []).intent_candidates
-    if len(intent) != 1 or intent[0] not in ("price", "shipping"):
-        return None
-    if set(matched_intents(question)) - {intent[0], "buy_intent"}:
-        return None  # it also touches another topic (size, promotion, stock...)
-    topic = intent[0]
-    # Mixed questions and personalised guarantees need the existing semantic path.
-    if re.search(r"bảo đảm|chắc chắn|kịp|địa chỉ|ngày mai|hôm nay", question, re.I):
+    topic = _topic_of(question)
+    if topic is None:
         return None
     answers = product.answers()
     if topic == "price":
-        if re.search(r"giá gốc|giảm|sale|ship|giao hàng|mua .*giá", question, re.I):
-            return None
         selected = [a for a in answers if "giá " in a.lower() and "đồng" in a.lower()]
     else:
-        # Positive evidence only: a delivery-TIME question. Money, refunds and restocks are not.
-        if not _DELIVERY_TIME_RE.search(question) or _NOT_DELIVERY_RE.search(question):
-            return None
         selected = [a for a in answers if re.search(r"giao hàng|vận chuyển|ship", a, re.I)]
     if not selected or len(selected) > (1 if topic == "price" else 3):
         return None  # ambiguous/missing policy: don't guess or widen the approved answer
