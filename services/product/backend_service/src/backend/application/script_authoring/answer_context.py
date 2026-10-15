@@ -3,35 +3,69 @@
 from __future__ import annotations
 
 import re
+import zlib
 
 from .generation.ordered_units import claim_covered
 
 
-def factual_reply(
-    product, question: str, completed_text: str = "", future_text: str = ""
-) -> str | None:
-    """Only unambiguous price/delivery questions use this zero-model path.
+# A closed grammar, not a keyword hunt: the shortcut only answers a question that IS, word for
+# word, one of these shapes once greetings and the viewer's city are dropped. Anything else
+# (warranty, washing, stock, refunds, "shop nhận đơn"...) takes the validated semantic path.
+_FILLER = frozenset(
+    "ạ nhé nha nhỉ vậy ơi shop ad admin cho hỏi xin em mình bạn anh chị à hả thế".split()
+)
+_GOODS = r"(?:áo|sản phẩm|mẫu|món|cái|chiếc)"
+_PRICE_Q = re.compile(
+    rf"(?:{_GOODS}\s+)?(?:này\s+|đó\s+|kia\s+)?"
+    r"(?:(?:có\s+)?giá(?:\s+cả)?(?:\s+là)?(?:\s+(?:bao nhiêu|nhiêu|sao|thế nào))?"
+    r"|(?:bao nhiêu|nhiêu) tiền|mấy đồng)"
+)
+_HOW_LONG = r"(?:bao lâu|mấy ngày|bao nhiêu ngày)"
+_SHIP_Q = re.compile(
+    rf"(?:thời gian\s+)?(?:giao hàng|giao|ship|vận chuyển)(?:\s+mất)?\s+{_HOW_LONG}"
+    rf"|(?:đặt hàng\s+|đặt\s+|mua\s+)?(?:thì\s+|rồi\s+)?(?:bao lâu|mấy ngày|khi nào|bao giờ)\s+"
+    r"(?:thì\s+|sẽ\s+)?(?:nhận|giao|ship)(?:\s+được)?(?:\s+hàng)?(?:\s+(?:tới|đến))?"
+    rf"|(?:nhận|giao)(?:\s+được)?\s+hàng(?:\s+mất)?\s+{_HOW_LONG}"
+)
+
+
+_CITY_NAMES = (
+    "hồ chí minh|tp hcm|tphcm|hcm|sài gòn|hà nội|hn|đà nẵng|hải phòng|cần thơ|huế|nha trang"
+    "|đà lạt|vũng tàu|biên hòa|bình dương"
+)
+
+
+def _topic_of(question: str) -> str | None:
+    """ "price" / "shipping" when every comment of the cluster is exactly such a question."""
+    topics = set()
+    for part in question.lower().split("|"):
+        # The viewer's own city only ("em ở Hồ Chí Minh"): a closed list, so no question that
+        # merely contains "ở" ("em ở xa có ship không", "shop ở đâu") is ever cut away.
+        part = re.sub(rf"[,.\s]*(?:em|mình|tôi|nhà em)\s+ở\s+(?:{_CITY_NAMES})\s*[?.!]*$", "", part)
+        words = [w for w in re.findall(r"\w+", part) if w not in _FILLER]
+        text = " ".join(words)
+        if _PRICE_Q.fullmatch(text):
+            topics.add("price")
+        elif _SHIP_Q.fullmatch(text):
+            topics.add("shipping")
+        else:
+            return None
+    return topics.pop() if len(topics) == 1 else None
+
+
+def factual_reply(product, question: str, completed_text: str = "") -> str | None:
+    """Only exact price / delivery-time questions use this zero-model path.
 
     Other questions retain semantic retrieval and validation. Never infer a delivery
     promise for an individual address from a general policy, or omit its conditions.
     """
-    from backend.application.director.routing import route_hints
-
-    intent = route_hints(question, []).intent_candidates
-    if len(intent) != 1 or intent[0] not in ("price", "shipping"):
-        return None
-    topic = intent[0]
-    # Mixed questions and personalised guarantees need the existing semantic path.
-    if re.search(r"bảo đảm|chắc chắn|kịp|địa chỉ|ngày mai|hôm nay", question, re.I):
+    topic = _topic_of(question)
+    if topic is None:
         return None
     answers = product.answers()
     if topic == "price":
-        if re.search(r"giá gốc|giảm|sale|ship|giao hàng|mua .*giá", question, re.I):
-            return None
         selected = [a for a in answers if "giá " in a.lower() and "đồng" in a.lower()]
     else:
-        if re.search(r"phí|freeship|miễn phí|giá|bao nhiêu tiền", question, re.I):
-            return None
         selected = [a for a in answers if re.search(r"giao hàng|vận chuyển|ship", a, re.I)]
     if not selected or len(selected) > (1 if topic == "price" else 3):
         return None  # ambiguous/missing policy: don't guess or widen the approved answer
@@ -43,15 +77,47 @@ def factual_reply(
         any(claim_covered(a, part) for part in completed_text.split("\n\n") if part)
         for a in selected
     )
-    if said:
-        intro = f"Mình nhắc lại phần {label} để các bạn mới vào cũng tiện theo dõi nhé. "
-        tail = " Các bạn cứ hỏi thêm nếu còn điều gì muốn mình giải thích nha."
+    # A fixed set of wordings (picked by the question, so the same question repeats itself but a
+    # live is not one template over and over). They only greet, invite and echo the viewer's
+    # city; every claim is the approved fact above, and nothing refers to the script.
+    pick = zlib.crc32(question.encode("utf-8")) % len(_LEAD_IN)
+    city = _city(question) if topic == "shipping" else None
+    if city:
+        intro = f"Bạn ở {city} đúng không nè, mình nói rõ cho bạn luôn nha. "
     else:
-        intro = f"Mình trả lời câu hỏi về {label} của các bạn trước nhé. "
-        # No promise about a future script passage whose cursor could change.
-        tail = " Mọi người cứ theo dõi cùng mình và hỏi thêm nếu cần nhé."
-        if topic == "price" and any(
-            claim_covered(selected[0], part) for part in future_text.split("\n\n") if part
-        ):
-            tail = " Lát nữa tới phần giá trong kịch bản, mình sẽ nhắc lại để mọi người dễ theo dõi nhé."
-    return intro + fact + tail
+        intro = _LEAD_IN_SAID[pick] if said else _LEAD_IN[pick]
+    return intro.format(label=label) + fact + " " + _INVITE[pick]
+
+
+_LEAD_IN = (
+    "Mình thấy có bạn hỏi về {label}, mình trả lời luôn cho mọi người tiện nha. ",
+    "Cảm ơn bạn đã hỏi nha, về {label} thì mình nói ngay đây. ",
+    "À câu hỏi về {label} nè, mình trả lời liền cho mọi người nhé. ",
+)
+_LEAD_IN_SAID = (
+    "Mình nói lại về {label} cho các bạn mới vào tiện theo dõi nha. ",
+    "Bạn nào mới vào thì mình nhắc lại {label} một chút nhé. ",
+    "Về {label} thì mình nói lại cho mọi người cùng nghe nha. ",
+)
+_INVITE = (
+    "Bạn nào còn băn khoăn điều gì về sản phẩm thì cứ bình luận, mình trả lời liền nhé.",
+    "Mọi người cần hỏi thêm gì cứ nhắn mình, mình tư vấn kỹ cho từng bạn nha.",
+    "Còn thắc mắc gì thì mọi người cứ thoải mái hỏi tiếp nhé.",
+)
+
+
+def _city(question: str) -> str | None:
+    """Only a city the viewer says they live in; "giao tới Hà Nội" names a destination, not them."""
+    named = [
+        n for n, pattern in _CITIES if re.search(rf"(?<!\w)(?:{pattern})(?!\w)", question, re.I)
+    ]
+    lives = [
+        n for n, pattern in _CITIES if re.search(rf"(?<!\w)ở\s+(?:{pattern})(?!\w)", question, re.I)
+    ]
+    return lives[0] if len(named) == 1 and lives else None
+
+
+_CITIES = (
+    ("Hồ Chí Minh", r"hồ chí minh|hcm|tphcm|sài gòn"),
+    ("Hà Nội", r"hà nội|hn"),
+)
