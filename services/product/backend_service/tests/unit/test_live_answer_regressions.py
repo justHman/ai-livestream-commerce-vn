@@ -45,8 +45,8 @@ def test_contextual_price_answer_uses_completed_speech_only():
     product = ApprovedProduct("p", "v", spoken, "hash", json.dumps({"prices": ["180000 VND"]}))
     before = factual_reply(product, "Giá bao nhiêu?")
     after = factual_reply(product, "Giá bao nhiêu?", spoken)
-    assert "trả lời câu hỏi" in before
-    assert "nhắc lại" in after
+    assert "mới vào" in after and "mới vào" not in before
+    assert "kịch bản" not in before + after
     assert "một trăm tám mươi nghìn đồng" in before and "một trăm tám mươi nghìn đồng" in after
     assert factual_reply(product, "Giá gốc bao nhiêu?") is None
     assert factual_reply(product, "Mua hai áo giá bao nhiêu?") is None
@@ -91,3 +91,48 @@ def test_denim_delivery_reply_keeps_both_general_and_city_policies():
     product = ApprovedProduct("p", "v", script, "hash", json.dumps({"allowed_claims": [claim]}))
     answer = factual_reply(product, "Đặt hàng thì bao lâu nhận được?", script)
     assert answer is not None and "hai đến ba ngày" in answer and "một ngày" in answer
+
+
+def test_delivery_question_with_city_and_filler_words_is_answered_without_the_model():
+    from backend.application.script_authoring.answer_context import factual_reply
+
+    question = "bao lâu thì nhận được hàng ạ, em ở Hồ Chí Minh"
+    assert route_hints(question, []).intent_candidates == ["shipping"]
+    claim = "Giao hàng toàn quốc từ 2 đến 3 ngày, nội thành HCM và HN ship hỏa tốc trong 1 ngày"
+    script = "Giao hàng toàn quốc chỉ từ hai đến ba ngày. Nội thành Hồ Chí Minh và Hà Nội hỏa tốc một ngày."
+    product = ApprovedProduct("p", "v", script, "hash", json.dumps({"allowed_claims": [claim]}))
+    answer = factual_reply(product, question)
+    assert answer.startswith("Bạn ở Hồ Chí Minh") and "hai đến ba ngày" in answer
+    assert len(answer) > 200 and "kịch bản" not in answer
+
+
+def test_cash_on_delivery_question_is_not_a_delivery_time_question():
+    assert route_hints("thanh toán khi nhận hàng được không", []).intent_candidates != ["shipping"]
+
+
+def test_natural_answer_missing_only_its_full_stop_is_closed_but_a_cut_one_is_not():
+    from backend.application.script_authoring.approved_speech import _close_sentence
+
+    assert _close_sentence("Mình giao hàng toàn quốc nhé") == "Mình giao hàng toàn quốc nhé."
+    assert (
+        _close_sentence("Mình giao hàng toàn quốc từ hai đến")
+        == "Mình giao hàng toàn quốc từ hai đến"
+    )
+
+
+def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live():
+    from backend.application.script_authoring.generation.ordered_units import (
+        ProductBrief,
+        SessionBrief,
+        build_unit_prompt,
+        plan_units,
+    )
+
+    claims = tuple(f"Thông tin số {n}." for n in range(1, 8))
+    product = ProductBrief("p", "Áo denim", claims=claims)
+    units = plan_units(product, first=True, last=True, target_duration_s=360)
+    assert 250 < sum(u.target_seconds for u in units) <= 270.01  # role caps may trim a little
+    middle = next(i for i, u in enumerate(units) if u.role == "highlight")
+    prompt = build_unit_prompt(SessionBrief(), product, units, middle)
+    low = int(units[middle].target_seconds * 16 * 0.85)
+    assert f"khoảng {low} đến" in prompt

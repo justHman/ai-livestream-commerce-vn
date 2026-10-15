@@ -45,6 +45,13 @@ __all__ = [
 
 # Spoken-duration bounds (seconds, canonical estimator) per role. Wide on purpose:
 # the owner edits the text; these only reject empty/one-word and runaway output.
+# Measured in the 2026-10-15 live (VieNeu, TTS tempo 0.92): 3672 characters were spoken in 226 s,
+# i.e. 16 characters/second. The same script had been planned at 9 and ran at 63% of its target.
+_VOICE_CHARS_PER_S = 16
+# That live lasted 5:15 for 3:46 of script (72%): viewer answers and pauses took the rest.
+_SPEECH_SHARE_OF_TARGET = 0.75
+# Short enough that a viewer question waits for at most one unit before the answer.
+_UNIT_SECONDS = 28
 _BOUNDS_S: dict[str, tuple[float, float]] = {
     "opening": (1.0, 40.0),
     "intro": (1.0, 40.0),
@@ -516,7 +523,9 @@ def plan_units(
     # One spaced revisit per factual part, no repeated opening/intro/closing or
     # additional CTA. A longer request expands known information, never invents it.
     candidates = [u for u in units if u.claims and u.role not in ("opening", "intro")]
-    wanted = max(0, math.ceil(target_duration_s / 35) - len(units) - int(last))
+    # The target is the whole live: answers to viewers and pauses take the rest of it.
+    speech_s = target_duration_s * _SPEECH_SHARE_OF_TARGET
+    wanted = max(0, math.ceil(speech_s / _UNIT_SECONDS) - len(units) - int(last))
     revisits = [replace(u, revisit=True, with_cta=False) for u in candidates[:wanted]]
     units.extend(revisits)
     body = [i for i, u in enumerate(units) if u.role != "opening"]
@@ -524,7 +533,7 @@ def plan_units(
     if last:
         units.append(spec("closing"))
     if target_duration_s:
-        per_part = target_duration_s / len(units)
+        per_part = speech_s / len(units)
         units = [replace(u, target_seconds=min(per_part, role_bounds_s(u.role)[1])) for u in units]
     return units
 
@@ -869,13 +878,14 @@ def build_unit_prompt(
         f"{_GUIDE[spec.role]}"
     )
     if spec.target_seconds:
-        # Match the Studio's measured voice pace (9 characters/second).
         # This is prompt calibration, not a second gate duration estimator.
-        low = max(120, int(spec.target_seconds * 9 * 0.85))
-        high = min(850, max(low, int(spec.target_seconds * 9 * 1.15)))
+        low = max(120, int(spec.target_seconds * _VOICE_CHARS_PER_S * 0.85))
+        high = min(850, max(low, int(spec.target_seconds * _VOICE_CHARS_PER_S * 1.15)))
         parts.append(
             f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự tiếng Việt. "
-            "Mở rộng bằng giải thích dễ nghe và câu hỏi gợi mở; không thêm sự thật mới."
+            "Mở rộng bằng giải thích dễ nghe, câu hỏi gợi mở, và được phép nói chuyện đời thường "
+            "quanh sản phẩm (hình dung dịp dùng, cảm giác khi dùng, trò chuyện với khán giả); "
+            "không thêm thông số, cam kết, ưu đãi hay sự thật mới về sản phẩm."
         )
     if spec.revisit:
         parts.append(

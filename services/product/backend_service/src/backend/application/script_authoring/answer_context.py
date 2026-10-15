@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import re
+import zlib
 
 from .generation.ordered_units import claim_covered
 
 
-def factual_reply(
-    product, question: str, completed_text: str = "", future_text: str = ""
-) -> str | None:
+def factual_reply(product, question: str, completed_text: str = "") -> str | None:
     """Only unambiguous price/delivery questions use this zero-model path.
 
     Other questions retain semantic retrieval and validation. Never infer a delivery
@@ -43,15 +42,38 @@ def factual_reply(
         any(claim_covered(a, part) for part in completed_text.split("\n\n") if part)
         for a in selected
     )
-    if said:
-        intro = f"Mình nhắc lại phần {label} để các bạn mới vào cũng tiện theo dõi nhé. "
-        tail = " Các bạn cứ hỏi thêm nếu còn điều gì muốn mình giải thích nha."
+    # A fixed set of wordings (picked by the question, so the same question repeats itself but a
+    # live is not one template over and over). They only greet, invite and echo the viewer's
+    # city; every claim is the approved fact above, and nothing refers to the script.
+    pick = zlib.crc32(question.encode("utf-8")) % len(_LEAD_IN)
+    city = _city(question) if topic == "shipping" else None
+    if city:
+        intro = f"Bạn ở {city} đúng không nè, mình nói rõ cho bạn luôn nha. "
     else:
-        intro = f"Mình trả lời câu hỏi về {label} của các bạn trước nhé. "
-        # No promise about a future script passage whose cursor could change.
-        tail = " Mọi người cứ theo dõi cùng mình và hỏi thêm nếu cần nhé."
-        if topic == "price" and any(
-            claim_covered(selected[0], part) for part in future_text.split("\n\n") if part
-        ):
-            tail = " Lát nữa tới phần giá trong kịch bản, mình sẽ nhắc lại để mọi người dễ theo dõi nhé."
-    return intro + fact + tail
+        intro = _LEAD_IN_SAID[pick] if said else _LEAD_IN[pick]
+    return intro.format(label=label) + fact + " " + _INVITE[pick]
+
+
+_LEAD_IN = (
+    "Mình thấy có bạn hỏi về {label}, mình trả lời luôn cho mọi người tiện nha. ",
+    "Cảm ơn bạn đã hỏi nha, về {label} thì mình nói ngay đây. ",
+    "À câu hỏi về {label} nè, mình trả lời liền cho mọi người nhé. ",
+)
+_LEAD_IN_SAID = (
+    "Mình nói lại về {label} cho các bạn mới vào tiện theo dõi nha. ",
+    "Bạn nào mới vào thì mình nhắc lại {label} một chút nhé. ",
+    "Về {label} thì mình nói lại cho mọi người cùng nghe nha. ",
+)
+_INVITE = (
+    "Bạn nào còn băn khoăn điều gì về sản phẩm thì cứ bình luận, mình trả lời liền nhé.",
+    "Mọi người cần hỏi thêm gì cứ nhắn mình, mình tư vấn kỹ cho từng bạn nha.",
+    "Còn thắc mắc gì thì mọi người cứ thoải mái hỏi tiếp nhé.",
+)
+
+
+def _city(question: str) -> str | None:
+    if re.search(r"hồ chí minh|hcm|tphcm|sài gòn", question, re.I):
+        return "Hồ Chí Minh"
+    if re.search(r"hà nội|(?<!\w)hn(?!\w)", question, re.I):
+        return "Hà Nội"
+    return None

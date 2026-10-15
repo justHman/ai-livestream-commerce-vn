@@ -1367,7 +1367,6 @@ class DirectorCoordinator:
             decision.prepared_script is None or decision.cache_variant_index is not None
         )
         completed_text = ""
-        future_text = ""
         ds = self._runtime._sessions.get(session_id)
         if reactive and ds is not None:
             product = next(
@@ -1375,7 +1374,6 @@ class DirectorCoordinator:
             )
             if product is not None:
                 completed_text = "\n\n".join(product.units[: product.next_unit])
-                future_text = "\n\n".join(product.units[product.next_unit :])
         return await self.approved_speech.prepare(
             session_id,
             (
@@ -1387,7 +1385,6 @@ class DirectorCoordinator:
             generate=refresh_answer
             or (decision.prompt is not None and decision.prepared_script is None),
             completed_text=completed_text,
-            future_text=future_text,
             question_text=" | ".join(decision.cluster_members[:5]) if refresh_answer else None,
             product_id=decision.product_id,
             select_locked=(
