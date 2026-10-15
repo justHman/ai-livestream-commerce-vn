@@ -200,6 +200,23 @@ async def test_order_is_kept_and_only_the_last_window_is_final() -> None:
 
 
 @pytest.mark.asyncio
+async def test_completed_prefetch_worker_exits_before_turn_returns(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    waits = []
+
+    class RecordingPool(ThreadPoolExecutor):
+        def shutdown(self, wait=True, **kwargs):
+            waits.append(wait)
+            return super().shutdown(wait=wait, **kwargs)
+
+    monkeypatch.setattr("backend.application.render.orchestrator.ThreadPoolExecutor", RecordingPool)
+    await _orchestrator(_FakeTTS(), _Playback()).speak_verbatim("settled", LONG)
+    assert waits == [True]
+    assert _prefetch_threads() == []
+
+
+@pytest.mark.asyncio
 async def test_tts_failure_in_the_prefetched_phrase_propagates() -> None:
     orch = _orchestrator(_FakeTTS(fail_on=SECOND), _Playback())
     with pytest.raises(TimeoutError):
