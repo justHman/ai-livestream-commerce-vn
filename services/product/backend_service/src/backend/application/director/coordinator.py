@@ -1295,7 +1295,10 @@ class DirectorCoordinator:
         queued text, so discarding that preparation neither loses nor repeats a unit.
         The normal Director still owns Q&A cooldowns, relevance and selling fairness.
         """
-        async with self._decision_locks[session_id]:
+        lock = self._decision_locks.get(session_id)
+        if lock is None:
+            return False
+        async with lock:
             queue = self._speech_queue.get(session_id)
             ds = self._runtime._sessions.get(session_id)
             if (

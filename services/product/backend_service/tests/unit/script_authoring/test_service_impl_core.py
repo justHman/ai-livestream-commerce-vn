@@ -149,6 +149,12 @@ class _FakeVersionRepo:
         # into the stored row (mirrors the SQL INSERT-ONLY repository).
         self.rows[version.id] = version.model_copy(deep=True)
 
+    async def list_by_item(self, item_id: str, *, conn=None) -> list[ScriptVersion]:
+        return sorted(
+            (v.model_copy(deep=True) for v in self.rows.values() if v.script_item_id == item_id),
+            key=lambda v: v.version,
+        )
+
 
 class _FakeGateRunRepo:
     def __init__(self) -> None:

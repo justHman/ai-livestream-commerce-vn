@@ -7,6 +7,7 @@ fail. GREEN once ``PostgresAuthoringRepositories`` implements the interfaces.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,6 +63,72 @@ async def test_model_dispatch_budget_is_atomic_and_survives_reconnect(pg_url: st
         assert await repos.model_budget.reserve(batch.id, "p1", 1, operation_id="repair-one")
         assert await repos.model_budget.reserve(batch.id, "p1", 1, operation_id="repair-two")
     finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_recovered_replacement_then_new_generation_respects_unique_versions(pg_url: str):
+    from backend.application.script_authoring.service_impl import ScriptAuthoringServiceImpl
+
+    repos = await _connect(pg_url)
+    engine = SimpleNamespace(
+        llm_cfg={"engine": "fake"}, llm_failed=False, get_llm_fn=lambda **kwargs: lambda prompt: ""
+    )
+    service = ScriptAuthoringServiceImpl(repos, engine_manager=engine)
+    try:
+        created = await service.create_script_set(
+            name="proof",
+            transition_policy="ORDER_AWARE",
+            product_ids=["p1"],
+            brief={
+                "product_facts": {
+                    "p1": {
+                        "product_name": "Áo denim",
+                        "prices": ["180000 VND"],
+                        "allowed_claims": [
+                            "Chất vải denim dày dặn.",
+                            "Giao hàng toàn quốc từ hai đến ba ngày.",
+                        ],
+                    }
+                }
+            },
+        )
+        set_id = created["id"]
+
+        async def start(key):
+            return await service.start_batch_generation(
+                set_id=set_id,
+                product_ids=[],
+                target_duration_s=60,
+                idempotency_key=key,
+                ordered_units=True,
+                replace_existing=True,
+            )
+
+        await start("first")
+        await asyncio.gather(*service._tasks)
+        original = await repos.items.get_by_product(set_id, "p1")
+        assert original.current_version_id is not None
+        spawn = service._spawn
+        service._spawn = lambda coro, **kwargs: coro.close()
+        batch_id = (await start("recovery"))["batch_id"]
+        orch = service._active_orchestrators[batch_id]
+        for _ in range(2):
+            await asyncio.to_thread(orch.step)
+        revisions = await service._current_item_revisions(batch_id)
+        await service._drain_artifacts(service._batch_artifact_bridges[batch_id], revisions, set())
+        await service._drain_batch_persists(batch_id, service._batch_persist_queues[batch_id])
+        recovered, queue, bridge = await service._recover_orchestrator(batch_id, set_id)
+        existing = {v.id for v in await repos.versions.list_by_item(original.id)}
+        await service._run_batch_job(batch_id, recovered, queue, bridge, revisions, existing)
+        versions = await repos.versions.list_by_item(original.id)
+        assert [v.version for v in versions] == [1, 2]
+        service._spawn = spawn
+        await start("third")
+        await asyncio.gather(*service._tasks)
+        assert [v.version for v in await repos.versions.list_by_item(original.id)] == [1, 2, 3]
+    finally:
+        await service.drain()
         await repos.close()
 
 

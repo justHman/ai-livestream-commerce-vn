@@ -401,10 +401,14 @@ class WorkflowDriver:
         self.fallback_units = {
             int(i): list(r) for i, r in (state.get("fallback_units") or {}).items()
         }
+        wf.segments = {}
+        wf.versions = []
+        wf.current_version = None
         for entry in state.get("segment_versions", []):
             segment = self.load_segment(entry["id"])
             wf.segments[int(entry["index"])] = segment
-        for version_id in state.get("version_ids", []):
+        for version_id in dict.fromkeys(state.get("version_ids", [])):
             version = self.load_version(version_id)
             wf.versions.append(version)
-            wf.current_version = version
+            if version.id == wf.item.current_version_id:
+                wf.current_version = version

@@ -1919,6 +1919,17 @@ class ScriptAuthoringServiceImpl:
         current_version = None
         if item.current_version_id is not None:
             current_version = await self._repos.versions.get(item.current_version_id)
+        if (
+            current_version is not None
+            and current_version.display_text == display_text
+            and (
+                not spoken_text
+                or not spoken_text.strip()
+                or spoken_text == current_version.spoken_text
+            )
+            and item.state in (ScriptState.DRAFT, ScriptState.REVIEWABLE, ScriptState.GATE_FAILED)
+        ):
+            return {"ok": True, "product_id": product_id, "state": item.state.name}
         spoken = (
             # None AND blank both mean "not provided": never store an empty spoken text.
             spoken_text
@@ -1927,6 +1938,7 @@ class ScriptAuthoringServiceImpl:
         )
         bridge = _SyncPersistBridge()
         workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
+        workflow.versions = await self._repos.versions.list_by_item(item.id)
         try:
             workflow.create_manual_draft(display_text=display_text, spoken_text=spoken)
         except IllegalTransitionError as exc:
@@ -1949,6 +1961,12 @@ class ScriptAuthoringServiceImpl:
         current_version = await self._repos.versions.get(item.current_version_id)
         if current_version is None:
             raise ScriptAuthoringError("illegal_transition", "current draft version is missing")
+        if item.state in (ScriptState.REVIEWABLE, ScriptState.GATE_FAILED):
+            # Recheck the exact selected content without manufacturing a manual
+            # version and dropping its AI segment provenance. Final gate result
+            # and revision are still persisted atomically through the normal FSM.
+            item = item.model_copy(deep=True)
+            item.state = ScriptState.DRAFT
         bridge = _SyncPersistBridge()
         workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
         try:
@@ -2176,6 +2194,24 @@ class ScriptAuthoringServiceImpl:
         item = await self._repos.items.get_by_product(set_id, product_id)
         if item is None:
             self._raise_not_found("product script", product_id)
+        op_intent = ScriptIntent.REGENERATE_SEGMENT
+        existing = await self._repos.jobs.find_by_idempotency(
+            item.id, op_intent.value, idempotency_key
+        )
+        if existing is not None:
+            if expected_version_id is not None and (
+                existing.input_snapshot.get("source_version_id") != expected_version_id
+                or existing.input_snapshot.get("segment_index") != segment_index
+            ):
+                raise ScriptAuthoringError(
+                    "idempotency_conflict", "part request does not match original source"
+                )
+            return {
+                "workflow_id": existing.id,
+                "product_id": product_id,
+                "segment_index": segment_index,
+                "idempotent": True,
+            }
         if expected_version_id is not None and expected_version_id != item.current_version_id:
             raise ScriptAuthoringError(
                 "stale_revision",
@@ -2187,17 +2223,6 @@ class ScriptAuthoringServiceImpl:
                 f"cannot regenerate segment {segment_index} in state {item.state.name}",
             )
         llm_fn = self._require_llm()
-        op_intent = ScriptIntent.REGENERATE_SEGMENT
-        existing = await self._repos.jobs.find_by_idempotency(
-            item.id, op_intent.value, idempotency_key
-        )
-        if existing is not None:
-            return {
-                "workflow_id": existing.id,
-                "product_id": product_id,
-                "segment_index": segment_index,
-                "idempotent": True,
-            }
         plan = await self._repos.plans.get_latest(item.id)
         target = plan.target_duration_s if plan is not None else self._config.min_target_duration_s
         job, _lease_epoch = await self._create_job(
