@@ -29,16 +29,19 @@ _SHIP_Q = re.compile(
 )
 
 
+_CITY_NAMES = (
+    "hồ chí minh|tp hcm|tphcm|hcm|sài gòn|hà nội|hn|đà nẵng|hải phòng|cần thơ|huế|nha trang"
+    "|đà lạt|vũng tàu|biên hòa|bình dương"
+)
+
+
 def _topic_of(question: str) -> str | None:
     """ "price" / "shipping" when every comment of the cluster is exactly such a question."""
     topics = set()
     for part in question.lower().split("|"):
-        # The viewer's own place only ("em ở Hồ Chí Minh"), never a question about the shop's.
-        part = re.sub(
-            r"[,.\s]*(?:em|mình|tôi|nhà em)\s+ở(?!\s+(?:đâu|nào|gì))(?:\s+\w+){1,4}\s*[?.!]*$",
-            "",
-            part,
-        )
+        # The viewer's own city only ("em ở Hồ Chí Minh"): a closed list, so no question that
+        # merely contains "ở" ("em ở xa có ship không", "shop ở đâu") is ever cut away.
+        part = re.sub(rf"[,.\s]*(?:em|mình|tôi|nhà em)\s+ở\s+(?:{_CITY_NAMES})\s*[?.!]*$", "", part)
         words = [w for w in re.findall(r"\w+", part) if w not in _FILLER]
         text = " ".join(words)
         if _PRICE_Q.fullmatch(text):

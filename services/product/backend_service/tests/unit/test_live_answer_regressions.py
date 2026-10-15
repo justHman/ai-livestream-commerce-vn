@@ -153,6 +153,7 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
         "Từ ngày nhận hàng thì bao lâu hết bảo hành?",
         "Giao hàng rồi bao lâu mới được giặt áo?",
         "Giao hàng bao lâu, shop ở đâu?",
+        "Giao hàng bao lâu, em ở xa có ship?",
         "Giao hàng bao lâu và size L còn không?",
     ],
 )
@@ -218,4 +219,6 @@ def test_price_shortcut_needs_a_price_question_and_every_clustered_comment_to_ag
     assert factual_reply(product, "giá bao nhiêu ạ | bao nhiêu tiền vậy shop") is not None
     assert factual_reply(product, "Áo này có bao nhiêu túi?") is None
     assert factual_reply(product, "Giá bao nhiêu, shop ở đâu?") is None
+    assert factual_reply(product, "Giá bao nhiêu, em ở xa có ship?") is None
+    assert factual_reply(product, "giá bao nhiêu ạ, em ở Đà Nẵng") is not None
     assert factual_reply(product, "giá bao nhiêu ạ | còn size L không") is None
