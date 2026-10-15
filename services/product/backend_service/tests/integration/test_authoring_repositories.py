@@ -127,6 +127,54 @@ async def test_recovered_replacement_then_new_generation_respects_unique_version
         await start("third")
         await asyncio.gather(*service._tasks)
         assert [v.version for v in await repos.versions.list_by_item(original.id)] == [1, 2, 3]
+        # Terminal receipt and new text must roll back together if the job
+        # update fails, and a successful receipt must survive recovery/replay.
+        item = await repos.items.get(original.id)
+        source = await repos.versions.get(item.current_version_id)
+        segment = await repos.segments.get(source.segment_version_ids[2])
+        calls = []
+
+        def write(prompt):
+            calls.append(prompt)
+            return segment.spoken_text
+
+        engine.get_llm_fn = lambda **kwargs: write
+        update = repos.jobs.update
+
+        async def fail_terminal(job, *, conn=None, **kwargs):
+            await update(job, conn=conn, **kwargs)
+            if job.status is GenerationJobStatus.COMPLETED:
+                assert conn is not None
+                raise ConnectionError("injected before commit")
+
+        repos.jobs.update = fail_terminal
+        failed = await service.regenerate_segment(
+            set_id=set_id,
+            product_id="p1",
+            segment_index=segment.segment_index,
+            idempotency_key="atomic-fail",
+            expected_version_id=source.id,
+        )
+        await asyncio.gather(*service._tasks)
+        assert (await repos.jobs.get(failed["workflow_id"])).status is GenerationJobStatus.FAILED
+        assert (await repos.items.get(original.id)).current_version_id == source.id
+        assert len(await repos.versions.list_by_item(original.id)) == 3
+        repos.jobs.update = update
+        request = dict(
+            set_id=set_id,
+            product_id="p1",
+            segment_index=segment.segment_index,
+            idempotency_key="atomic-success",
+            expected_version_id=source.id,
+        )
+        succeeded = await service.regenerate_segment(**request)
+        await asyncio.gather(*service._tasks)
+        completed = await repos.jobs.get(succeeded["workflow_id"])
+        assert completed.status is GenerationJobStatus.COMPLETED
+        count = len(calls)
+        await service._resume_job(completed)
+        assert (await service.regenerate_segment(**request))["workflow_id"] == completed.id
+        assert len(calls) == count and count >= 2
     finally:
         await service.drain()
         await repos.close()

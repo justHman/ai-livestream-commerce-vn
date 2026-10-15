@@ -1516,6 +1516,7 @@ class ScriptAuthoringServiceImpl:
         job: GenerationJob | None = None,
         batch_id: str | None = None,
         batch_lease: tuple[str, int] | None = None,
+        complete_job: bool = False,
     ) -> None:
         """Persist one drain of driver artifacts in a single transaction.
 
@@ -1590,6 +1591,15 @@ class ScriptAuthoringServiceImpl:
                         continue
                     await self._repos.items.update(item, expected_revision=expected, conn=conn)
                     revisions[item.id] = expected + 1
+                if complete_job:
+                    assert job is not None
+                    await self._repos.jobs.update(
+                        job,
+                        lease_owner=job.lease_owner,
+                        lease_epoch=job.lease_epoch,
+                        lease_duration_s=self._config.recovery_lease_seconds,
+                        conn=conn,
+                    )
         except StaleRevisionError as exc:
             raise ScriptAuthoringError("stale_revision", str(exc)) from exc
 
@@ -2698,6 +2708,8 @@ class ScriptAuthoringServiceImpl:
 
     async def _resume_job(self, job: GenerationJob) -> None:
         """Dispatch recovery for one durable job by its intent (R6.3)."""
+        if job.status not in (GenerationJobStatus.QUEUED, GenerationJobStatus.RUNNING):
+            return
         if job.intent == ScriptIntent.REGENERATE_SEGMENT and job.input_snapshot.get(
             "source_version_id"
         ):
@@ -3173,23 +3185,29 @@ class ScriptAuthoringServiceImpl:
             item.current_version_id, item.state = version.id, state
             for artifact in (new_segment, run, version, item):
                 bridge(artifact)
-            await self._drain_artifacts(bridge, revisions, set(), job=job)
             job.status = GenerationJobStatus.COMPLETED
             job.error_code = "" if result.passed else "script_needs_review"
-            await self._repos.jobs.update(
-                job,
-                lease_owner=job.lease_owner,
-                lease_epoch=job.lease_epoch,
-                lease_duration_s=self._config.recovery_lease_seconds,
-            )
+            await self._drain_artifacts(bridge, revisions, set(), job=job, complete_job=True)
         except LeaseLostError:
             return
         except TimeoutError:
-            await self._fail_job(job, "part_provider_timeout")
+            await self._fail_part_job(job, "part_provider_timeout")
         except ScriptAuthoringError:
-            await self._fail_job(job, "part_source_changed")
+            await self._fail_part_job(job, "part_source_changed")
         except Exception:
-            await self._fail_job(job, "part_provider_unavailable")
+            await self._fail_part_job(job, "part_provider_unavailable")
+
+    async def _fail_part_job(self, job, code: str) -> None:
+        # A connection can drop after COMMIT was accepted. Read the atomic
+        # receipt before reporting failure; if the DB is unreachable leave
+        # recovery ownership intact instead of guessing an outcome.
+        try:
+            latest = await self._repos.jobs.get(job.id)
+        except Exception:
+            return
+        if latest is not None and latest.status is GenerationJobStatus.COMPLETED:
+            return
+        await self._fail_job(job, code)
 
     async def _run_regenerate_job(
         self, job, item: ScriptItem, script_set: ScriptSet, segment_index: int, llm_fn

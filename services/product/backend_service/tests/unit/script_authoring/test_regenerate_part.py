@@ -110,3 +110,29 @@ async def test_saving_unchanged_ai_text_preserves_part_provenance():
     await service.submit_for_gate(set_id=set_id, product_id="P1")
     _, checked = await _text(repos, set_id, "P1")
     assert checked.id == before.id and checked.segment_version_ids == before.segment_version_ids
+
+
+@pytest.mark.asyncio
+async def test_part_completion_uses_the_same_transaction_as_selected_version():
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await _run(service, repos, set_id)
+    _, source = await _text(repos, set_id, "P1")
+    updates = []
+    original = repos.jobs.update
+
+    async def observe(job, **kwargs):
+        if job.status.value == "completed":
+            updates.append(kwargs.get("conn"))
+        await original(job, **kwargs)
+
+    repos.jobs.update = observe
+    started = await service.regenerate_segment(
+        set_id=set_id,
+        product_id="P1",
+        segment_index=1,
+        idempotency_key="atomic",
+        expected_version_id=source.id,
+    )
+    assert (await wait_job(service, set_id, "P1", started["workflow_id"]))["status"] == "completed"
+    assert len(updates) == 1 and updates[0] is not None
