@@ -19,7 +19,7 @@ _DELIVERY_TIME_RE = re.compile(
 )
 _NOT_DELIVERY_RE = re.compile(
     r"(?<!\w)(?:phí|freeship|miễn phí|giá|bao nhiêu tiền|tiền|hoàn|trả|đưa|thanh toán|cod"
-    r"|hàng lại|còn hàng|bồi thường|trở lại|xác nhận|mới về|hàng mới|nhập)(?!\w)|(?<!\w)shop\s+(?:\w+\s+){0,2}nhận",
+    r"|hàng lại|còn hàng|bồi thường|trở lại|xác nhận|mới về|hàng mới|nhập|bảo hành|hết hạn|đổi|hạn dùng)(?!\w)|(?<!\w)shop\s+(?:\w+\s+){0,2}nhận",
     re.I,
 )
 
@@ -30,11 +30,13 @@ def factual_reply(product, question: str, completed_text: str = "") -> str | Non
     Other questions retain semantic retrieval and validation. Never infer a delivery
     promise for an individual address from a general policy, or omit its conditions.
     """
-    from backend.application.director.routing import route_hints
+    from backend.application.director.routing import matched_intents, route_hints
 
     intent = route_hints(question, []).intent_candidates
     if len(intent) != 1 or intent[0] not in ("price", "shipping"):
         return None
+    if set(matched_intents(question)) - {intent[0], "buy_intent"}:
+        return None  # it also touches another topic (size, promotion, stock...)
     topic = intent[0]
     # Mixed questions and personalised guarantees need the existing semantic path.
     if re.search(r"bảo đảm|chắc chắn|kịp|địa chỉ|ngày mai|hôm nay", question, re.I):

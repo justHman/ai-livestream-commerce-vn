@@ -45,6 +45,14 @@ _INTENT_PHRASES: list[tuple[str, tuple[str, ...]]] = [
 _SOCIAL = ("chào", "hello", "hi ", "like", "follow", "thả tim", "tym", "đẹp quá")
 
 
+def matched_intents(text: str) -> list[str]:
+    """Every commerce intent whose phrases occur (route_hints keeps only the first)."""
+    lowered = re.sub(
+        r"bao nhiêu (?:ngày|lâu|tiếng|hôm)", "", text.lower()
+    )  # a duration, not a price
+    return [name for name, phrases in _INTENT_PHRASES if any(p in lowered for p in phrases)]
+
+
 def _is_social(text: str) -> bool:
     # Whole words: "khi nào nhận hàng" must never match the greeting "hi".
     return any(re.search(r"(?<!\w)" + re.escape(p.strip()) + r"(?!\w)", text) for p in _SOCIAL)
