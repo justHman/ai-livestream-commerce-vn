@@ -11,7 +11,7 @@ from .generation.ordered_units import claim_covered
 _TIME = r"bao lâu|mấy ngày|bao nhiêu ngày|bao giờ|khi nào|thời gian"
 # Receiving the GOODS ("nhận được hàng"), never "nhận tiền / khoản bồi thường".
 _DELIVERY = (
-    r"(?<!xác\s)nhận(?:\s+được)?(?=\s*(?:hàng|đơn hàng|áo|đồ|sản phẩm|món|ạ|nhỉ|vậy|shop|[?.!,]|$))"
+    r"(?<!xác\s)nhận(?:\s+được)?(?=\s*(?:hàng|áo|đồ|sản phẩm|món|ạ|nhỉ|vậy|[?.!,]|$))"
     r"|giao|ship|vận chuyển"
 )
 _DELIVERY_TIME_RE = re.compile(

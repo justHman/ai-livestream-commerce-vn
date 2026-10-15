@@ -148,6 +148,7 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
         "Bao lâu nhận được khoản bồi thường?",
         "Shop bao giờ nhận đơn trở lại?",
         "Bao lâu nhận được xác nhận đơn hàng?",
+        "Shop bao giờ nhận đơn hàng sau Tết?",
     ],
 )
 def test_payment_and_restock_questions_never_get_the_delivery_time_reply(question):
