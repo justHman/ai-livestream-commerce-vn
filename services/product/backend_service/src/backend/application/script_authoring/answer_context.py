@@ -8,6 +8,17 @@ import zlib
 from .generation.ordered_units import claim_covered
 
 
+_TIME = r"bao lâu|mấy ngày|bao giờ|khi nào|thời gian"
+_DELIVERY = r"nhận|giao|ship|vận chuyển"
+_DELIVERY_TIME_RE = re.compile(
+    rf"(?:{_TIME}).{{0,30}}(?:{_DELIVERY})|(?:{_DELIVERY}).{{0,30}}(?:{_TIME})", re.I
+)
+_NOT_DELIVERY_RE = re.compile(
+    r"phí|freeship|miễn phí|giá|bao nhiêu tiền|tiền|hoàn|trả|đưa|thanh toán|cod|hàng lại|còn hàng",
+    re.I,
+)
+
+
 def factual_reply(product, question: str, completed_text: str = "") -> str | None:
     """Only unambiguous price/delivery questions use this zero-model path.
 
@@ -29,11 +40,8 @@ def factual_reply(product, question: str, completed_text: str = "") -> str | Non
             return None
         selected = [a for a in answers if "giá " in a.lower() and "đồng" in a.lower()]
     else:
-        if re.search(
-            r"phí|freeship|miễn phí|giá|bao nhiêu tiền|trả tiền|thanh toán|cod|hàng lại|còn hàng",
-            question,
-            re.I,
-        ):
+        # Positive evidence only: a delivery-TIME question. Money, refunds and restocks are not.
+        if not _DELIVERY_TIME_RE.search(question) or _NOT_DELIVERY_RE.search(question):
             return None
         selected = [a for a in answers if re.search(r"giao hàng|vận chuyển|ship", a, re.I)]
     if not selected or len(selected) > (1 if topic == "price" else 3):

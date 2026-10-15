@@ -140,7 +140,12 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
 
 @pytest.mark.parametrize(
     "question",
-    ["Nhận được hàng rồi mới trả tiền được không?", "Bao lâu có hàng lại vậy shop?"],
+    [
+        "Nhận được hàng rồi mới trả tiền được không?",
+        "Bao lâu có hàng lại vậy shop?",
+        "Bao lâu nhận được tiền hoàn?",
+        "Giao hàng rồi mới đưa tiền được không?",
+    ],
 )
 def test_payment_and_restock_questions_never_get_the_delivery_time_reply(question):
     from backend.application.script_authoring.answer_context import factual_reply
@@ -168,3 +173,22 @@ def test_unfinished_replies_are_not_closed_by_a_stray_particle():
         == "Mình giao hàng toàn quốc rồi nên mình luôn"
     )
     assert _close_sentence("Mình giao hàng toàn quốc rồi,") == "Mình giao hàng toàn quốc rồi,"
+
+
+def test_a_plain_delivery_time_question_still_gets_the_reply():
+    from backend.application.script_authoring.answer_context import factual_reply
+
+    claim = "Giao hàng toàn quốc từ 2 đến 3 ngày"
+    product = ApprovedProduct(
+        "p",
+        "v",
+        "Giao hàng toàn quốc chỉ từ hai đến ba ngày.",
+        "hash",
+        json.dumps({"allowed_claims": [claim]}),
+    )
+    for question in (
+        "Thời gian giao hàng bao lâu?",
+        "Đặt hàng thì bao lâu nhận được?",
+        "bao lâu thì nhận được hàng ạ",
+    ):
+        assert factual_reply(product, question) is not None, question
