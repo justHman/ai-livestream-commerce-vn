@@ -19,7 +19,7 @@ _DELIVERY_TIME_RE = re.compile(
 )
 _NOT_DELIVERY_RE = re.compile(
     r"(?<!\w)(?:phí|freeship|miễn phí|giá|bao nhiêu tiền|tiền|hoàn|trả|đưa|thanh toán|cod"
-    r"|hàng lại|còn hàng|bồi thường|trở lại|xác nhận)(?!\w)",
+    r"|hàng lại|còn hàng|bồi thường|trở lại|xác nhận|mới về|hàng mới|nhập)(?!\w)|(?<!\w)shop\s+(?:\w+\s+){0,2}nhận",
     re.I,
 )
 
