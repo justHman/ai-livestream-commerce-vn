@@ -145,6 +145,7 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
         "Bao lâu có hàng lại vậy shop?",
         "Bao lâu nhận được tiền hoàn?",
         "Giao hàng rồi mới đưa tiền được không?",
+        "Bao lâu nhận được khoản bồi thường?",
     ],
 )
 def test_payment_and_restock_questions_never_get_the_delivery_time_reply(question):
@@ -190,5 +191,7 @@ def test_a_plain_delivery_time_question_still_gets_the_reply():
         "Thời gian giao hàng bao lâu?",
         "Đặt hàng thì bao lâu nhận được?",
         "bao lâu thì nhận được hàng ạ",
+        "Giao hàng mất bao nhiêu ngày?",
+        "Giao hàng đến Hoàng Mai bao lâu?",
     ):
         assert factual_reply(product, question) is not None, question
