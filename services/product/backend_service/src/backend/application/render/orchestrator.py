@@ -350,6 +350,7 @@ class StreamOrchestrator:
             # discarded, so this turn releases the coordinator lock at once.
             synthesis_stop = threading.Event()
             pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-prefetch")
+            ahead = None
             try:
                 ahead = (
                     pool.submit(
@@ -390,7 +391,10 @@ class StreamOrchestrator:
                         raise error
             finally:
                 synthesis_stop.set()
-                pool.shutdown(wait=False, cancel_futures=True)
+                # Join an already completed worker so a rejected/finished turn
+                # does not leave an idle thread visible to the next turn. A
+                # genuinely stalled provider still detaches immediately.
+                pool.shutdown(wait=ahead is None or ahead.done(), cancel_futures=True)
         finally:
             bridge.put(_BRIDGE_SENTINEL)
 

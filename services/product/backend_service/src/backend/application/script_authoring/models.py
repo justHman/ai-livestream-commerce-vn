@@ -355,6 +355,8 @@ class GenerationJob(BaseModel):
     target_duration_s: int = Field(ge=1)
     fingerprint: Optional[GenerationFingerprint] = None
     idempotency_key: str = ""
+    input_snapshot: dict[str, Any] = Field(default_factory=dict)
+    error_code: str = ""
     lease_owner: Optional[str] = None
     lease_expires_at: Optional[str] = None
     lease_epoch: int = Field(default=0, ge=0)

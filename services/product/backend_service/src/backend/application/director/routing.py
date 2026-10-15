@@ -15,9 +15,21 @@ _INTENT_PHRASES: list[tuple[str, tuple[str, ...]]] = [
         "complaint",
         ("giao sai", "bị lỗi", "bị rát", "giao chậm", "móp", "đổi size", "không phản hồi"),
     ),
+    (
+        "shipping",
+        (
+            "ship",
+            "giao hàng",
+            "vận chuyển",
+            "freeship",
+            "bao lâu nhận",
+            "ngày nhận",
+            "khi nào nhận",
+            "thời gian nhận",
+        ),
+    ),
     ("buy_intent", ("chốt", "đặt hàng", "đặt ", "mua ngay", "lấy ", "thanh toán")),
     ("promotion", ("khuyến mãi", "giảm", "sale", "voucher", "deal", "ưu đãi")),
-    ("shipping", ("ship", "giao hàng", "vận chuyển", "freeship", "bao lâu nhận")),
     ("stock", ("còn hàng", "còn không", "hết chưa", "về hàng")),
     ("size_color", ("size", "cỡ", "kích cỡ", "màu", "vừa không")),
     ("price", ("giá", "bao nhiêu", "nhiêu tiền", "mấy đồng")),
@@ -25,6 +37,13 @@ _INTENT_PHRASES: list[tuple[str, tuple[str, ...]]] = [
     ("usage", ("cách dùng", "dùng sao", "sử dụng", "công dụng", "phù hợp", "dùng được")),
 ]
 _SOCIAL = ("chào", "hello", "hi ", "like", "follow", "thả tim", "tym", "đẹp quá")
+
+
+def _is_social(text: str) -> bool:
+    # Whole words: "khi nào nhận hàng" must never match the greeting "hi".
+    return any(re.search(r"(?<!\w)" + re.escape(p.strip()) + r"(?!\w)", text) for p in _SOCIAL)
+
+
 _SPAM = ("bit.ly", "t.me/", "inbox em", "bên shop em", "link mua", "follow em")
 _PRODUCT_STOPWORDS = {
     "cho",
@@ -125,7 +144,7 @@ def route_hints(
         return RoutingHints(intent_candidates=["spam"], product_candidates=[])
     if any(phrase in lowered for phrase in _OFF_TOPIC):
         return RoutingHints(intent_candidates=["off_topic"], product_candidates=[])
-    if any(phrase in lowered for phrase in _SOCIAL):
+    if _is_social(lowered):
         return RoutingHints(intent_candidates=["social"], product_candidates=[])
 
     intent = "unknown"
@@ -180,7 +199,7 @@ def route_comment(
         return replace(comment, category="spam", intent="spam", actionable=False)
     if any(phrase in text for phrase in _OFF_TOPIC):
         return replace(comment, category="off_topic", intent="off_topic", actionable=False)
-    if any(phrase in text for phrase in _SOCIAL):
+    if _is_social(text):
         return replace(comment, category="social", intent="social", actionable=False)
 
     intent = "unknown"

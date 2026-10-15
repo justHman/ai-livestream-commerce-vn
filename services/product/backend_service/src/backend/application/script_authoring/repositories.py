@@ -76,7 +76,7 @@ _JOB_COLS = (
     "id, batch_id, script_item_id, product_id, intent, status, plan_id, "
     "plan_segment_count, current_segment_index, attempt_count, target_duration_s, "
     "fingerprint::text AS fingerprint, idempotency_key, lease_owner, lease_expires_at, "
-    "lease_epoch, created_at, updated_at"
+    "lease_epoch, created_at, updated_at, input_snapshot::text AS input_snapshot, error_code"
 )
 
 # Plain column lists for INSERT (no casts / aliases).
@@ -113,7 +113,7 @@ _BATCH_INS = (
 _JOB_INS = (
     "id, batch_id, script_item_id, product_id, intent, status, plan_id, "
     "plan_segment_count, current_segment_index, attempt_count, target_duration_s, "
-    "fingerprint, idempotency_key, created_at, updated_at"
+    "fingerprint, idempotency_key, created_at, updated_at, input_snapshot, error_code"
 )
 
 
@@ -872,7 +872,7 @@ class JobRepository(_Repo):
     async def insert(self, job: GenerationJob, *, conn=None) -> None:
         await self._execute(
             f"INSERT INTO script_generation_jobs ({_JOB_INS}) "
-            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15)",
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb,$17)",
             job.id,
             job.batch_id,
             job.script_item_id,
@@ -888,6 +888,8 @@ class JobRepository(_Repo):
             job.idempotency_key,
             _dts(job.created_at),
             _dts(job.updated_at),
+            json.dumps(job.input_snapshot),
+            job.error_code,
             conn=conn,
         )
 
@@ -965,20 +967,21 @@ class JobRepository(_Repo):
             await self._execute(
                 "UPDATE script_generation_jobs SET status=$2, plan_id=$3, "
                 "plan_segment_count=$4, current_segment_index=$5, attempt_count=$6, "
-                "updated_at=NOW() WHERE id=$1",
+                "error_code=$7, updated_at=NOW() WHERE id=$1",
                 job.id,
                 job.status.value,
                 job.plan_id,
                 job.plan_segment_count,
                 job.current_segment_index,
                 job.attempt_count,
+                job.error_code,
                 conn=conn,
             )
             return
         status = await self._execute(
             "UPDATE script_generation_jobs SET status=$2, plan_id=$3, "
             "plan_segment_count=$4, current_segment_index=$5, attempt_count=$6, "
-            "lease_expires_at=NOW() + make_interval(secs => $7), updated_at=NOW() "
+            "error_code=$10, lease_expires_at=NOW() + make_interval(secs => $7), updated_at=NOW() "
             "WHERE id=$1 AND lease_owner=$8 AND lease_epoch=$9 RETURNING id",
             job.id,
             job.status.value,
@@ -989,6 +992,7 @@ class JobRepository(_Repo):
             lease_duration_s,
             lease_owner,
             lease_epoch,
+            job.error_code,
             conn=conn,
         )
         if status != "UPDATE 1":
@@ -1059,6 +1063,7 @@ class JobRepository(_Repo):
             return None
         data = dict(row)
         data["fingerprint"] = _json_rows(data["fingerprint"], None)
+        data["input_snapshot"] = _json_rows(data.get("input_snapshot"), {})
         data["created_at"] = _iso(data["created_at"])
         data["updated_at"] = _iso(data["updated_at"])
         data["lease_expires_at"] = _iso(data["lease_expires_at"])
@@ -1098,6 +1103,22 @@ def _null_transaction():
     return _NullTransaction()
 
 
+class ModelWriteBudgetRepository(_Repo):
+    async def reserve(
+        self, batch_id: str, product_id: str, index: int, *, operation_id: str = "full"
+    ) -> bool:
+        row = await self._fetchone(
+            "INSERT INTO script_model_write_budget(batch_id,product_id,unit_index,operation_id,writes) VALUES ($1,$2,$3,$4,1) "
+            "ON CONFLICT (batch_id,product_id,unit_index,operation_id) DO UPDATE SET writes=script_model_write_budget.writes+1 "
+            "WHERE script_model_write_budget.writes<2 RETURNING writes",
+            batch_id,
+            product_id,
+            index,
+            operation_id,
+        )
+        return row is not None
+
+
 class PostgresAuthoringRepositories:
     """Aggregate root owning the pool + one repository per domain aggregate."""
 
@@ -1113,6 +1134,7 @@ class PostgresAuthoringRepositories:
         self.approvals = ApprovalRepository(self)
         self.batches = BatchRepository(self)
         self.jobs = JobRepository(self)
+        self.model_budget = ModelWriteBudgetRepository(self)
         self.idempotency = IdempotencyRepository(self)
 
     @property

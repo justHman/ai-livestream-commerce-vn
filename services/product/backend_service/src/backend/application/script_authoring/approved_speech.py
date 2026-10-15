@@ -90,7 +90,7 @@ class ApprovedProduct:
             spoken = compile_spoken_text(claim.strip()).spoken_text
             if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # a condition only restricts: never dropped
-            elif not claim_covered(claim, self.spoken_text):
+            elif not any(claim_covered(claim, unit) for unit in self.units):
                 continue  # not part of what the owner approved: a changed fact must not slip in
             elif claim in promotions:
                 conditional.append(spoken)  # never alone: a discount without its condition misleads
@@ -530,6 +530,9 @@ class ApprovedSpeech:
         select_locked: bool = False,
         route: str,
         live: Callable[[], bool] = lambda: True,
+        completed_text: str = "",
+        future_text: str = "",
+        question_text: str | None = None,
     ) -> ValidatedSpeech:
         epoch = self._epochs.get(session_id, 0)
         if route != "director":
@@ -548,6 +551,21 @@ class ApprovedSpeech:
                 raise SpeechRejected("unit_required")
             text = whole.spoken_text
         elif generate:
+            from .answer_context import factual_reply
+
+            direct = (
+                factual_reply(candidates[0], question_text, completed_text, future_text)
+                if len(candidates) == 1 and question_text
+                else None
+            )
+            if direct is not None:
+                self._fence(session_id, epoch, live)
+                self._said_ok.setdefault(session_id, set()).add((candidates[0].product_id, direct))
+                speech = ValidatedSpeech(envelope, candidates[0], direct, epoch, route)
+                await self.revalidate(speech, live=live)
+                if route != "director":
+                    self.check_start(session_id)
+                return speech
             if llm is None or getattr(llm, "name", "none") == "none":
                 raise SpeechRejected("generation_unavailable")
             answers = [answer for p in candidates for answer in p.answers()]
