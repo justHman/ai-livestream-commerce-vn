@@ -136,3 +136,35 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
     prompt = build_unit_prompt(SessionBrief(), product, units, middle)
     low = int(units[middle].target_seconds * 16 * 0.85)
     assert f"khoảng {low} đến" in prompt
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["Nhận được hàng rồi mới trả tiền được không?", "Bao lâu có hàng lại vậy shop?"],
+)
+def test_payment_and_restock_questions_never_get_the_delivery_time_reply(question):
+    from backend.application.script_authoring.answer_context import factual_reply
+
+    claim = "Giao hàng toàn quốc từ 2 đến 3 ngày"
+    product = ApprovedProduct(
+        "p", "v", "Giao hàng hai đến ba ngày.", "hash", json.dumps({"allowed_claims": [claim]})
+    )
+    assert factual_reply(product, question) is None
+
+
+def test_only_the_city_the_viewer_lives_in_is_echoed():
+    from backend.application.script_authoring.answer_context import _city
+
+    assert _city("bao lâu thì nhận được hàng, em ở Hồ Chí Minh") == "Hồ Chí Minh"
+    assert _city("Bao lâu giao tới Hà Nội? Em ở Đà Nẵng.") is None
+    assert _city("em ở Hà Nội hay Hồ Chí Minh cũng được") is None
+
+
+def test_unfinished_replies_are_not_closed_by_a_stray_particle():
+    from backend.application.script_authoring.approved_speech import _close_sentence
+
+    assert (
+        _close_sentence("Mình giao hàng toàn quốc rồi nên mình luôn")
+        == "Mình giao hàng toàn quốc rồi nên mình luôn"
+    )
+    assert _close_sentence("Mình giao hàng toàn quốc rồi,") == "Mình giao hàng toàn quốc rồi,"

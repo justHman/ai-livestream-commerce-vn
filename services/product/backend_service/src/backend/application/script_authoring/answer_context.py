@@ -29,7 +29,11 @@ def factual_reply(product, question: str, completed_text: str = "") -> str | Non
             return None
         selected = [a for a in answers if "giá " in a.lower() and "đồng" in a.lower()]
     else:
-        if re.search(r"phí|freeship|miễn phí|giá|bao nhiêu tiền", question, re.I):
+        if re.search(
+            r"phí|freeship|miễn phí|giá|bao nhiêu tiền|trả tiền|thanh toán|cod|hàng lại|còn hàng",
+            question,
+            re.I,
+        ):
             return None
         selected = [a for a in answers if re.search(r"giao hàng|vận chuyển|ship", a, re.I)]
     if not selected or len(selected) > (1 if topic == "price" else 3):
@@ -72,8 +76,17 @@ _INVITE = (
 
 
 def _city(question: str) -> str | None:
-    if re.search(r"hồ chí minh|hcm|tphcm|sài gòn", question, re.I):
-        return "Hồ Chí Minh"
-    if re.search(r"hà nội|(?<!\w)hn(?!\w)", question, re.I):
-        return "Hà Nội"
-    return None
+    """Only a city the viewer says they live in; "giao tới Hà Nội" names a destination, not them."""
+    named = [
+        n for n, pattern in _CITIES if re.search(rf"(?<!\w)(?:{pattern})(?!\w)", question, re.I)
+    ]
+    lives = [
+        n for n, pattern in _CITIES if re.search(rf"(?<!\w)ở\s+(?:{pattern})(?!\w)", question, re.I)
+    ]
+    return lives[0] if len(named) == 1 and lives else None
+
+
+_CITIES = (
+    ("Hồ Chí Minh", r"hồ chí minh|hcm|tphcm|sài gòn"),
+    ("Hà Nội", r"hà nội|hn"),
+)

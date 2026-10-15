@@ -186,13 +186,13 @@ _JUDGE_SYSTEM = (
 
 
 # A reply that ends on one of these only lacks its full stop; anything else cut short stays refused.
-_FINAL_PARTICLES = frozenset("nhé nha nhỉ ạ nè đó luôn rồi thôi đâu".split())
+_FINAL_PARTICLES = frozenset("nhé nha nhỉ ạ nè".split())
 
 
 def _close_sentence(raw: str) -> str:
     text = raw.strip()
     words = re.findall(r"\w+", text.lower())
-    if words and words[-1] in _FINAL_PARTICLES and not re.search(r"[.!?…]$", text):
+    if words and words[-1] in _FINAL_PARTICLES and not re.search(r"[.!?…,;:]$", text):
         return text + "."
     return raw
 
