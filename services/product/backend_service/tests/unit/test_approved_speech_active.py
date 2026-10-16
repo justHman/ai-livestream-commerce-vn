@@ -250,7 +250,10 @@ async def test_generated_speech_buffered_before_any_audio(case_factory, cloud):
     case.llm.release.set()
     await pending
     assert case.llm.complete
-    assert (case.backend.calls if cloud else case.tts.calls) == [CLAIM]
+    said = "".join(case.backend.calls if cloud else case.tts.calls)
+    assert CLAIM in said and len(said) > len(
+        CLAIM
+    )  # the approved answer, said as a short conversation
 
 
 def _only_deflection(case) -> bool:
@@ -398,7 +401,8 @@ async def test_direct_say_valid_content_and_version_evidence(
         },
     )
     assert response.status_code == 200, response.text
-    assert response.json()["reply"] == (CLAIM if generate else TEXT)
+    reply = response.json()["reply"]
+    assert (CLAIM in reply) if generate else (reply == TEXT)
     assert response.json()["validation"]["approved_version_id"] == case.source.version.id
 
 
@@ -525,14 +529,9 @@ async def test_ordered_units_play_in_owner_order_with_qa_interruption(case_facto
     assert await case.d.coordinator._maybe_speak(case.sid, qa)
     for _ in range(5):
         await play_next(case)
-    assert spoken(case) == [
-        B_UNITS[0],
-        B_UNITS[1],
-        B_UNITS[2],
-        CLAIM,
-        B_UNITS[3],
-        *A_UNITS,
-    ]
+    said = spoken(case)
+    assert said[:3] == B_UNITS[:3] and CLAIM in said[3]  # the answer, said as a short conversation
+    assert said[4:] == [B_UNITS[3], *A_UNITS]
     assert " ".join(c.strip() for c in case.tts.calls) == " ".join(spoken(case))
     # everything is spoken: nothing left that could repeat or be skipped
     assert spoken(case)[-1] == A_UNITS[-1]
@@ -644,9 +643,11 @@ async def test_a_viewer_answer_is_a_fact_or_the_fixed_deflection(case_factory, o
     turn = decision(case, generated=True)
     await prepare(case, turn)
     await case.d.coordinator._maybe_speak(case.sid, turn)
-    assert "".join(case.tts.calls) == "".join(
-        DEFLECTION if s == "DEFLECTION" else s for s in spoken
-    )
+    said = "".join(case.tts.calls)
+    if spoken == [CLAIM]:
+        assert CLAIM in said and len(said) > len(CLAIM)  # the fact, said as a short conversation
+    else:
+        assert said == "".join(DEFLECTION if s == "DEFLECTION" else s for s in spoken)
 
 
 @pytest.mark.asyncio
@@ -666,7 +667,13 @@ async def test_a_natural_answer_keeps_the_approved_numbers(case_factory, output,
     turn = decision(case, generated=True)
     await prepare(case, turn)
     await case.d.coordinator._maybe_speak(case.sid, turn)
-    assert "".join(case.tts.calls) == (output if accepted else DEFLECTION)
+    said = "".join(case.tts.calls)
+    if accepted:
+        assert output in said and len(said) > len(
+            output
+        )  # the checked answer, said as a short conversation
+    else:
+        assert said == DEFLECTION
 
 
 @pytest.mark.asyncio

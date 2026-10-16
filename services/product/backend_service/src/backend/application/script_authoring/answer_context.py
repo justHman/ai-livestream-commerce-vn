@@ -42,6 +42,9 @@ def _topic_of(question: str) -> str | None:
         # The viewer's own city only ("em ở Hồ Chí Minh"): a closed list, so no question that
         # merely contains "ở" ("em ở xa có ship không", "shop ở đâu") is ever cut away.
         part = re.sub(rf"[,.\s]*(?:em|mình|tôi|nhà em)\s+ở\s+(?:{_CITY_NAMES})\s*[?.!]*$", "", part)
+        part = re.sub(
+            rf"^\s*(?:em|mình|tôi|nhà em)\s+ở\s+(?:{_CITY_NAMES})\s*(?:thì\s+)?[,.]?\s*", "", part
+        )
         words = [w for w in re.findall(r"\w+", part) if w not in _FILLER]
         text = " ".join(words)
         if _PRICE_Q.fullmatch(text):
@@ -86,7 +89,9 @@ def factual_reply(product, question: str, completed_text: str = "") -> str | Non
         intro = f"Bạn ở {city} đúng không nè, mình nói rõ cho bạn luôn nha. "
     else:
         intro = _LEAD_IN_SAID[pick] if said else _LEAD_IN[pick]
-    return intro.format(label=label) + fact + " " + _INVITE[pick]
+    remarks = (_PRICE_REMARK, _PRICE_MORE) if topic == "price" else (_SHIP_REMARK, _SHIP_MORE)
+    chat = f"{remarks[0][(pick + 1) % 3]} {remarks[1][(pick + 2) % 3]}"
+    return intro.format(label=label) + fact + " " + chat + " " + _INVITE[pick]
 
 
 _LEAD_IN = (
@@ -98,6 +103,38 @@ _LEAD_IN_SAID = (
     "Mình nói lại về {label} cho các bạn mới vào tiện theo dõi nha. ",
     "Bạn nào mới vào thì mình nhắc lại {label} một chút nhé. ",
     "Về {label} thì mình nói lại cho mọi người cùng nghe nha. ",
+)
+# Friendly talk around the fact, never a claim of its own (about the viewer or the situation only), so the
+# answer is a little conversation and not a bare line.
+_PRICE_REMARK = (
+    "Hỏi giá trước rồi mới chọn thì đúng là cách mua sắm khôn ngoan luôn đó, mình thấy bạn rất biết cách cân nhắc.",
+    "Mình hiểu ai mua đồ online cũng muốn nắm rõ chi phí trước, nên mình nói rõ để mọi người thoải mái cân nhắc nha.",
+    "Giá cả rõ ràng thì mình mới thoải mái chọn lựa đúng không nè, nên mình nói thẳng luôn cho cả nhà cùng nghe.",
+)
+_SHIP_REMARK = (
+    "Mua đồ online mà biết rõ bao lâu hàng tới thì mới sắp xếp được lịch nhận đúng không nè, nên mình nói kỹ để bạn dễ tính nha.",
+    "Mình hiểu cảm giác chờ hàng nó sốt ruột lắm, nên biết trước thời gian giao thì chủ động hơn nhiều.",
+    "Câu hỏi này rất thực tế luôn, vì ai cũng muốn biết khi nào mình nhận được món đồ mình đã chọn.",
+)
+_PRICE_MORE = (
+    "Món nào mình chọn cũng nên vừa túi tiền và vừa ý, nên bạn cứ thong thả xem thêm phần giới thiệu của mình nha.",
+    "Nếu bạn đang phân vân thì cứ nghe hết phần giới thiệu, rồi quyết định thật thoải mái nhé.",
+    "Mình thích cùng các bạn tính toán kỹ trước khi chốt, như vậy mua về mới ưng cái bụng.",
+)
+_SHIP_MORE = (
+    "Có thời gian dự kiến trong tay thì bạn dễ sắp xếp lịch ở nhà để nhận hàng hơn nhiều.",
+    "Mình nói vậy để các bạn tính trước chuyện nhận hàng cho kịp lịch của mình nha.",
+    "Hàng về tới tay đúng lúc mình cần thì dùng mới thích, đúng không nè.",
+)
+_NATURAL_LEAD_IN = (
+    "Cảm ơn bạn đã hỏi nha, mình trả lời liền đây.",
+    "À câu này mình xin trả lời luôn cho mọi người cùng nghe nhé.",
+    "Mình thấy có bạn hỏi nè, để mình nói rõ cho mọi người cùng nghe nha.",
+)
+_NATURAL_REMARK = (
+    "Câu này nhiều bạn cũng quan tâm lắm, nên mình nói kỹ một chút cho mọi người dễ hình dung.",
+    "Hỏi như vậy là rất hợp lý luôn, vì mua đồ online ai cũng muốn nắm rõ trước khi quyết định.",
+    "Mình thích những câu hỏi thực tế như vầy, vì nó giúp mọi người chọn đúng món mình cần.",
 )
 _INVITE = (
     "Bạn nào còn băn khoăn điều gì về sản phẩm thì cứ bình luận, mình trả lời liền nhé.",
@@ -121,3 +158,11 @@ _CITIES = (
     ("Hồ Chí Minh", r"hồ chí minh|hcm|tphcm|sài gòn"),
     ("Hà Nội", r"hà nội|hn"),
 )
+
+
+def wrap_natural(question: str, answer: str) -> str:
+    """A checked natural answer, said as a short conversation: lead-in, the answer, a remark, an invitation.
+
+    The model's text is untouched; the sentences around it are fixed and carry no claim."""
+    pick = zlib.crc32(question.encode("utf-8")) % 3
+    return f"{_NATURAL_LEAD_IN[pick]} {answer.strip()} {_NATURAL_REMARK[(pick + 1) % 3]} {_INVITE[pick]}"
