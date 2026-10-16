@@ -186,28 +186,35 @@ _SHOP_WORDS = (
     "|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn|hàng|freeship|miễn phí|phí|tiền"
     "|trả góp|order|inbox|tư vấn|liên hệ|địa chỉ|ở đâu|cửa hàng|showroom|bao lâu|mấy ngày|tặng|quà"
     "|voucher|mã giảm|chiết khấu|cam kết|đảm bảo|bảo đảm|hứa|khuyến|lừa|uy tín|thật|giả"
+    "|cái này|cái đó|cái kia|món này|món đó|mẫu này|đồ này|loại này|chiếc này|bộ này|hàng này"
 )
 _COMMERCE = re.compile(rf"(?<!\w)(?:{_SHOP_WORDS})(?!\w)", re.IGNORECASE)
 _HOST = re.compile(r"(?<!\w)(?:anh|chị|em|bạn|mc|kol|ad|admin)(?!\w)", re.IGNORECASE)
 _PERSONAL = re.compile(
     r"(?<!\w)(?:biết|thích|ăn|uống|ngủ|hát|nhảy|múa|đàn|tuổi|độc thân|người yêu|bạn trai|bạn gái|vợ"
-    r"|chồng|gia đình|quê|sống|học|làm nghề|nghề|khoẻ|khỏe|vui|buồn|mệt|đẹp trai|xinh|tên)(?!\w)",
+    r"|chồng|gia đình|quê|sống|học|làm nghề|nghề|khoẻ|khỏe|vui|buồn|mệt|đẹp trai|xinh|tên|chơi|đi đâu"
+    r"|rảnh|bận|làm gì|ở nhà|cười|yêu|ghét|đói|phim|nhạc|bài hát|game|bóng đá|du lịch|ngày mai|cuối tuần)"
+    r"(?!\w)",
     re.IGNORECASE,
 )
-_ASKING_LAST = frozenset("không chưa hả à nhỉ sao gì nào đâu chứ".split())
-_SOFTENER = frozenset("ạ vậy thế nhé nha ơi ha".split())
+_ASKING = re.compile(
+    r"\?|(?<!\w)(?:không|chưa|hả|à|nhỉ|sao|gì|nào|đâu|chứ|ko|k)(?!\w)", re.IGNORECASE
+)
 
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
-    """A personal question put to the host, with no shopping word and no content word of the facts."""
+    """A question put to the host as a person, with no shopping word and no content word of the facts.
+
+    Real viewers rarely type a '?', so a question is any interrogative word. A wrong guess only changes
+    the wording: both fallbacks send a shop question to the shop and repeat nothing the viewer wrote."""
     lowered = question.split("|")[0].strip().lower()
-    if _COMMERCE.search(lowered) or not (_HOST.search(lowered) and _PERSONAL.search(lowered)):
+    if _COMMERCE.search(lowered) or not _HOST.search(lowered):
+        return False
+    if not (_PERSONAL.search(lowered) or _ASKING.search(lowered)):
         return False
     words = {w for w in re.findall(r"\w+", lowered) if len(w) > 2 and w not in _STOP}
     known = set(re.findall(r"\w+", " ".join(facts).lower()))
-    tokens = [t for t in lowered.rstrip("?!. ").split() if t not in _SOFTENER]
-    asks = lowered.rstrip().endswith("?") or (tokens and tokens[-1] in _ASKING_LAST)
-    return bool(asks) and not (words & known)
+    return not (words & known)
 
 
 def deflection_for(question: str | None, facts: list[str]) -> str:
