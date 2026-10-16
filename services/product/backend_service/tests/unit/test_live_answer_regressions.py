@@ -326,11 +326,13 @@ def test_an_off_topic_question_is_named_and_politely_set_aside():
     assert "chưa có thông tin chính xác" not in said
 
 
-def test_a_shop_question_the_facts_cannot_answer_is_named_and_sent_to_the_shop():
+def test_a_shop_question_the_facts_cannot_answer_is_sent_to_the_shop_without_repeating_it():
     from backend.application.script_authoring.answer_context import deflection_for
 
     said = deflection_for("áo này có túi trong không ạ", FACTS)
-    assert said.startswith("Mình thấy có bạn hỏi là áo này có túi trong không ạ.")
+    assert said.startswith(
+        "Mình thấy có bạn gửi một câu hỏi rất cụ thể."
+    )  # a shop question is never echoed
     assert "chưa có thông tin chính xác" in said and "nhắn tin cho shop" in said
 
 
@@ -450,3 +452,36 @@ def test_ordinary_shop_questions_are_never_called_off_topic(question):
 
     assert not is_off_topic(question, FACTS)
     assert "ngoài lề" not in deflection_for(question, FACTS)
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "shop không thu phí ship toàn bộ đơn hàng",
+        "có tốt không, shop miễn phí toàn bộ đơn hàng",
+        "shop miễn phí ship toàn bộ đơn không ạ",
+        "shop giảm giá một nửa phải không",
+    ],
+)
+def test_a_shop_comment_that_holds_a_fee_or_promise_is_never_repeated(comment):
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    said = deflection_for(comment, FACTS)
+    assert "miễn phí" not in said and "thu phí" not in said and "giảm giá" not in said
+
+
+@pytest.mark.parametrize("comment", ["anh khoẻ không", "anh còn độc thân không ạ"])
+def test_chit_chat_that_merely_contains_a_shopping_looking_syllable_is_off_topic(comment):
+    from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
+
+    assert is_off_topic(comment, FACTS)
+    assert deflection_for(comment, FACTS).startswith(
+        f"Mình thấy có bạn hỏi là {comment.rstrip(' ạ')}"
+    )
+
+
+def test_an_off_topic_statement_or_two_clauses_are_not_repeated():
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    for comment in ("anh nhảy đẹp lắm", "anh khoẻ không, nhảy cho xem"):
+        assert "nhảy" not in deflection_for(comment, FACTS)

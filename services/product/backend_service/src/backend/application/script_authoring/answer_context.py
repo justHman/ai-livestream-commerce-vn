@@ -173,14 +173,17 @@ _STOP = frozenset(
     "không có biết được là và của thì mà nào gì sao đâu cho với này kia đó vậy nhé nha ạ à hả thế "
     "anh chị em bạn mình shop ad admin ơi cái những các một hai ba bao nhiêu".split()
 )
-_COMMERCE = re.compile(
-    r"giá|bao nhiêu|size|kích cỡ|màu|chất liệu|vải|giao|ship|vận chuyển|nhận hàng|đổi|trả|bảo hành"
-    r"|hoàn tiền|cod|thanh toán|khuyến mãi|giảm giá|ưu đãi|còn hàng|hết hàng|mua|đặt|sản phẩm|mẫu"
-    r"|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn"
-    r"|còn|sẵn|kho|hàng|freeship|miễn phí|phí|tiền|trả góp|order|inbox|tư vấn|liên hệ|địa chỉ"
-    r"|ở đâu|cửa hàng|showroom|loại|hãng|bao lâu|mấy ngày",
-    re.IGNORECASE,
+# Shopping words, each as a whole word or phrase ("khoẻ" is not "kho", "anh còn độc thân" is not "còn hàng"):
+# a question that holds none of them and shares no content word with the facts is off topic.
+_SHOP_WORDS = (
+    "giá|bao nhiêu|size|kích cỡ|màu|chất liệu|vải|giao|ship|vận chuyển|nhận hàng|đổi|trả|bảo hành"
+    "|hoàn tiền|cod|thanh toán|khuyến mãi|giảm giá|giảm|ưu đãi|còn hàng|hết hàng|còn size|còn màu"
+    "|còn không|còn áo|còn mẫu|còn bao nhiêu|có sẵn|sẵn hàng|trong kho|kho hàng|mua|đặt|sản phẩm|mẫu"
+    "|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn|hàng|freeship|miễn phí|phí|tiền"
+    "|trả góp|order|inbox|tư vấn|liên hệ|địa chỉ|ở đâu|cửa hàng|showroom|bao lâu|mấy ngày|tặng|quà"
+    "|voucher|mã giảm|chiết khấu|cam kết|đảm bảo|hứa|khuyến"
 )
+_COMMERCE = re.compile(rf"(?<!\w)(?:{_SHOP_WORDS})(?!\w)", re.IGNORECASE)
 
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
@@ -193,25 +196,25 @@ def is_off_topic(question: str, facts: list[str]) -> bool:
     return not (words & known)
 
 
-_ASKING = re.compile(
-    r"\?|\b(?:không|chưa|hả|à|nhỉ|sao|gì|nào|đâu|mấy|bao nhiêu|bao lâu|thế nào|chứ)\b",
-    re.IGNORECASE,
-)
+_ASKING_LAST = frozenset("không chưa hả à nhỉ sao gì nào đâu chứ".split())
+_SOFTENER = frozenset("ạ vậy thế nhé nha ơi ha".split())
 
 
 def _quote(question: str) -> str | None:
     """The viewer's question, only when it is ONE short plain question: no digit, link, handle or markup,
-    no second sentence (a statement such as a promise must never be spoken in the shop's voice), and it
-    must actually ask something."""
+    no second sentence, and it ENDS in a question (a '?' or an interrogative word, softeners like 'ạ'
+    aside). A statement or a promise written by a viewer must never be spoken in the shop's voice."""
     raw = question.split("|")[0].strip()
-    first = raw.rstrip("?!. ")
-    first = re.sub(r"\s+", " ", first)
+    first = re.sub(r"\s+", " ", raw.rstrip("?!. "))
     if not first or len(first) > 90 or re.search(r"[\d@/\\<>#]|http|www", first, re.IGNORECASE):
         return None
-    if re.search(r"[.?!;:\n]", first) or "\n" in raw:
-        return None  # more than one sentence
-    if not _ASKING.search(raw):
-        return None  # not a question: do not repeat it
+    if re.search(r"[.?!;:,\n]", first) or "\n" in raw:
+        return None  # more than one sentence or clause
+    words = first.lower().split()
+    while words and words[-1] in _SOFTENER:
+        words.pop()
+    if not (raw.endswith("?") or (words and words[-1] in _ASKING_LAST)):
+        return None
     return first
 
 
@@ -219,8 +222,10 @@ def deflection_for(question: str | None, facts: list[str]) -> str:
     """Said when the approved facts cannot answer: it names the question, so the viewer knows which one
     is answered, and says why (outside the shop talk, or not in the introduction), with no claim."""
     question = (question or "").strip()
-    quoted = _quote(question) if question else None
     off_topic = bool(question) and is_off_topic(question, facts)
+    # Only an OFF-TOPIC question is repeated: by definition it holds no shopping word, so no price, fee,
+    # discount or promise can be spoken through it.
+    quoted = _quote(question) if off_topic else None
     if quoted:
         lead = f"Mình thấy có bạn hỏi là {quoted}."
     elif off_topic:
