@@ -215,9 +215,11 @@ def deflection_for(question: str | None, facts: list[str]) -> str:
     outside the shop talk, or a shop question the introduction does not cover) and goes back to the
     product. It repeats nothing the viewer wrote."""
     if (question or "").strip() and is_off_topic(question or "", facts):
+        # Even a wrongly classified shop question is still sent to the shop by this text.
         return (
-            "Mình thấy có bạn hỏi một chuyện ngoài lề, không liên quan tới sản phẩm hôm nay. "
-            "Mình xin phép không trả lời sâu nha, cảm ơn bạn đã ghé tương tác với mình. "
+            "Mình thấy có bạn hỏi một chuyện hơi ngoài lề so với phần giới thiệu hôm nay. "
+            "Nếu bạn cần hỏi về sản phẩm thì nhắn tin cho shop để được hỗ trợ kỹ hơn nha, còn chuyện này "
+            "thì mình xin phép không trả lời sâu, cảm ơn bạn đã ghé tương tác với mình. "
             "Giờ mình quay lại giới thiệu tiếp cho mọi người nhé."
         )
     return (

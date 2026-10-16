@@ -317,7 +317,7 @@ def test_fixed_remarks_are_category_neutral_so_any_product_can_use_them():
 
 FACTS = ["Vải denim dày dặn, bền", "Giao hàng toàn quốc từ 2 đến 3 ngày", "Kích cỡ: M, L, XL"]
 SHOP_FALLBACK = "Mình thấy có bạn hỏi một câu rất cụ thể về sản phẩm."
-CHAT_FALLBACK = "Mình thấy có bạn hỏi một chuyện ngoài lề"
+CHAT_FALLBACK = "Mình thấy có bạn hỏi một chuyện hơi ngoài lề"
 
 
 @pytest.mark.parametrize(
@@ -335,7 +335,7 @@ def test_a_personal_question_to_the_host_is_set_aside_politely(comment):
     assert is_off_topic(comment, FACTS)
     said = deflection_for(comment, FACTS)
     assert said.startswith(CHAT_FALLBACK) and "quay lại giới thiệu" in said
-    assert "chưa có thông tin chính xác" not in said
+    assert "nhắn tin cho shop" in said  # a wrongly classified shop question still reaches the shop
 
 
 @pytest.mark.parametrize(
@@ -475,3 +475,10 @@ def test_wording_the_owner_wrote_is_not_blamed_on_the_model():
     from backend.application.script_authoring.generation.ordered_units import offending_phrases
 
     assert offending_phrases("Đặt ngay hôm nay.", "hard_sell", ("Đặt ngay trên giỏ hàng",)) == []
+
+
+def test_a_product_question_phrased_like_chit_chat_is_still_sent_to_the_shop():
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    said = deflection_for("anh có biết cái này có gây dị ứng không ạ?", ["Giá 180000 đồng"])
+    assert "nhắn tin cho shop" in said and "dị ứng" not in said
