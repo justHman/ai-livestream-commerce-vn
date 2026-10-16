@@ -176,7 +176,9 @@ _STOP = frozenset(
 _COMMERCE = re.compile(
     r"giá|bao nhiêu|size|kích cỡ|màu|chất liệu|vải|giao|ship|vận chuyển|nhận hàng|đổi|trả|bảo hành"
     r"|hoàn tiền|cod|thanh toán|khuyến mãi|giảm giá|ưu đãi|còn hàng|hết hàng|mua|đặt|sản phẩm|mẫu"
-    r"|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn",
+    r"|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn"
+    r"|còn|sẵn|kho|hàng|freeship|miễn phí|phí|tiền|trả góp|order|inbox|tư vấn|liên hệ|địa chỉ"
+    r"|ở đâu|cửa hàng|showroom|loại|hãng|bao lâu|mấy ngày",
     re.IGNORECASE,
 )
 
@@ -191,12 +193,25 @@ def is_off_topic(question: str, facts: list[str]) -> bool:
     return not (words & known)
 
 
+_ASKING = re.compile(
+    r"\?|\b(?:không|chưa|hả|à|nhỉ|sao|gì|nào|đâu|mấy|bao nhiêu|bao lâu|thế nào|chứ)\b",
+    re.IGNORECASE,
+)
+
+
 def _quote(question: str) -> str | None:
-    """The viewer's question, only when it is short plain words: no digit, link, handle or markup."""
-    first = question.split("|")[0].strip().rstrip("?!. ")
+    """The viewer's question, only when it is ONE short plain question: no digit, link, handle or markup,
+    no second sentence (a statement such as a promise must never be spoken in the shop's voice), and it
+    must actually ask something."""
+    raw = question.split("|")[0].strip()
+    first = raw.rstrip("?!. ")
     first = re.sub(r"\s+", " ", first)
     if not first or len(first) > 90 or re.search(r"[\d@/\\<>#]|http|www", first, re.IGNORECASE):
         return None
+    if re.search(r"[.?!;:\n]", first) or "\n" in raw:
+        return None  # more than one sentence
+    if not _ASKING.search(raw):
+        return None  # not a question: do not repeat it
     return first
 
 

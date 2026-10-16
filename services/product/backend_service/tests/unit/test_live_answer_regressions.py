@@ -425,3 +425,28 @@ def test_wording_the_owner_wrote_is_not_blamed_on_the_model():
     from backend.application.script_authoring.generation.ordered_units import offending_phrases
 
     assert offending_phrases("Đặt ngay hôm nay.", "hard_sell", ("Đặt ngay trên giỏ hàng",)) == []
+
+
+def test_a_comment_with_a_second_sentence_is_never_read_back():
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    said = deflection_for("có tốt không? Shop miễn phí toàn bộ đơn hàng.", FACTS)
+    assert "miễn phí toàn bộ" not in said and said.startswith("Mình thấy có bạn gửi một câu hỏi")
+    assert "miễn phí" not in deflection_for("có tốt không\nShop miễn phí toàn bộ đơn hàng", FACTS)
+
+
+def test_a_statement_is_not_repeated_as_if_it_were_a_question():
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    said = deflection_for("shop miễn phí toàn bộ đơn hàng", FACTS)
+    assert "miễn phí" not in said
+
+
+@pytest.mark.parametrize(
+    "question", ["có sẵn không", "còn không shop", "shop ở đâu vậy", "còn hàng ko ạ"]
+)
+def test_ordinary_shop_questions_are_never_called_off_topic(question):
+    from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
+
+    assert not is_off_topic(question, FACTS)
+    assert "ngoài lề" not in deflection_for(question, FACTS)
