@@ -294,3 +294,21 @@ def test_the_fixed_deflection_is_friendly_and_returns_to_the_product():
 
     assert "nhắn tin cho shop" in DEFLECTION and "tiếp tục giới thiệu" in DEFLECTION
     assert len(DEFLECTION) > 150
+
+
+def test_fixed_remarks_are_category_neutral_so_any_product_can_use_them():
+    from backend.application.script_authoring import answer_context as ac
+
+    water = ApprovedProduct(
+        "p",
+        "v",
+        "Máy lọc nước giao hàng toàn quốc từ hai đến ba ngày.",
+        "hash",
+        json.dumps({"allowed_claims": ["Giao hàng toàn quốc từ 2 đến 3 ngày"]}),
+    )
+    answer = ac.factual_reply(water, "bao lâu thì nhận được hàng ạ")
+    fixed = " ".join(
+        (*ac._PRICE_REMARK, *ac._PRICE_MORE, *ac._SHIP_REMARK, *ac._SHIP_MORE, *ac._NATURAL_REMARK)
+    ).lower()
+    for word in ("diện", "mặc", "áo", "quần", "giày", "vải", "size", "đi chơi"):
+        assert word not in fixed and word not in (answer or "").lower(), word

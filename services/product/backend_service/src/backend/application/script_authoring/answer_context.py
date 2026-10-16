@@ -112,9 +112,9 @@ _PRICE_REMARK = (
     "Giá cả rõ ràng thì mình mới thoải mái chọn lựa đúng không nè, nên mình nói thẳng luôn cho cả nhà cùng nghe.",
 )
 _SHIP_REMARK = (
-    "Mua đồ online mà biết rõ bao lâu hàng tới thì mới sắp xếp được lịch diện đồ đúng không nè, nên mình nói kỹ để bạn dễ tính nha.",
-    "Mình hiểu cảm giác chờ hàng nó sốt ruột lắm, nên biết trước thời gian giao thì lên kế hoạch diện đồ dễ hơn nhiều.",
-    "Câu hỏi này rất thực tế luôn, vì ai cũng muốn biết khi nào mình được mặc món đồ mình đã chọn.",
+    "Mua đồ online mà biết rõ bao lâu hàng tới thì mới sắp xếp được lịch nhận đúng không nè, nên mình nói kỹ để bạn dễ tính nha.",
+    "Mình hiểu cảm giác chờ hàng nó sốt ruột lắm, nên biết trước thời gian giao thì chủ động hơn nhiều.",
+    "Câu hỏi này rất thực tế luôn, vì ai cũng muốn biết khi nào mình nhận được món đồ mình đã chọn.",
 )
 _PRICE_MORE = (
     "Món nào mình chọn cũng nên vừa túi tiền và vừa ý, nên bạn cứ thong thả xem thêm phần giới thiệu của mình nha.",
@@ -122,9 +122,9 @@ _PRICE_MORE = (
     "Mình thích cùng các bạn tính toán kỹ trước khi chốt, như vậy mua về mới ưng cái bụng.",
 )
 _SHIP_MORE = (
-    "Có thời gian dự kiến trong tay thì bạn dễ sắp xếp lịch diện đồ cho những buổi hẹn sắp tới lắm.",
-    "Mình nói vậy để các bạn tính trước chuyện mặc đi chơi hay đi làm cho kịp lịch của mình nha.",
-    "Hàng về tới tay mà đúng dịp mình cần thì mặc mới thích, đúng không nè.",
+    "Có thời gian dự kiến trong tay thì bạn dễ sắp xếp lịch ở nhà để nhận hàng hơn nhiều.",
+    "Mình nói vậy để các bạn tính trước chuyện nhận hàng cho kịp lịch của mình nha.",
+    "Hàng về tới tay đúng lúc mình cần thì dùng mới thích, đúng không nè.",
 )
 _NATURAL_LEAD_IN = (
     "Cảm ơn bạn đã hỏi nha, mình trả lời liền đây.",
