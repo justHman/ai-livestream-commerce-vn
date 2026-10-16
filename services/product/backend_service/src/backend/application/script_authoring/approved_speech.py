@@ -566,8 +566,11 @@ class ApprovedSpeech:
                 raise SpeechRejected("unit_required")
             text = whole.spoken_text
         elif generate:
-            from .answer_context import factual_reply
+            from .answer_context import deflection_for, factual_reply
 
+            question = (
+                question_text or text
+            )  # the viewer's words, before the answer replaces `text`
             direct = (
                 factual_reply(candidates[0], question_text, completed_text)
                 if len(candidates) == 1 and question_text
@@ -585,7 +588,8 @@ class ApprovedSpeech:
                 raise SpeechRejected("generation_unavailable")
             answers = [answer for p in candidates for answer in p.answers()]
             if not answers:
-                text, trusted = DEFLECTION, True  # nothing approved to say: never improvise
+                # nothing approved to say: never improvise
+                text, trusted = deflection_for(question, []), True
             else:
                 natural = None
                 if len(candidates) == 1:
@@ -602,7 +606,7 @@ class ApprovedSpeech:
                     if text in answers:
                         generated = True  # only a whole approved fact is valid
                     else:
-                        text, trusted = DEFLECTION, True
+                        text, trusted = deflection_for(question, answers), True
         replay = None
         if not (select_locked or generate):
             replay = next(

@@ -256,11 +256,17 @@ async def test_generated_speech_buffered_before_any_audio(case_factory, cloud):
     )  # the approved answer, said as a short conversation
 
 
+def _is_deflection(said: str) -> bool:
+    """The viewer-question fallback: it names the question and returns to the product, with no claim."""
+    return said.startswith("Mình thấy có bạn") and (
+        "chưa có thông tin chính xác" in said or "ngoài lề" in said
+    )
+
+
 def _only_deflection(case) -> bool:
     """Unsupported text is never spoken; the fixed deflection is the only thing that may be."""
-    from backend.application.script_authoring.approved_speech import DEFLECTION
-
-    return "".join(case.tts.calls) in ("", DEFLECTION)
+    said = "".join(case.tts.calls)
+    return said == "" or _is_deflection(said)
 
 
 @pytest.mark.asyncio
@@ -636,8 +642,6 @@ async def test_late_rejection_drops_the_units_queued_behind_it(case_factory):
     ],
 )
 async def test_a_viewer_answer_is_a_fact_or_the_fixed_deflection(case_factory, output, spoken):
-    from backend.application.script_authoring.approved_speech import DEFLECTION
-
     case = await case_factory()
     case.llm.output = output
     turn = decision(case, generated=True)
@@ -647,7 +651,7 @@ async def test_a_viewer_answer_is_a_fact_or_the_fixed_deflection(case_factory, o
     if spoken == [CLAIM]:
         assert CLAIM in said and len(said) > len(CLAIM)  # the fact, said as a short conversation
     else:
-        assert said == "".join(DEFLECTION if s == "DEFLECTION" else s for s in spoken)
+        assert _is_deflection(said)
 
 
 @pytest.mark.asyncio
@@ -660,8 +664,6 @@ async def test_a_viewer_answer_is_a_fact_or_the_fixed_deflection(case_factory, o
     ],
 )
 async def test_a_natural_answer_keeps_the_approved_numbers(case_factory, output, accepted):
-    from backend.application.script_authoring.approved_speech import DEFLECTION
-
     case = await case_factory()
     case.llm.output = output
     turn = decision(case, generated=True)
@@ -673,7 +675,7 @@ async def test_a_natural_answer_keeps_the_approved_numbers(case_factory, output,
             output
         )  # the checked answer, said as a short conversation
     else:
-        assert said == DEFLECTION
+        assert _is_deflection(said)
 
 
 @pytest.mark.asyncio
@@ -690,15 +692,13 @@ async def test_a_refused_natural_answer_logs_why_without_its_text(case_factory, 
 
 @pytest.mark.asyncio
 async def test_a_natural_answer_the_judge_refuses_is_not_spoken(case_factory):
-    from backend.application.script_authoring.approved_speech import DEFLECTION
-
     case = await case_factory()
     case.llm.output = "Bên mình giao hàng trong ba ngày nhé mọi người."
     case.llm.judge = "NO"
     turn = decision(case, generated=True)
     await prepare(case, turn)
     await case.d.coordinator._maybe_speak(case.sid, turn)
-    assert "".join(case.tts.calls) == DEFLECTION
+    assert _is_deflection("".join(case.tts.calls))
 
 
 @pytest.mark.asyncio

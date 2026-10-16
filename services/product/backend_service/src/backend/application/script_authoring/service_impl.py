@@ -86,11 +86,15 @@ from backend.application.script_authoring.generation.ordered_units import (
     ProductBrief,
     SessionBrief,
     UnitSpec,
+    WORDING_REASONS,
     build_unit_prompt,
     build_unit_repair_prompt,
     check_unit_text,
     claims_not_spoken,
     fallback_unit_text,
+    offending_phrases,
+    retry_hint,
+    salvage_unit_text,
     uncovered_claims,
     plan_units,
     role_bounds_s,
@@ -1409,17 +1413,24 @@ class ScriptAuthoringServiceImpl:
                         code,
                     )
                     return SegmentStepOutcome(index=index, state=continuity, error=code)
-                text, why = check_unit_text(
-                    raw,
-                    spec=roles[index],
-                    prices=product.prices,
-                    allow_bridge=roles[index].bridge,
-                    approved=(*product.claims, *product.discounts),
-                    product_name=product.name,
-                    name_used_elsewhere=len(name_units - {index}),
-                    must=roles[index].must,
-                    aware=policy == "ORDER_AWARE",
-                )
+                check = {
+                    "spec": roles[index],
+                    "prices": product.prices,
+                    "allow_bridge": roles[index].bridge,
+                    "approved": (*product.claims, *product.discounts),
+                    "product_name": product.name,
+                    "name_used_elsewhere": len(name_units - {index}),
+                    "must": roles[index].must,
+                    "aware": policy == "ORDER_AWARE",
+                }
+                text, why = check_unit_text(raw, **check)
+                if text is None:
+                    # Wording-only rejection: cut the offending sentence instead of another paid call.
+                    text = salvage_unit_text(raw, why, **check)
+                    if text is not None:
+                        logger.info(
+                            "script unit salvaged product=%s unit=%s reason=%s", pid, index, why
+                        )
                 if text is not None:
                     if product.name and product.name.lower() in text.lower():
                         name_units.add(index)
@@ -1438,12 +1449,13 @@ class ScriptAuthoringServiceImpl:
                 reason = why or "empty"
                 logger.warning(
                     "script unit rejected by guard product=%s unit=%s role=%s attempt=%s "
-                    "reason=%s sample=%r",
+                    "reason=%s detail=%s sample=%r",
                     pid,
                     index,
                     roles[index].role,
                     attempt,
                     reason,
+                    offending_phrases(raw, reason, check["approved"]),
                     (raw or "")[:120],
                 )
                 if reason in ("truncated", "too_long") and attempt == 1:
@@ -1451,6 +1463,8 @@ class ScriptAuthoringServiceImpl:
                 if reason == "coverage" and attempt == 1:
                     left_out = uncovered_claims(raw or "", roles[index].must)
                     prompt = prompt + _COVERAGE_RETRY + " | ".join(left_out)
+                elif reason in WORDING_REASONS and attempt == 1:
+                    prompt = prompt + retry_hint(reason, raw, check["approved"])
             return SegmentStepOutcome(index=index, state=continuity, error=f"guard:{reason}")
 
         def segment_generate(index, continuity, _target=None) -> SegmentStepOutcome:
@@ -3103,19 +3117,27 @@ class ScriptAuthoringServiceImpl:
                         await self._fail_job(job, "part_model_budget_exhausted")
                         return
                 raw = await self._with_lease_heartbeat(lambda: ordered.llm(prompt), job=job)
-                text, why = check_unit_text(
-                    raw,
-                    spec=spec,
-                    prices=product.prices,
-                    allow_bridge=spec.bridge,
-                    approved=(*product.claims, *product.discounts),
-                    must=spec.must,
-                    aware=script_set.brief.transition_policy == "ORDER_AWARE",
-                )
+                check = {
+                    "spec": spec,
+                    "prices": product.prices,
+                    "allow_bridge": spec.bridge,
+                    "approved": (*product.claims, *product.discounts),
+                    "must": spec.must,
+                    "aware": script_set.brief.transition_policy == "ORDER_AWARE",
+                }
+                text, why = check_unit_text(raw, **check)
                 if text is None:
-                    prompt += (
-                        f"\nBản trước không đạt kiểm tra: {why}. Sửa đúng lỗi, kết thúc trọn câu."
+                    text = salvage_unit_text(raw, why, **check)
+                if text is None:
+                    logger.warning(
+                        "script part rejected by guard product=%s part=%s attempt=%s reason=%s detail=%s",
+                        item.product_id,
+                        index,
+                        attempt,
+                        why,
+                        offending_phrases(raw, why, check["approved"]),
                     )
+                    prompt += retry_hint(why, raw, check["approved"])
                     continue
                 low, high = role_bounds_s(spec.role)
                 result = self._gate.run_segment(
@@ -3128,6 +3150,13 @@ class ScriptAuthoringServiceImpl:
                     ),
                 )
                 if not result.passed:
+                    logger.warning(
+                        "script part rejected by gate product=%s part=%s attempt=%s rules=%s",
+                        item.product_id,
+                        index,
+                        attempt,
+                        [v.rule_id for v in result.violations][:6],
+                    )
                     prompt = build_unit_repair_prompt(
                         ordered.session,
                         product,
