@@ -107,19 +107,19 @@ _LEAD_IN_SAID = (
 # Friendly talk around the fact, never a claim of its own (about the viewer or the situation only), so the
 # answer is a little conversation and not a bare line.
 _PRICE_REMARK = (
-    "Hỏi giá trước rồi mới chọn thì đúng là cách mua sắm khôn ngoan luôn đó, mình thấy bạn rất biết cách cân nhắc.",
-    "Mình hiểu ai mua đồ online cũng muốn nắm rõ chi phí trước, nên mình nói rõ để mọi người thoải mái cân nhắc nha.",
-    "Giá cả rõ ràng thì mình mới thoải mái chọn lựa đúng không nè, nên mình nói thẳng luôn cho cả nhà cùng nghe.",
+    "Mua đồ online thì giá là điều ai cũng muốn nắm rõ trước tiên, nên mình nói luôn để cả nhà tiện theo dõi.",
+    "Câu hỏi về giá nhiều bạn cũng đang chờ nghe, nên mình trả lời thẳng luôn cho mọi người cùng biết.",
+    "Có giá rõ ràng rồi thì mọi người dễ so sánh và cân nhắc hơn nhiều.",
+)
+_PRICE_MORE = (
+    "Mình nói giá trước, còn các thông tin khác về sản phẩm thì mình sẽ giới thiệu tiếp ngay phía sau nha.",
+    "Bạn nào còn muốn xem thêm chi tiết thì cứ nghe tiếp phần giới thiệu của mình nhé.",
+    "Giá chỉ là một phần thôi, mình sẽ cùng mọi người xem tiếp các điểm khác của sản phẩm nữa.",
 )
 _SHIP_REMARK = (
     "Mua đồ online mà biết rõ bao lâu hàng tới thì mới sắp xếp được lịch nhận đúng không nè, nên mình nói kỹ để bạn dễ tính nha.",
     "Mình hiểu cảm giác chờ hàng nó sốt ruột lắm, nên biết trước thời gian giao thì chủ động hơn nhiều.",
     "Câu hỏi này rất thực tế luôn, vì ai cũng muốn biết khi nào mình nhận được món đồ mình đã chọn.",
-)
-_PRICE_MORE = (
-    "Món nào mình chọn cũng nên vừa túi tiền và vừa ý, nên bạn cứ thong thả xem thêm phần giới thiệu của mình nha.",
-    "Nếu bạn đang phân vân thì cứ nghe hết phần giới thiệu, rồi quyết định thật thoải mái nhé.",
-    "Mình thích cùng các bạn tính toán kỹ trước khi chốt, như vậy mua về mới ưng cái bụng.",
 )
 _SHIP_MORE = (
     "Có thời gian dự kiến trong tay thì bạn dễ sắp xếp lịch ở nhà để nhận hàng hơn nhiều.",
@@ -132,9 +132,9 @@ _NATURAL_LEAD_IN = (
     "Mình thấy có bạn hỏi nè, để mình nói rõ cho mọi người cùng nghe nha.",
 )
 _NATURAL_REMARK = (
-    "Câu này nhiều bạn cũng quan tâm lắm, nên mình nói kỹ một chút cho mọi người dễ hình dung.",
-    "Hỏi như vậy là rất hợp lý luôn, vì mua đồ online ai cũng muốn nắm rõ trước khi quyết định.",
-    "Mình thích những câu hỏi thực tế như vầy, vì nó giúp mọi người chọn đúng món mình cần.",
+    "Câu này nhiều bạn cũng quan tâm, nên mình nói kỹ một chút cho mọi người dễ hình dung.",
+    "Mua đồ online thì ai cũng muốn nắm rõ chuyện này trước khi quyết định.",
+    "Mình trả lời công khai để các bạn khác đang xem cũng nắm được luôn nha.",
 )
 _INVITE = (
     "Bạn nào còn băn khoăn điều gì về sản phẩm thì cứ bình luận, mình trả lời liền nhé.",
@@ -166,3 +166,60 @@ def wrap_natural(question: str, answer: str) -> str:
     The model's text is untouched; the sentences around it are fixed and carry no claim."""
     pick = zlib.crc32(question.encode("utf-8")) % 3
     return f"{_NATURAL_LEAD_IN[pick]} {answer.strip()} {_NATURAL_REMARK[(pick + 1) % 3]} {_INVITE[pick]}"
+
+
+# Words that never tie a question to the product: "không" or "biết" appear in any fact and in any chit-chat.
+_STOP = frozenset(
+    "không có biết được là và của thì mà nào gì sao đâu cho với này kia đó vậy nhé nha ạ à hả thế "
+    "anh chị em bạn mình shop ad admin ơi cái những các một hai ba bao nhiêu".split()
+)
+_COMMERCE = re.compile(
+    r"giá|bao nhiêu|size|kích cỡ|màu|chất liệu|vải|giao|ship|vận chuyển|nhận hàng|đổi|trả|bảo hành"
+    r"|hoàn tiền|cod|thanh toán|khuyến mãi|giảm giá|ưu đãi|còn hàng|hết hàng|mua|đặt|sản phẩm|mẫu"
+    r"|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn",
+    re.IGNORECASE,
+)
+
+
+def is_off_topic(question: str, facts: list[str]) -> bool:
+    """A question that neither names a shopping topic nor shares a content word with the approved facts."""
+    lowered = question.lower()
+    if _COMMERCE.search(lowered):
+        return False
+    words = {w for w in re.findall(r"\w+", lowered) if len(w) > 2 and w not in _STOP}
+    known = set(re.findall(r"\w+", " ".join(facts).lower()))
+    return not (words & known)
+
+
+def _quote(question: str) -> str | None:
+    """The viewer's question, only when it is short plain words: no digit, link, handle or markup."""
+    first = question.split("|")[0].strip().rstrip("?!. ")
+    first = re.sub(r"\s+", " ", first)
+    if not first or len(first) > 90 or re.search(r"[\d@/\\<>#]|http|www", first, re.IGNORECASE):
+        return None
+    return first
+
+
+def deflection_for(question: str | None, facts: list[str]) -> str:
+    """Said when the approved facts cannot answer: it names the question, so the viewer knows which one
+    is answered, and says why (outside the shop talk, or not in the introduction), with no claim."""
+    question = (question or "").strip()
+    quoted = _quote(question) if question else None
+    off_topic = bool(question) and is_off_topic(question, facts)
+    if quoted:
+        lead = f"Mình thấy có bạn hỏi là {quoted}."
+    elif off_topic:
+        lead = "Mình thấy có bạn gửi một câu hỏi ngoài lề."
+    else:
+        lead = "Mình thấy có bạn gửi một câu hỏi rất cụ thể."
+    if off_topic:
+        return (
+            f"{lead} Câu này hơi ngoài lề so với buổi giới thiệu sản phẩm hôm nay nên mình xin phép "
+            "không trả lời sâu nha, cảm ơn bạn đã ghé tương tác với mình. "
+            "Giờ mình quay lại giới thiệu tiếp cho mọi người nhé."
+        )
+    return (
+        f"{lead} Câu này mình chưa có thông tin chính xác trong phần giới thiệu để trả lời, bạn nhắn "
+        "tin cho shop để được hỗ trợ kỹ hơn nha. Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục "
+        "giới thiệu cho mọi người nhé."
+    )

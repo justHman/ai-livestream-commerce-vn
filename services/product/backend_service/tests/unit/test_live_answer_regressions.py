@@ -312,3 +312,116 @@ def test_fixed_remarks_are_category_neutral_so_any_product_can_use_them():
     ).lower()
     for word in ("diện", "mặc", "áo", "quần", "giày", "vải", "size", "đi chơi"):
         assert word not in fixed and word not in (answer or "").lower(), word
+
+
+FACTS = ["Vải denim dày dặn, bền", "Giao hàng toàn quốc từ 2 đến 3 ngày", "Kích cỡ: M, L, XL"]
+
+
+def test_an_off_topic_question_is_named_and_politely_set_aside():
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    said = deflection_for("anh có biết nhảy không ạ", FACTS)
+    assert said.startswith("Mình thấy có bạn hỏi là anh có biết nhảy không ạ.")
+    assert "ngoài lề" in said and "quay lại giới thiệu" in said
+    assert "chưa có thông tin chính xác" not in said
+
+
+def test_a_shop_question_the_facts_cannot_answer_is_named_and_sent_to_the_shop():
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    said = deflection_for("áo này có túi trong không ạ", FACTS)
+    assert said.startswith("Mình thấy có bạn hỏi là áo này có túi trong không ạ.")
+    assert "chưa có thông tin chính xác" in said and "nhắn tin cho shop" in said
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "gọi 0912345678 nha",
+        "xem tại http://spam.example",
+        "ib @someone",
+        "x" * 120,
+        "",
+    ],
+)
+def test_a_question_with_numbers_links_handles_or_length_is_never_read_back(question):
+    from backend.application.script_authoring.answer_context import deflection_for
+
+    said = deflection_for(question, FACTS)
+    assert question.strip() == "" or question not in said
+    assert said.startswith("Mình thấy có bạn gửi một câu hỏi")
+
+
+def test_the_fixed_remarks_never_flatter_the_viewer():
+    from backend.application.script_authoring import answer_context as ac
+
+    fixed = " ".join(
+        (*ac._PRICE_REMARK, *ac._PRICE_MORE, *ac._SHIP_REMARK, *ac._SHIP_MORE, *ac._NATURAL_REMARK)
+    ).lower()
+    for phrase in ("khôn ngoan", "biết cách", "rất hợp lý", "bạn rất", "thông minh", "tinh tế"):
+        assert phrase not in fixed, phrase
+
+
+_OFFER_APPROVED = ("Giá 180000 đồng", "Mua 2 sản phẩm giảm 10% tổng hóa đơn")
+
+
+def _offer_check():
+    from backend.application.script_authoring.generation.ordered_units import UnitSpec
+
+    return {
+        "spec": UnitSpec("offer"),
+        "prices": ("180000 VND",),
+        "approved": _OFFER_APPROVED,
+        "product_name": "Áo khoác denim",
+    }
+
+
+def test_a_pressure_sentence_is_cut_out_instead_of_paying_for_another_model_call():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        salvage_unit_text,
+    )
+
+    raw = (
+        "Mẫu này hiện có giá một trăm tám mươi nghìn đồng thôi mọi người ơi. "
+        "Mua hai sản phẩm thì được giảm mười phần trăm tổng hóa đơn nữa đó. "
+        "Đặt ngay hôm nay kẻo hết nha các bạn."
+    )
+    kwargs = _offer_check()
+    text, why = check_unit_text(raw, **kwargs)
+    assert text is None and why == "hard_sell"
+    saved = salvage_unit_text(raw, why, **kwargs)
+    assert saved is not None and "một trăm tám mươi nghìn" in saved and "kẻo hết" not in saved
+
+
+def test_nothing_is_salvaged_when_the_offending_sentence_holds_the_only_content():
+    from backend.application.script_authoring.generation.ordered_units import salvage_unit_text
+
+    raw = "Đặt ngay hôm nay kẻo hết nha các bạn."
+    assert salvage_unit_text(raw, "hard_sell", **_offer_check()) is None
+
+
+def test_a_length_or_coverage_rejection_is_never_salvaged_by_cutting_sentences():
+    from backend.application.script_authoring.generation.ordered_units import salvage_unit_text
+
+    for why in ("too_long", "truncated", "coverage", "missing_info", "empty", None):
+        assert salvage_unit_text("Câu một. Câu hai. Đặt ngay.", why, **_offer_check()) is None
+
+
+def test_the_retry_hint_names_the_exact_wording_to_drop():
+    from backend.application.script_authoring.generation.ordered_units import (
+        offending_phrases,
+        retry_hint,
+    )
+
+    raw = "Giá rất hời. Chốt đơn ngay và nhanh tay nha."
+    assert offending_phrases(raw, "hard_sell", _OFFER_APPROVED) == ["chốt đơn ngay", "nhanh tay"]
+    hint = retry_hint("hard_sell", raw, _OFFER_APPROVED)
+    assert "'chốt đơn ngay'" in hint and "'nhanh tay'" in hint
+    assert "Giá rất hời" not in hint  # only our fixed patterns' matches, never the model's own text
+
+
+def test_wording_the_owner_wrote_is_not_blamed_on_the_model():
+    from backend.application.script_authoring.generation.ordered_units import offending_phrases
+
+    assert offending_phrases("Đặt ngay hôm nay.", "hard_sell", ("Đặt ngay trên giỏ hàng",)) == []

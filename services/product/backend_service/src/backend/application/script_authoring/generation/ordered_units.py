@@ -799,6 +799,69 @@ def check_unit_text(
     return text, None
 
 
+# Reasons a model text is rejected for specific WORDING (not for length or missing facts): the offending
+# sentence can be cut out instead of paying for another model call.
+WORDING_REASONS = ("hard_sell", "cta", "bridge", "address", "position")
+
+
+def offending_phrases(
+    raw: str | None, why: str | None, approved: tuple[str, ...] = ()
+) -> list[str]:
+    """The wording our own fixed patterns matched for a wording rejection (never any other text)."""
+    text = raw or ""
+    lowered = [a.lower() for a in approved]
+    patterns: tuple[re.Pattern, ...] = {
+        "hard_sell": (_HARD_SELL_RE, _CHEAP_RE),
+        "cta": (_CTA_RE,),
+        "bridge": (_BRIDGE_RE,),
+        "address": (_ADDRESS_RE,),
+        "position": (_POSITION_RE,),
+    }.get(why or "", ())
+    hits: list[str] = []
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            phrase = match.group().strip().lower()
+            owner_wrote = why == "hard_sell" and any(phrase in a for a in lowered)
+            if phrase and not owner_wrote and phrase not in hits:
+                hits.append(phrase)
+    return hits[:5]
+
+
+def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
+    """The text without the sentences that carry the offending wording, when what is left still passes
+    every check (length, coverage of the must-keep claims...). None when nothing is salvageable."""
+    if why not in WORDING_REASONS:
+        return None
+    phrases = offending_phrases(raw, why, tuple(kwargs.get("approved") or ()))
+    if not phrases:
+        return None
+    sentences = re.split(r"(?<=[.!?])\s+", (raw or "").strip())
+    kept = [s for s in sentences if not any(p in s.lower() for p in phrases)]
+    if not kept or len(kept) == len(sentences):
+        return None
+    return check_unit_text(" ".join(kept), **kwargs)[0]
+
+
+_RETRY_HINTS = {
+    "hard_sell": "Bản trước bị loại vì dùng lời thúc giục hoặc khoe quá đà: {phrases}. Viết lại, "
+    "KHÔNG dùng các cụm đó hay ý tương tự; giọng nhẹ nhàng, nêu sự thật như chủ shop đã viết.",
+    "cta": "Bản trước bị loại vì có lời mời nhắn tin hoặc đặt hàng ({phrases}) ở phần không được "
+    "phép. Bỏ hẳn lời mời đó.",
+    "bridge": "Bản trước bị loại vì nói về sản phẩm trước hoặc sau ({phrases}). Bỏ hẳn ý đó.",
+    "address": "Bản trước bị loại vì xưng hô không phù hợp ({phrases}). Dùng 'mình' và 'mọi người'.",
+    "position": "Bản trước bị loại vì nói về thứ tự phần ({phrases}). Bỏ hẳn ý đó.",
+}
+
+
+def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ()) -> str:
+    """What to tell the model on the second attempt: the exact wording to drop, not just a reason code."""
+    template = _RETRY_HINTS.get(why or "")
+    phrases = offending_phrases(raw, why, approved)
+    if template and phrases:
+        return "\n" + template.format(phrases=", ".join(f"'{p}'" for p in phrases))
+    return f"\nBản trước không đạt kiểm tra: {why}. Sửa đúng lỗi, kết thúc trọn câu."
+
+
 def clean_unit_text(raw: str | None, **kwargs) -> str | None:
     return check_unit_text(raw, **kwargs)[0]
 
