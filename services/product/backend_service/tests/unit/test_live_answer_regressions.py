@@ -324,6 +324,8 @@ CHAT_FALLBACK = "Mình thấy có bạn hỏi một chuyện hơi ngoài lề"
     "comment",
     [
         "anh có biết nhảy không ạ",
+        "anh có biết nhảy không anh",
+        "quảng cáo xong anh có đi đâu chơi không anh",
         "anh khoẻ không",
         "anh còn độc thân không ạ",
         "chị thích ăn gì vậy ạ?",
@@ -477,8 +479,14 @@ def test_wording_the_owner_wrote_is_not_blamed_on_the_model():
     assert offending_phrases("Đặt ngay hôm nay.", "hard_sell", ("Đặt ngay trên giỏ hàng",)) == []
 
 
-def test_a_product_question_phrased_like_chit_chat_is_still_sent_to_the_shop():
+def test_a_product_question_phrased_like_chit_chat_goes_to_the_shop():
     from backend.application.script_authoring.answer_context import deflection_for
 
     said = deflection_for("anh có biết cái này có gây dị ứng không ạ?", ["Giá 180000 đồng"])
     assert "nhắn tin cho shop" in said and "dị ứng" not in said
+
+
+def test_a_product_question_addressed_to_the_host_with_a_deictic_word_is_a_shop_question():
+    from backend.application.script_authoring.answer_context import is_off_topic
+
+    assert not is_off_topic("anh có biết cái này có gây dị ứng không ạ?", ["Giá 180000 đồng"])
