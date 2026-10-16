@@ -131,7 +131,9 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
     claims = tuple(f"Thông tin số {n}." for n in range(1, 8))
     product = ProductBrief("p", "Áo denim", claims=claims)
     units = plan_units(product, first=True, last=True, target_duration_s=360)
-    assert 250 < sum(u.target_seconds for u in units) <= 270.01  # role caps may trim a little
+    assert (
+        280 < sum(u.target_seconds for u in units) <= 306.01
+    )  # 85% of 360 s; role caps may trim a little
     middle = next(i for i, u in enumerate(units) if u.role == "highlight")
     prompt = build_unit_prompt(SessionBrief(), product, units, middle)
     low = int(units[middle].target_seconds * 16 * 0.85)
@@ -222,3 +224,73 @@ def test_price_shortcut_needs_a_price_question_and_every_clustered_comment_to_ag
     assert factual_reply(product, "Giá bao nhiêu, em ở xa có ship?") is None
     assert factual_reply(product, "giá bao nhiêu ạ, em ở Đà Nẵng") is not None
     assert factual_reply(product, "giá bao nhiêu ạ | còn size L không") is None
+
+
+_DENIM_CLAIM = "Giao hàng toàn quốc từ 2 đến 3 ngày, nội thành HCM và HN ship hỏa tốc trong 1 ngày"
+_DENIM_SCRIPT = (
+    "Giao hàng toàn quốc chỉ từ hai đến ba ngày. Nội thành Hồ Chí Minh và Hà Nội hỏa tốc một ngày."
+)
+
+
+def _denim_product():
+    return ApprovedProduct(
+        "p", "v", _DENIM_SCRIPT, "hash", json.dumps({"allowed_claims": [_DENIM_CLAIM]})
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "em ở Hồ Chí Minh thì mấy ngày nhận được hàng ạ",
+        "Mình ở HCM thì bao lâu nhận được hàng vậy shop",
+        "em ở Hà Nội, khi nào nhận được hàng ạ",
+    ],
+)
+def test_city_said_first_still_gets_the_zero_model_delivery_reply(question):
+    from backend.application.script_authoring.answer_context import factual_reply
+
+    answer = factual_reply(_denim_product(), question)
+    assert answer is not None and answer.startswith("Bạn ở ") and "hai đến ba ngày" in answer
+
+
+def test_a_city_clause_does_not_turn_another_question_into_a_delivery_question():
+    from backend.application.script_authoring.answer_context import factual_reply
+
+    for question in ("em ở Hồ Chí Minh thì có ship COD không ạ", "em ở Hà Nội thì shop ở đâu vậy"):
+        assert factual_reply(_denim_product(), question) is None
+
+
+def test_price_and_delivery_answers_are_a_short_conversation_not_a_bare_line():
+    from backend.application.script_authoring.answer_context import factual_reply
+
+    price = ApprovedProduct(
+        "p",
+        "v",
+        "Áo giá một trăm tám mươi nghìn đồng nhé.",
+        "hash",
+        json.dumps({"prices": ["180000 VND"]}),
+    )
+    for product, question in (
+        (price, "áo này giá bao nhiêu vậy ạ"),
+        (_denim_product(), "bao lâu thì nhận được hàng ạ"),
+    ):
+        answer = factual_reply(product, question)
+        assert answer is not None and len(answer) > 330, answer
+        assert answer.count(".") >= 5 and "kịch bản" not in answer
+
+
+def test_a_checked_natural_answer_is_wrapped_in_fixed_conversation_around_it():
+    from backend.application.script_authoring.answer_context import wrap_natural
+
+    spoken = wrap_natural("shop có freeship không", "Nội thành ship hỏa tốc trong một ngày.")
+    assert "Nội thành ship hỏa tốc trong một ngày." in spoken and len(spoken) > 200
+    assert spoken == wrap_natural(
+        "shop có freeship không", "Nội thành ship hỏa tốc trong một ngày."
+    )
+
+
+def test_the_fixed_deflection_is_friendly_and_returns_to_the_product():
+    from backend.application.script_authoring.approved_speech import DEFLECTION
+
+    assert "nhắn tin cho shop" in DEFLECTION and "tiếp tục giới thiệu" in DEFLECTION
+    assert len(DEFLECTION) > 150

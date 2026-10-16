@@ -48,8 +48,9 @@ __all__ = [
 # Measured in the 2026-10-15 live (VieNeu, TTS tempo 0.92): 3672 characters were spoken in 226 s,
 # i.e. 16 characters/second. The same script had been planned at 9 and ran at 63% of its target.
 _VOICE_CHARS_PER_S = 16
-# That live lasted 5:15 for 3:46 of script (72%): viewer answers and pauses took the rest.
-_SPEECH_SHARE_OF_TARGET = 0.75
+# The 2026-10-15 live lasted 5:15 for 3:46 of script (72%); the 2026-10-16 test ran 4:52 for 4:42 with only two
+# short answers, so 75% left a 6-minute target ~1 minute short. 85% leaves room for longer viewer answers.
+_SPEECH_SHARE_OF_TARGET = 0.85
 # Short enough that a viewer question waits for at most one unit before the answer.
 _UNIT_SECONDS = 28
 _BOUNDS_S: dict[str, tuple[float, float]] = {
@@ -883,8 +884,9 @@ def build_unit_prompt(
         high = min(850, max(low, int(spec.target_seconds * _VOICE_CHARS_PER_S * 1.15)))
         parts.append(
             f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự tiếng Việt. "
-            "Mở rộng bằng giải thích dễ nghe, câu hỏi gợi mở, và được phép nói chuyện đời thường "
-            "quanh sản phẩm (hình dung dịp dùng, cảm giác khi dùng, trò chuyện với khán giả); "
+            "Mở rộng bằng giải thích dễ nghe, câu hỏi gợi mở, và nên chèn 1 đến 2 câu chuyện đời thường "
+            "quanh sản phẩm (hình dung dịp dùng, chuyện chọn đồ đi chơi, cảm giác khi mặc, trò chuyện với "
+            "khán giả) để lời nói tự nhiên và đủ dài; "
             "không thêm thông số, cam kết, ưu đãi hay sự thật mới về sản phẩm."
         )
     if spec.revisit:

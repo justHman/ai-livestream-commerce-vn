@@ -127,7 +127,10 @@ def _is_script_text(text: str, product: "ApprovedProduct") -> bool:
 
 
 # Said when the approved facts cannot answer a viewer: fixed bytes, no facts of its own.
-DEFLECTION = "Phần này mình chưa có thông tin chính xác, bạn nhắn mình để shop hỗ trợ thêm nhé."
+DEFLECTION = (
+    "Câu này mình chưa có thông tin chính xác để trả lời bạn, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
+    "Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục giới thiệu cho mọi người nhé."
+)
 _NATURAL_MAX_CHARS = 360
 _NATURAL_SYSTEM = (
     "Bạn là MC livestream bán hàng Việt Nam. Trả lời câu hỏi của khán giả bằng 1 đến 3 câu ngắn, "
@@ -590,7 +593,9 @@ class ApprovedSpeech:
                         llm, session_id, epoch, live, candidates[0], text, answers
                     )
                 if natural is not None:
-                    text, trusted = natural, True
+                    from .answer_context import wrap_natural
+
+                    text, trusted = wrap_natural(question_text or text, natural), True
                 else:
                     self._fence(session_id, epoch, live)  # a cancelled turn starts no fallback call
                     text = await self._select(llm, session_id, epoch, live, text, answers)
