@@ -173,73 +173,55 @@ _STOP = frozenset(
     "không có biết được là và của thì mà nào gì sao đâu cho với này kia đó vậy nhé nha ạ à hả thế "
     "anh chị em bạn mình shop ad admin ơi cái những các một hai ba bao nhiêu".split()
 )
-# Shopping words, each as a whole word or phrase ("khoẻ" is not "kho", "anh còn độc thân" is not "còn hàng"):
-# a question that holds none of them and shares no content word with the facts is off topic.
+# A viewer's words are NEVER spoken back in the shop's voice: no list of words can prove that arbitrary text
+# holds no price, fee, promise, insult or personal detail. The fallback only says WHAT KIND of question it is.
+#
+# "Off topic" needs a positive sign: a question put to the host as a person (anh/chị/em/bạn/MC...) about
+# something personal, with no shopping word and no content word of the approved facts. Anything else that the
+# facts cannot answer is a shop question and goes to the shop, so "có chống nước không" is never "ngoài lề".
 _SHOP_WORDS = (
     "giá|bao nhiêu|size|kích cỡ|màu|chất liệu|vải|giao|ship|vận chuyển|nhận hàng|đổi|trả|bảo hành"
     "|hoàn tiền|cod|thanh toán|khuyến mãi|giảm giá|giảm|ưu đãi|còn hàng|hết hàng|còn size|còn màu"
     "|còn không|còn áo|còn mẫu|còn bao nhiêu|có sẵn|sẵn hàng|trong kho|kho hàng|mua|đặt|sản phẩm|mẫu"
     "|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn|hàng|freeship|miễn phí|phí|tiền"
     "|trả góp|order|inbox|tư vấn|liên hệ|địa chỉ|ở đâu|cửa hàng|showroom|bao lâu|mấy ngày|tặng|quà"
-    "|voucher|mã giảm|chiết khấu|cam kết|đảm bảo|hứa|khuyến"
+    "|voucher|mã giảm|chiết khấu|cam kết|đảm bảo|bảo đảm|hứa|khuyến|lừa|uy tín|thật|giả"
 )
 _COMMERCE = re.compile(rf"(?<!\w)(?:{_SHOP_WORDS})(?!\w)", re.IGNORECASE)
-
-
-def is_off_topic(question: str, facts: list[str]) -> bool:
-    """A question that neither names a shopping topic nor shares a content word with the approved facts."""
-    lowered = question.lower()
-    if _COMMERCE.search(lowered):
-        return False
-    words = {w for w in re.findall(r"\w+", lowered) if len(w) > 2 and w not in _STOP}
-    known = set(re.findall(r"\w+", " ".join(facts).lower()))
-    return not (words & known)
-
-
+_HOST = re.compile(r"(?<!\w)(?:anh|chị|em|bạn|mc|kol|ad|admin)(?!\w)", re.IGNORECASE)
+_PERSONAL = re.compile(
+    r"(?<!\w)(?:biết|thích|ăn|uống|ngủ|hát|nhảy|múa|đàn|tuổi|độc thân|người yêu|bạn trai|bạn gái|vợ"
+    r"|chồng|gia đình|quê|sống|học|làm nghề|nghề|khoẻ|khỏe|vui|buồn|mệt|đẹp trai|xinh|tên)(?!\w)",
+    re.IGNORECASE,
+)
 _ASKING_LAST = frozenset("không chưa hả à nhỉ sao gì nào đâu chứ".split())
 _SOFTENER = frozenset("ạ vậy thế nhé nha ơi ha".split())
 
 
-def _quote(question: str) -> str | None:
-    """The viewer's question, only when it is ONE short plain question: no digit, link, handle or markup,
-    no second sentence, and it ENDS in a question (a '?' or an interrogative word, softeners like 'ạ'
-    aside). A statement or a promise written by a viewer must never be spoken in the shop's voice."""
-    raw = question.split("|")[0].strip()
-    first = re.sub(r"\s+", " ", raw.rstrip("?!. "))
-    if not first or len(first) > 90 or re.search(r"[\d@/\\<>#]|http|www", first, re.IGNORECASE):
-        return None
-    if re.search(r"[.?!;:,\n]", first) or "\n" in raw:
-        return None  # more than one sentence or clause
-    words = first.lower().split()
-    while words and words[-1] in _SOFTENER:
-        words.pop()
-    if not (raw.endswith("?") or (words and words[-1] in _ASKING_LAST)):
-        return None
-    return first
+def is_off_topic(question: str, facts: list[str]) -> bool:
+    """A personal question put to the host, with no shopping word and no content word of the facts."""
+    lowered = question.split("|")[0].strip().lower()
+    if _COMMERCE.search(lowered) or not (_HOST.search(lowered) and _PERSONAL.search(lowered)):
+        return False
+    words = {w for w in re.findall(r"\w+", lowered) if len(w) > 2 and w not in _STOP}
+    known = set(re.findall(r"\w+", " ".join(facts).lower()))
+    tokens = [t for t in lowered.rstrip("?!. ").split() if t not in _SOFTENER]
+    asks = lowered.rstrip().endswith("?") or (tokens and tokens[-1] in _ASKING_LAST)
+    return bool(asks) and not (words & known)
 
 
 def deflection_for(question: str | None, facts: list[str]) -> str:
-    """Said when the approved facts cannot answer: it names the question, so the viewer knows which one
-    is answered, and says why (outside the shop talk, or not in the introduction), with no claim."""
-    question = (question or "").strip()
-    off_topic = bool(question) and is_off_topic(question, facts)
-    # Only an OFF-TOPIC question is repeated: by definition it holds no shopping word, so no price, fee,
-    # discount or promise can be spoken through it.
-    quoted = _quote(question) if off_topic else None
-    if quoted:
-        lead = f"Mình thấy có bạn hỏi là {quoted}."
-    elif off_topic:
-        lead = "Mình thấy có bạn gửi một câu hỏi ngoài lề."
-    else:
-        lead = "Mình thấy có bạn gửi một câu hỏi rất cụ thể."
-    if off_topic:
+    """Said when the approved facts cannot answer. It says what kind of question this is (a chat question
+    outside the shop talk, or a shop question the introduction does not cover) and goes back to the
+    product. It repeats nothing the viewer wrote."""
+    if (question or "").strip() and is_off_topic(question or "", facts):
         return (
-            f"{lead} Câu này hơi ngoài lề so với buổi giới thiệu sản phẩm hôm nay nên mình xin phép "
-            "không trả lời sâu nha, cảm ơn bạn đã ghé tương tác với mình. "
+            "Mình thấy có bạn hỏi một chuyện ngoài lề, không liên quan tới sản phẩm hôm nay. "
+            "Mình xin phép không trả lời sâu nha, cảm ơn bạn đã ghé tương tác với mình. "
             "Giờ mình quay lại giới thiệu tiếp cho mọi người nhé."
         )
     return (
-        f"{lead} Câu này mình chưa có thông tin chính xác trong phần giới thiệu để trả lời, bạn nhắn "
-        "tin cho shop để được hỗ trợ kỹ hơn nha. Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục "
-        "giới thiệu cho mọi người nhé."
+        "Mình thấy có bạn hỏi một câu rất cụ thể về sản phẩm. Câu này mình chưa có thông tin chính xác "
+        "trong phần giới thiệu để trả lời, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
+        "Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục giới thiệu cho mọi người nhé."
     )

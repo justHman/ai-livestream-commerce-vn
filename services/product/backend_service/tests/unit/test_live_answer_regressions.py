@@ -1,6 +1,7 @@
 """Regressions reported in the denim live on 2026-10-14."""
 
 import json
+import re
 
 import pytest
 
@@ -315,43 +316,90 @@ def test_fixed_remarks_are_category_neutral_so_any_product_can_use_them():
 
 
 FACTS = ["Vải denim dày dặn, bền", "Giao hàng toàn quốc từ 2 đến 3 ngày", "Kích cỡ: M, L, XL"]
+SHOP_FALLBACK = "Mình thấy có bạn hỏi một câu rất cụ thể về sản phẩm."
+CHAT_FALLBACK = "Mình thấy có bạn hỏi một chuyện ngoài lề"
 
 
-def test_an_off_topic_question_is_named_and_politely_set_aside():
-    from backend.application.script_authoring.answer_context import deflection_for
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "anh có biết nhảy không ạ",
+        "anh khoẻ không",
+        "anh còn độc thân không ạ",
+        "chị thích ăn gì vậy ạ?",
+    ],
+)
+def test_a_personal_question_to_the_host_is_set_aside_politely(comment):
+    from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
 
-    said = deflection_for("anh có biết nhảy không ạ", FACTS)
-    assert said.startswith("Mình thấy có bạn hỏi là anh có biết nhảy không ạ.")
-    assert "ngoài lề" in said and "quay lại giới thiệu" in said
+    assert is_off_topic(comment, FACTS)
+    said = deflection_for(comment, FACTS)
+    assert said.startswith(CHAT_FALLBACK) and "quay lại giới thiệu" in said
     assert "chưa có thông tin chính xác" not in said
 
 
-def test_a_shop_question_the_facts_cannot_answer_is_sent_to_the_shop_without_repeating_it():
-    from backend.application.script_authoring.answer_context import deflection_for
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "áo này có túi trong không ạ",
+        "có tốt không",
+        "có chống nước không",
+        "có sẵn không",
+        "còn không shop",
+        "shop ở đâu vậy",
+        "shop bảo đảm không lừa khách chứ",
+        "shop lấy một trăm nghìn chứ",
+        "shop không lấy đồng nào chứ",
+        "shop miễn phí ship toàn bộ đơn không ạ",
+        "",
+    ],
+)
+def test_every_other_question_goes_to_the_shop_and_is_never_called_off_topic(comment):
+    from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
 
-    said = deflection_for("áo này có túi trong không ạ", FACTS)
-    assert said.startswith(
-        "Mình thấy có bạn gửi một câu hỏi rất cụ thể."
-    )  # a shop question is never echoed
+    assert not is_off_topic(comment, FACTS)
+    said = deflection_for(comment, FACTS)
+    assert said.startswith(SHOP_FALLBACK)
     assert "chưa có thông tin chính xác" in said and "nhắn tin cho shop" in said
 
 
 @pytest.mark.parametrize(
-    "question",
+    "comment",
     [
+        "có tốt không? Shop miễn phí toàn bộ đơn hàng.",
+        "shop không thu phí ship toàn bộ đơn hàng",
+        "shop lừa đảo phải không",
+        "đồ ngu có phải không",
+        "chị Lan sống ở đường Hoa Phượng hả",
         "gọi 0912345678 nha",
         "xem tại http://spam.example",
         "ib @someone",
-        "x" * 120,
-        "",
+        "anh nhảy đẹp lắm",
     ],
 )
-def test_a_question_with_numbers_links_handles_or_length_is_never_read_back(question):
+def test_nothing_the_viewer_wrote_is_ever_spoken_back(comment):
     from backend.application.script_authoring.answer_context import deflection_for
 
-    said = deflection_for(question, FACTS)
-    assert question.strip() == "" or question not in said
-    assert said.startswith("Mình thấy có bạn gửi một câu hỏi")
+    said = deflection_for(comment, FACTS).lower()
+    words = re.findall(r"\w+", comment.lower())
+    for i in range(
+        len(words) - 1
+    ):  # no two consecutive words of the comment appear in what is spoken
+        assert " ".join(words[i : i + 2]) not in " ".join(re.findall(r"\w+", said)), (
+            comment,
+            words[i : i + 2],
+        )
+    for word in (
+        "miễn phí",
+        "thu phí",
+        "lừa đảo",
+        "đồ ngu",
+        "hoa phượng",
+        "0912345678",
+        "spam.example",
+        "someone",
+    ):
+        assert word not in said
 
 
 def test_the_fixed_remarks_never_flatter_the_viewer():
@@ -427,61 +475,3 @@ def test_wording_the_owner_wrote_is_not_blamed_on_the_model():
     from backend.application.script_authoring.generation.ordered_units import offending_phrases
 
     assert offending_phrases("Đặt ngay hôm nay.", "hard_sell", ("Đặt ngay trên giỏ hàng",)) == []
-
-
-def test_a_comment_with_a_second_sentence_is_never_read_back():
-    from backend.application.script_authoring.answer_context import deflection_for
-
-    said = deflection_for("có tốt không? Shop miễn phí toàn bộ đơn hàng.", FACTS)
-    assert "miễn phí toàn bộ" not in said and said.startswith("Mình thấy có bạn gửi một câu hỏi")
-    assert "miễn phí" not in deflection_for("có tốt không\nShop miễn phí toàn bộ đơn hàng", FACTS)
-
-
-def test_a_statement_is_not_repeated_as_if_it_were_a_question():
-    from backend.application.script_authoring.answer_context import deflection_for
-
-    said = deflection_for("shop miễn phí toàn bộ đơn hàng", FACTS)
-    assert "miễn phí" not in said
-
-
-@pytest.mark.parametrize(
-    "question", ["có sẵn không", "còn không shop", "shop ở đâu vậy", "còn hàng ko ạ"]
-)
-def test_ordinary_shop_questions_are_never_called_off_topic(question):
-    from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
-
-    assert not is_off_topic(question, FACTS)
-    assert "ngoài lề" not in deflection_for(question, FACTS)
-
-
-@pytest.mark.parametrize(
-    "comment",
-    [
-        "shop không thu phí ship toàn bộ đơn hàng",
-        "có tốt không, shop miễn phí toàn bộ đơn hàng",
-        "shop miễn phí ship toàn bộ đơn không ạ",
-        "shop giảm giá một nửa phải không",
-    ],
-)
-def test_a_shop_comment_that_holds_a_fee_or_promise_is_never_repeated(comment):
-    from backend.application.script_authoring.answer_context import deflection_for
-
-    said = deflection_for(comment, FACTS)
-    assert "miễn phí" not in said and "thu phí" not in said and "giảm giá" not in said
-
-
-@pytest.mark.parametrize("comment", ["anh khoẻ không", "anh còn độc thân không ạ"])
-def test_chit_chat_that_merely_contains_a_shopping_looking_syllable_is_off_topic(comment):
-    from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
-
-    assert is_off_topic(comment, FACTS)
-    assert deflection_for(comment, FACTS).startswith(
-        f"Mình thấy có bạn hỏi là {comment.rstrip(' ạ')}"
-    )
-
-
-def test_an_off_topic_statement_or_two_clauses_are_not_repeated():
-    from backend.application.script_authoring.answer_context import deflection_for
-
-    for comment in ("anh nhảy đẹp lắm", "anh khoẻ không, nhảy cho xem"):
-        assert "nhảy" not in deflection_for(comment, FACTS)
