@@ -132,6 +132,9 @@ class StreamState:
     embeddings_cache: dict[str, list[float]] = field(default_factory=dict)  # comment_id -> vec
     answered_comments: set[str] = field(default_factory=set)
     closing_spoken: bool = False
+    closing_qa_answered: int = (
+        0  # answers given after the last product's budget/cap ran out (bounded)
+    )
     qa_window_open: bool = False
     qa_clusters_answered: int = 0
     qa_window_started_at: float = 0.0
