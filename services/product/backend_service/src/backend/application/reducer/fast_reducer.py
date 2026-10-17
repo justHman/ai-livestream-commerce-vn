@@ -22,6 +22,7 @@ sentence-transformers) never blocks the event loop. The clock is injectable
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -36,6 +37,18 @@ from .cluster_store import (
 )
 
 __all__ = ["AcceptedComment", "FastReducer", "FastReducerConfig"]
+
+logger = logging.getLogger(__name__)
+
+
+def source_lag_ms(ts: object, *, now: Optional[float] = None) -> object:
+    """Age of a comment on arrival in ms, or "na" when ``ts`` is not a finite number. Used only for logging, so it
+    must never raise: a malformed timestamp would otherwise change ingestion behavior."""
+    try:
+        age = ((time.time() if now is None else now) - float(ts)) * 1000  # type: ignore[arg-type]
+        return int(age) if age == age and abs(age) != float("inf") else "na"
+    except (TypeError, ValueError, OverflowError):
+        return "na"
 
 
 @dataclass(frozen=True)
@@ -212,6 +225,14 @@ class FastReducer:
         """
         state = self._sessions.setdefault(session_id, _SessionState())
         if comment is not None:
+            if comment.comment_id not in state.provenance:
+                # Age on arrival (a redelivery keeps its original age and is not logged again): the platform ->
+                # API -> Runtime part of the delay before a viewer hears the answer.
+                logger.info(
+                    "comment accepted session=%s source_lag_ms=%s",
+                    session_id,
+                    source_lag_ms(comment.ts),
+                )
             state.pending.append(comment)
             if state.first_pending_ts is None:
                 state.first_pending_ts = comment.ts

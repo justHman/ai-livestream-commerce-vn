@@ -35,6 +35,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
+from backend.application.reducer.fast_reducer import source_lag_ms
 from backend.application.entity.models import EntityDocument
 
 from .comment_buffer import ChatQueue, IncomingComment
@@ -103,6 +104,12 @@ class _SessionStats:
     interrupts: int = 0
     last_decision_ts: Optional[float] = None
     last_turn_end: Optional[float] = None  # monotonic end of the previous spoken turn
+
+
+def _decision_to_start_ms(decision: "Decision", playback_started: float):
+    """Milliseconds from the Director deciding the turn to its audio starting (queue wait + preparation + boundary)."""
+    decided = (decision.latency_spans.get("decision") or {}).get("start")
+    return "na" if decided is None else int((playback_started - decided) * 1000)
 
 
 class DirectorCoordinator:
@@ -590,6 +597,13 @@ class DirectorCoordinator:
             raise CoordinatorUnavailable(f"No active coordinator session: {session_id}")
         self._delivery_seq[session_id] = self._delivery_seq.get(session_id, 0) + 1
         comment = queue.put(text, author, ts=ts)
+        if ts is not None:
+            # How old the comment already was on arrival: the Facebook -> API -> Runtime part of the answer delay.
+            logger.info(
+                "comment ingested session=%s source_lag_ms=%s",
+                session_id,
+                source_lag_ms(ts),
+            )
         # Approved P0 sessions require the authorized execution start command.
         if self._runtime.get_session(session_id).approved_envelope is None:
             self._activated.add(session_id)
@@ -1626,7 +1640,7 @@ class DirectorCoordinator:
             previous_end = st.last_turn_end
             logger.info(
                 "speech turn timing session=%s unit=%s action=%s start_gap_ms=%s "
-                "first_audio_ms=%s total_ms=%s chars=%s",
+                "first_audio_ms=%s total_ms=%s chars=%s decision_to_start_ms=%s",
                 session_id,
                 decision.unit_index,
                 decision.action,
@@ -1634,6 +1648,7 @@ class DirectorCoordinator:
                 int((first_audio_at[0] - playback_started) * 1000) if first_audio_at else "na",
                 int((ended - playback_started) * 1000),
                 len(text or ""),
+                _decision_to_start_ms(decision, playback_started),
             )
             st.last_turn_end = ended
             completed = {
