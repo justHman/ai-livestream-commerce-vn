@@ -22,6 +22,7 @@ sentence-transformers) never blocks the event loop. The clock is injectable
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -36,6 +37,8 @@ from .cluster_store import (
 )
 
 __all__ = ["AcceptedComment", "FastReducer", "FastReducerConfig"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -212,6 +215,14 @@ class FastReducer:
         """
         state = self._sessions.setdefault(session_id, _SessionState())
         if comment is not None:
+            if comment.comment_id not in state.provenance:
+                # Age on arrival (a redelivery keeps its original age and is not logged again): the platform ->
+                # API -> Runtime part of the delay before a viewer hears the answer.
+                logger.info(
+                    "comment accepted session=%s source_lag_ms=%s",
+                    session_id,
+                    int((time.time() - comment.ts) * 1000),
+                )
             state.pending.append(comment)
             if state.first_pending_ts is None:
                 state.first_pending_ts = comment.ts
