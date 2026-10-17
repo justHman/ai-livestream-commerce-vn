@@ -500,6 +500,7 @@ class Director:
                     pivot=pivot,
                     excursion=not pivot,
                 )
+                cross_decision.pre_closing = pre_closing
                 if cross_selection is not None:
                     cross_decision.source_cluster_id = cross_selection.envelope.cluster_id
                 return cross_decision

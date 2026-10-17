@@ -265,3 +265,50 @@ async def test_reducer_feed_answers_a_question_before_the_closing_when_the_cap_w
     decision = director.decide_from_reducer(selections, now, high_value_ids=lambda cid: False)
     assert decision.action in ("answer_cluster", "answer_fact"), decision.action
     assert decision.pre_closing is True
+
+
+def test_excursion_answers_before_the_closing_are_bounded_too() -> None:
+    """A stream of questions about an EARLIER product (cross-product excursions) must not postpone the closing forever."""
+    from backend.application.director.decision import Director
+    from backend.application.director.state import ProductState, StreamState
+
+    first = ProductState(
+        product_id="P1", name="P1", units=("a.", "b.", "c."), status=ProductStatus.DONE
+    )
+    first.next_unit = 2
+    last = ProductState(product_id="P2", name="P2", units=("d.", "e.", "Lời kết."))
+    state = StreamState(products=[first, last])
+    director = Director(state)
+    director.cfg.qa_min_cluster_size = 1
+    state.phase = Phase.SELLING
+    state.cursor.opening_completed = True
+    state.current_product_index = 1
+    last.status = ProductStatus.ACTIVE
+    last.is_introduced = True
+    last.next_unit = 2
+    last.stage_turn_index = 10
+    last.cluster_count = director.cfg.max_clusters_per_product
+    actions = []
+    for step in range(12):
+        now = float(step)
+        vec = [0.0] * 8
+        vec[step % 8] = 1.0
+        question = Comment(
+            id=f"x{step}",
+            text=f"Hỏi về P1 số {step}?",
+            embedding=vec,
+            t=now,
+            product_id="P1",
+            intent=f"t{step}",
+        )
+        state.rolling_comments = [question]
+        decision = director.decide([question], now=now)
+        actions.append(decision.action)
+        if decision.action in ("idle", "skip"):
+            break
+        director.mark_spoken(decision)
+    assert actions.count("close") == 1, actions
+    assert (
+        len([a for a in actions if a in ("answer_fact", "answer_cluster")])
+        <= director.cfg.max_closing_qa_answers
+    ), actions
