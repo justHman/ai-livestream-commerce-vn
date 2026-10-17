@@ -12,7 +12,7 @@ import pytest
 
 from backend.application.director.clustering import Comment
 from backend.application.director.decision import Decision
-from backend.application.director.state import Phase
+from backend.application.director.state import Phase, ProductStatus
 
 from .test_director_coordinator import _make_coordinator, _make_products
 
@@ -221,3 +221,47 @@ def test_a_question_does_not_delay_the_switch_to_the_next_product() -> None:
     first.stage_turn_index = 2
     first.cluster_count = director.cfg.max_clusters_per_product
     assert director._switch_would_close() is False
+
+
+@pytest.mark.asyncio
+async def test_reducer_feed_answers_a_question_before_the_closing_when_the_cap_would_close() -> (
+    None
+):
+    """The production feed (reducer selections) takes the same bounded pre-closing path as the legacy feed."""
+    import time
+
+    from backend.application.director.reducer_input import build_selections
+
+    from .test_reducer_director_input import _comment, _reducer, _seed, _selling_director
+
+    reducer = _reducer()
+    now = time.time()
+    await _seed(
+        reducer,
+        "s1",
+        [
+            _comment("c1", "cách dùng sản phẩm thế nào", now, "c1"),
+            _comment("c2", "cách dùng sản phẩm thế nào", now, "c2"),
+        ],
+        now=now,
+    )
+    store = reducer.session_store("s1")
+    director = _selling_director(stage_turn_index=10)
+    director.cfg.qa_min_cluster_size = 1
+    state = director.state
+    state.current_product_index = len(state.products) - 1
+    for other in state.products[:-1]:
+        other.status = ProductStatus.DONE
+    product = state.current_product()
+    product.units = ("Mở đầu.", "Phần hai.", "Lời kết.")
+    product.next_unit = 2  # only the reserved closing is left
+    product.is_introduced = True
+    product.stage_turn_index = 10  # past every planned stage, so the cap is what ends the product
+    product.cluster_count = director.cfg.max_clusters_per_product  # the cap would close the session
+    selections = build_selections(
+        director, store=store, reducer_now=now, director_now=now, wall_now=now
+    )
+    assert selections, "the reducer must have projected the waiting question"
+    decision = director.decide_from_reducer(selections, now, high_value_ids=lambda cid: False)
+    assert decision.action in ("answer_cluster", "answer_fact"), decision.action
+    assert decision.pre_closing is True
