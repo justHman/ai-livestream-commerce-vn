@@ -81,6 +81,9 @@ class Decision:
     qa_window_started_at_after_decision: Optional[float] = None
     qa_window_stage_index_after_decision: Optional[int] = None
     qa_clusters_answered_after_decision: Optional[int] = None
+    pre_closing: bool = (
+        False  # an answer given because the closing was already due (counted against its bound)
+    )
     latency_spans: dict[str, dict[str, float]] = dataclass_field(default_factory=dict)
     turn_id: str = dataclass_field(default_factory=lambda: uuid4().hex)
     # Reducer provenance (P0-FB-014). It travels BESIDE the envelope, never
@@ -362,8 +365,20 @@ class Director:
         if relevant_ages:
             s.sec_since_relevant_msg = min(s.sec_since_relevant_msg, min(relevant_ages))
 
-        # Fresh relevant demand must reach ranking before the engagement-decay gate.
-        if self._should_switch_product():
+        # Fresh relevant demand must reach ranking before the engagement-decay gate. When the switch would END the
+        # session (no product left) and a viewer question is waiting, answer it first (bounded): the budget/cluster cap
+        # used to jump straight to the closing and drop every question that arrived in the last stretch.
+        switch = self._should_switch_product()
+        pre_closing = False
+        if (
+            switch
+            and ranked
+            and s.closing_qa_answered < c.max_closing_qa_answers
+            and self._switch_would_close()
+        ):
+            switch = False
+            pre_closing = True
+        if switch:
             self._advance_product()
             if s.phase == Phase.CLOSING:
                 return self._close_decision("all products done", None)
@@ -559,9 +574,22 @@ class Director:
             skipped.cluster.skips += 1
         selection = by_cluster.get(_cluster_id_of(by_members, top))
         decision = self._qa_decision(top, cur)
+        decision.pre_closing = pre_closing
         if selection is not None:
             decision.source_cluster_id = selection.envelope.cluster_id
         return decision
+
+    def _switch_would_close(self) -> bool:
+        """True when advancing the product would reach CLOSING (no later or earlier-unfinished product)."""
+        s = self.state
+        for i in range(s.current_product_index + 1, len(s.products)):
+            if s.products[i].status != ProductStatus.DONE:
+                return False
+        for i in range(0, s.current_product_index):
+            earlier = s.products[i]
+            if earlier.units and not self._units_exhausted(earlier):
+                return False
+        return True
 
     def _qa_decision(
         self,
@@ -697,6 +725,8 @@ class Director:
             )
             topic_key = f"{product_id}:{topic}"
             self.state.qa_clusters_answered += 1
+            if decision.pre_closing:
+                self.state.closing_qa_answered += 1
             self.state.topic_cooldown_until[topic_key] = (
                 decision.completed_at or decision.decided_at
             ) + self.cfg.qa_topic_cooldown_sec
