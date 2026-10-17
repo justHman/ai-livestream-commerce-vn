@@ -35,6 +35,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
+from backend.application.reducer.fast_reducer import source_lag_ms
 from backend.application.entity.models import EntityDocument
 
 from .comment_buffer import ChatQueue, IncomingComment
@@ -601,7 +602,7 @@ class DirectorCoordinator:
             logger.info(
                 "comment ingested session=%s source_lag_ms=%s",
                 session_id,
-                int((time.time() - ts) * 1000),
+                source_lag_ms(ts),
             )
         # Approved P0 sessions require the authorized execution start command.
         if self._runtime.get_session(session_id).approved_envelope is None:

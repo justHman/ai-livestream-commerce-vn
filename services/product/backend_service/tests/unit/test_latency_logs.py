@@ -39,3 +39,24 @@ def test_reducer_logs_how_old_a_new_comment_already_is_but_not_on_redelivery(cap
     assert len(lines) == 1
     lag = int(lines[0].rsplit("source_lag_ms=", 1)[1])
     assert 19_000 <= lag <= 25_000
+
+
+def test_lag_helper_never_raises_on_a_malformed_timestamp() -> None:
+    from backend.application.reducer.fast_reducer import source_lag_ms
+
+    for bad in (float("nan"), float("inf"), float("-inf"), None, "yesterday", object()):
+        assert source_lag_ms(bad) == "na"
+    assert source_lag_ms(90.0, now=100.0) == 10000
+    assert (
+        source_lag_ms(101.0, now=100.0) == -1000
+    )  # a skewed clock is shown as negative, not hidden
+
+
+def test_a_nan_timestamp_does_not_break_reducer_ingestion(caplog) -> None:
+    reducer = FastReducer(config=FastReducerConfig(), embedder=HashingEmbedder())
+    item = AcceptedComment(
+        event_id="e2", comment_id="c2", text="Giá?", ts=float("nan"), viewer_key="v2", provenance={}
+    )
+    with caplog.at_level(logging.INFO, logger="backend.application.reducer.fast_reducer"):
+        reducer.notify_new_events("s1", comment=item)  # must not raise
+    assert any("source_lag_ms=na" in r.getMessage() for r in caplog.records)

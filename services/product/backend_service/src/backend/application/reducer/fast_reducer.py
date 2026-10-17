@@ -41,6 +41,16 @@ __all__ = ["AcceptedComment", "FastReducer", "FastReducerConfig"]
 logger = logging.getLogger(__name__)
 
 
+def source_lag_ms(ts: object, *, now: Optional[float] = None) -> object:
+    """Age of a comment on arrival in ms, or "na" when ``ts`` is not a finite number. Used only for logging, so it
+    must never raise: a malformed timestamp would otherwise change ingestion behavior."""
+    try:
+        age = ((time.time() if now is None else now) - float(ts)) * 1000  # type: ignore[arg-type]
+        return int(age) if age == age and abs(age) != float("inf") else "na"
+    except (TypeError, ValueError, OverflowError):
+        return "na"
+
+
 @dataclass(frozen=True)
 class AcceptedComment:
     """One semantic item accepted by the ingestion pipeline.
@@ -221,7 +231,7 @@ class FastReducer:
                 logger.info(
                     "comment accepted session=%s source_lag_ms=%s",
                     session_id,
-                    int((time.time() - comment.ts) * 1000),
+                    source_lag_ms(comment.ts),
                 )
             state.pending.append(comment)
             if state.first_pending_ts is None:
