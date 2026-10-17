@@ -272,13 +272,18 @@ def test_excursion_answers_before_the_closing_are_bounded_too() -> None:
     from backend.application.director.decision import Director
     from backend.application.director.state import ProductState, StreamState
 
+    from .test_director_coordinator import _make_products
+
+    catalog = {
+        entity.id: entity for entity in _make_products()
+    }  # the real catalog is what makes a question cross-product
     first = ProductState(
-        product_id="P1", name="P1", units=("a.", "b.", "c."), status=ProductStatus.DONE
+        product_id="P001", name="P001", units=("a.", "b.", "c."), status=ProductStatus.DONE
     )
-    first.next_unit = 2
-    last = ProductState(product_id="P2", name="P2", units=("d.", "e.", "Lời kết."))
+    first.next_unit = 3  # every unit of the earlier product is spoken (only the LAST product reserves its closing)
+    last = ProductState(product_id="P002", name="P002", units=("d.", "e.", "Lời kết."))
     state = StreamState(products=[first, last])
-    director = Director(state)
+    director = Director(state, catalog=catalog)
     director.cfg.qa_min_cluster_size = 1
     state.phase = Phase.SELLING
     state.cursor.opening_completed = True
@@ -288,27 +293,27 @@ def test_excursion_answers_before_the_closing_are_bounded_too() -> None:
     last.next_unit = 2
     last.stage_turn_index = 10
     last.cluster_count = director.cfg.max_clusters_per_product
-    actions = []
+    actions, excursions = [], []
     for step in range(12):
         now = float(step)
         vec = [0.0] * 8
         vec[step % 8] = 1.0
         question = Comment(
             id=f"x{step}",
-            text=f"Hỏi về P1 số {step}?",
+            text=f"Hỏi về P001 số {step}?",
             embedding=vec,
             t=now,
-            product_id="P1",
+            product_id="P001",
             intent=f"t{step}",
         )
         state.rolling_comments = [question]
         decision = director.decide([question], now=now)
         actions.append(decision.action)
+        excursions.append(decision.excursion)
         if decision.action in ("idle", "skip"):
             break
         director.mark_spoken(decision)
+    assert any(excursions), "the scenario must actually take the cross-product excursion path"
     assert actions.count("close") == 1, actions
-    assert (
-        len([a for a in actions if a in ("answer_fact", "answer_cluster")])
-        <= director.cfg.max_closing_qa_answers
-    ), actions
+    answers = [a for a in actions if a in ("answer_fact", "answer_cluster")]
+    assert len(answers) <= director.cfg.max_closing_qa_answers, actions
