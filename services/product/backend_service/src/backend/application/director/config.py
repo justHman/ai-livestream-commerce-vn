@@ -65,6 +65,9 @@ class StreamConfig:
     # qualify). 2 keeps a single stray comment from interrupting the script on a busy stream;
     # on a small live every viewer matters, so 1 answers each question.
     qa_min_cluster_size: int = 2
+    # Questions the Director may still answer on the LAST product after its time budget or cluster cap would have
+    # switched to the closing. Bounded so a busy stream cannot postpone the closing forever.
+    max_closing_qa_answers: int = 3
 
     def validate_runtime(self) -> None:
         if not 0.2 <= self.traffic_high_threshold <= 5.0:
@@ -79,6 +82,8 @@ class StreamConfig:
             raise ValueError("pivot gates must be non-negative")
         if self.qa_min_cluster_size < 1:
             raise ValueError("qa_min_cluster_size must be at least 1")
+        if self.max_closing_qa_answers < 0:
+            raise ValueError("max_closing_qa_answers must not be negative")
 
     @classmethod
     def from_env(cls) -> "StreamConfig":
