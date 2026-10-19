@@ -12,6 +12,7 @@ import asyncio
 import copy
 from datetime import datetime, timezone
 import os
+from urllib.parse import urlsplit
 
 from typing import Any
 
@@ -37,6 +38,47 @@ def _container(request: Request):
     return container_from_request(request)
 
 
+def _authenticated_internal_caller(request: Request, config: Any) -> bool:
+    """Overrides are accepted only with the configured internal bearer secret.
+
+    ``viewer_auth`` deliberately remains unchanged for legacy session starts,
+    including unauthenticated local development. Provider and voice overrides
+    must never inherit that development bypass.
+    """
+    from backend.api.security.authentication import parse_bearer, tokens_match
+
+    expected = (getattr(config, "backend_api_token", "") or "").strip()
+    presented = parse_bearer(request.headers.get("authorization"))
+    return bool(expected and presented and tokens_match(presented, expected))
+
+
+def _validate_image_host(image_url: str | None, config: Any) -> None:
+    if image_url is None:
+        return
+    hosts = {
+        host.strip().lower()
+        for host in (getattr(config, "avatar_image_hosts", "") or "").split(",")
+        if host.strip()
+    }
+    if (urlsplit(image_url).hostname or "").lower() not in hosts:
+        raise HTTPException(status_code=422, detail={"code": "avatar_image_host_not_allowed"})
+
+
+class _SessionTTS:
+    """Apply validated TTS overrides to this session without changing shared state."""
+
+    def __init__(self, tts: Any, *, voice_id: str | None, tempo: float | None) -> None:
+        self._tts = tts
+        self._voice_id = voice_id
+        self._tempo = tempo
+
+    def stream_audio(self, chunk: Any, **kwargs: Any):
+        from tts.engines.base import TTSRequest
+
+        kwargs["req"] = TTSRequest(text=chunk.text, voice=self._voice_id, tempo=self._tempo)
+        yield from self._tts.stream_audio(chunk, **kwargs)
+
+
 @_router.post("/sessions")
 async def sessions_start(
     req: router.StartReq,
@@ -58,10 +100,22 @@ async def sessions_start(
         ):
             raise HTTPException(status_code=409, detail={"code": "unsupported_capability"})
 
+    if req.has_avatar_or_voice_override() and not _authenticated_internal_caller(request, d.config):
+        raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
+    _validate_image_host(req.avatar_image_url, d.config)
+
     try:
         result = await asyncio.to_thread(
             d.backend.start,
-            StartOptions(avatar_id=req.avatar_id, is_sandbox=req.is_sandbox),
+            StartOptions(
+                avatar_id=req.avatar_id,
+                avatar_provider=req.avatar_provider,
+                avatar_agent_id=req.avatar_agent_id,
+                avatar_image_url=req.avatar_image_url,
+                voice_id=req.voice_id,
+                tts_tempo=req.tts_tempo,
+                is_sandbox=req.is_sandbox,
+            ),
         )
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
@@ -69,6 +123,10 @@ async def sessions_start(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     meta: dict[str, Any] = {"status": "active", "mode": result.mode}
+    if req.voice_id is not None:
+        meta["voice_id"] = req.voice_id
+    if req.tts_tempo is not None:
+        meta["tts_tempo"] = req.tts_tempo
     if req.execution_contract:
         meta["execution_contract"] = {
             "tenant_id": req.tenant_id,
@@ -262,6 +320,15 @@ async def _streaming_say(d: Any, req: router.SayReq, *, speech=None) -> dict[str
     em = d.engine_manager
     llm: LLMEngine = em.llm if (em is not None and em.llm is not None) else _NoopEngine()
     tts: TTSEngine = em.tts if (em is not None and em.tts is not None) else ToneEngine()
+    session_meta = await d.store.get(sid)
+    if session_meta and (
+        session_meta.get("voice_id") is not None or session_meta.get("tts_tempo") is not None
+    ):
+        tts = _SessionTTS(
+            tts,
+            voice_id=session_meta.get("voice_id"),
+            tempo=session_meta.get("tts_tempo"),
+        )
 
     # Bounded queue + metrics for this utterance. The chunking config is
     # built ONCE from AppConfig into the typed configs the orchestrator

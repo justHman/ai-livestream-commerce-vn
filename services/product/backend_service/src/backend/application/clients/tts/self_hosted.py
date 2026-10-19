@@ -366,7 +366,9 @@ class SelfHostedTTSClient:
                 time.sleep(_RETRY_DELAYS_S[attempt])
         raise AssertionError("unreachable")
 
-    def _synthesize_openai_audio_speech(self, text: str, *, voice: str = "") -> TTSResult:
+    def _synthesize_openai_audio_speech(
+        self, text: str, *, voice: str = "", tempo: float | None = None
+    ) -> TTSResult:
         """`POST /v1/audio/speech` — raw PCM s16le mono, no x-audio-* headers."""
         url = urljoin(self._base_url + "/", "v1/audio/speech")
         rate = self._sample_rate
@@ -380,7 +382,7 @@ class SelfHostedTTSClient:
         resolved_voice = (voice or self._voice_id or "").strip()
         if resolved_voice:
             body["voice"] = resolved_voice
-        pcm = change_tempo(self._stream_openai_pcm(url, body), rate, self._tempo)
+        pcm = change_tempo(self._stream_openai_pcm(url, body), rate, self._tempo if tempo is None else tempo)
         duration_ms = int(len(pcm) / (2 * rate) * 1000)
         return TTSResult(
             pcm16=pcm,
@@ -394,12 +396,13 @@ class SelfHostedTTSClient:
         text: str,
         *,
         voice: str = "",
+        tempo: float | None = None,
         language: str = "vi",
         response_format: str = "pcm",
     ) -> TTSResult:
         """Call the self-host TTS service and return PCM16 audio."""
         if self._api_style == OPENAI_AUDIO_SPEECH_STYLE:
-            return self._synthesize_openai_audio_speech(text, voice=voice)
+            return self._synthesize_openai_audio_speech(text, voice=voice, tempo=tempo)
         client = self._get_client()
         url = urljoin(self._base_url + "/", "v1/speech")
         body: dict = {

@@ -107,7 +107,9 @@ class RemoteHttpTTSEngine(TTSEngine):
         return cls(client, sample_rate=rate)
 
     def synthesize(self, req: TTSRequest) -> AudioChunk:
-        result = self._client.synthesize(req.text, voice=req.voice or "", language=req.language)
+        result = self._client.synthesize(
+            req.text, voice=req.voice or "", tempo=req.tempo, language=req.language
+        )
         pcm = np.frombuffer(result.pcm16, dtype="<i2").astype(np.float32) / 32767.0
         return AudioChunk(pcm=pcm, sample_rate=result.sample_rate)
 

@@ -36,6 +36,15 @@ def _client(cfg: AppConfig | None = None) -> TestClient:
     return TestClient(app)
 
 
+def _client_with_backend(cfg: AppConfig, backend) -> TestClient:
+    from backend.main import create_app
+
+    d = _deps()
+    d.config = cfg
+    d.backend = backend
+    return TestClient(create_app(config=cfg, deps=d))
+
+
 def test_sessions_start_and_stop_alias(mock_env: None) -> None:
     with _client() as client:
         r = client.post("/api/v1/sessions", json={})
@@ -50,6 +59,83 @@ def test_sessions_start_and_stop_alias(mock_env: None) -> None:
         r4 = client.post(f"/api/v1/sessions/{sid}/stop")
         assert r4.status_code == 200, r4.text
         assert r4.json()["stopped"] == sid
+
+
+def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_env: None) -> None:
+    from backend.application.render.engines_base import StartResult
+
+    class CaptureBackend:
+        name = "capture"
+
+        def start(self, opts):
+            self.opts = opts
+            return StartResult("capture-1", "ws://livekit", "token", "CAPTURE")
+
+    payload = {
+        "avatar_provider": "lemonslice",
+        "avatar_agent_id": "agent_093d2f9535db94ef",
+        "voice_id": "Hai Dang",
+        "tts_tempo": 0.92,
+    }
+    backend = CaptureBackend()
+    with _client_with_backend(AppConfig(render_backend="mock", app_env="dev"), backend) as client:
+        denied = client.post("/api/v1/sessions", json=payload)
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "avatar_override_not_authorized"
+
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        backend_api_token="internal-test-token",
+        avatar_image_hosts="avatars.example.test",
+    )
+    with _client_with_backend(cfg, backend) as client:
+        started = client.post(
+            "/api/v1/sessions",
+            json=payload,
+            headers={"Authorization": "Bearer internal-test-token"},
+        )
+    assert started.status_code == 200, started.text
+    assert backend.opts.avatar_provider == "lemonslice"
+    assert backend.opts.avatar_agent_id == "agent_093d2f9535db94ef"
+    assert backend.opts.voice_id == "Hai Dang"
+    assert backend.opts.tts_tempo == 0.92
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"avatar_agent_id": "agent_uppercase"},
+        {"avatar_image_url": "http://avatars.example.test/a.png"},
+        {
+            "avatar_agent_id": "agent_093d2f9535db94ef",
+            "avatar_image_url": "https://avatars.example.test/a.png",
+        },
+        {"voice_id": "   "},
+        {"tts_tempo": 1.6},
+    ],
+)
+def test_session_avatar_override_shape_validation(mock_env: None, payload: dict) -> None:
+    with _client() as client:
+        response = client.post("/api/v1/sessions", json=payload)
+    assert response.status_code == 422
+
+
+def test_session_avatar_image_host_must_be_allowlisted(mock_env: None) -> None:
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        backend_api_token="internal-test-token",
+        avatar_image_hosts="avatars.example.test",
+    )
+    with _client(cfg) as client:
+        response = client.post(
+            "/api/v1/sessions",
+            json={"avatar_image_url": "https://outside.example.test/avatar.png"},
+            headers={"Authorization": "Bearer internal-test-token"},
+        )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "avatar_image_host_not_allowed"
 
 
 def test_plan_create_stores_run_plan(mock_env: None) -> None:

@@ -153,6 +153,34 @@ def test_avatar_id_must_be_preset_or_allowlisted():
     backend.stop_all()
 
 
+def test_per_session_agent_id_bypasses_legacy_allowlist():
+    backend, _, rest = make(avatar_allowlist=())
+    backend.start(StartOptions(avatar_provider="lemonslice", avatar_agent_id="agent_093d2f9535db94ef"))
+    backend.stop_all()
+
+    assert rest.starts[0]["agent_id"] == "agent_093d2f9535db94ef"
+
+
+def test_per_session_image_url_requires_allowed_host_and_uses_provider_image_field():
+    backend, _, rest = make(image_hosts=("avatars.example.test",))
+    backend.start(
+        StartOptions(
+            avatar_provider="lemonslice",
+            avatar_image_url="https://avatars.example.test/catalog/avatar.png",
+        )
+    )
+    backend.stop_all()
+
+    assert "agent_id" not in rest.starts[0]
+    assert rest.starts[0]["agent_image_url"] == "https://avatars.example.test/catalog/avatar.png"
+
+    disallowed, _, _ = make(image_hosts=("avatars.example.test",))
+    with pytest.raises(RuntimeError, match="allowed host"):
+        disallowed.start(
+            StartOptions(avatar_image_url="https://untrusted.example.test/catalog/avatar.png")
+        )
+
+
 def test_one_stream_per_utterance_in_order_final_closes_only_avatar_receives(started):
     backend, room, _, res = started
     for i in range(3):

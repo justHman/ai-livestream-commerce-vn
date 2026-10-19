@@ -57,7 +57,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from backend.application.publishing.datastream import AvatarAudioChannel
 from backend.application.publishing.livekit import mint_room_token
@@ -80,6 +80,7 @@ _ROLLOVER_RETRY_S = 30.0  # pause before trying again after a failed rollover
 _ROLLOVER_LEAVE_WAIT_S = 8.0  # how long an ended avatar gets to leave the room
 # A provider session id becomes ONE URL path segment carrying the API key header.
 _SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_AGENT_ID = re.compile(r"agent_[0-9a-f]{8,32}")
 _TERMINAL_STATUS = frozenset({404, 410})  # the provider session is gone
 _AUTH_STATUS = frozenset({401, 403})  # terminal only when repeated
 _CREDIT_CODE = "LEMONSLICE_CREDIT_EXHAUSTED"
@@ -101,6 +102,7 @@ class LemonSliceSettings:
     api_base: str = "https://lemonslice.com/api/liveai"
     agent_id: str = ""
     avatar_allowlist: tuple[str, ...] = ()
+    image_hosts: tuple[str, ...] = ()
     audio_sample_rate: int = 16000
     idle_timeout_s: int = 60
     ready_timeout_s: float = 30.0
@@ -451,6 +453,7 @@ class _Sess:
     speech_pending: bool = False
     ever_on_air: bool = False
     agent_id: str = ""  # kept so a rollover can start the same avatar again
+    image_url: str = ""  # kept so a rollover can start the same avatar again
     room_name: str = ""
     roll_lock: Any = None  # serializes rollovers of this session (created on the loop)
     next_roll_at: float = 0.0  # monotonic: earliest retry after a failed rollover
@@ -743,12 +746,47 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
 
     # ---- RenderBackend ---------------------------------------------
     def start(self, opts: StartOptions) -> StartResult:
-        agent_id = self._resolve_agent(opts.avatar_id)
+        agent_id, image_url = self._resolve_avatar(opts)
         return self._run(
-            self._start(agent_id),
+            self._start(agent_id, image_url),
             self._s.ready_timeout_s + self._s.request_timeout_s + 10,
             pool="startup",
         )
+
+    def _resolve_avatar(self, opts: StartOptions) -> tuple[str | None, str | None]:
+        """Resolve a trusted per-session avatar or preserve the legacy env path."""
+        if opts.avatar_provider is not None and opts.avatar_provider != "lemonslice":
+            raise LemonSliceError("avatar_provider_invalid", "avatar_provider is not supported")
+        if opts.avatar_agent_id and opts.avatar_image_url:
+            raise LemonSliceError(
+                "avatar_source_invalid", "avatar_agent_id and avatar_image_url are mutually exclusive"
+            )
+        if opts.avatar_agent_id:
+            if not _AGENT_ID.fullmatch(opts.avatar_agent_id):
+                raise LemonSliceError("agent_id_invalid", "avatar_agent_id has an invalid format")
+            return opts.avatar_agent_id, None
+        if opts.avatar_image_url:
+            self._validate_image_url(opts.avatar_image_url)
+            return None, opts.avatar_image_url
+        return self._resolve_agent(opts.avatar_id), None
+
+    def _validate_image_url(self, image_url: str) -> None:
+        try:
+            parsed = urlsplit(image_url)
+        except ValueError:
+            raise LemonSliceError(
+                "image_url_not_allowed", "avatar_image_url is not on an allowed host"
+            ) from None
+        host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme != "https"
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or host not in self._s.image_hosts
+        ):
+            # Do not include the URL: it can contain sensitive object names or query strings.
+            raise LemonSliceError("image_url_not_allowed", "avatar_image_url is not on an allowed host")
 
     def _resolve_agent(self, avatar_id: str | None) -> str:
         # DR-AVATAR-001: preset avatars only. A caller-supplied id must be allowlisted.
@@ -762,7 +800,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             raise LemonSliceError("agent_not_configured", "LEMONSLICE_AGENT_ID is not configured")
         return self._s.agent_id
 
-    async def _start(self, agent_id: str) -> StartResult:
+    async def _start(self, agent_id: str | None, image_url: str | None) -> StartResult:
         self._check_creation()
         # The tracked current startup already occupies one slot. Never evict an unpaid
         # cleanup identity to admit another billable provider session.
@@ -821,12 +859,14 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             )
             sess.started_at = self._mono()
             sess.created_at = sess.started_at
-            sess.agent_id, sess.room_name = agent_id, room_name
+            sess.agent_id, sess.image_url, sess.room_name = agent_id or "", image_url or "", room_name
             sess.cleared = _BoundedSet(s.history)
             sess.unconfirmed = _BoundedSet(s.history)
             # Single-speaker: no agent_prompt / LLM / TTS fields are ever sent.
             post_task = asyncio.ensure_future(
-                self._request_session(agent_id, avatar_token, await self._room_sid(room, room_name))
+                self._request_session(
+                    agent_id, image_url, avatar_token, await self._room_sid(room, room_name)
+                )
             )
             # The creation is an owned task: the caller's deadline stops WAITING for it, never
             # the request itself (a cancelled request loses the session id of a billable session).
@@ -897,7 +937,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             sid = await sid
         return sid if isinstance(sid, str) and sid else room_name
 
-    async def _request_session(self, agent_id: str, avatar_token: str, room_sid: str) -> Any:
+    async def _request_session(
+        self, agent_id: str | None, image_url: str | None, avatar_token: str, room_sid: str
+    ) -> Any:
         """Start the provider session through the plugin client; errors carry no body/URL/key."""
         s = self._s
         self._check_creation()
@@ -913,12 +955,18 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         failure: Exception | None = None
         try:
             async with self._session_client() as client:
+                request: dict[str, Any] = {
+                    "livekit_url": s.livekit_url,
+                    "livekit_token": avatar_token,
+                    "livekit_session_id": room_sid,
+                    "idle_timeout": s.idle_timeout_s,
+                }
+                if agent_id:
+                    request["agent_id"] = agent_id
+                else:
+                    request["agent_image_url"] = image_url
                 sid = await client.start_agent_session(
-                    livekit_url=s.livekit_url,
-                    livekit_token=avatar_token,
-                    livekit_session_id=room_sid,
-                    agent_id=agent_id,
-                    idle_timeout=s.idle_timeout_s,
+                    **request,
                 )
                 if budget_token and isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):
                     self._budget_tokens[sid] = budget_token
@@ -1138,7 +1186,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
 
     async def _maybe_rollover(self, sess: _Sess) -> None:
         s = self._s
-        if sess.closing or sess.fatal_code or not sess.agent_id:
+        if sess.closing or sess.fatal_code or not (sess.agent_id or sess.image_url):
             return
 
         def due() -> bool:
@@ -1214,7 +1262,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             )
             room_sid = await self._room_sid(sess.room, sess.room_name)
             post_task = asyncio.ensure_future(
-                self._request_session(sess.agent_id, avatar_token, room_sid)
+                self._request_session(
+                    sess.agent_id or None, sess.image_url or None, avatar_token, room_sid
+                )
             )
             try:
                 new_sid = await asyncio.wait_for(
