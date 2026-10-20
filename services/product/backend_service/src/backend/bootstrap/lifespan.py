@@ -244,6 +244,14 @@ async def _stop_usage_evidence(container: BootstrapContainer) -> None:
     from backend.application.execution_contract import set_usage_evidence_capabilities
 
     set_usage_evidence_capabilities(())
+    from backend.application.usage_evidence.cost import cost_meter
+
+    # render.stop_all may have outlived its stage timeout (it runs in a thread): give its
+    # avatar settle a short bounded moment before the final flush.
+    for _ in range(30):
+        if cost_meter.open_count() == 0:
+            break
+        await asyncio.sleep(0.1)
     task = getattr(container, "usage_evidence_task", None)
     if task is not None and not task.done():
         task.cancel()
@@ -259,9 +267,7 @@ async def _stop_usage_evidence(container: BootstrapContainer) -> None:
             await sender.flush(timeout)
         finally:
             await sender.close()
-    from backend.application.usage_evidence.cost import cost_meter
-
-    cost_meter.enabled = False  # only after the final flush (and the avatar settle before it)
+    cost_meter.close()  # only after the final flush (and the avatar settle before it)
     # The service object stays: a request during shutdown still stages durably, and
     # the rows are delivered by the next process.
 

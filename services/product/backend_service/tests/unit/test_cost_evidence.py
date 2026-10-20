@@ -37,7 +37,7 @@ def meter():
     cost_meter.configure(enabled=True)
     cost_meter.bind("rt", IDENTITY)
     cost_meter.drain(10_000)
-    for name in ("dropped", "unbound", "lost", "conflicts"):
+    for name in ("dropped", "unbound", "lost", "conflicts", "evicted"):
         setattr(cost_meter, name, 0)
     yield cost_meter
     cost_meter.configure(enabled=False)
@@ -651,3 +651,66 @@ def test_stop_all_settles_the_avatar_even_when_the_loop_fails_early(meter):
         b.stop_all()
     sample = meter.drain(1)[0]
     assert sample.cost_key == "ps" and sample.usage_source == "derived"
+
+
+# -- review round 4 ----------------------------------------------------------------------------------
+
+
+def test_a_sample_arriving_after_shutdown_is_counted_and_logged_not_silent(meter, caplog):
+    meter.close()
+    with caplog.at_level("ERROR"):
+        llm(meter, "late")
+    lines = [r.getMessage() for r in caplog.records if "late_after_shutdown" in r.getMessage()]
+    assert len(lines) == 1 and "key=late" in lines[0] and TENANT in lines[0]
+    assert meter.lost == 1 and not meter._buf
+
+
+def test_a_never_enabled_meter_stays_silent():
+    fresh = CostMeter()
+    fresh.record_llm("x", call_id="c", provider="p", model="m", input_tokens=1, output_tokens=1)
+    assert fresh.lost == 0
+
+
+def test_forced_eviction_of_an_open_avatar_emits_a_derived_row(meter, monkeypatch):
+    monkeypatch.setattr("backend.application.usage_evidence.cost._MAX_BOUND", 2)
+    meter.avatar_idle_bound_s = 60.0
+    for n in range(3):  # none is old enough to be "expired"
+        meter.avatar_open("rt", f"ps{n}")
+    rows = meter.drain(10)
+    assert meter.evicted == 1 and len(meter._open) == 2
+    assert [r.cost_key for r in rows] == ["ps0"]
+    assert rows[0].usage_source == "derived" and rows[0].fields["seconds"] >= 60.0
+    meter.avatar_idle_bound_s = 0.0
+
+
+async def test_render_stop_slower_than_its_stage_timeout_still_settles_and_flushes(
+    meter, monkeypatch
+):
+    import time
+
+    from avatar.engines.mock import MockRenderBackend
+    from backend.application.db import InMemorySessionStore
+    from backend.bootstrap import create_container
+    from backend.bootstrap import lifespan as lifespan_module
+    from backend.config import AppConfig
+
+    monkeypatch.setattr(lifespan_module, "_SHUTDOWN_TIMEOUT_SECONDS", 0.25)
+    outbox = FakeOutbox()
+
+    class SlowBackend(MockRenderBackend):
+        def stop_all(self):
+            time.sleep(0.3)  # outlives the stage timeout; the thread keeps running
+            meter.avatar_settle_all(60.0)
+
+    meter.avatar_open("rt", "ps")
+    container = create_container(
+        backend=SlowBackend(),
+        store=InMemorySessionStore(),
+        config=AppConfig(render_backend="mock", app_env="dev"),
+    )
+    container.usage_sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter)
+    container.usage_evidence = SimpleNamespace(settings=UsageEvidenceSettings())
+    container.usage_evidence_task = None
+    await lifespan_module._shutdown(container)
+    assert [k[1] for k in outbox.rows] == ["cost:AVATAR"]
+    assert meter.lost == 0 and meter.enabled is False

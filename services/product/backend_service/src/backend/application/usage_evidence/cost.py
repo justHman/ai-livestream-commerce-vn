@@ -63,10 +63,13 @@ class CostMeter:
         self.unbound = 0  # no identity for the session: shown as "unknown", not zero
         self.lost = 0  # dropped for good (each one logged once as cost_evidence_lost)
         self.conflicts = 0  # same semantic key, different bytes
+        self._closed = False  # shut down: late samples are logged as lost, never silent
+        self.avatar_idle_bound_s = 0.0  # provider idle timeout: the end bound of a derived row
         self.evicted = 0  # identity / open avatar record removed to make room (an error)
 
     def configure(self, *, enabled: bool, buffer: int = 5000) -> None:
         self.enabled = bool(enabled)
+        self._closed = False
         self._cap = max(1, buffer)
 
     # -- session binding (control plane, at start / stop) -------------------
@@ -126,6 +129,15 @@ class CostMeter:
         **fields: Any,
     ) -> None:
         if not self.enabled:
+            if self._closed:  # arrived after shutdown (e.g. a slow stop_all thread)
+                self.lost += 1
+                identity = self._ids.get(session_id)
+                logger.error(
+                    "cost_evidence_lost key=%s tenant=%s kind=%s reason=late_after_shutdown",
+                    key,
+                    identity.tenant_id if identity else "unknown",
+                    kind,
+                )
             return
         try:
             identity = self._ids.get(session_id)
@@ -234,24 +246,26 @@ class CostMeter:
             )
             expired = self._trim_open() if len(self._open) > _MAX_BOUND else []
         for psid, rec in expired:  # emitted outside the lock: _push/_emit_avatar take it again
-            self._emit_avatar(psid, rec, confirmed=False, extra_s=0.0)
+            self._emit_avatar(psid, rec, confirmed=False, extra_s=self.avatar_idle_bound_s)
 
     def _trim_open(self) -> list[tuple[str, tuple[str, float, datetime, bool]]]:
-        """Caller holds the lock. Returns the expired records to settle (the caller emits them
-        after releasing the lock); only if none can go is one evicted, as an error."""
+        """Caller holds the lock. Returns the records to settle as derived (expired ones first,
+        then, only if still over the limit, the oldest open ones: counted + logged as evicted).
+        The caller emits them after releasing the lock, so nothing is dropped silently."""
         now = time.monotonic()
-        expired = []
+        out = []
         for psid, rec in list(self._open.items()):
             if len(self._open) <= _MAX_BOUND:
                 break
             if now - rec[1] > _OPEN_MAX_AGE_S:
                 del self._open[psid]
-                expired.append((psid, rec))
+                out.append((psid, rec))
         while len(self._open) > _MAX_BOUND:
-            psid, _ = self._open.popitem(last=False)
+            psid, rec = self._open.popitem(last=False)
             self.evicted += 1
             logger.error("cost_evidence_evicted what=avatar_open provider_session=%s", psid)
-        return expired
+            out.append((psid, rec))
+        return out
 
     def avatar_close(
         self, provider_session_id: str, *, confirmed: bool = True, extra_s: float = 0.0
@@ -306,6 +320,14 @@ class CostMeter:
             while self._buf and len(out) < limit:
                 out.append(self._buf.popleft())
         return out
+
+    def close(self) -> None:
+        """Shutdown: stop accepting; anything arriving later is logged as lost."""
+        self.enabled = False
+        self._closed = True
+
+    def open_count(self) -> int:
+        return len(self._open)
 
     def requeue(self, sample: CostSample) -> None:
         """Back to the FRONT after an outbox failure. Always succeeds: a sample that was once

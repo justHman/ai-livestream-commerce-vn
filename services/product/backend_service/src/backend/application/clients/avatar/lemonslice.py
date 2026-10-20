@@ -490,6 +490,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     ) -> None:
         self._mono = monotonic
         self._s = settings
+        cost_meter.avatar_idle_bound_s = float(getattr(settings, "idle_timeout_s", 0) or 0)
         self._room_factory = room_factory or self._default_room
         self._session_client = session_client_factory or _plugin_client_factory(
             settings, _load_plugin()
