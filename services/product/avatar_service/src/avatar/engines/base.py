@@ -41,6 +41,12 @@ class StartOptions:
 
     avatar_id: Optional[str] = None
     is_sandbox: bool = True
+    # Runtime-session selections supplied by the authenticated internal
+    # caller. Backends which do not support provider overrides ignore them.
+    avatar_provider: Optional[str] = None
+    avatar_agent_id: Optional[str] = None
+    avatar_image_url: Optional[str] = None
+    voice_id: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 

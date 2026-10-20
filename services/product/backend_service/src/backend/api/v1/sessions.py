@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from backend.application.clients.avatar.image_url import check_image_url
 from backend.api.dependencies import container_from_request
 from backend.application.db.session_store import SessionLockTimeout, delete_owned
 from backend.application.execution_contract import rescue_switch_on
@@ -35,6 +36,53 @@ from .router import router as _router  # noqa: F401
 
 def _container(request: Request):
     return container_from_request(request)
+
+
+def _authenticated_internal_caller(request: Request, config: Any) -> bool:
+    """Per-session avatar/voice overrides need the viewer bearer AND a separate internal secret.
+
+    The viewer token is handed to browsers, so on its own it must never choose a provider agent or a voice.
+    ``viewer_auth`` stays unchanged for legacy session starts, including unauthenticated local development, and
+    overrides never inherit that development bypass. Without AVATAR_INTERNAL_TOKEN overrides are refused.
+    """
+    from backend.api.security.authentication import parse_bearer, tokens_match
+
+    viewer = (getattr(config, "backend_api_token", "") or "").strip()
+    internal = (getattr(config, "avatar_internal_token", "") or "").strip()
+    bearer = parse_bearer(request.headers.get("authorization"))
+    header = (request.headers.get("x-livento-internal-token") or "").strip()
+    return bool(
+        viewer
+        and internal
+        and bearer
+        and header
+        and tokens_match(bearer, viewer)
+        and tokens_match(header, internal)
+    )
+
+
+def _validate_image_host(image_url: str, config: Any) -> None:
+    hosts = (getattr(config, "avatar_image_hosts", "") or "").split(",")
+    try:
+        check_image_url(image_url, hosts)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail={"code": "avatar_image_host_not_allowed"}
+        ) from None
+
+
+class _SessionTTS:
+    """Apply the validated voice override to this session without changing shared state."""
+
+    def __init__(self, tts: Any, *, voice_id: str | None) -> None:
+        self._tts = tts
+        self._voice_id = voice_id
+
+    def stream_audio(self, chunk: Any, **kwargs: Any):
+        from tts.engines.base import TTSRequest
+
+        kwargs["req"] = TTSRequest(text=chunk.text, voice=self._voice_id)
+        yield from self._tts.stream_audio(chunk, **kwargs)
 
 
 @_router.post("/sessions")
@@ -58,10 +106,29 @@ async def sessions_start(
         ):
             raise HTTPException(status_code=409, detail={"code": "unsupported_capability"})
 
+    if req.has_avatar_or_voice_override() and not _authenticated_internal_caller(request, d.config):
+        raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
+    if req.has_avatar_or_voice_override() and not getattr(
+        d.backend, "supports_avatar_override", False
+    ):
+        # e.g. static_avatar ignores StartOptions: acknowledging would let the API show the wrong avatar.
+        raise HTTPException(
+            status_code=422, detail={"code": "avatar_override_unsupported_renderer"}
+        )
+    if req.avatar_image_url is not None:
+        _validate_image_host(req.avatar_image_url, d.config)
+
     try:
         result = await asyncio.to_thread(
             d.backend.start,
-            StartOptions(avatar_id=req.avatar_id, is_sandbox=req.is_sandbox),
+            StartOptions(
+                avatar_id=req.avatar_id,
+                avatar_provider=req.avatar_provider,
+                avatar_agent_id=req.avatar_agent_id,
+                avatar_image_url=req.avatar_image_url,
+                voice_id=req.voice_id,
+                is_sandbox=req.is_sandbox,
+            ),
         )
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
@@ -69,6 +136,8 @@ async def sessions_start(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     meta: dict[str, Any] = {"status": "active", "mode": result.mode}
+    if req.voice_id is not None:
+        meta["voice_id"] = req.voice_id
     if req.execution_contract:
         meta["execution_contract"] = {
             "tenant_id": req.tenant_id,
@@ -108,6 +177,10 @@ async def sessions_start(
                 result.session_id,
             )
     out = result.public_dict()  # frontend-safe only
+    if req.has_avatar_or_voice_override():
+        out["avatar_override_applied"] = (
+            True  # lets the API detect a Runtime that ignores the override fields
+        )
     if req.rescue_commands:
         # R4-R2: report whether the marker was accepted; the API follows this.
         out["rescue_commands"] = bool(meta.get("p0_rescue"))
@@ -262,6 +335,9 @@ async def _streaming_say(d: Any, req: router.SayReq, *, speech=None) -> dict[str
     em = d.engine_manager
     llm: LLMEngine = em.llm if (em is not None and em.llm is not None) else _NoopEngine()
     tts: TTSEngine = em.tts if (em is not None and em.tts is not None) else ToneEngine()
+    session_meta = await d.store.get(sid)
+    if session_meta and session_meta.get("voice_id") is not None:
+        tts = _SessionTTS(tts, voice_id=session_meta.get("voice_id"))
 
     # Bounded queue + metrics for this utterance. The chunking config is
     # built ONCE from AppConfig into the typed configs the orchestrator

@@ -22,6 +22,7 @@ removed. This router exposes:
 from __future__ import annotations
 
 import logging
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
 
@@ -36,8 +37,9 @@ from fastapi import (
     WebSocket,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.application.clients.avatar.image_url import check_image_url
 from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
 from backend.application.entity.registry import (
     COMMERCE_PRICE_CURRENT,
@@ -108,12 +110,74 @@ class ControlHub:
 
 class StartReq(BaseModel):
     avatar_id: Optional[str] = Field(default=None, max_length=128)
+    avatar_provider: Optional[Literal["lemonslice"]] = None
+    avatar_agent_id: Optional[str] = Field(default=None, max_length=38)
+    avatar_image_url: Optional[str] = Field(default=None, max_length=2_048)
+    voice_id: Optional[str] = Field(default=None, max_length=128)
     is_sandbox: bool = True
     execution_contract: Optional[str] = None
     tenant_id: Optional[str] = None
     business_session_id: Optional[str] = None
     generation: Optional[str] = None
     rescue_commands: bool = False
+
+    @field_validator("avatar_agent_id")
+    @classmethod
+    def validate_avatar_agent_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not re.fullmatch(r"agent_[0-9a-f]{8,32}", value):
+            raise ValueError("avatar_agent_id has an invalid format")
+        return value
+
+    @field_validator("avatar_image_url")
+    @classmethod
+    def validate_avatar_image_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            check_image_url(value)
+        except ValueError as exc:
+            raise ValueError("avatar_image_url is not an acceptable https image URL") from exc
+        return value
+
+    @field_validator("voice_id")
+    @classmethod
+    def validate_voice_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("voice_id must be non-empty bounded text")
+        return value
+
+    @model_validator(mode="after")
+    def validate_avatar_source(self) -> "StartReq":
+        if self.avatar_agent_id and self.avatar_image_url:
+            raise ValueError("avatar_agent_id and avatar_image_url are mutually exclusive")
+        if self.avatar_id and (self.avatar_agent_id or self.avatar_image_url):
+            raise ValueError("avatar_id cannot be combined with a per-session avatar source")
+        if self.has_avatar_or_voice_override() and (
+            self.avatar_provider != "lemonslice"
+            or not (self.avatar_agent_id or self.avatar_image_url)
+            or not self.voice_id
+        ):
+            # One atomic bundle: provider + exactly one avatar source + voice (the internal caller sends all of them).
+            raise ValueError(
+                "avatar override needs avatar_provider, avatar_agent_id or avatar_image_url, and voice_id together"
+            )
+        return self
+
+    def has_avatar_or_voice_override(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.avatar_provider,
+                self.avatar_agent_id,
+                self.avatar_image_url,
+                self.voice_id,
+            )
+        )
 
 
 class SayReq(BaseModel):

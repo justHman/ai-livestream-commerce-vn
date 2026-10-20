@@ -570,6 +570,8 @@ class AppConfig:
     lemonslice_api_base: str = "https://lemonslice.com/api/liveai"
     lemonslice_agent_id: str = ""
     lemonslice_avatar_allowlist: str = ""
+    avatar_image_hosts: str = ""
+    avatar_internal_token: str = field(default="", repr=False)
     lemonslice_audio_sample_rate: int = 16000
     lemonslice_idle_timeout_s: int = 60
     lemonslice_ready_timeout_s: float = 30.0
@@ -678,6 +680,8 @@ class AppConfig:
             or "https://lemonslice.com/api/liveai",
             lemonslice_agent_id=os.environ.get("LEMONSLICE_AGENT_ID", ""),
             lemonslice_avatar_allowlist=os.environ.get("LEMONSLICE_AVATAR_ALLOWLIST", ""),
+            avatar_image_hosts=os.environ.get("AVATAR_IMAGE_HOSTS", ""),
+            avatar_internal_token=os.environ.get("AVATAR_INTERNAL_TOKEN", ""),
             lemonslice_audio_sample_rate=_int_env("LEMONSLICE_AUDIO_SAMPLE_RATE", "16000", 1),
             lemonslice_idle_timeout_s=_int_env("LEMONSLICE_IDLE_TIMEOUT_S", "60"),
             lemonslice_ready_timeout_s=_timer_env("LEMONSLICE_READY_TIMEOUT_S", "30"),
@@ -902,6 +906,11 @@ class AppConfig:
                 agent_id=self.lemonslice_agent_id,
                 avatar_allowlist=tuple(
                     a.strip() for a in self.lemonslice_avatar_allowlist.split(",") if a.strip()
+                ),
+                image_hosts=tuple(
+                    host.strip().lower()
+                    for host in self.avatar_image_hosts.split(",")
+                    if host.strip()
                 ),
                 audio_sample_rate=self.lemonslice_audio_sample_rate,
                 idle_timeout_s=self.lemonslice_idle_timeout_s,

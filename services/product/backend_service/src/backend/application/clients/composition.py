@@ -12,6 +12,7 @@ idempotent registration entrypoint; construction stays lazy inside
 
 from __future__ import annotations
 
+import logging
 from typing import Iterator, Optional
 
 import numpy as np
@@ -36,6 +37,8 @@ from backend.application.contracts.tts_engines import (
     TTSRequest,
     register_engine as register_tts_engine,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _chat_request(req: LLMRequest) -> ChatRequest:
@@ -118,6 +121,16 @@ class RemoteHttpTTSEngine(TTSEngine):
         self._client.close()
 
 
+def _warn_voice_override_ignored(engine: object, req: TTSRequest, name: str) -> None:
+    """Hosted adapters speak with the deployment voice; only the self-hosted engine honours a per-session voice."""
+    if req.voice and not getattr(engine, "_voice_warned", False):
+        engine._voice_warned = True  # once per engine, so a long session does not flood the log
+        logger.warning(
+            "tts_voice_override_ignored engine=%s (per-session voice is only honoured by remote_http)",
+            name,
+        )
+
+
 class ElevenLabsTTSEngine(TTSEngine):
     """TTSEngine seam over the ElevenLabs hosted client."""
 
@@ -137,6 +150,7 @@ class ElevenLabsTTSEngine(TTSEngine):
         return cls(client, sample_rate=rate)
 
     def synthesize(self, req: TTSRequest) -> AudioChunk:
+        _warn_voice_override_ignored(self, req, "ElevenLabsTTSEngine")
         result = self._client.synthesize(req.text)
         return AudioChunk(pcm=result.pcm, sample_rate=result.sample_rate)
 
@@ -164,6 +178,7 @@ class OpenAISpeechTTSEngine(TTSEngine):
         return cls(client, sample_rate=rate)
 
     def synthesize(self, req: TTSRequest) -> AudioChunk:
+        _warn_voice_override_ignored(self, req, "OpenAISpeechTTSEngine")
         result = self._client.synthesize(req.text)
         return AudioChunk(pcm=result.pcm, sample_rate=result.sample_rate)
 
