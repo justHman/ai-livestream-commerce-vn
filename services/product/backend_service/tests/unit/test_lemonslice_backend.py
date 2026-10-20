@@ -155,7 +155,9 @@ def test_avatar_id_must_be_preset_or_allowlisted():
 
 def test_per_session_agent_id_bypasses_legacy_allowlist():
     backend, _, rest = make(avatar_allowlist=())
-    backend.start(StartOptions(avatar_provider="lemonslice", avatar_agent_id="agent_093d2f9535db94ef"))
+    backend.start(
+        StartOptions(avatar_provider="lemonslice", avatar_agent_id="agent_093d2f9535db94ef")
+    )
     backend.stop_all()
 
     assert rest.starts[0]["agent_id"] == "agent_093d2f9535db94ef"

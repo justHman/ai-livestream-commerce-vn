@@ -121,12 +121,15 @@ class RemoteHttpTTSEngine(TTSEngine):
         self._client.close()
 
 
-
 def _warn_voice_override_ignored(engine: object, req: TTSRequest, name: str) -> None:
     """Hosted adapters speak with the deployment voice; only the self-hosted engine honours a per-session voice."""
     if req.voice and not getattr(engine, "_voice_warned", False):
         engine._voice_warned = True  # once per engine, so a long session does not flood the log
-        logger.warning("tts_voice_override_ignored engine=%s (per-session voice is only honoured by remote_http)", name)
+        logger.warning(
+            "tts_voice_override_ignored engine=%s (per-session voice is only honoured by remote_http)",
+            name,
+        )
+
 
 class ElevenLabsTTSEngine(TTSEngine):
     """TTSEngine seam over the ElevenLabs hosted client."""

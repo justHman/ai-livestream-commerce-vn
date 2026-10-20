@@ -40,10 +40,17 @@ def normalize_host(host: str) -> str:
 
 def check_image_url(value: str, hosts: Iterable[str] | None = None) -> None:
     """Raise ValueError unless ``value`` is an acceptable https image URL (and on ``hosts`` when they are given)."""
-    if len(value) > MAX_IMAGE_URL_LENGTH or any(ord(ch) <= 32 or ord(ch) == 127 or ch == "\\" for ch in value):
+    if len(value) > MAX_IMAGE_URL_LENGTH or any(
+        ord(ch) <= 32 or ord(ch) == 127 or ch == "\\" for ch in value
+    ):
         raise ValueError("avatar_image_url is malformed")
     parsed = urlsplit(value)
-    if parsed.scheme != "https" or parsed.fragment or parsed.username is not None or parsed.password is not None:
+    if (
+        parsed.scheme != "https"
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         raise ValueError("avatar_image_url must be https without credentials or a fragment")
     host = normalize_host(parsed.hostname or "")
     if parsed.netloc.lower().rsplit("@", 1)[-1] not in (parsed.hostname, f"{parsed.hostname}:443"):

@@ -52,7 +52,12 @@ def _authenticated_internal_caller(request: Request, config: Any) -> bool:
     bearer = parse_bearer(request.headers.get("authorization"))
     header = (request.headers.get("x-livento-internal-token") or "").strip()
     return bool(
-        viewer and internal and bearer and header and tokens_match(bearer, viewer) and tokens_match(header, internal)
+        viewer
+        and internal
+        and bearer
+        and header
+        and tokens_match(bearer, viewer)
+        and tokens_match(header, internal)
     )
 
 
@@ -61,7 +66,9 @@ def _validate_image_host(image_url: str, config: Any) -> None:
     try:
         check_image_url(image_url, hosts)
     except ValueError:
-        raise HTTPException(status_code=422, detail={"code": "avatar_image_host_not_allowed"}) from None
+        raise HTTPException(
+            status_code=422, detail={"code": "avatar_image_host_not_allowed"}
+        ) from None
 
 
 class _SessionTTS:
@@ -163,6 +170,10 @@ async def sessions_start(
                 result.session_id,
             )
     out = result.public_dict()  # frontend-safe only
+    if req.has_avatar_or_voice_override():
+        out["avatar_override_applied"] = (
+            True  # lets the API detect a Runtime that ignores the override fields
+        )
     if req.rescue_commands:
         # R4-R2: report whether the marker was accepted; the API follows this.
         out["rescue_commands"] = bool(meta.get("p0_rescue"))

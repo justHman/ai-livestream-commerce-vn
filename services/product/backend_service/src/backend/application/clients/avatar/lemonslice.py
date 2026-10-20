@@ -759,10 +759,13 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         if opts.avatar_provider is not None and opts.avatar_provider != "lemonslice":
             raise LemonSliceError("avatar_provider_invalid", "avatar_provider is not supported")
         if (opts.avatar_agent_id or opts.avatar_image_url) and opts.avatar_provider != "lemonslice":
-            raise LemonSliceError("avatar_provider_invalid", "a per-session avatar needs avatar_provider=lemonslice")
+            raise LemonSliceError(
+                "avatar_provider_invalid", "a per-session avatar needs avatar_provider=lemonslice"
+            )
         if opts.avatar_agent_id and opts.avatar_image_url:
             raise LemonSliceError(
-                "avatar_source_invalid", "avatar_agent_id and avatar_image_url are mutually exclusive"
+                "avatar_source_invalid",
+                "avatar_agent_id and avatar_image_url are mutually exclusive",
             )
         if opts.avatar_agent_id:
             if not _AGENT_ID.fullmatch(opts.avatar_agent_id):
@@ -778,7 +781,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             check_image_url(image_url, self._s.image_hosts)
         except ValueError:
             # Do not include the URL: it can contain sensitive object names or query strings.
-            raise LemonSliceError("image_url_not_allowed", "avatar_image_url is not on an allowed host") from None
+            raise LemonSliceError(
+                "image_url_not_allowed", "avatar_image_url is not on an allowed host"
+            ) from None
 
     def _resolve_agent(self, avatar_id: str | None) -> str:
         # DR-AVATAR-001: preset avatars only. A caller-supplied id must be allowlisted.
@@ -851,7 +856,11 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             )
             sess.started_at = self._mono()
             sess.created_at = sess.started_at
-            sess.agent_id, sess.image_url, sess.room_name = agent_id or "", image_url or "", room_name
+            sess.agent_id, sess.image_url, sess.room_name = (
+                agent_id or "",
+                image_url or "",
+                room_name,
+            )
             sess.cleared = _BoundedSet(s.history)
             sess.unconfirmed = _BoundedSet(s.history)
             # Single-speaker: no agent_prompt / LLM / TTS fields are ever sent.

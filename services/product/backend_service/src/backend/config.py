@@ -908,7 +908,9 @@ class AppConfig:
                     a.strip() for a in self.lemonslice_avatar_allowlist.split(",") if a.strip()
                 ),
                 image_hosts=tuple(
-                    host.strip().lower() for host in self.avatar_image_hosts.split(",") if host.strip()
+                    host.strip().lower()
+                    for host in self.avatar_image_hosts.split(",")
+                    if host.strip()
                 ),
                 audio_sample_rate=self.lemonslice_audio_sample_rate,
                 idle_timeout_s=self.lemonslice_idle_timeout_s,

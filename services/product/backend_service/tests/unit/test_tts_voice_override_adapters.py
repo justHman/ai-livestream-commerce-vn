@@ -18,7 +18,9 @@ class _Client:
         return None
 
 
-@pytest.mark.parametrize("engine_cls", [composition.ElevenLabsTTSEngine, composition.OpenAISpeechTTSEngine])
+@pytest.mark.parametrize(
+    "engine_cls", [composition.ElevenLabsTTSEngine, composition.OpenAISpeechTTSEngine]
+)
 def test_hosted_adapters_say_once_that_a_session_voice_is_ignored(engine_cls, caplog) -> None:
     engine = engine_cls(_Client())
     with caplog.at_level(logging.WARNING):
@@ -29,7 +31,9 @@ def test_hosted_adapters_say_once_that_a_session_voice_is_ignored(engine_cls, ca
     assert "Hai Dang" not in warnings[0].getMessage()
 
 
-@pytest.mark.parametrize("engine_cls", [composition.ElevenLabsTTSEngine, composition.OpenAISpeechTTSEngine])
+@pytest.mark.parametrize(
+    "engine_cls", [composition.ElevenLabsTTSEngine, composition.OpenAISpeechTTSEngine]
+)
 def test_hosted_adapters_stay_quiet_without_a_session_voice(engine_cls, caplog) -> None:
     engine = engine_cls(_Client())
     with caplog.at_level(logging.WARNING):

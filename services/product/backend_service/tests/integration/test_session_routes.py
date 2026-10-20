@@ -98,7 +98,10 @@ def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_e
         wrong_internal = client.post(
             "/api/v1/sessions",
             json=payload,
-            headers={"Authorization": "Bearer viewer-test-token", "X-Livento-Internal-Token": "nope"},
+            headers={
+                "Authorization": "Bearer viewer-test-token",
+                "X-Livento-Internal-Token": "nope",
+            },
         )
         started = client.post(
             "/api/v1/sessions",
@@ -108,7 +111,10 @@ def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_e
                 "X-Livento-Internal-Token": "internal-test-token",
             },
         )
-    assert viewer_only.status_code == 403, "the viewer token alone must not choose an avatar or voice"
+    assert started.json().get("avatar_override_applied") is True
+    assert viewer_only.status_code == 403, (
+        "the viewer token alone must not choose an avatar or voice"
+    )
     assert wrong_internal.status_code == 403
     assert started.status_code == 200, started.text
     assert backend.opts.avatar_provider == "lemonslice"
@@ -236,7 +242,10 @@ def test_overrides_are_refused_when_the_internal_token_is_not_configured(mock_en
                 "avatar_agent_id": "agent_093d2f9535db94ef",
                 "voice_id": "Hai Dang",
             },
-            headers={"Authorization": "Bearer viewer-test-token", "X-Livento-Internal-Token": "anything"},
+            headers={
+                "Authorization": "Bearer viewer-test-token",
+                "X-Livento-Internal-Token": "anything",
+            },
         )
     assert response.status_code == 403
 
@@ -253,4 +262,6 @@ def test_incomplete_override_bundles_are_rejected_by_the_request_model() -> None
     ):
         with pytest.raises(ValueError):
             StartReq(**body)
-    StartReq(avatar_provider="lemonslice", avatar_agent_id="agent_093d2f9535db94ef", voice_id="Hai Dang")
+    StartReq(
+        avatar_provider="lemonslice", avatar_agent_id="agent_093d2f9535db94ef", voice_id="Hai Dang"
+    )
