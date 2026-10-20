@@ -71,6 +71,62 @@ class TTSClientError(RuntimeError):
     """Typed transport failure for a TTS client."""
 
 
+VOICES_MAX = 200
+_VOICE_FIELD_MAX = 128
+
+
+def _voice_str(value: object) -> str | None:
+    """Trimmed string, or None when it is not a string, is empty, or has control characters."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return None
+    return value
+
+
+def _first_str(item: dict, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = _voice_str(item.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def parse_voices(payload: object) -> list[dict]:
+    """Tolerant parse of a ``/v1/voices`` body: a list, ``{"data": [...]}`` or ``{"voices": [...]}``.
+
+    The exact VieNeu shape is not confirmed, so only id/name/language/gender are ever read.
+    """
+    if isinstance(payload, dict):
+        payload = payload.get("data", payload.get("voices"))
+    if not isinstance(payload, list):
+        raise TTSClientError("self-host TTS voices: unexpected response shape")
+    voices: list[dict] = []
+    seen: set[str] = set()
+    for item in payload:
+        if isinstance(item, str):
+            item = {"id": item}
+        if not isinstance(item, dict):
+            continue
+        voice_id = _first_str(item, ("id", "voice_id", "voice", "name"))
+        if voice_id is None or len(voice_id) > _VOICE_FIELD_MAX or voice_id in seen:
+            continue
+        seen.add(voice_id)
+        name = _first_str(item, ("display_name", "name", "id")) or voice_id
+        voices.append(
+            {
+                "id": voice_id,
+                "name": name[:_VOICE_FIELD_MAX],
+                "language": _first_str(item, ("language", "lang", "locale")),
+                "gender": _first_str(item, ("gender", "sex")),
+            }
+        )
+        if len(voices) >= VOICES_MAX:
+            break
+    return voices
+
+
 _synthesis_cancel: ContextVar[threading.Event | None] = ContextVar(
     "tts_synthesis_cancel", default=None
 )
@@ -418,6 +474,17 @@ class SelfHostedTTSClient:
             duration_ms=duration_ms,
             engine=engine,
         )
+
+    def list_voices(self) -> list[dict]:
+        """``GET /v1/voices`` -> [{"id", "name", "language", "gender"}]; raises TTSClientError."""
+        url = urljoin(self._base_url + "/", "v1/voices")
+        try:
+            resp = self._get_client().get(url, headers=self._auth_headers(), timeout=5.0)
+            resp.raise_for_status()
+            payload = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise TTSClientError(f"self-host TTS voices failed: {type(exc).__name__}") from exc
+        return parse_voices(payload)
 
     def close(self) -> None:
         if self._client is not None:

@@ -14,6 +14,7 @@ removed. This router exposes:
 
   GET  /api/v1/health
   POST /api/v1/sessions/*  (canonical path-style aliases)
+  GET  /api/v1/tts/voices  (viewer bearer + X-Livento-Internal-Token; {"voices": [...], "available": bool})
   POST /api/v1/avatars CRUD (in-memory)
   WS   /api/v1/ws/control/{session_id}
   POST /api/v1/media/livekit/room/{session_id}
