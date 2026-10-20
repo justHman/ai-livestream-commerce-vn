@@ -108,12 +108,19 @@ async def sessions_start(
 
     if req.has_avatar_or_voice_override() and not _authenticated_internal_caller(request, d.config):
         raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
-    if req.has_avatar_or_voice_override() and not getattr(
-        d.backend, "supports_avatar_override", False
+    override_mode = getattr(d.backend, "avatar_override_mode", None)
+    if req.has_avatar_or_voice_override() and override_mode not in (
+        "avatar_and_voice",
+        "voice_only",
     ):
-        # e.g. static_avatar ignores StartOptions: acknowledging would let the API show the wrong avatar.
+        # a renderer that declares nothing cannot honour the choice: acknowledging would show the wrong avatar
         raise HTTPException(
             status_code=422, detail={"code": "avatar_override_unsupported_renderer"}
+        )
+    if req.has_avatar_or_voice_override() and override_mode == "voice_only":
+        logger.warning(
+            "avatar_override_voice_only renderer=%s: the avatar choice is ignored, the voice is applied",
+            getattr(d.backend, "name", "?"),
         )
     if req.avatar_image_url is not None:
         _validate_image_host(req.avatar_image_url, d.config)
@@ -178,9 +185,9 @@ async def sessions_start(
             )
     out = result.public_dict()  # frontend-safe only
     if req.has_avatar_or_voice_override():
-        out["avatar_override_applied"] = (
-            True  # lets the API detect a Runtime that ignores the override fields
-        )
+        # lets the API detect a Runtime that ignores the override fields; avatar_applied says whether the avatar took effect
+        out["avatar_override_applied"] = True
+        out["avatar_applied"] = override_mode == "avatar_and_voice"
     if req.rescue_commands:
         # R4-R2: report whether the marker was accepted; the API follows this.
         out["rescue_commands"] = bool(meta.get("p0_rescue"))
