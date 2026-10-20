@@ -25,7 +25,9 @@ import os
 import shutil
 import socket
 import subprocess
+import json
 import threading
+import unicodedata
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -72,15 +74,18 @@ class TTSClientError(RuntimeError):
 
 
 VOICES_MAX = 200
+VOICES_INSPECT_MAX = 1_000
+VOICES_BODY_MAX_BYTES = 1_048_576
 _VOICE_FIELD_MAX = 128
 
 
 def _voice_str(value: object) -> str | None:
-    """Trimmed string, or None when it is not a string, is empty, or has control characters."""
+    """Trimmed string, or None when it is not a string, is empty, or has control/format characters."""
     if not isinstance(value, str):
         return None
     value = value.strip()
-    if not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+    # Unicode category C* covers C0/C1 controls, bidi and other format characters, surrogates, private use.
+    if not value or any(unicodedata.category(c).startswith("C") for c in value):
         return None
     return value
 
@@ -93,10 +98,15 @@ def _first_str(item: dict, keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def _bounded(value: str | None) -> str | None:
+    return value[:_VOICE_FIELD_MAX] if value is not None else None
+
+
 def parse_voices(payload: object) -> list[dict]:
     """Tolerant parse of a ``/v1/voices`` body: a list, ``{"data": [...]}`` or ``{"voices": [...]}``.
 
-    The exact VieNeu shape is not confirmed, so only id/name/language/gender are ever read.
+    VieNeu v3 Turbo answers ``{"object": "list", "data": [{"id", "name", "gender"}]}``; the parser stays tolerant, and only
+    id/name/language/gender are ever read. At most VOICES_INSPECT_MAX entries are looked at.
     """
     if isinstance(payload, dict):
         payload = payload.get("data", payload.get("voices"))
@@ -104,7 +114,7 @@ def parse_voices(payload: object) -> list[dict]:
         raise TTSClientError("self-host TTS voices: unexpected response shape")
     voices: list[dict] = []
     seen: set[str] = set()
-    for item in payload:
+    for item in payload[:VOICES_INSPECT_MAX]:
         if isinstance(item, str):
             item = {"id": item}
         if not isinstance(item, dict):
@@ -113,13 +123,13 @@ def parse_voices(payload: object) -> list[dict]:
         if voice_id is None or len(voice_id) > _VOICE_FIELD_MAX or voice_id in seen:
             continue
         seen.add(voice_id)
-        name = _first_str(item, ("display_name", "name", "id")) or voice_id
+        name = _first_str(item, ("display_name", "label", "name", "id")) or voice_id
         voices.append(
             {
                 "id": voice_id,
                 "name": name[:_VOICE_FIELD_MAX],
-                "language": _first_str(item, ("language", "lang", "locale")),
-                "gender": _first_str(item, ("gender", "sex")),
+                "language": _bounded(_first_str(item, ("language", "lang", "locale"))),
+                "gender": _bounded(_first_str(item, ("gender", "sex"))),
             }
         )
         if len(voices) >= VOICES_MAX:
@@ -479,9 +489,16 @@ class SelfHostedTTSClient:
         """``GET /v1/voices`` -> [{"id", "name", "language", "gender"}]; raises TTSClientError."""
         url = urljoin(self._base_url + "/", "v1/voices")
         try:
-            resp = self._get_client().get(url, headers=self._auth_headers(), timeout=5.0)
-            resp.raise_for_status()
-            payload = resp.json()
+            with self._get_client().stream(
+                "GET", url, headers=self._auth_headers(), timeout=5.0
+            ) as resp:
+                resp.raise_for_status()
+                body = bytearray()
+                for chunk in resp.iter_bytes():
+                    body.extend(chunk)
+                    if len(body) > VOICES_BODY_MAX_BYTES:
+                        raise TTSClientError("self-host TTS voices: response too large")
+            payload = json.loads(bytes(body))
         except (httpx.HTTPError, ValueError) as exc:
             raise TTSClientError(f"self-host TTS voices failed: {type(exc).__name__}") from exc
         return parse_voices(payload)

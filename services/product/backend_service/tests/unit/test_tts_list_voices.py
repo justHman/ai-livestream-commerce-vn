@@ -9,6 +9,7 @@ from backend.application.clients.tts.self_hosted import (
     VOICES_MAX,
     SelfHostedTTSClient,
     TTSClientError,
+    parse_voices,
 )
 
 
@@ -119,6 +120,34 @@ def test_non_json_raises() -> None:
 def test_connection_error_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down")
+
+    with pytest.raises(TTSClientError):
+        _client(handler).list_voices()
+
+
+def test_c1_controls_and_bidi_marks_are_dropped() -> None:
+    voices = parse_voices(
+        [{"id": "ok"}, {"id": "bad\u0085id"}, {"id": "bidi\u202eid"}, {"id": "zw\u200bid"}]
+    )
+    assert [v["id"] for v in voices] == ["ok"]
+
+
+def test_language_and_gender_are_bounded_and_label_is_accepted() -> None:
+    voices = parse_voices([{"id": "a", "label": "Anh", "language": "v" * 500, "gender": "g" * 500}])
+    assert voices[0]["name"] == "Anh"
+    assert len(voices[0]["language"]) == 128 and len(voices[0]["gender"]) == 128
+
+
+def test_only_the_first_thousand_entries_are_inspected() -> None:
+    junk = [{"nothing": 1}] * 1_000
+    assert parse_voices(junk + [{"id": "late"}]) == []
+
+
+def test_an_oversized_response_is_refused() -> None:
+    big = b"[" + b'"x",' * 400_000 + b'"y"]'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=big)
 
     with pytest.raises(TTSClientError):
         _client(handler).list_voices()
