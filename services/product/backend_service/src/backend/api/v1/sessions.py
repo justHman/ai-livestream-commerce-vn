@@ -108,6 +108,13 @@ async def sessions_start(
 
     if req.has_avatar_or_voice_override() and not _authenticated_internal_caller(request, d.config):
         raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
+    if req.has_avatar_or_voice_override() and not getattr(
+        d.backend, "supports_avatar_override", False
+    ):
+        # e.g. static_avatar ignores StartOptions: acknowledging would let the API show the wrong avatar.
+        raise HTTPException(
+            status_code=422, detail={"code": "avatar_override_unsupported_renderer"}
+        )
     if req.avatar_image_url is not None:
         _validate_image_host(req.avatar_image_url, d.config)
 

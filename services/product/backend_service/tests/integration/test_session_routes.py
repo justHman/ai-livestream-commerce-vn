@@ -66,6 +66,7 @@ def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_e
 
     class CaptureBackend:
         name = "capture"
+        supports_avatar_override = True
 
         def start(self, opts):
             self.opts = opts
@@ -265,3 +266,30 @@ def test_incomplete_override_bundles_are_rejected_by_the_request_model() -> None
     StartReq(
         avatar_provider="lemonslice", avatar_agent_id="agent_093d2f9535db94ef", voice_id="Hai Dang"
     )
+
+
+def test_override_is_refused_when_the_renderer_cannot_apply_it(mock_env: None) -> None:
+    class IgnoringBackend:
+        name = "static_avatar"
+
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        backend_api_token="viewer-test-token",
+        avatar_internal_token="internal-test-token",
+    )
+    with _client_with_backend(cfg, IgnoringBackend()) as client:
+        response = client.post(
+            "/api/v1/sessions",
+            json={
+                "avatar_provider": "lemonslice",
+                "avatar_agent_id": "agent_093d2f9535db94ef",
+                "voice_id": "Hai Dang",
+            },
+            headers={
+                "Authorization": "Bearer viewer-test-token",
+                "X-Livento-Internal-Token": "internal-test-token",
+            },
+        )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "avatar_override_unsupported_renderer"
