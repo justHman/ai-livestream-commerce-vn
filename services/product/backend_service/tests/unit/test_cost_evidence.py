@@ -35,6 +35,7 @@ FORBIDDEN = {"cost_usd", "cost_micros", "credit", "credits", "billable_quantity"
 @pytest.fixture
 def meter():
     cost_meter.configure(enabled=True)
+    cost_meter._open.clear()
     cost_meter.bind("rt", IDENTITY)
     cost_meter.drain(10_000)
     for name in ("dropped", "unbound", "lost", "conflicts", "evicted"):
@@ -714,3 +715,93 @@ async def test_render_stop_slower_than_its_stage_timeout_still_settles_and_flush
     await lifespan_module._shutdown(container)
     assert [k[1] for k in outbox.rows] == ["cost:AVATAR"]
     assert meter.lost == 0 and meter.enabled is False
+
+
+# -- review round 5: state x entry-point table --------------------------------------------------------
+
+
+async def test_final_flush_drains_every_batch_not_just_one(meter):
+    meter.configure(enabled=True, buffer=1000)
+    for n in range(250):
+        llm(meter, f"k{n}")
+    outbox = FakeOutbox()
+    sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter)
+    await sender.flush(5)
+    assert len(outbox.rows) == 250 and meter.lost == 0 and meter.buffered() == 0
+    meter.configure(enabled=True)
+
+
+async def test_final_flush_with_a_failing_outbox_reports_each_unflushed_sample(meter, caplog):
+    for n in range(3):
+        llm(meter, f"k{n}")
+    sender = UsageSender(FakeOutbox(fail=99), UsageEvidenceSettings(), cost=meter)
+    with caplog.at_level("ERROR"):
+        await sender.flush(5)
+    lines = [r.getMessage() for r in caplog.records if "shutdown_unflushed" in r.getMessage()]
+    assert len(lines) == 3 and meter.lost == 3 and meter.buffered() == 0
+    assert all(TENANT in line for line in lines)
+
+
+def test_avatar_open_after_shutdown_is_counted_and_logged_at_open(meter, caplog):
+    meter.close()
+    with caplog.at_level("ERROR"):
+        meter.avatar_open("rt", "late-ps")
+    lines = [r.getMessage() for r in caplog.records if "late_after_shutdown" in r.getMessage()]
+    assert len(lines) == 1 and "key=late-ps" in lines[0] and "kind=AVATAR" in lines[0]
+    assert meter.lost == 1 and meter.open_count() == 0
+
+
+def test_evicting_an_identity_with_an_open_avatar_settles_it_as_derived(meter, monkeypatch):
+    # Only reachable when every bound identity is busy; built directly because the open-record
+    # limit normally trips first.
+    meter._ids.clear()
+    meter.avatar_idle_bound_s = 30.0
+    for name in ("rt", "x0", "x1"):
+        meter.bind(name, IDENTITY)
+        meter.avatar_open(name, "p-" + name)
+    monkeypatch.setattr("backend.application.usage_evidence.cost._MAX_BOUND", 2)
+    with meter._lock:
+        forced = meter._trim_ids()
+    for psid, rec, ident in forced:
+        meter._emit_avatar(psid, rec, confirmed=False, extra_s=30.0, identity=ident)
+    rows = meter.drain(10)
+    assert [r.cost_key for r in rows] == ["p-rt"] and rows[0].usage_source == "derived"
+    assert rows[0].identity == IDENTITY and meter.unbound == 0 and meter.evicted == 1
+    meter.avatar_close("p-rt")  # the later close is a no-op, not an unreported orphan
+    assert meter.drain(10) == [] and meter.unbound == 0
+    meter.avatar_idle_bound_s = 0.0
+    meter._ids.clear()
+
+
+@pytest.mark.parametrize("state", ["running", "closed", "full"])
+@pytest.mark.parametrize("entry", ["llm", "tts", "avatar_open", "avatar_close"])
+def test_no_state_entry_point_cell_is_silent_once_the_meter_was_enabled(meter, entry, state):
+    """Every cell is either recorded or counted (cost_lost / cost_dropped), never silent."""
+    meter.configure(enabled=True, buffer=1)
+    if entry == "avatar_close":
+        meter.avatar_open("rt", "ps")
+    if state == "full":
+        llm(meter, "fill")
+    if state == "closed":
+        meter.close()
+    before = (len(meter._buf), meter.lost, meter.dropped, meter.open_count())
+    if entry == "llm":
+        llm(meter, "k")
+    elif entry == "tts":
+        meter.record_tts(
+            "rt",
+            utterance_id="u",
+            phrase_seq=0,
+            attempt=1,
+            provider="t",
+            characters=1,
+            audio_ms=1,
+            synth_ms=1,
+        )
+    elif entry == "avatar_open":
+        meter.avatar_open("rt", "p2")
+    else:
+        meter.avatar_close("ps")
+    after = (len(meter._buf), meter.lost, meter.dropped, meter.open_count())
+    assert after != before, f"{entry} in state {state} left no trace"
+    meter.configure(enabled=True)

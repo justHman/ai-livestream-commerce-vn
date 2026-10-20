@@ -654,7 +654,12 @@ class UsageSender:
 
         async def passes() -> None:
             await self.drain_cogs()
-            await self.drain_cost()
+            self._cost_retry_at = 0.0  # shutdown: no backoff wait
+            while self._cost.buffered():
+                before = self._cost.buffered()
+                await self.drain_cost()
+                if self._cost.buffered() >= before:  # outbox failing: no progress
+                    break
             while await self.deliver_due():
                 pass
 
@@ -666,6 +671,9 @@ class UsageSender:
             logger.warning(
                 "usage evidence final flush incomplete error_type=%s", type(exc).__name__
             )
+        finally:
+            # What could not reach the outbox is reported one line per sample, then counted lost.
+            self._cost.lose_remaining("shutdown_unflushed")
 
     async def close(self) -> None:
         if self._poster is not None:

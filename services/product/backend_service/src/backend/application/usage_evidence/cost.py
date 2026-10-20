@@ -78,8 +78,11 @@ class CostMeter:
         with self._lock:
             self._ids[session_id] = identity
             self._ids.move_to_end(session_id)
-            if len(self._ids) > _MAX_BOUND:
-                self._trim_ids()
+            forced = self._trim_ids() if len(self._ids) > _MAX_BOUND else []
+        for psid, rec, ident in forced:  # outside the lock: the identity left, the row must not
+            self._emit_avatar(
+                psid, rec, confirmed=False, extra_s=self.avatar_idle_bound_s, identity=ident
+            )
 
     def unbind(self, session_id: str) -> None:
         """Forget the identity, unless a provider avatar session of it is still open."""
@@ -89,20 +92,29 @@ class CostMeter:
             else:
                 self._ids.pop(session_id, None)
 
-    def _trim_ids(self) -> None:
-        """Caller holds the lock. Identities of sessions with an open avatar go last."""
+    def _trim_ids(self) -> list[tuple[str, tuple[str, float, datetime, bool], ExecutionIdentity]]:
+        """Caller holds the lock. Identities of sessions with an open avatar go last; if one
+        must go, its open avatar records are returned (with the identity) to be settled as
+        derived by the caller outside the lock, so the later close is not an unreported orphan."""
         busy = {rec[0] for rec in self._open.values()}
         for sid in list(self._ids):
             if len(self._ids) <= _MAX_BOUND:
-                return
+                return []
             if sid not in busy:
                 del self._ids[sid]
                 self.evicted += 1
                 logger.error("cost_evidence_evicted what=identity session=%s", sid)
+        forced = []
         while len(self._ids) > _MAX_BOUND:
-            sid, _ = self._ids.popitem(last=False)
+            sid, ident = self._ids.popitem(last=False)
             self.evicted += 1
             logger.error("cost_evidence_evicted what=identity_in_use session=%s", sid)
+            for psid, rec in list(self._open.items()):
+                if rec[0] == sid:
+                    del self._open[psid]
+                    forced.append((psid, rec, ident))
+            self._unbound_pending.discard(sid)
+        return forced
 
     def lose(self, sample: CostSample, reason: str) -> None:
         """The one reconciliation line for a sample that had to be dropped for good."""
@@ -126,6 +138,7 @@ class CostMeter:
         provider: str = "",
         model: str = "",
         usage_source: str = "measured",
+        _identity: ExecutionIdentity | None = None,
         **fields: Any,
     ) -> None:
         if not self.enabled:
@@ -140,7 +153,7 @@ class CostMeter:
                 )
             return
         try:
-            identity = self._ids.get(session_id)
+            identity = _identity or self._ids.get(session_id)
             if identity is None:
                 self.unbound += 1
                 return
@@ -235,7 +248,17 @@ class CostMeter:
         Identity is resolved at close (the session is bound only after start returns).
         ``derived`` marks a start time we could not observe.
         """
-        if not (self.enabled and provider_session_id):
+        if not provider_session_id:
+            return
+        if not self.enabled:
+            if self._closed:  # a late reaper after shutdown: record it now, never silently
+                self.lost += 1
+                identity = self._ids.get(session_id)
+                logger.error(
+                    "cost_evidence_lost key=%s tenant=%s kind=AVATAR reason=late_after_shutdown",
+                    provider_session_id,
+                    identity.tenant_id if identity else "unknown",
+                )
             return
         with self._lock:
             self._open[provider_session_id] = (
@@ -290,7 +313,13 @@ class CostMeter:
             self._emit_avatar(psid, rec, confirmed=False, extra_s=extra_s)
 
     def _emit_avatar(
-        self, psid: str, rec: tuple[str, float, datetime, bool], *, confirmed: bool, extra_s: float
+        self,
+        psid: str,
+        rec: tuple[str, float, datetime, bool],
+        *,
+        confirmed: bool,
+        extra_s: float,
+        identity: ExecutionIdentity | None = None,
     ) -> None:
         session_id, mono, started, derived_start = rec
         extra = 0.0 if confirmed else max(0.0, float(extra_s))
@@ -299,6 +328,7 @@ class CostMeter:
             AVATAR,
             psid,
             provider="lemonslice",
+            _identity=identity,
             usage_source="measured" if confirmed and not derived_start else "derived",
             seconds=round(max(0.0, time.monotonic() - mono) + extra, 3),
             started_at=started,
@@ -325,6 +355,16 @@ class CostMeter:
         """Shutdown: stop accepting; anything arriving later is logged as lost."""
         self.enabled = False
         self._closed = True
+
+    def lose_remaining(self, reason: str) -> int:
+        """Shutdown leftovers that could not be flushed: one log line per sample, counted."""
+        left = self.drain(1 << 30)
+        for sample in left:
+            self.lose(sample, reason)
+        return len(left)
+
+    def buffered(self) -> int:
+        return len(self._buf)
 
     def open_count(self) -> int:
         return len(self._open)
