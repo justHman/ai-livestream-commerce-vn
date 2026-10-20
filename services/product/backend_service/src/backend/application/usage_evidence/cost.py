@@ -227,22 +227,26 @@ class CostMeter:
                 datetime.now(timezone.utc),
                 derived,
             )
-            if len(self._open) > _MAX_BOUND:
-                self._trim_open()
+            expired = self._trim_open() if len(self._open) > _MAX_BOUND else []
+        for psid, rec in expired:  # emitted outside the lock: _push/_emit_avatar take it again
+            self._emit_avatar(psid, rec, confirmed=False, extra_s=0.0)
 
-    def _trim_open(self) -> None:
-        """Caller holds the lock. Expired records are settled (not dropped); else an error."""
+    def _trim_open(self) -> list[tuple[str, tuple[str, float, datetime, bool]]]:
+        """Caller holds the lock. Returns the expired records to settle (the caller emits them
+        after releasing the lock); only if none can go is one evicted, as an error."""
         now = time.monotonic()
+        expired = []
         for psid, rec in list(self._open.items()):
             if len(self._open) <= _MAX_BOUND:
-                return
+                break
             if now - rec[1] > _OPEN_MAX_AGE_S:
                 del self._open[psid]
-                self._emit_avatar(psid, rec, confirmed=False, extra_s=0.0)
+                expired.append((psid, rec))
         while len(self._open) > _MAX_BOUND:
             psid, _ = self._open.popitem(last=False)
             self.evicted += 1
             logger.error("cost_evidence_evicted what=avatar_open provider_session=%s", psid)
+        return expired
 
     def avatar_close(
         self, provider_session_id: str, *, confirmed: bool = True, extra_s: float = 0.0

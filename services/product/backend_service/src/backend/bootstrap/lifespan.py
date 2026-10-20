@@ -244,9 +244,6 @@ async def _stop_usage_evidence(container: BootstrapContainer) -> None:
     from backend.application.execution_contract import set_usage_evidence_capabilities
 
     set_usage_evidence_capabilities(())
-    from backend.application.usage_evidence.cost import cost_meter
-
-    cost_meter.enabled = False
     task = getattr(container, "usage_evidence_task", None)
     if task is not None and not task.done():
         task.cancel()
@@ -262,6 +259,9 @@ async def _stop_usage_evidence(container: BootstrapContainer) -> None:
             await sender.flush(timeout)
         finally:
             await sender.close()
+    from backend.application.usage_evidence.cost import cost_meter
+
+    cost_meter.enabled = False  # only after the final flush (and the avatar settle before it)
     # The service object stays: a request during shutdown still stages durably, and
     # the rows are delivered by the next process.
 
@@ -673,9 +673,11 @@ async def _shutdown(container: BootstrapContainer) -> None:
         ("coordinator", stop_coordinator),
         ("reducer", lambda: _stop_reducer_loop(container)),
         ("terminal.outbox", lambda: _stop_terminal_outcomes(container)),
-        ("usage.evidence", lambda: _stop_usage_evidence(container)),
         ("livekit.stop_all", stop_livekit),
+        # render.stop_all settles still-open avatar cost records; usage evidence flushes them
+        # into the outbox only after that, then turns the meter off.
         ("render.stop_all", stop_backend),
+        ("usage.evidence", lambda: _stop_usage_evidence(container)),
         ("clients.close", close_clients),
         ("authoring", close_authoring),
         ("postgres", close_postgres),

@@ -496,3 +496,95 @@ def test_other_http_errors_are_not_swallowed():
     req = ChatRequest(messages=[ChatMessage("user", "x")], include_usage=True)
     with pytest.raises(LLMClientError):
         list(client.chat_stream(req))
+
+
+# -- review round 2 ----------------------------------------------------------------------------------
+
+
+class FailNth:
+    """Stores every sample except the nth write, which fails once."""
+
+    def __init__(self, nth):
+        self.nth, self.calls, self.rows = nth, 0, []
+
+    async def enqueue_cost(self, identity, *, event_id, cost_kind, cost_key, occurred_at, body):
+        self.calls += 1
+        if self.calls == self.nth:
+            raise ConnectionError("pg down")
+        self.rows.append(cost_key)
+        return "stored"
+
+
+async def test_a_failed_write_keeps_every_unwritten_sample_in_order(meter):
+    now = [0.0]
+    outbox = FailNth(2)
+    sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter, clock=lambda: now[0])
+    for key in ("a", "b", "c", "d", "e"):
+        llm(meter, key)
+    await sender.drain_cost()
+    assert outbox.rows == ["a"] and meter.lost == 0
+    assert [s.cost_key for s in meter._buf] == ["b", "c", "d", "e"]
+    now[0] += 60
+    await sender.drain_cost()
+    assert outbox.rows == ["a", "b", "c", "d", "e"] and meter.lost == 0
+
+
+async def test_cancellation_mid_drain_keeps_the_unwritten_samples(meter):
+    class Hang:
+        async def enqueue_cost(self, *a, **k):
+            await asyncio.sleep(3600)
+
+    for key in ("a", "b"):
+        llm(meter, key)
+    task = asyncio.create_task(
+        UsageSender(Hang(), UsageEvidenceSettings(), cost=meter).drain_cost()
+    )
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [s.cost_key for s in meter._buf] == ["a", "b"]
+
+
+def test_avatar_open_over_the_limit_with_a_stale_record_does_not_deadlock(meter, monkeypatch):
+    monkeypatch.setattr("backend.application.usage_evidence.cost._MAX_BOUND", 2)
+    monkeypatch.setattr("backend.application.usage_evidence.cost._OPEN_MAX_AGE_S", -1.0)
+    done = threading.Event()
+
+    def work():
+        for n in range(4):
+            meter.avatar_open("rt", f"ps{n}")
+        done.set()
+
+    threading.Thread(target=work, daemon=True).start()
+    assert done.wait(5), "avatar_open deadlocked while trimming stale records"
+    assert {s.usage_source for s in meter.drain(10)} == {"derived"}
+
+
+async def test_shutdown_settles_the_avatar_before_the_final_flush_and_then_disables_the_meter(
+    meter,
+):
+    from avatar.engines.mock import MockRenderBackend
+    from backend.bootstrap import create_container
+    from backend.bootstrap.lifespan import _shutdown
+    from backend.application.db import InMemorySessionStore
+    from backend.config import AppConfig
+
+    outbox = FakeOutbox()
+
+    class Backend(MockRenderBackend):
+        def stop_all(self):
+            meter.avatar_open("rt", "ps")
+            meter.avatar_settle_all(60.0)
+
+    container = create_container(
+        backend=Backend(),
+        store=InMemorySessionStore(),
+        config=AppConfig(render_backend="mock", app_env="dev"),
+    )
+    container.usage_sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter)
+    container.usage_evidence = SimpleNamespace(settings=UsageEvidenceSettings())
+    container.usage_evidence_task = None
+    await _shutdown(container)
+    assert [k[1] for k in outbox.rows] == ["cost:AVATAR"]
+    assert meter.enabled is False

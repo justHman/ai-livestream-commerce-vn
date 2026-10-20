@@ -16,6 +16,7 @@ verbatim on every attempt (only the timestamp and signature change).
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import hashlib
 import hmac
 import logging
@@ -585,44 +586,50 @@ class UsageSender:
         stored = 0
         if self._clock() < self._cost_retry_at:  # outbox unwell: samples wait in the buffer
             return 0
-        for sample in meter.drain(max(self._batch, 100)):
-            try:
-                eid, body = envelope.build_cost_body(
-                    sample.identity,
-                    cost_kind=sample.cost_kind,
-                    cost_key=sample.cost_key,
-                    occurred_at=sample.occurred_at,
-                    provider=sample.provider,
-                    model=sample.model,
-                    usage_source=sample.usage_source,
-                    fields=sample.fields,
-                    producer_id=self._settings.producer_id,
-                )
-                outcome = await self._outbox.enqueue_cost(
-                    sample.identity,
-                    event_id=eid,
-                    cost_kind=sample.cost_kind,
-                    cost_key=sample.cost_key,
-                    occurred_at=sample.occurred_at,
-                    body=body,
-                )
-                if outcome == "conflict":
-                    meter.conflicts += 1
-                    logger.error("cost evidence CONFLICT id=%s; kept the first row", eid)
-                else:
-                    stored += 1
-            except asyncio.CancelledError:
-                raise
-            except (envelope.InvalidIdentity, envelope.InvalidCostPayload) as exc:
-                meter.lose(sample, type(exc).__name__)  # can never be delivered
-            except Exception as exc:
+        pending = deque(meter.drain(max(self._batch, 100)))
+        try:
+            while pending:
+                sample = pending[0]  # popped only once it is stored or finally rejected
+                try:
+                    eid, body = envelope.build_cost_body(
+                        sample.identity,
+                        cost_kind=sample.cost_kind,
+                        cost_key=sample.cost_key,
+                        occurred_at=sample.occurred_at,
+                        provider=sample.provider,
+                        model=sample.model,
+                        usage_source=sample.usage_source,
+                        fields=sample.fields,
+                        producer_id=self._settings.producer_id,
+                    )
+                    outcome = await self._outbox.enqueue_cost(
+                        sample.identity,
+                        event_id=eid,
+                        cost_kind=sample.cost_kind,
+                        cost_key=sample.cost_key,
+                        occurred_at=sample.occurred_at,
+                        body=body,
+                    )
+                    if outcome == "conflict":
+                        meter.conflicts += 1
+                        logger.error("cost evidence CONFLICT id=%s; kept the first row", eid)
+                    else:
+                        stored += 1
+                except (envelope.InvalidIdentity, envelope.InvalidCostPayload) as exc:
+                    meter.lose(sample, type(exc).__name__)  # can never be delivered
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._cost_failures += 1
+                    self._cost_retry_at = self._clock() + min(30.0, 0.5 * 2**self._cost_failures)
+                    logger.warning("cost evidence write failed error_type=%s", type(exc).__name__)
+                    break  # the outbox is unwell: back off, everything unwritten stays buffered
+                pending.popleft()
+            else:
+                self._cost_failures = 0
+        finally:
+            for sample in reversed(pending):  # failure or cancellation: nothing is dropped
                 meter.requeue(sample)
-                self._cost_failures += 1
-                self._cost_retry_at = self._clock() + min(30.0, 0.5 * 2**self._cost_failures)
-                logger.warning("cost evidence write failed error_type=%s", type(exc).__name__)
-                break  # the outbox is unwell: back off, the rest stays buffered
-        else:
-            self._cost_failures = 0
         return stored
 
     async def run_loop(self) -> None:
