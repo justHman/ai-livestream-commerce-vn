@@ -19,6 +19,7 @@ import inspect
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -196,6 +197,7 @@ async def _start_usage_evidence(container: BootstrapContainer) -> None:
         return
     outbox = UsageOutbox(pg, producer_id=settings.producer_id)
     service = UsageEvidence(outbox, settings)
+    await _enable_cost_evidence(pg, settings)
     from backend.api.v1.execution import _locked
 
     sender = UsageSender(
@@ -212,11 +214,39 @@ async def _start_usage_evidence(container: BootstrapContainer) -> None:
     set_usage_evidence_capabilities(settings.capabilities())
 
 
+async def _enable_cost_evidence(pg: Any, settings: Any) -> None:
+    """M7.3: cost producer only if flagged AND the outbox CHECK was widened by the operator job."""
+    from backend.application.usage_evidence.cost import cost_meter
+
+    cost_meter.configure(enabled=False)
+    if not settings.cost_enabled:
+        return
+    try:
+        ready = await pg.usage_cost_event_type_ready()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Cost evidence check failed error_type=%s; producer stays off", type(exc).__name__
+        )
+        return
+    if not ready:
+        logger.error(
+            "Cost evidence enabled but usage_evidence_outbox CHECK is not widened; run "
+            "backend.application.usage_evidence.cost_migration once. Producer stays off"
+        )
+        return
+    cost_meter.configure(enabled=True, buffer=settings.cost_buffer)
+
+
 async def _stop_usage_evidence(container: BootstrapContainer) -> None:
     """Stop after the coordinator and before Postgres closes, with a bounded final flush."""
     from backend.application.execution_contract import set_usage_evidence_capabilities
 
     set_usage_evidence_capabilities(())
+    from backend.application.usage_evidence.cost import cost_meter
+
+    cost_meter.enabled = False
     task = getattr(container, "usage_evidence_task", None)
     if task is not None and not task.done():
         task.cancel()

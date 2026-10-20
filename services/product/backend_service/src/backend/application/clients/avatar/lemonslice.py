@@ -68,6 +68,7 @@ from backend.application.render.engines_base import (
     StreamingAvatarBackend,
 )
 from backend.application.render.windows import AudioWindow
+from backend.application.usage_evidence.cost import cost_meter
 
 log = logging.getLogger(__name__)
 
@@ -889,6 +890,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     "session_id_invalid", "LemonSlice returned an unusable session id"
                 )
             sess.provider_session_id = sid
+            cost_meter.avatar_open(room_name, sid)
             if s.keepalive_s > 0 and sess.provider_session_id:
                 sess.keepalive = asyncio.ensure_future(self._keepalive(sess))
             await self._wait_avatar_video(room)
@@ -1243,6 +1245,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 log.warning("lemonslice rollover postponed: the old session is not confirmed ended")
                 return
             sess.provider_session_id = ""  # nothing left to end at stop
+            cost_meter.avatar_close(sess.room_name, old_sid)
         if not await self._wait_avatar_gone(sess.room):
             sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
             return  # the old avatar is still in the room: never start a second one next to it
@@ -1281,6 +1284,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 new_sid = ""
                 raise LemonSliceError("session_id_invalid", "LemonSlice returned an unusable id")
             sess.provider_session_id = new_sid  # from here on a stop ends it
+            cost_meter.avatar_open(sess.room_name, new_sid)
             await self._wait_avatar_video(sess.room)
         except BaseException as exc:
             sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
@@ -1294,6 +1298,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 )
             if new_sid and sess.closing:  # stopped while it was being created
                 sess.provider_session_id = ""
+                cost_meter.avatar_close(sess.room_name, new_sid)
                 await self._end_provider_session(label, new_sid)
             if post_task is not None and post_task.done():
                 post_task.cancelled() or post_task.exception()  # retrieved: it failed outright
@@ -1310,6 +1315,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             return
         if sess.closing:  # the live was stopped while the replacement was being created
             sess.provider_session_id = ""
+            cost_meter.avatar_close(sess.room_name, new_sid)
             await self._end_provider_session(label, new_sid)
             return
         self._adopt_rolled_session(sess, new_sid)
@@ -1340,6 +1346,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             await self._end_provider_session(label, sid)  # stopped, or another one took over
             return
         sess.provider_session_id = sid
+        cost_meter.avatar_open(sess.room_name, sid)
         try:
             await self._wait_avatar_video(sess.room)
         except Exception:
@@ -1471,6 +1478,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         cleanup_failed = False
         if sess is not None:
             sess.closing = True  # first: no keep-alive may start from here on
+            cost_meter.avatar_close(room_name, sess.provider_session_id)
             if sess.keepalive is not None:
                 sess.keepalive.cancel()
                 # cancellable: an async keep-alive aborts its connection; await it before terminate

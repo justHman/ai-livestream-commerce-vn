@@ -607,7 +607,7 @@ async def test_each_attempt_is_re_signed_with_a_fresh_timestamp_over_the_same_by
 
 async def test_vendor_cogs_rides_ai_usage_reported_unordered_and_never_blocks_lifecycle(pg):
     outbox, ident, receiver = UsageOutbox(pg), new_identity(), Receiver()
-    settings = UsageEvidenceSettings.from_env(FAST)
+    settings = UsageEvidenceSettings.from_env({**FAST, "USAGE_EVIDENCE_LEGACY_COGS_ENABLED": "1"})
     service = UsageEvidence(outbox, settings)
     service.record_cogs(ident, model_id="m", input_tokens=10, output_tokens=20, sample_id="s1")
     staged = await outbox.stage(ident, [draft()])  # stays staged: blocks lifecycle rows only

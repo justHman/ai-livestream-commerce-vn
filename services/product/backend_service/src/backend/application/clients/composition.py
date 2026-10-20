@@ -31,6 +31,7 @@ from backend.application.contracts.llm_engines import (
     LLMResponse,
     register_engine as register_llm_engine,
 )
+from llm.engines.base import TextChunk
 from backend.application.contracts.tts_engines import (
     AudioChunk,
     TTSEngine,
@@ -80,6 +81,51 @@ class OpenAICompatLLMEngine(LLMEngine):
 
     def stream(self, req: LLMRequest) -> Iterator[str]:
         yield from self._client.chat_stream(_chat_request(req))
+
+    def stream_chunks(
+        self, req: LLMRequest, *, session_id: str = "", utterance_id: str = ""
+    ) -> Iterator[TextChunk]:
+        """Default chunking plus M7.3 cost evidence: one row per call, best effort."""
+        from backend.application.usage_evidence.cost import cost_meter, new_call_id
+
+        if not (cost_meter.enabled and session_id):
+            yield from super().stream_chunks(req, session_id=session_id, utterance_id=utterance_id)
+            return
+        usage: dict = {}
+        chat = _chat_request(req)
+        chat.include_usage = cost_meter.include_usage
+        seq, buffered = 0, None
+        try:
+            for delta in self._client.chat_stream(chat, usage):
+                if buffered is not None:
+                    yield TextChunk(
+                        session_id=session_id,
+                        utterance_id=utterance_id,
+                        seq=seq,
+                        text=buffered,
+                        is_final=False,
+                    )
+                    seq += 1
+                buffered = delta
+            if buffered is not None:
+                yield TextChunk(
+                    session_id=session_id,
+                    utterance_id=utterance_id,
+                    seq=seq,
+                    text=buffered,
+                    is_final=True,
+                )
+        finally:
+            tokens = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+            known = all(isinstance(t, int) for t in tokens)
+            cost_meter.record_llm(
+                session_id,
+                call_id=new_call_id(),
+                provider="openai_compatible",
+                model=chat.model or self._client.model,
+                input_tokens=tokens[0] if known else None,
+                output_tokens=tokens[1] if known else None,
+            )
 
     def warmup(self, system_prompt: Optional[str] = None) -> None:
         return None  # no network at startup

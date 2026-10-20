@@ -51,6 +51,8 @@ class ChatRequest:
     stop: list[str] = field(default_factory=list)
     seed: int = 42
     stream: bool = False
+    # Ask the provider for token usage in the final stream chunk (cost evidence, M7.3).
+    include_usage: bool = False
 
 
 class OpenAICompatibleClient:
@@ -122,6 +124,8 @@ class OpenAICompatibleClient:
             body["stop"] = req.stop
         if req.seed:
             body["seed"] = req.seed
+        if req.include_usage:
+            body["stream_options"] = {"include_usage": True}
         for name in self._omit_params:
             body.pop(name, None)
         return body
@@ -161,8 +165,16 @@ class OpenAICompatibleClient:
             )
         raise LLMClientError(f"LLM chat failed after retries: {last_error}") from last_error
 
-    def chat_stream(self, req: ChatRequest) -> Iterator[str]:
-        """Streaming chat completion. Yields text deltas."""
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def chat_stream(self, req: ChatRequest, usage: Optional[dict] = None) -> Iterator[str]:
+        """Streaming chat completion. Yields text deltas.
+
+        ``usage``, when given, receives ``prompt_tokens``/``completion_tokens`` only if the
+        provider reports them (never estimated).
+        """
         client = self._get_client()
         url = self._chat_url
         body = self._build_body(req)
@@ -179,6 +191,12 @@ class OpenAICompatibleClient:
                             break
                         try:
                             chunk = json.loads(payload)
+                            reported = chunk.get("usage")
+                            if usage is not None and isinstance(reported, dict):
+                                usage.update(
+                                    prompt_tokens=reported.get("prompt_tokens"),
+                                    completion_tokens=reported.get("completion_tokens"),
+                                )
                             choices = chunk.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})

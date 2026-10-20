@@ -435,6 +435,39 @@ class StreamOrchestrator:
         finally:
             self._synthesis_lock.release()
 
+    def _tts_audio(self, phrase: TextChunk, session_id: str, utterance_id: str):
+        """``tts.stream_audio`` plus M7.3 cost evidence: one best-effort row per TTS call.
+
+        Recorded where the provider is called (per phrase), not inferred from the turn
+        timing log; key = ``utterance_id:phrase_seq:attempt``.
+        """
+        from backend.application.usage_evidence.cost import cost_meter
+
+        if not cost_meter.enabled:
+            yield from self._tts.stream_audio(
+                phrase, session_id=session_id, utterance_id=utterance_id
+            )
+            return
+        attempt = cost_meter.next_attempt(session_id, utterance_id, phrase.seq)
+        t0, audio_ms = time.perf_counter(), 0
+        try:
+            for audio_window in self._tts.stream_audio(
+                phrase, session_id=session_id, utterance_id=utterance_id
+            ):
+                audio_ms += audio_window.duration_ms
+                yield audio_window
+        finally:
+            cost_meter.record_tts(
+                session_id,
+                utterance_id=utterance_id,
+                phrase_seq=phrase.seq,
+                attempt=attempt,
+                provider=str(getattr(self._tts, "name", "") or type(self._tts).__name__),
+                characters=len(phrase.text),
+                audio_ms=audio_ms,
+                synth_ms=int((time.perf_counter() - t0) * 1000),
+            )
+
     def _synthesize_phrase(
         self,
         phrase: TextChunk,
@@ -455,9 +488,7 @@ class StreamOrchestrator:
         t0 = time.perf_counter()
         try:
             with self._synthesis_slot(session_id), synthesis_cancellation(synthesis_stop):
-                for audio_window in self._tts.stream_audio(
-                    phrase, session_id=session_id, utterance_id=utterance_id
-                ):
+                for audio_window in self._tts_audio(phrase, session_id, utterance_id):
                     if synthesis_stop.is_set() or self._cancel_event.is_set():
                         break
                     windows.append(audio_window)
@@ -569,11 +600,7 @@ class StreamOrchestrator:
             audio_duration_ms = 0
             try:
                 with self._synthesis_slot(session_id):
-                    for audio_window in self._tts.stream_audio(
-                        phrase,
-                        session_id=session_id,
-                        utterance_id=utterance_id,
-                    ):
+                    for audio_window in self._tts_audio(phrase, session_id, utterance_id):
                         if self._cancel_event.is_set():
                             return
                         audio_duration_ms += audio_window.duration_ms

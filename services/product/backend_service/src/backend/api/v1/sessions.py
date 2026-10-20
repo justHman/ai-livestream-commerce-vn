@@ -161,6 +161,19 @@ async def sessions_start(
             # Per-session gate; capabilities/commands/legacy guard all read it.
             meta["p0_rescue"] = True
     await d.store.set(result.session_id, meta)
+    if req.execution_contract:
+        from backend.application.execution_contract import ExecutionIdentity
+        from backend.application.usage_evidence.cost import cost_meter
+
+        cost_meter.bind(
+            result.session_id,
+            ExecutionIdentity(
+                tenant_id=req.tenant_id,
+                business_session_id=req.business_session_id,
+                runtime_session_id=result.session_id,
+                generation=req.generation,
+            ),
+        )
     await register_terminal_execution(d, result.session_id, meta)
     failures = getattr(d, "runtime_failures", None)
     if failures is not None:
@@ -533,6 +546,9 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
     backend_error: str | None = None
     try:
         await asyncio.to_thread(d.backend.stop, session_id)
+        from backend.application.usage_evidence.cost import cost_meter
+
+        cost_meter.unbind(session_id)  # after stop: the avatar close needs the identity
     except KeyError:
         # An unknown / already released backend session is "already cleaned" only when a
         # previous teardown is mid-flight: 019's retry flag OR the lease termination marker.

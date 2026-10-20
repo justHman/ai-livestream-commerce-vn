@@ -51,6 +51,11 @@ class UsageEvidenceSettings:
     http_timeout: float = 10.0
     flush_timeout: float = 5.0
     cogs_buffer: int = 1000
+    # M7.3: cost evidence producer (ai.cost.reported). Default OFF.
+    cost_enabled: bool = False
+    cost_buffer: int = 5000
+    # Legacy vendor COGS (ai.usage.reported, reaches Kafka/usage-service). Default OFF.
+    legacy_cogs_enabled: bool = False
     # Per-sweep wall-clock budget, and the backoff for a session whose lock is busy.
     sweep_budget: float = 20.0
     busy_backoff_base: float = 5.0
@@ -74,6 +79,9 @@ class UsageEvidenceSettings:
             backoff_cap=_num(env, "BACKOFF_CAP_SECONDS", 300.0),
             sweep_age=_num(env, "SWEEP_AGE_SECONDS", 60.0),
             cogs_buffer=int(_num(env, "COGS_BUFFER", 1000)),
+            cost_enabled=_flag(env, "COST_ENABLED"),
+            cost_buffer=int(_num(env, "COST_BUFFER", 5000)),
+            legacy_cogs_enabled=_flag(env, "LEGACY_COGS_ENABLED"),
             sweep_budget=_num(env, "SWEEP_BUDGET_SECONDS", 20.0),
             busy_backoff_base=_num(env, "BUSY_BACKOFF_BASE_SECONDS", 5.0),
             busy_backoff_cap=_num(env, "BUSY_BACKOFF_CAP_SECONDS", 300.0),

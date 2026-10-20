@@ -30,6 +30,7 @@ from backend.application.terminal_outcomes import backoff_seconds
 
 from . import envelope
 from .outbox import StageBlocked, UsageOutbox  # noqa: F401
+from .cost import CostMeter, cost_meter as _default_cost_meter
 from .settings import CogsBuffer, UsageEvidenceSettings
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class UsageSender:
         session_store: Any = None,
         session_lock: Callable[[str], Any] | None = None,
         cogs: CogsBuffer | None = None,
+        cost: CostMeter | None = None,
         post: PostFn | None = None,
         unstaged_sessions: set[str] | None = None,
         clock: Callable[[], float] = time.time,
@@ -146,6 +148,7 @@ class UsageSender:
         # Must be the SAME lock the request path holds from staging through the save.
         self._session_lock = session_lock or _no_lock
         self._cogs = cogs
+        self._cost = cost if cost is not None else _default_cost_meter
         self._poster = HttpxPoster(settings.http_timeout) if post is None else None
         self._post: PostFn = post or self._poster  # type: ignore[assignment]
         self._clock = clock
@@ -574,6 +577,46 @@ class UsageSender:
                 logger.warning("usage cogs sample lost error_type=%s", type(exc).__name__)
         return stored
 
+    async def drain_cost(self) -> int:
+        """Flush buffered cost samples into the durable outbox. Best effort, never raises."""
+        meter = self._cost
+        stored = 0
+        for sample in meter.drain(max(self._batch, 100)):
+            try:
+                eid, body = envelope.build_cost_body(
+                    sample.identity,
+                    cost_kind=sample.cost_kind,
+                    cost_key=sample.cost_key,
+                    occurred_at=sample.occurred_at,
+                    provider=sample.provider,
+                    model=sample.model,
+                    usage_source=sample.usage_source,
+                    fields=sample.fields,
+                    producer_id=self._settings.producer_id,
+                )
+                outcome = await self._outbox.enqueue_cost(
+                    sample.identity,
+                    event_id=eid,
+                    cost_kind=sample.cost_kind,
+                    cost_key=sample.cost_key,
+                    occurred_at=sample.occurred_at,
+                    body=body,
+                )
+                if outcome == "conflict":
+                    meter.conflicts += 1
+                    logger.error("cost evidence CONFLICT id=%s; kept the first row", eid)
+                else:
+                    stored += 1
+            except asyncio.CancelledError:
+                raise
+            except envelope.InvalidIdentity:
+                meter.lost += 1  # can never be delivered
+            except Exception as exc:
+                meter.requeue(sample)
+                logger.warning("cost evidence write failed error_type=%s", type(exc).__name__)
+                break  # the outbox is unwell: try the rest next pass
+        return stored
+
     async def run_loop(self) -> None:
         while True:
             try:
@@ -581,6 +624,7 @@ class UsageSender:
                     self._last_sweep = self._clock()
                     await self.sweep()
                 await self.drain_cogs()
+                await self.drain_cost()
                 processed = await self.deliver_due()
             except asyncio.CancelledError:
                 raise
@@ -595,6 +639,7 @@ class UsageSender:
 
         async def passes() -> None:
             await self.drain_cogs()
+            await self.drain_cost()
             while await self.deliver_due():
                 pass
 

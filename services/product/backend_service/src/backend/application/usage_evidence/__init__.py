@@ -20,6 +20,7 @@ from backend.application.execution_contract import (
 )
 
 from . import envelope
+from .cost import cost_meter
 from .outbox import Staged, StageBlocked, UsageOutbox
 from .sender import (  # noqa: F401
     CLEANUP_KEY,
@@ -191,7 +192,13 @@ class UsageEvidence:
         output_tokens: int,
         sample_id: str | None = None,
     ) -> None:
-        """Speech-path safe: append to a bounded in-memory buffer. No await, no I/O."""
+        """Speech-path safe: append to a bounded in-memory buffer. No await, no I/O.
+
+        Legacy ``ai.usage.reported`` reaches Kafka and the vendor ledger, so it is off unless
+        ``USAGE_EVIDENCE_LEGACY_COGS_ENABLED`` is set; M7.3 cost goes through ``cost_meter``.
+        """
+        if not self.settings.legacy_cogs_enabled:
+            return
         self.cogs.append(
             CogsSample(
                 identity,
@@ -207,6 +214,7 @@ class UsageEvidence:
         out: dict[str, Any] = {
             "cogs_buffered": len(self.cogs),
             "cogs_dropped": self.cogs.dropped,
+            **cost_meter.health(),
         }
         try:
             out.update(await self._outbox.backlog())
