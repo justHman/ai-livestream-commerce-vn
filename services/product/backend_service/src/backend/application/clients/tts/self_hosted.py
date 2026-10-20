@@ -494,10 +494,11 @@ class SelfHostedTTSClient:
             ) as resp:
                 resp.raise_for_status()
                 body = bytearray()
-                for chunk in resp.iter_bytes():
-                    body.extend(chunk)
-                    if len(body) > VOICES_BODY_MAX_BYTES:
+                # small decoded chunks, so the cap is a real memory bound (a transport may yield one huge chunk otherwise)
+                for chunk in resp.iter_bytes(chunk_size=65_536):
+                    if len(body) + len(chunk) > VOICES_BODY_MAX_BYTES:
                         raise TTSClientError("self-host TTS voices: response too large")
+                    body.extend(chunk)
             payload = json.loads(bytes(body))
         except (httpx.HTTPError, ValueError) as exc:
             raise TTSClientError(f"self-host TTS voices failed: {type(exc).__name__}") from exc
