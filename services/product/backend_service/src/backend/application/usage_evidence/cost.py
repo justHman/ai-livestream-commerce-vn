@@ -50,7 +50,9 @@ class CostSample:
 class CostMeter:
     def __init__(self) -> None:
         self.enabled = False
-        self._buf: deque[CostSample] = deque(maxlen=5000)
+        self._buf: deque[CostSample] = deque()
+        self._cap = 5000
+        self._buf_lock = threading.Lock()
         self._ids: OrderedDict[str, ExecutionIdentity] = OrderedDict()
         # provider_session_id -> (session_id, monotonic start, wall start, start is derived)
         self._open: OrderedDict[str, tuple[str, float, datetime, bool]] = OrderedDict()
@@ -65,7 +67,7 @@ class CostMeter:
 
     def configure(self, *, enabled: bool, buffer: int = 5000) -> None:
         self.enabled = bool(enabled)
-        self._buf = deque(self._buf, maxlen=max(1, buffer))
+        self._cap = max(1, buffer)
 
     # -- session binding (control plane, at start / stop) -------------------
 
@@ -140,10 +142,13 @@ class CostMeter:
                 usage_source,
                 fields,
             )
-            if len(self._buf) == self._buf.maxlen:
+            with self._buf_lock:  # check + append are one step: no silent deque eviction
+                full = len(self._buf) >= self._cap
+                if not full:
+                    self._buf.append(sample)
+            if full:  # only a NEW sample is refused; queued/in-flight ones are never evicted
                 self.dropped += 1
-                self.lose(self._buf.popleft(), "buffer_full")
-            self._buf.append(sample)
+                self.lose(sample, "buffer_full")
         except Exception as exc:  # never reaches the live path
             self.lost += 1
             logger.error(
@@ -297,19 +302,17 @@ class CostMeter:
 
     def drain(self, limit: int) -> list[CostSample]:
         out: list[CostSample] = []
-        while self._buf and len(out) < limit:
-            try:
+        with self._buf_lock:
+            while self._buf and len(out) < limit:
                 out.append(self._buf.popleft())
-            except IndexError:
-                break
         return out
 
     def requeue(self, sample: CostSample) -> None:
-        """Back to the FRONT after an outbox failure (the sender retries with backoff)."""
-        if len(self._buf) == self._buf.maxlen:
-            self.lose(sample, "buffer_full_on_retry")
-            return
-        self._buf.appendleft(sample)
+        """Back to the FRONT after an outbox failure. Always succeeds: a sample that was once
+        accepted keeps its place even if producers filled the buffer meanwhile (the overshoot
+        is bounded by one drain batch); only NEW samples are refused when full."""
+        with self._buf_lock:
+            self._buf.appendleft(sample)
 
     def health(self) -> dict[str, Any]:
         return {

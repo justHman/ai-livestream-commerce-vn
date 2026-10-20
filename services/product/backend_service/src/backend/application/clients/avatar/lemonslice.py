@@ -1459,15 +1459,19 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if self._loop is not None:
                 self._run(self._drain("cleanups"))  # a stop parked in a clear is awaited
                 self._run(self._drain("reapers"))  # late REST sessions are ended before exit
-            # Whatever the provider never confirmed ended is settled now as derived: the end is
-            # this moment plus the idle timeout, the latest it can still have been running.
-            cost_meter.avatar_settle_all(float(self._s.idle_timeout_s))
             if self._closing or self._pending_terminate:
                 log.error(
                     "lemonslice sessions left without confirmed cleanup count=%d",
                     len(set(self._closing) | set(self._pending_terminate)),
                 )
         finally:
+            # Whatever the provider never confirmed ended is settled now as derived: the end is
+            # this moment plus the idle timeout, the latest it can still have been running.
+            # In `finally`: an early failure above must not skip it.
+            try:
+                cost_meter.avatar_settle_all(float(self._s.idle_timeout_s))
+            except Exception as exc:  # cost evidence must never block the cleanup below
+                log.warning("lemonslice avatar cost settle error_type=%s", type(exc).__name__)
             try:
                 if self._loop is not None:
                     self._run(self._close_client())

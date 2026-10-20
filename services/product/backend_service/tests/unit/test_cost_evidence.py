@@ -315,7 +315,7 @@ def test_overflow_logs_one_reconciliation_line_per_dropped_sample(meter, caplog)
         llm(meter, "a")
         llm(meter, "b")
     lines = [r.getMessage() for r in caplog.records if "cost_evidence_lost" in r.getMessage()]
-    assert len(lines) == 1 and "key=a" in lines[0] and TENANT in lines[0] and "kind=LLM" in lines[0]
+    assert len(lines) == 1 and "key=b" in lines[0] and TENANT in lines[0] and "kind=LLM" in lines[0]
     assert meter.lost == 1
     meter.configure(enabled=True)
 
@@ -588,3 +588,66 @@ async def test_shutdown_settles_the_avatar_before_the_final_flush_and_then_disab
     await _shutdown(container)
     assert [k[1] for k in outbox.rows] == ["cost:AVATAR"]
     assert meter.enabled is False
+
+
+# -- review round 3 ----------------------------------------------------------------------------------
+
+
+async def test_samples_in_flight_survive_a_buffer_filled_meanwhile_and_a_failed_write(meter):
+    meter.configure(enabled=True, buffer=3)
+    for key in ("a", "b", "c"):
+        llm(meter, key)
+    gate, release = asyncio.Event(), asyncio.Event()
+
+    class Slow:
+        async def enqueue_cost(self, *a, **k):
+            gate.set()
+            await release.wait()
+            raise ConnectionError("pg down")
+
+    sender = UsageSender(Slow(), UsageEvidenceSettings(), cost=meter)
+    task = asyncio.create_task(sender.drain_cost())
+    await gate.wait()  # a, b, c are in flight; producers now fill the buffer again
+    for key in ("x", "y", "z", "w"):
+        llm(meter, key)
+    release.set()
+    await task
+    kept = [s.cost_key for s in meter._buf]
+    assert kept[:3] == ["a", "b", "c"]  # no old sample lost
+    assert meter.lost == 1 and meter.dropped == 1  # only the NEW overflow ("w") was refused
+    meter.configure(enabled=True)
+
+
+def test_concurrent_producers_account_for_every_sample(meter):
+    meter.configure(enabled=True, buffer=50)
+    total, workers = 2000, 8
+
+    def work(w):
+        for n in range(total // workers):
+            meter.record_llm(
+                "rt", call_id=f"{w}-{n}", provider="p", model="m", input_tokens=1, output_tokens=1
+            )
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(workers)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(meter._buf) == 50 and meter.dropped == total - 50 and meter.lost == total - 50
+    meter.configure(enabled=True)
+
+
+def test_stop_all_settles_the_avatar_even_when_the_loop_fails_early(meter):
+    from backend.application.clients.avatar.lemonslice import LemonSliceRenderBackend
+
+    b = object.__new__(LemonSliceRenderBackend)
+    b._s = SimpleNamespace(idle_timeout_s=60)
+    b._sessions, b._pending_terminate, b._closing = {}, {}, {}
+    b._loop = object()
+    b._run = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("loop gone"))
+    b._drain = lambda name: None
+    b._shutdown_loop = lambda: None
+    b._close_client = lambda: None
+    meter.avatar_open("rt", "ps")
+    with pytest.raises(RuntimeError):
+        b.stop_all()
+    sample = meter.drain(1)[0]
+    assert sample.cost_key == "ps" and sample.usage_source == "derived"
