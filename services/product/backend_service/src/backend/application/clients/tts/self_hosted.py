@@ -25,7 +25,9 @@ import os
 import shutil
 import socket
 import subprocess
+import json
 import threading
+import unicodedata
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -69,6 +71,70 @@ def phrase_wait_budget_s(char_count: int) -> float:
 
 class TTSClientError(RuntimeError):
     """Typed transport failure for a TTS client."""
+
+
+VOICES_MAX = 200
+VOICES_INSPECT_MAX = 1_000
+VOICES_BODY_MAX_BYTES = 1_048_576
+_VOICE_FIELD_MAX = 128
+
+
+def _voice_str(value: object) -> str | None:
+    """Trimmed string, or None when it is not a string, is empty, or has control/format characters."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    # Unicode category C* covers C0/C1 controls, bidi and other format characters, surrogates, private use.
+    if not value or any(unicodedata.category(c).startswith("C") for c in value):
+        return None
+    return value
+
+
+def _first_str(item: dict, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = _voice_str(item.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _bounded(value: str | None) -> str | None:
+    return value[:_VOICE_FIELD_MAX] if value is not None else None
+
+
+def parse_voices(payload: object) -> list[dict]:
+    """Tolerant parse of a ``/v1/voices`` body: a list, ``{"data": [...]}`` or ``{"voices": [...]}``.
+
+    VieNeu v3 Turbo answers ``{"object": "list", "data": [{"id", "name", "gender"}]}``; the parser stays tolerant, and only
+    id/name/language/gender are ever read. At most VOICES_INSPECT_MAX entries are looked at.
+    """
+    if isinstance(payload, dict):
+        payload = payload.get("data", payload.get("voices"))
+    if not isinstance(payload, list):
+        raise TTSClientError("self-host TTS voices: unexpected response shape")
+    voices: list[dict] = []
+    seen: set[str] = set()
+    for item in payload[:VOICES_INSPECT_MAX]:
+        if isinstance(item, str):
+            item = {"id": item}
+        if not isinstance(item, dict):
+            continue
+        voice_id = _first_str(item, ("id", "voice_id", "voice", "name"))
+        if voice_id is None or len(voice_id) > _VOICE_FIELD_MAX or voice_id in seen:
+            continue
+        seen.add(voice_id)
+        name = _first_str(item, ("display_name", "label", "name", "id")) or voice_id
+        voices.append(
+            {
+                "id": voice_id,
+                "name": name[:_VOICE_FIELD_MAX],
+                "language": _bounded(_first_str(item, ("language", "lang", "locale"))),
+                "gender": _bounded(_first_str(item, ("gender", "sex"))),
+            }
+        )
+        if len(voices) >= VOICES_MAX:
+            break
+    return voices
 
 
 _synthesis_cancel: ContextVar[threading.Event | None] = ContextVar(
@@ -418,6 +484,25 @@ class SelfHostedTTSClient:
             duration_ms=duration_ms,
             engine=engine,
         )
+
+    def list_voices(self) -> list[dict]:
+        """``GET /v1/voices`` -> [{"id", "name", "language", "gender"}]; raises TTSClientError."""
+        url = urljoin(self._base_url + "/", "v1/voices")
+        try:
+            with self._get_client().stream(
+                "GET", url, headers=self._auth_headers(), timeout=5.0
+            ) as resp:
+                resp.raise_for_status()
+                body = bytearray()
+                # small decoded chunks, so the cap is a real memory bound (a transport may yield one huge chunk otherwise)
+                for chunk in resp.iter_bytes(chunk_size=65_536):
+                    if len(body) + len(chunk) > VOICES_BODY_MAX_BYTES:
+                        raise TTSClientError("self-host TTS voices: response too large")
+                    body.extend(chunk)
+            payload = json.loads(bytes(body))
+        except (httpx.HTTPError, ValueError) as exc:
+            raise TTSClientError(f"self-host TTS voices failed: {type(exc).__name__}") from exc
+        return parse_voices(payload)
 
     def close(self) -> None:
         if self._client is not None:
