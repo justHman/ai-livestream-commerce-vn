@@ -151,7 +151,11 @@ def test_session_avatar_image_host_must_be_allowlisted(mock_env: None) -> None:
     with _client(cfg) as client:
         response = client.post(
             "/api/v1/sessions",
-            json={"avatar_image_url": "https://outside.example.test/avatar.png"},
+            json={
+                "avatar_provider": "lemonslice",
+                "avatar_image_url": "https://outside.example.test/avatar.png",
+                "voice_id": "Hai Dang",
+            },
             headers={
                 "Authorization": "Bearer viewer-test-token",
                 "X-Livento-Internal-Token": "internal-test-token",
@@ -227,7 +231,26 @@ def test_overrides_are_refused_when_the_internal_token_is_not_configured(mock_en
     with _client(cfg) as client:
         response = client.post(
             "/api/v1/sessions",
-            json={"voice_id": "Hai Dang"},
+            json={
+                "avatar_provider": "lemonslice",
+                "avatar_agent_id": "agent_093d2f9535db94ef",
+                "voice_id": "Hai Dang",
+            },
             headers={"Authorization": "Bearer viewer-test-token", "X-Livento-Internal-Token": "anything"},
         )
     assert response.status_code == 403
+
+
+def test_incomplete_override_bundles_are_rejected_by_the_request_model() -> None:
+    from backend.api.v1.router import StartReq
+
+    for body in (
+        {"avatar_agent_id": "agent_093d2f9535db94ef"},
+        {"avatar_provider": "lemonslice", "avatar_agent_id": "agent_093d2f9535db94ef"},
+        {"avatar_provider": "lemonslice", "voice_id": "Hai Dang"},
+        {"voice_id": "Hai Dang"},
+        {"avatar_provider": "lemonslice"},
+    ):
+        with pytest.raises(ValueError):
+            StartReq(**body)
+    StartReq(avatar_provider="lemonslice", avatar_agent_id="agent_093d2f9535db94ef", voice_id="Hai Dang")

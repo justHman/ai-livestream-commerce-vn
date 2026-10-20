@@ -157,6 +157,15 @@ class StartReq(BaseModel):
             raise ValueError("avatar_agent_id and avatar_image_url are mutually exclusive")
         if self.avatar_id and (self.avatar_agent_id or self.avatar_image_url):
             raise ValueError("avatar_id cannot be combined with a per-session avatar source")
+        if self.has_avatar_or_voice_override() and (
+            self.avatar_provider != "lemonslice"
+            or not (self.avatar_agent_id or self.avatar_image_url)
+            or not self.voice_id
+        ):
+            # One atomic bundle: provider + exactly one avatar source + voice (the internal caller sends all of them).
+            raise ValueError(
+                "avatar override needs avatar_provider, avatar_agent_id or avatar_image_url, and voice_id together"
+            )
         return self
 
     def has_avatar_or_voice_override(self) -> bool:

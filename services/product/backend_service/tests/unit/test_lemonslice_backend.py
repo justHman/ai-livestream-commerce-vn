@@ -177,7 +177,10 @@ def test_per_session_image_url_requires_allowed_host_and_uses_provider_image_fie
     disallowed, _, _ = make(image_hosts=("avatars.example.test",))
     with pytest.raises(RuntimeError, match="allowed host"):
         disallowed.start(
-            StartOptions(avatar_image_url="https://untrusted.example.test/catalog/avatar.png")
+            StartOptions(
+                avatar_provider="lemonslice",
+                avatar_image_url="https://untrusted.example.test/catalog/avatar.png",
+            )
         )
 
 

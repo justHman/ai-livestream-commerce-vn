@@ -12,7 +12,8 @@ from typing import Iterable
 from urllib.parse import urlsplit
 
 MAX_IMAGE_URL_LENGTH = 2_048
-_ENCODED_PATH_TRICKS = ("%2e", "%2f", "%5c")
+# %25 is refused too: a double-encoded separator (%252f) decodes to %2f one layer later in some URL stacks.
+_ENCODED_PATH_TRICKS = ("%2e", "%2f", "%5c", "%25")
 
 
 def normalize_host(host: str) -> str:
@@ -26,8 +27,15 @@ def normalize_host(host: str) -> str:
     try:
         ipaddress.ip_address(ascii_host.strip("[]"))
     except ValueError:
-        return ascii_host
-    raise ValueError("IP literals are not allowed")
+        pass
+    else:
+        raise ValueError("IP literals are not allowed")
+    # Alternate IPv4 spellings (2130706433, 0x7f000001, 0177.0.0.1, 127.1) are not parsed by ipaddress but many URL
+    # stacks resolve them as addresses: require a real name whose top-level label starts with a letter.
+    labels = ascii_host.split(".")
+    if len(labels) < 2 or not labels[-1][:1].isalpha():
+        raise ValueError("host must be a domain name")
+    return ascii_host
 
 
 def check_image_url(value: str, hosts: Iterable[str] | None = None) -> None:

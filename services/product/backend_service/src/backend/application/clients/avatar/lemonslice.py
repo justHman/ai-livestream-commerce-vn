@@ -758,6 +758,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         """Resolve a trusted per-session avatar or preserve the legacy env path."""
         if opts.avatar_provider is not None and opts.avatar_provider != "lemonslice":
             raise LemonSliceError("avatar_provider_invalid", "avatar_provider is not supported")
+        if (opts.avatar_agent_id or opts.avatar_image_url) and opts.avatar_provider != "lemonslice":
+            raise LemonSliceError("avatar_provider_invalid", "a per-session avatar needs avatar_provider=lemonslice")
         if opts.avatar_agent_id and opts.avatar_image_url:
             raise LemonSliceError(
                 "avatar_source_invalid", "avatar_agent_id and avatar_image_url are mutually exclusive"
