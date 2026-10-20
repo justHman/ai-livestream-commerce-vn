@@ -39,6 +39,18 @@ _PHASE_INTERVALS = ("warming", "selling", "closing", "ending")
 _MEDIA_REASON_PREFIXES = ("media_", "platform_")
 
 
+COST_FIELDS = {
+    "LLM": frozenset({"input_tokens", "output_tokens"}),
+    "TTS": frozenset({"characters", "audio_ms", "synth_ms"}),
+    "AVATAR": frozenset({"seconds", "started_at", "ended_at", "provider_session_id"}),
+}
+COST_USAGE_SOURCES = frozenset({"provider", "measured", "derived", "unknown"})
+
+
+class InvalidCostPayload(ValueError):
+    """A cost sample with a kind, source or field outside the allowlist (never sent)."""
+
+
 class InvalidIdentity(ValueError):
     """The identity can never be delivered (non-UUID tenant, oversize id)."""
 
@@ -264,6 +276,11 @@ def build_cost_body(
     producer_id: str,
 ) -> tuple[str, bytes]:
     """``ai.cost.reported``: measured quantities only. No price, cost_usd or credit, ever."""
+    allowed = COST_FIELDS.get(cost_kind)
+    if allowed is None or usage_source not in COST_USAGE_SOURCES:
+        raise InvalidCostPayload("cost_kind or usage_source not allowed")
+    if set(fields) - allowed:  # cost_usd, credit, billable, price... can never ride along
+        raise InvalidCostPayload("field not allowed for " + cost_kind)
     eid = cost_event_id(identity, cost_kind, cost_key)
     payload: dict[str, Any] = {
         "schema": COST_SCHEMA,

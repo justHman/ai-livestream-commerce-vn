@@ -3,8 +3,14 @@
 ``cost_meter`` is a process singleton, DEFAULT OFF. Every ``record_*`` is synchronous,
 never awaits, never does I/O and never raises: a failure here must not touch the live
 path. Samples wait in a bounded in-memory buffer and the sender flushes them into the
-durable ``usage_evidence_outbox`` (kind ``cost:<COST_KIND>``). No price, ``cost_usd`` or
-credit exists anywhere in this module (BR-PRICING-001/002).
+durable ``usage_evidence_outbox`` (kind ``cost:<COST_KIND>``), retrying with backoff while
+the outbox is unwell.
+
+ACCEPTED CEILING: a crash loses what is still in the buffer (about one sender pass, ~2 s,
+longer only while the outbox is failing); an overflow drops the oldest. Every sample that
+must be dropped is logged ONCE (``cost_evidence_lost``: key, tenant, kind, reason) and
+counted in ``cost_lost`` so it can be reconciled by hand. No price, ``cost_usd`` or credit
+exists anywhere in this module (BR-PRICING-001/002).
 """
 
 from __future__ import annotations
@@ -15,7 +21,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from backend.application.execution_contract import ExecutionIdentity
@@ -24,8 +30,9 @@ logger = logging.getLogger(__name__)
 
 LLM, TTS, AVATAR = "LLM", "TTS", "AVATAR"
 COST_KINDS = (LLM, TTS, AVATAR)
-_MAX_BOUND = 256  # bound sessions / open avatar sessions / attempt counters
+_MAX_BOUND = 4096  # bound identities / open avatar sessions
 _MAX_ATTEMPT_KEYS = 4096
+_OPEN_MAX_AGE_S = 6 * 3600.0  # an avatar record older than this is settled as derived
 
 
 @dataclass(frozen=True)
@@ -36,9 +43,8 @@ class CostSample:
     occurred_at: datetime
     provider: str = ""
     model: str = ""
-    usage_source: str = "measured"  # provider | measured | unknown
+    usage_source: str = "measured"  # provider | measured | derived | unknown
     fields: dict[str, Any] = field(default_factory=dict)  # kind-specific quantities
-    attempts: int = 0  # sender flush retries (not part of the identity)
 
 
 class CostMeter:
@@ -46,13 +52,16 @@ class CostMeter:
         self.enabled = False
         self._buf: deque[CostSample] = deque(maxlen=5000)
         self._ids: OrderedDict[str, ExecutionIdentity] = OrderedDict()
-        self._open: OrderedDict[tuple[str, str], tuple[float, datetime]] = OrderedDict()
+        # provider_session_id -> (session_id, monotonic start, wall start, start is derived)
+        self._open: OrderedDict[str, tuple[str, float, datetime, bool]] = OrderedDict()
+        self._unbound_pending: set[str] = set()  # unbind requested while an avatar was open
         self._attempts: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
         self.dropped = 0  # buffer overflow
         self.unbound = 0  # no identity for the session: shown as "unknown", not zero
-        self.lost = 0  # could not be written to the outbox
+        self.lost = 0  # dropped for good (each one logged once as cost_evidence_lost)
         self.conflicts = 0  # same semantic key, different bytes
+        self.evicted = 0  # identity / open avatar record removed to make room (an error)
 
     def configure(self, *, enabled: bool, buffer: int = 5000) -> None:
         self.enabled = bool(enabled)
@@ -63,12 +72,43 @@ class CostMeter:
     def bind(self, session_id: str, identity: ExecutionIdentity) -> None:
         with self._lock:
             self._ids[session_id] = identity
-            while len(self._ids) > _MAX_BOUND:
-                self._ids.popitem(last=False)
+            self._ids.move_to_end(session_id)
+            if len(self._ids) > _MAX_BOUND:
+                self._trim_ids()
 
     def unbind(self, session_id: str) -> None:
+        """Forget the identity, unless a provider avatar session of it is still open."""
         with self._lock:
-            self._ids.pop(session_id, None)
+            if any(rec[0] == session_id for rec in self._open.values()):
+                self._unbound_pending.add(session_id)
+            else:
+                self._ids.pop(session_id, None)
+
+    def _trim_ids(self) -> None:
+        """Caller holds the lock. Identities of sessions with an open avatar go last."""
+        busy = {rec[0] for rec in self._open.values()}
+        for sid in list(self._ids):
+            if len(self._ids) <= _MAX_BOUND:
+                return
+            if sid not in busy:
+                del self._ids[sid]
+                self.evicted += 1
+                logger.error("cost_evidence_evicted what=identity session=%s", sid)
+        while len(self._ids) > _MAX_BOUND:
+            sid, _ = self._ids.popitem(last=False)
+            self.evicted += 1
+            logger.error("cost_evidence_evicted what=identity_in_use session=%s", sid)
+
+    def lose(self, sample: CostSample, reason: str) -> None:
+        """The one reconciliation line for a sample that had to be dropped for good."""
+        self.lost += 1
+        logger.error(
+            "cost_evidence_lost key=%s tenant=%s kind=%s reason=%s",
+            sample.cost_key,
+            sample.identity.tenant_id,
+            sample.cost_kind,
+            reason,
+        )
 
     # -- producers (speech path safe) ----------------------------------------
 
@@ -90,23 +130,25 @@ class CostMeter:
             if identity is None:
                 self.unbound += 1
                 return
+            sample = CostSample(
+                identity,
+                kind,
+                key,
+                datetime.now(timezone.utc),
+                provider,
+                model,
+                usage_source,
+                fields,
+            )
             if len(self._buf) == self._buf.maxlen:
                 self.dropped += 1
-            self._buf.append(
-                CostSample(
-                    identity,
-                    kind,
-                    key,
-                    datetime.now(timezone.utc),
-                    provider,
-                    model,
-                    usage_source,
-                    fields,
-                )
-            )
+                self.lose(self._buf.popleft(), "buffer_full")
+            self._buf.append(sample)
         except Exception as exc:  # never reaches the live path
             self.lost += 1
-            logger.warning("cost evidence record failed error_type=%s", type(exc).__name__)
+            logger.error(
+                "cost_evidence_lost reason=record_failed error_type=%s", type(exc).__name__
+            )
 
     @property
     def include_usage(self) -> bool:
@@ -168,37 +210,84 @@ class CostMeter:
             synth_ms=max(0, int(synth_ms)),
         )
 
-    def avatar_open(self, session_id: str, provider_session_id: str) -> None:
-        """A provider avatar session began (start or rollover). Identity is resolved at close."""
+    def avatar_open(
+        self, session_id: str, provider_session_id: str, *, derived: bool = False
+    ) -> None:
+        """A provider avatar session began (start, rollover, or a reaped late session).
+
+        Identity is resolved at close (the session is bound only after start returns).
+        ``derived`` marks a start time we could not observe.
+        """
         if not (self.enabled and provider_session_id):
             return
         with self._lock:
-            self._open[(session_id, provider_session_id)] = (
+            self._open[provider_session_id] = (
+                session_id,
                 time.monotonic(),
                 datetime.now(timezone.utc),
+                derived,
             )
-            while len(self._open) > _MAX_BOUND:
-                self._open.popitem(last=False)
+            if len(self._open) > _MAX_BOUND:
+                self._trim_open()
 
-    def avatar_close(self, session_id: str, provider_session_id: str) -> None:
-        """The provider avatar session ended (rollover end or stop). Idempotent."""
+    def _trim_open(self) -> None:
+        """Caller holds the lock. Expired records are settled (not dropped); else an error."""
+        now = time.monotonic()
+        for psid, rec in list(self._open.items()):
+            if len(self._open) <= _MAX_BOUND:
+                return
+            if now - rec[1] > _OPEN_MAX_AGE_S:
+                del self._open[psid]
+                self._emit_avatar(psid, rec, confirmed=False, extra_s=0.0)
+        while len(self._open) > _MAX_BOUND:
+            psid, _ = self._open.popitem(last=False)
+            self.evicted += 1
+            logger.error("cost_evidence_evicted what=avatar_open provider_session=%s", psid)
+
+    def avatar_close(
+        self, provider_session_id: str, *, confirmed: bool = True, extra_s: float = 0.0
+    ) -> None:
+        """Provider-CONFIRMED end (``confirmed=False`` only for a final settle). Idempotent.
+
+        Unconfirmed: ``usage_source='derived'`` and the end is the moment we know for sure
+        plus ``extra_s`` (the provider idle timeout: the latest it may still have been running).
+        """
         if not provider_session_id:
             return
         with self._lock:
-            opened = self._open.pop((session_id, provider_session_id), None)
-        if opened is None:
-            return
-        mono, started = opened
+            rec = self._open.pop(provider_session_id, None)
+        if rec is not None:
+            self._emit_avatar(provider_session_id, rec, confirmed=confirmed, extra_s=extra_s)
+
+    def avatar_settle_all(self, extra_s: float) -> None:
+        """Shutdown: every still-open record is settled as derived (end = now + idle bound)."""
+        with self._lock:
+            records, self._open = list(self._open.items()), OrderedDict()
+        for psid, rec in records:
+            self._emit_avatar(psid, rec, confirmed=False, extra_s=extra_s)
+
+    def _emit_avatar(
+        self, psid: str, rec: tuple[str, float, datetime, bool], *, confirmed: bool, extra_s: float
+    ) -> None:
+        session_id, mono, started, derived_start = rec
+        extra = 0.0 if confirmed else max(0.0, float(extra_s))
         self._push(
             session_id,
             AVATAR,
-            provider_session_id,
+            psid,
             provider="lemonslice",
-            seconds=round(max(0.0, time.monotonic() - mono), 3),
+            usage_source="measured" if confirmed and not derived_start else "derived",
+            seconds=round(max(0.0, time.monotonic() - mono) + extra, 3),
             started_at=started,
-            ended_at=datetime.now(timezone.utc),
-            provider_session_id=provider_session_id,
+            ended_at=datetime.now(timezone.utc) + timedelta(seconds=extra),
+            provider_session_id=psid,
         )
+        with self._lock:
+            if session_id in self._unbound_pending and not any(
+                r[0] == session_id for r in self._open.values()
+            ):
+                self._unbound_pending.discard(session_id)
+                self._ids.pop(session_id, None)
 
     # -- sender side -------------------------------------------------------
 
@@ -212,23 +301,11 @@ class CostMeter:
         return out
 
     def requeue(self, sample: CostSample) -> None:
-        """One bounded retry after an outbox write failure; then it counts as lost."""
-        if sample.attempts >= 2:
-            self.lost += 1
+        """Back to the FRONT after an outbox failure (the sender retries with backoff)."""
+        if len(self._buf) == self._buf.maxlen:
+            self.lose(sample, "buffer_full_on_retry")
             return
-        self._buf.appendleft(
-            CostSample(
-                sample.identity,
-                sample.cost_kind,
-                sample.cost_key,
-                sample.occurred_at,
-                sample.provider,
-                sample.model,
-                sample.usage_source,
-                sample.fields,
-                sample.attempts + 1,
-            )
-        )
+        self._buf.appendleft(sample)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -238,6 +315,8 @@ class CostMeter:
             "cost_unbound": self.unbound,
             "cost_lost": self.lost,
             "cost_conflicts": self.conflicts,
+            "cost_evicted": self.evicted,
+            "cost_avatar_open": len(self._open),
         }
 
 

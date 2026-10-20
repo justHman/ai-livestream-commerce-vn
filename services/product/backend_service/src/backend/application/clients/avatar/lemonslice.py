@@ -1068,6 +1068,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
             return
         if isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):
+            # Created after its caller gave up: start time is only known to be ~now (derived).
+            cost_meter.avatar_open(session_id, sid, derived=True)
             try:
                 await self._terminate_and_retain(
                     session_id, SimpleNamespace(provider_session_id=sid)
@@ -1245,7 +1247,6 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 log.warning("lemonslice rollover postponed: the old session is not confirmed ended")
                 return
             sess.provider_session_id = ""  # nothing left to end at stop
-            cost_meter.avatar_close(sess.room_name, old_sid)
         if not await self._wait_avatar_gone(sess.room):
             sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
             return  # the old avatar is still in the room: never start a second one next to it
@@ -1298,7 +1299,6 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 )
             if new_sid and sess.closing:  # stopped while it was being created
                 sess.provider_session_id = ""
-                cost_meter.avatar_close(sess.room_name, new_sid)
                 await self._end_provider_session(label, new_sid)
             if post_task is not None and post_task.done():
                 post_task.cancelled() or post_task.exception()  # retrieved: it failed outright
@@ -1315,7 +1315,6 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             return
         if sess.closing:  # the live was stopped while the replacement was being created
             sess.provider_session_id = ""
-            cost_meter.avatar_close(sess.room_name, new_sid)
             await self._end_provider_session(label, new_sid)
             return
         self._adopt_rolled_session(sess, new_sid)
@@ -1460,6 +1459,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if self._loop is not None:
                 self._run(self._drain("cleanups"))  # a stop parked in a clear is awaited
                 self._run(self._drain("reapers"))  # late REST sessions are ended before exit
+            # Whatever the provider never confirmed ended is settled now as derived: the end is
+            # this moment plus the idle timeout, the latest it can still have been running.
+            cost_meter.avatar_settle_all(float(self._s.idle_timeout_s))
             if self._closing or self._pending_terminate:
                 log.error(
                     "lemonslice sessions left without confirmed cleanup count=%d",
@@ -1478,7 +1480,6 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         cleanup_failed = False
         if sess is not None:
             sess.closing = True  # first: no keep-alive may start from here on
-            cost_meter.avatar_close(room_name, sess.provider_session_id)
             if sess.keepalive is not None:
                 sess.keepalive.cancel()
                 # cancellable: an async keep-alive aborts its connection; await it before terminate
@@ -1593,6 +1594,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     + (s.request_timeout_s + 1 if self._async_post is None and guard else 0),
                 )
                 if 200 <= status < 300 or status in _TERMINAL_STATUS:
+                    cost_meter.avatar_close(sess.provider_session_id)  # provider-confirmed end
                     token = self._budget_tokens.get(sess.provider_session_id)
                     if token and self._budget is not None:
                         await self._budget.finish(token)

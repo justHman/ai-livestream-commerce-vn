@@ -149,6 +149,8 @@ class UsageSender:
         self._session_lock = session_lock or _no_lock
         self._cogs = cogs
         self._cost = cost if cost is not None else _default_cost_meter
+        self._cost_failures = 0
+        self._cost_retry_at = 0.0
         self._poster = HttpxPoster(settings.http_timeout) if post is None else None
         self._post: PostFn = post or self._poster  # type: ignore[assignment]
         self._clock = clock
@@ -581,6 +583,8 @@ class UsageSender:
         """Flush buffered cost samples into the durable outbox. Best effort, never raises."""
         meter = self._cost
         stored = 0
+        if self._clock() < self._cost_retry_at:  # outbox unwell: samples wait in the buffer
+            return 0
         for sample in meter.drain(max(self._batch, 100)):
             try:
                 eid, body = envelope.build_cost_body(
@@ -609,12 +613,16 @@ class UsageSender:
                     stored += 1
             except asyncio.CancelledError:
                 raise
-            except envelope.InvalidIdentity:
-                meter.lost += 1  # can never be delivered
+            except (envelope.InvalidIdentity, envelope.InvalidCostPayload) as exc:
+                meter.lose(sample, type(exc).__name__)  # can never be delivered
             except Exception as exc:
                 meter.requeue(sample)
+                self._cost_failures += 1
+                self._cost_retry_at = self._clock() + min(30.0, 0.5 * 2**self._cost_failures)
                 logger.warning("cost evidence write failed error_type=%s", type(exc).__name__)
-                break  # the outbox is unwell: try the rest next pass
+                break  # the outbox is unwell: back off, the rest stays buffered
+        else:
+            self._cost_failures = 0
         return stored
 
     async def run_loop(self) -> None:

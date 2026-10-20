@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from backend.application.clients.composition import OpenAICompatLLMEngine
+from backend.application.clients.llm.openai_compatible import (
+    ChatMessage,
+    ChatRequest,
+    LLMClientError,
+    OpenAICompatibleClient,
+)
 from backend.application.execution_contract import ExecutionIdentity
 from backend.application.render.orchestrator import StreamOrchestrator
 from backend.application.usage_evidence import UsageEvidence, UsageEvidenceSettings, UsageSender
 from backend.application.usage_evidence import envelope
-from backend.application.usage_evidence.cost import CostMeter, cost_meter
+from backend.application.usage_evidence.cost import CostMeter, CostSample, cost_meter
 from llm.engines.base import LLMRequest
 
 TENANT = "11111111-2222-4333-8444-555555555555"
@@ -205,10 +215,10 @@ def test_unbound_session_is_counted_not_buffered(meter):
 
 def test_avatar_rollover_makes_one_row_per_provider_session_and_close_is_idempotent(meter):
     meter.avatar_open("rt", "ps1")
-    meter.avatar_close("rt", "ps1")  # rollover ends the first
+    meter.avatar_close("ps1")  # rollover ends the first
     meter.avatar_open("rt", "ps2")
-    meter.avatar_close("rt", "ps2")  # stop ends the second
-    meter.avatar_close("rt", "ps2")  # duplicate teardown
+    meter.avatar_close("ps2")  # stop ends the second
+    meter.avatar_close("ps2")  # duplicate teardown
     rows = meter.drain(10)
     assert [r.cost_key for r in rows] == ["ps1", "ps2"]
     payload = body_of(rows[0])[2]["payload"]
@@ -264,7 +274,7 @@ async def test_replay_is_idempotent_and_cost_kinds_do_not_overwrite_each_other(m
             synth_ms=5,
         )
         meter.avatar_open("rt", "k")
-        meter.avatar_close("rt", "k")
+        meter.avatar_close("k")
     outbox = FakeOutbox()
     await UsageSender(outbox, UsageEvidenceSettings(), cost=meter).drain_cost()
     # LLM key "k" and AVATAR key "k" collide on cost_key alone; kind keeps them apart.
@@ -281,23 +291,208 @@ async def test_same_key_different_bytes_is_a_conflict_not_a_silent_drop(meter):
     assert meter.conflicts == 1 and len(outbox.rows) == 1
 
 
-async def test_outbox_failure_never_raises_and_is_retried_then_counted_lost(meter):
-    outbox = FakeOutbox(fail=99)
-    sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter)
-    llm(meter, "k")
-    for _ in range(4):
-        await sender.drain_cost()  # must not raise
-    assert meter.lost == 1 and not outbox.rows
-
-
-async def test_a_transient_outbox_failure_is_retried_and_stored(meter):
-    outbox = FakeOutbox(fail=1)
-    sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter)
-    llm(meter, "k2")
-    for _ in range(2):
-        await sender.drain_cost()
-    assert len(outbox.rows) == 1 and meter.lost == 0
-
-
 def test_meter_is_a_fresh_default_off_object():
     assert CostMeter().enabled is False
+
+
+async def test_outbox_failure_keeps_the_sample_buffered_and_retries_with_backoff(meter):
+    now = [100.0]
+    outbox = FakeOutbox(fail=3)
+    sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter, clock=lambda: now[0])
+    llm(meter, "k")
+    for _ in range(3):
+        await sender.drain_cost()  # fails, must not raise
+        assert len(meter._buf) == 1 and meter.lost == 0
+        await sender.drain_cost()  # inside the backoff window: not even attempted
+        now[0] += 60
+    await sender.drain_cost()
+    assert len(outbox.rows) == 1 and meter.lost == 0 and len(meter._buf) == 0
+
+
+def test_overflow_logs_one_reconciliation_line_per_dropped_sample(meter, caplog):
+    meter.configure(enabled=True, buffer=1)
+    with caplog.at_level("ERROR"):
+        llm(meter, "a")
+        llm(meter, "b")
+    lines = [r.getMessage() for r in caplog.records if "cost_evidence_lost" in r.getMessage()]
+    assert len(lines) == 1 and "key=a" in lines[0] and TENANT in lines[0] and "kind=LLM" in lines[0]
+    assert meter.lost == 1
+    meter.configure(enabled=True)
+
+
+@pytest.mark.parametrize("bad", ["cost_usd", "credit", "billable_quantity", "price", "cost_micros"])
+def test_unknown_payload_keys_are_rejected_for_every_kind(bad):
+    for kind in ("LLM", "TTS", "AVATAR"):
+        with pytest.raises(envelope.InvalidCostPayload):
+            envelope.build_cost_body(
+                IDENTITY,
+                cost_kind=kind,
+                cost_key="k",
+                occurred_at=datetime.now(timezone.utc),
+                provider="p",
+                model="m",
+                usage_source="measured",
+                fields={bad: 1},
+                producer_id="runtime",
+            )
+
+
+def test_a_field_of_another_kind_is_rejected():
+    with pytest.raises(envelope.InvalidCostPayload):
+        envelope.build_cost_body(
+            IDENTITY,
+            cost_kind="LLM",
+            cost_key="k",
+            occurred_at=datetime.now(timezone.utc),
+            provider="p",
+            model="m",
+            usage_source="provider",
+            fields={"characters": 1},
+            producer_id="runtime",
+        )
+
+
+async def test_a_rejected_sample_is_logged_lost_and_never_sent(meter):
+    outbox = FakeOutbox()
+    meter._buf.append(
+        CostSample(IDENTITY, "LLM", "k", datetime.now(timezone.utc), fields={"cost_usd": 1})
+    )
+    await UsageSender(outbox, UsageEvidenceSettings(), cost=meter).drain_cost()
+    assert not outbox.rows and meter.lost == 1
+
+
+def test_many_sessions_in_parallel_never_mix_identities(meter):
+    ids = {}
+    for n in range(300):
+        sid = f"s{n}"
+        ids[sid] = ExecutionIdentity(
+            tenant_id=TENANT, business_session_id=f"b{n}", runtime_session_id=sid, generation="g"
+        )
+        meter.bind(sid, ids[sid])
+
+    def work(start):
+        for n in range(start, 300, 4):
+            meter.record_llm(
+                f"s{n}", call_id=f"c{n}", provider="p", model="m", input_tokens=1, output_tokens=1
+            )
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    samples = meter.drain(1000)
+    assert len(samples) == 300 and meter.evicted == 0
+    assert all(ids[f"s{int(x.cost_key[1:])}"] == x.identity for x in samples)
+    for sid in ids:
+        meter.unbind(sid)
+
+
+def test_an_open_avatar_keeps_its_identity_after_unbind_until_it_closes(meter):
+    meter.avatar_open("rt", "ps")
+    meter.unbind("rt")
+    meter.avatar_close("ps")
+    sample = meter.drain(1)[0]
+    assert sample.identity == IDENTITY and sample.usage_source == "measured"
+    assert "rt" not in meter._ids
+
+
+def test_identities_are_trimmed_without_touching_ones_with_an_open_avatar(meter, monkeypatch):
+    monkeypatch.setattr("backend.application.usage_evidence.cost._MAX_BOUND", 3)
+    meter.avatar_open("rt", "ps")  # rt is busy
+    for n in range(5):
+        meter.bind(f"x{n}", IDENTITY)
+    assert "rt" in meter._ids and len(meter._ids) <= 3 and meter.evicted >= 3
+    meter.avatar_close("ps")
+    meter.drain(10)
+
+
+def test_unconfirmed_terminate_settles_as_derived_with_the_idle_bound(meter):
+    meter.avatar_open("rt", "ps")
+    meter.avatar_settle_all(60.0)
+    sample = meter.drain(1)[0]
+    assert sample.usage_source == "derived" and sample.fields["seconds"] >= 60.0
+    assert sample.fields["ended_at"] > sample.fields["started_at"]
+
+
+# -- avatar terminate / reaper ---------------------------------------------------------------------
+
+
+def _backend(status):
+    from backend.application.clients.avatar.lemonslice import LemonSliceRenderBackend
+
+    b = object.__new__(LemonSliceRenderBackend)
+    b._s = SimpleNamespace(terminate_path="/t", terminate_attempts=1, idle_timeout_s=60)
+    b._budget_tokens, b._budget, b._async_post = {}, None, None
+    b._deadline = lambda: 1.0
+
+    async def control(*_a, **_k):
+        if isinstance(status, Exception):
+            raise status
+        return status
+
+    b._control = control
+    return b
+
+
+async def test_close_waits_for_provider_confirmed_terminate(meter):
+    from backend.application.clients.avatar.lemonslice import ProviderCleanupIncomplete
+
+    meter.avatar_open("rt", "ps")
+    failing = _backend(RuntimeError("boom"))
+    with pytest.raises(ProviderCleanupIncomplete):
+        await failing._terminate_provider(SimpleNamespace(provider_session_id="ps"))
+    assert meter.drain(1) == [] and len(meter._open) == 1  # still open: not confirmed
+    await _backend(200)._terminate_provider(SimpleNamespace(provider_session_id="ps"))
+    sample = meter.drain(1)[0]
+    assert sample.cost_key == "ps" and sample.usage_source == "measured"
+
+
+async def test_a_late_session_that_is_reaped_is_still_costed_as_derived(meter):
+    b = _backend(200)
+
+    async def terminate_and_retain(session_id, sess):
+        await b._terminate_provider(sess)
+
+    b._terminate_and_retain = terminate_and_retain
+    post = asyncio.get_running_loop().create_future()
+    post.set_result("late-sid")
+    await b._reap_late_session(post, "rt")
+    sample = meter.drain(1)[0]
+    assert sample.cost_key == "late-sid" and sample.usage_source == "derived"
+
+
+# -- include_usage rejected by the server ---------------------------------------------------------
+
+
+def _client(handler):
+    return OpenAICompatibleClient(
+        "http://llm.test",
+        model="m",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def test_a_server_rejecting_stream_options_is_retried_once_without_and_remembered():
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append("stream_options" in body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": "unknown field stream_options"})
+        sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+        return httpx.Response(200, content=sse.encode())
+
+    client = _client(handler)
+    req = ChatRequest(messages=[ChatMessage("user", "x")], include_usage=True)
+    usage: dict = {}
+    assert list(client.chat_stream(req, usage)) == ["hi"] and usage == {}
+    assert seen == [True, False]
+    assert list(client.chat_stream(req, usage)) == ["hi"]
+    assert seen == [True, False, False]  # remembered: not sent again
+
+
+def test_other_http_errors_are_not_swallowed():
+    client = _client(lambda request: httpx.Response(500, content=b"boom"))
+    req = ChatRequest(messages=[ChatMessage("user", "x")], include_usage=True)
+    with pytest.raises(LLMClientError):
+        list(client.chat_stream(req))

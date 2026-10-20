@@ -96,6 +96,8 @@ class OpenAICompatibleClient:
         self._timeout = float(timeout)
         self._max_retries = int(max_retries)
         self._client = http_client
+        # stream_options rejected once by this server: never sent again (tokens stay unknown)
+        self._usage_rejected = False
 
     def _get_client(self) -> httpx.Client:
         if self._client is None:
@@ -124,7 +126,7 @@ class OpenAICompatibleClient:
             body["stop"] = req.stop
         if req.seed:
             body["seed"] = req.seed
-        if req.include_usage:
+        if req.include_usage and not self._usage_rejected:
             body["stream_options"] = {"include_usage": True}
         for name in self._omit_params:
             body.pop(name, None)
@@ -179,37 +181,46 @@ class OpenAICompatibleClient:
         url = self._chat_url
         body = self._build_body(req)
         body["stream"] = True
-        try:
-            with client.stream("POST", url, json=body, headers=self._headers()) as resp:
-                resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if not line or line.startswith(":"):
-                        continue
-                    if line.startswith("data: "):
-                        payload = line[6:].strip()
-                        if payload == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(payload)
-                            reported = chunk.get("usage")
-                            if usage is not None and isinstance(reported, dict):
-                                usage.update(
-                                    prompt_tokens=reported.get("prompt_tokens"),
-                                    completion_tokens=reported.get("completion_tokens"),
-                                )
-                            choices = chunk.get("choices", [])
-                            if choices:
-                                delta = choices[0].get("delta", {})
-                                content = delta.get("content", "")
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
+        started = False
+        while True:
+            try:
+                with client.stream("POST", url, json=body, headers=self._headers()) as resp:
+                    resp.raise_for_status()
+                    for line in resp.iter_lines():
+                        if not line or line.startswith(":"):
                             continue
-        except httpx.RequestError as exc:
-            raise LLMClientError(f"LLM chat stream failed: {exc}") from exc
-        except httpx.HTTPStatusError as exc:
-            detail = (resp.text or "")[:300]
-            raise LLMClientError(f"LLM chat stream: HTTP {resp.status_code} {detail}") from exc
+                        if line.startswith("data: "):
+                            payload = line[6:].strip()
+                            if payload == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(payload)
+                                reported = chunk.get("usage")
+                                if usage is not None and isinstance(reported, dict):
+                                    usage.update(
+                                        prompt_tokens=reported.get("prompt_tokens"),
+                                        completion_tokens=reported.get("completion_tokens"),
+                                    )
+                                choices = chunk.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        started = True
+                                        yield content
+                            except json.JSONDecodeError:
+                                continue
+                return
+            except httpx.RequestError as exc:
+                raise LLMClientError(f"LLM chat stream failed: {exc}") from exc
+            except httpx.HTTPStatusError as exc:
+                if resp.status_code in (400, 422) and "stream_options" in body and not started:
+                    # The live call must not fail because of cost evidence: retry once without it.
+                    self._usage_rejected = True
+                    body.pop("stream_options")
+                    continue
+                detail = (resp.text or "")[:300]
+                raise LLMClientError(f"LLM chat stream: HTTP {resp.status_code} {detail}") from exc
 
     def close(self) -> None:
         if self._client is not None:
