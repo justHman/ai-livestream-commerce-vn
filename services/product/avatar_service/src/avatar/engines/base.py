@@ -47,7 +47,6 @@ class StartOptions:
     avatar_agent_id: Optional[str] = None
     avatar_image_url: Optional[str] = None
     voice_id: Optional[str] = None
-    tts_tempo: Optional[float] = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 

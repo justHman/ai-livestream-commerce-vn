@@ -400,25 +400,6 @@ def test_tempo_env_valid_value_is_used(monkeypatch):
     assert _self_hosted._env_tempo() == 0.92
 
 
-def test_openai_style_per_session_tempo_overrides_env(monkeypatch):
-    seen: list[float] = []
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=_pcm16_sine(96))
-
-    monkeypatch.setattr(
-        _self_hosted,
-        "change_tempo",
-        lambda pcm, _rate, tempo: seen.append(tempo) or pcm,
-    )
-    engine = _openai_client(handler, monkeypatch, TTS_TEMPO="0.92")
-    engine.synthesize("per session", tempo=1.1)
-    engine.synthesize("fallback")
-    engine.close()
-
-    assert seen == [1.1, 0.92]
-
-
 @_needs_ffmpeg
 def test_openai_style_client_applies_tempo_to_audio_and_duration(monkeypatch):
     raw = _pcm16_sine(48_000)

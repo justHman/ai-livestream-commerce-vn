@@ -57,8 +57,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
+from backend.application.clients.avatar.image_url import check_image_url
 from backend.application.publishing.datastream import AvatarAudioChannel
 from backend.application.publishing.livekit import mint_room_token
 from backend.application.render.engines_base import (
@@ -772,21 +773,10 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
 
     def _validate_image_url(self, image_url: str) -> None:
         try:
-            parsed = urlsplit(image_url)
+            check_image_url(image_url, self._s.image_hosts)
         except ValueError:
-            raise LemonSliceError(
-                "image_url_not_allowed", "avatar_image_url is not on an allowed host"
-            ) from None
-        host = (parsed.hostname or "").lower()
-        if (
-            parsed.scheme != "https"
-            or not host
-            or parsed.username is not None
-            or parsed.password is not None
-            or host not in self._s.image_hosts
-        ):
             # Do not include the URL: it can contain sensitive object names or query strings.
-            raise LemonSliceError("image_url_not_allowed", "avatar_image_url is not on an allowed host")
+            raise LemonSliceError("image_url_not_allowed", "avatar_image_url is not on an allowed host") from None
 
     def _resolve_agent(self, avatar_id: str | None) -> str:
         # DR-AVATAR-001: preset avatars only. A caller-supplied id must be allowlisted.

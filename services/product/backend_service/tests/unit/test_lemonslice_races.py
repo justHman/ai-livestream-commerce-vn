@@ -667,7 +667,7 @@ def test_start_timeout_cancels_startup_and_ends_a_session_created_late():
     backend, room, rest = make(terminate_path="/sessions/{session_id}/terminate")
     release = rest.hold()
     with pytest.raises(LemonSliceError) as err:
-        backend._run(backend._start("agent-preset"), 0.3)
+        backend._run(backend._start("agent-preset", None), 0.3)
     assert err.value.code == "timeout" and err.value.__context__ is None
     assert rest.parked.is_set()
     threading.Timer(0.1, release.set).start()  # the lost REST response finally lands

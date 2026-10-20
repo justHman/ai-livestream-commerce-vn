@@ -25,7 +25,6 @@ import logging
 import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
-from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from backend.application.schemas.run_plan import RunPlan
@@ -40,6 +39,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.application.clients.avatar.image_url import check_image_url
 from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
 from backend.application.entity.registry import (
     COMMERCE_PRICE_CURRENT,
@@ -114,7 +114,6 @@ class StartReq(BaseModel):
     avatar_agent_id: Optional[str] = Field(default=None, max_length=38)
     avatar_image_url: Optional[str] = Field(default=None, max_length=2_048)
     voice_id: Optional[str] = Field(default=None, max_length=128)
-    tts_tempo: Optional[float] = Field(default=None, ge=0.5, le=1.5, allow_inf_nan=False)
     is_sandbox: bool = True
     execution_contract: Optional[str] = None
     tenant_id: Optional[str] = None
@@ -137,16 +136,9 @@ class StartReq(BaseModel):
         if value is None:
             return None
         try:
-            parsed = urlsplit(value)
+            check_image_url(value)
         except ValueError as exc:
-            raise ValueError("avatar_image_url must be a valid https URL") from exc
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            raise ValueError("avatar_image_url must be an https URL without credentials")
+            raise ValueError("avatar_image_url is not an acceptable https image URL") from exc
         return value
 
     @field_validator("voice_id")
@@ -175,7 +167,6 @@ class StartReq(BaseModel):
                 self.avatar_agent_id,
                 self.avatar_image_url,
                 self.voice_id,
-                self.tts_tempo,
             )
         )
 

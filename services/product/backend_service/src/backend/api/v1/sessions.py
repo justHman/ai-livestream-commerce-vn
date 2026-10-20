@@ -12,13 +12,13 @@ import asyncio
 import copy
 from datetime import datetime, timezone
 import os
-from urllib.parse import urlsplit
 
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from backend.application.clients.avatar.image_url import check_image_url
 from backend.api.dependencies import container_from_request
 from backend.application.db.session_store import SessionLockTimeout, delete_owned
 from backend.application.execution_contract import rescue_switch_on
@@ -39,43 +39,42 @@ def _container(request: Request):
 
 
 def _authenticated_internal_caller(request: Request, config: Any) -> bool:
-    """Overrides are accepted only with the configured internal bearer secret.
+    """Per-session avatar/voice overrides need the viewer bearer AND a separate internal secret.
 
-    ``viewer_auth`` deliberately remains unchanged for legacy session starts,
-    including unauthenticated local development. Provider and voice overrides
-    must never inherit that development bypass.
+    The viewer token is handed to browsers, so on its own it must never choose a provider agent or a voice.
+    ``viewer_auth`` stays unchanged for legacy session starts, including unauthenticated local development, and
+    overrides never inherit that development bypass. Without AVATAR_INTERNAL_TOKEN overrides are refused.
     """
     from backend.api.security.authentication import parse_bearer, tokens_match
 
-    expected = (getattr(config, "backend_api_token", "") or "").strip()
-    presented = parse_bearer(request.headers.get("authorization"))
-    return bool(expected and presented and tokens_match(presented, expected))
+    viewer = (getattr(config, "backend_api_token", "") or "").strip()
+    internal = (getattr(config, "avatar_internal_token", "") or "").strip()
+    bearer = parse_bearer(request.headers.get("authorization"))
+    header = (request.headers.get("x-livento-internal-token") or "").strip()
+    return bool(
+        viewer and internal and bearer and header and tokens_match(bearer, viewer) and tokens_match(header, internal)
+    )
 
 
-def _validate_image_host(image_url: str | None, config: Any) -> None:
-    if image_url is None:
-        return
-    hosts = {
-        host.strip().lower()
-        for host in (getattr(config, "avatar_image_hosts", "") or "").split(",")
-        if host.strip()
-    }
-    if (urlsplit(image_url).hostname or "").lower() not in hosts:
-        raise HTTPException(status_code=422, detail={"code": "avatar_image_host_not_allowed"})
+def _validate_image_host(image_url: str, config: Any) -> None:
+    hosts = (getattr(config, "avatar_image_hosts", "") or "").split(",")
+    try:
+        check_image_url(image_url, hosts)
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"code": "avatar_image_host_not_allowed"}) from None
 
 
 class _SessionTTS:
-    """Apply validated TTS overrides to this session without changing shared state."""
+    """Apply the validated voice override to this session without changing shared state."""
 
-    def __init__(self, tts: Any, *, voice_id: str | None, tempo: float | None) -> None:
+    def __init__(self, tts: Any, *, voice_id: str | None) -> None:
         self._tts = tts
         self._voice_id = voice_id
-        self._tempo = tempo
 
     def stream_audio(self, chunk: Any, **kwargs: Any):
         from tts.engines.base import TTSRequest
 
-        kwargs["req"] = TTSRequest(text=chunk.text, voice=self._voice_id, tempo=self._tempo)
+        kwargs["req"] = TTSRequest(text=chunk.text, voice=self._voice_id)
         yield from self._tts.stream_audio(chunk, **kwargs)
 
 
@@ -102,7 +101,8 @@ async def sessions_start(
 
     if req.has_avatar_or_voice_override() and not _authenticated_internal_caller(request, d.config):
         raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
-    _validate_image_host(req.avatar_image_url, d.config)
+    if req.avatar_image_url is not None:
+        _validate_image_host(req.avatar_image_url, d.config)
 
     try:
         result = await asyncio.to_thread(
@@ -113,7 +113,6 @@ async def sessions_start(
                 avatar_agent_id=req.avatar_agent_id,
                 avatar_image_url=req.avatar_image_url,
                 voice_id=req.voice_id,
-                tts_tempo=req.tts_tempo,
                 is_sandbox=req.is_sandbox,
             ),
         )
@@ -125,8 +124,6 @@ async def sessions_start(
     meta: dict[str, Any] = {"status": "active", "mode": result.mode}
     if req.voice_id is not None:
         meta["voice_id"] = req.voice_id
-    if req.tts_tempo is not None:
-        meta["tts_tempo"] = req.tts_tempo
     if req.execution_contract:
         meta["execution_contract"] = {
             "tenant_id": req.tenant_id,
@@ -321,14 +318,8 @@ async def _streaming_say(d: Any, req: router.SayReq, *, speech=None) -> dict[str
     llm: LLMEngine = em.llm if (em is not None and em.llm is not None) else _NoopEngine()
     tts: TTSEngine = em.tts if (em is not None and em.tts is not None) else ToneEngine()
     session_meta = await d.store.get(sid)
-    if session_meta and (
-        session_meta.get("voice_id") is not None or session_meta.get("tts_tempo") is not None
-    ):
-        tts = _SessionTTS(
-            tts,
-            voice_id=session_meta.get("voice_id"),
-            tempo=session_meta.get("tts_tempo"),
-        )
+    if session_meta and session_meta.get("voice_id") is not None:
+        tts = _SessionTTS(tts, voice_id=session_meta.get("voice_id"))
 
     # Bounded queue + metrics for this utterance. The chunking config is
     # built ONCE from AppConfig into the typed configs the orchestrator

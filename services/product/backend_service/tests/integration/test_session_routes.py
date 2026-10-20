@@ -75,7 +75,6 @@ def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_e
         "avatar_provider": "lemonslice",
         "avatar_agent_id": "agent_093d2f9535db94ef",
         "voice_id": "Hai Dang",
-        "tts_tempo": 0.92,
     }
     backend = CaptureBackend()
     with _client_with_backend(AppConfig(render_backend="mock", app_env="dev"), backend) as client:
@@ -86,20 +85,35 @@ def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_e
     cfg = AppConfig(
         render_backend="mock",
         app_env="dev",
-        backend_api_token="internal-test-token",
+        backend_api_token="viewer-test-token",
+        avatar_internal_token="internal-test-token",
         avatar_image_hosts="avatars.example.test",
     )
     with _client_with_backend(cfg, backend) as client:
+        viewer_only = client.post(
+            "/api/v1/sessions",
+            json=payload,
+            headers={"Authorization": "Bearer viewer-test-token"},
+        )
+        wrong_internal = client.post(
+            "/api/v1/sessions",
+            json=payload,
+            headers={"Authorization": "Bearer viewer-test-token", "X-Livento-Internal-Token": "nope"},
+        )
         started = client.post(
             "/api/v1/sessions",
             json=payload,
-            headers={"Authorization": "Bearer internal-test-token"},
+            headers={
+                "Authorization": "Bearer viewer-test-token",
+                "X-Livento-Internal-Token": "internal-test-token",
+            },
         )
+    assert viewer_only.status_code == 403, "the viewer token alone must not choose an avatar or voice"
+    assert wrong_internal.status_code == 403
     assert started.status_code == 200, started.text
     assert backend.opts.avatar_provider == "lemonslice"
     assert backend.opts.avatar_agent_id == "agent_093d2f9535db94ef"
     assert backend.opts.voice_id == "Hai Dang"
-    assert backend.opts.tts_tempo == 0.92
 
 
 @pytest.mark.parametrize(
@@ -112,7 +126,12 @@ def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_e
             "avatar_image_url": "https://avatars.example.test/a.png",
         },
         {"voice_id": "   "},
-        {"tts_tempo": 1.6},
+        {"avatar_image_url": "https://avatars.example.test:8443/a.png"},
+        {"avatar_image_url": "https://user:pw@avatars.example.test/a.png"},
+        {"avatar_image_url": "https://192.168.0.10/a.png"},
+        {"avatar_image_url": "https://avatars.example.test/a/../b.png"},
+        {"avatar_image_url": "https://avatars.example.test/a%2f..%2fb.png"},
+        {"avatar_image_url": "https://avatars.example.test/a.png#x"},
     ],
 )
 def test_session_avatar_override_shape_validation(mock_env: None, payload: dict) -> None:
@@ -125,14 +144,18 @@ def test_session_avatar_image_host_must_be_allowlisted(mock_env: None) -> None:
     cfg = AppConfig(
         render_backend="mock",
         app_env="dev",
-        backend_api_token="internal-test-token",
+        backend_api_token="viewer-test-token",
+        avatar_internal_token="internal-test-token",
         avatar_image_hosts="avatars.example.test",
     )
     with _client(cfg) as client:
         response = client.post(
             "/api/v1/sessions",
             json={"avatar_image_url": "https://outside.example.test/avatar.png"},
-            headers={"Authorization": "Bearer internal-test-token"},
+            headers={
+                "Authorization": "Bearer viewer-test-token",
+                "X-Livento-Internal-Token": "internal-test-token",
+            },
         )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "avatar_image_host_not_allowed"
@@ -197,3 +220,14 @@ def test_mock_routes_404_in_prod_without_debug(mock_env: None) -> None:
     with _client(cfg) as client:
         r = client.get("/api/v1/mock/status/nope")
         assert r.status_code == 404
+
+
+def test_overrides_are_refused_when_the_internal_token_is_not_configured(mock_env: None) -> None:
+    cfg = AppConfig(render_backend="mock", app_env="dev", backend_api_token="viewer-test-token")
+    with _client(cfg) as client:
+        response = client.post(
+            "/api/v1/sessions",
+            json={"voice_id": "Hai Dang"},
+            headers={"Authorization": "Bearer viewer-test-token", "X-Livento-Internal-Token": "anything"},
+        )
+    assert response.status_code == 403

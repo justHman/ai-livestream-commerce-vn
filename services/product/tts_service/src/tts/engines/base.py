@@ -116,9 +116,6 @@ class TTSRequest:
     # `do_sample=req.temperature > 0` path in the transformers adapter without
     # requiring every caller to set it.
     temperature: float = 0.0
-    # An optional provider-independent playback-tempo override. ``None`` keeps
-    # the deployment default (for example, TTS_TEMPO in the Runtime client).
-    tempo: Optional[float] = None
 
 
 @dataclass
@@ -212,7 +209,6 @@ class TTSEngine(ABC):
                 ref_text=req.ref_text,
                 language=req.language,
                 speed=req.speed,
-                tempo=req.tempo,
                 seed=req.seed,
                 temperature=req.temperature,
             )
