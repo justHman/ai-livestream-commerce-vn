@@ -66,7 +66,7 @@ def test_session_avatar_overrides_require_internal_auth_and_reach_backend(mock_e
 
     class CaptureBackend:
         name = "capture"
-        supports_avatar_override = True
+        avatar_override_mode = "avatar_and_voice"
 
         def start(self, opts):
             self.opts = opts
@@ -293,3 +293,43 @@ def test_override_is_refused_when_the_renderer_cannot_apply_it(mock_env: None) -
         )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "avatar_override_unsupported_renderer"
+
+
+def test_static_avatar_renderer_accepts_the_bundle_applies_the_voice_and_says_the_avatar_was_not_applied(
+    mock_env: None,
+) -> None:
+    from backend.application.render.engines_base import StartResult
+
+    class StaticLikeBackend:
+        name = "static_avatar"
+        avatar_override_mode = "voice_only"
+
+        def start(self, opts):
+            self.opts = opts
+            return StartResult("static-1", "ws://livekit", "token", "STATIC")
+
+    cfg = AppConfig(
+        render_backend="mock",
+        app_env="dev",
+        backend_api_token="viewer-test-token",
+        avatar_internal_token="internal-test-token",
+    )
+    backend = StaticLikeBackend()
+    with _client_with_backend(cfg, backend) as client:
+        response = client.post(
+            "/api/v1/sessions",
+            json={
+                "avatar_provider": "lemonslice",
+                "avatar_agent_id": "agent_093d2f9535db94ef",
+                "voice_id": "Hai Dang",
+            },
+            headers={
+                "Authorization": "Bearer viewer-test-token",
+                "X-Livento-Internal-Token": "internal-test-token",
+            },
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["avatar_override_applied"] is True
+    assert body["avatar_applied"] is False
+    assert backend.opts.voice_id == "Hai Dang"

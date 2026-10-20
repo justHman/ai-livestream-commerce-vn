@@ -90,6 +90,9 @@ def render_frame(settings: StaticAvatarSettings) -> bytes:
 
 class StaticAvatarRenderBackend(StreamingAvatarBackend):
     name = "static_avatar"
+    # The picture is fixed (no provider agent to choose), but the per-session voice is applied by the session TTS. A session
+    # started with a catalog avatar is therefore accepted with the voice applied and the avatar choice ignored (logged).
+    avatar_override_mode = "voice_only"
 
     def __init__(self, settings: StaticAvatarSettings, *, room_factory=None, media_factory=None):
         self._s = settings

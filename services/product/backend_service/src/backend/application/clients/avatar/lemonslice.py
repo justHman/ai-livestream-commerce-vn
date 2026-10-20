@@ -473,7 +473,7 @@ class _Sess:
 
 class LemonSliceRenderBackend(StreamingAvatarBackend):
     name = "cloud_lemonslice"
-    supports_avatar_override = True  # _resolve_avatar applies the per-session agent/image
+    avatar_override_mode = "avatar_and_voice"  # _resolve_avatar applies the per-session agent/image
 
     def __init__(
         self,
