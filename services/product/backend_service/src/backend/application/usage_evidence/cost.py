@@ -109,10 +109,13 @@ class CostMeter:
     def bind(self, session_id: str, identity: ExecutionIdentity) -> None:
         if not self._armed:
             return
+        logs: list[tuple[str, str]] = []
         with self._lock:
             self._ids[session_id] = identity
             self._ids.move_to_end(session_id)
-            forced = self._trim_ids() if len(self._ids) > _MAX_BOUND else []
+            forced = self._trim_ids(logs) if len(self._ids) > _MAX_BOUND else []
+        for reason, message in logs:  # never log while holding a meter lock (re-entrancy)
+            self._safe_log(reason, message)
         for psid, rec, ident in forced:  # outside the lock: the identity left, the row must not
             self._emit_avatar(
                 psid, rec, confirmed=False, extra_s=self.avatar_idle_bound_s, identity=ident
@@ -129,7 +132,7 @@ class CostMeter:
                 self._ids.pop(session_id, None)
 
     def _trim_ids(
-        self,
+        self, logs: list[tuple[str, str]]
     ) -> list[
         tuple[str, tuple[str, float, datetime, bool, ExecutionIdentity | None], ExecutionIdentity]
     ]:
@@ -143,16 +146,18 @@ class CostMeter:
             if sid not in busy:
                 del self._ids[sid]
                 self.evicted += 1
-                self._safe_log(
-                    "evicted:identity", f"cost_evidence_evicted what=identity session={sid}"
+                logs.append(
+                    ("evicted:identity", f"cost_evidence_evicted what=identity session={sid}")
                 )
         forced = []
         while len(self._ids) > _MAX_BOUND:
             sid, ident = self._ids.popitem(last=False)
             self.evicted += 1
-            self._safe_log(
-                "evicted:identity_in_use",
-                f"cost_evidence_evicted what=identity_in_use session={sid}",
+            logs.append(
+                (
+                    "evicted:identity_in_use",
+                    f"cost_evidence_evicted what=identity_in_use session={sid}",
+                )
             )
             for psid, rec in list(self._open.items()):
                 if rec[0] == sid:
@@ -341,6 +346,7 @@ class CostMeter:
             if expected
             else None
         )
+        logs: list[tuple[str, str]] = []
         with self._lock:
             prior = self._open.pop(provider_session_id, None)
             self._open[provider_session_id] = (
@@ -350,7 +356,9 @@ class CostMeter:
                 derived,
                 known,
             )
-            expired = self._trim_open() if len(self._open) > _MAX_BOUND else []
+            expired = self._trim_open(logs) if len(self._open) > _MAX_BOUND else []
+        for reason, message in logs:  # outside the lock: a handler may call back into the meter
+            self._safe_log(reason, message)
         if prior is not None:  # same provider session opened twice: settle the old one first
             self.reopened += 1
             self._safe_log(
@@ -362,7 +370,7 @@ class CostMeter:
             self._emit_avatar(psid, rec, confirmed=False, extra_s=self.avatar_idle_bound_s)
 
     def _trim_open(
-        self,
+        self, logs: list[tuple[str, str]]
     ) -> list[tuple[str, tuple[str, float, datetime, bool, ExecutionIdentity | None]]]:
         """Caller holds the lock. Returns the records to settle as derived (expired ones first,
         then, only if still over the limit, the oldest open ones: counted + logged as evicted).
@@ -378,9 +386,11 @@ class CostMeter:
         while len(self._open) > _MAX_BOUND:
             psid, rec = self._open.popitem(last=False)
             self.evicted += 1
-            self._safe_log(
-                "evicted:avatar_open",
-                f"cost_evidence_evicted what=avatar_open provider_session={psid}",
+            logs.append(
+                (
+                    "evicted:avatar_open",
+                    f"cost_evidence_evicted what=avatar_open provider_session={psid}",
+                )
             )
             out.append((psid, rec))
         return out

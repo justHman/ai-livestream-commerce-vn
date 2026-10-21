@@ -764,7 +764,7 @@ def test_evicting_an_identity_with_an_open_avatar_settles_it_as_derived(meter, m
         meter.avatar_open(name, "p-" + name)
     monkeypatch.setattr("backend.application.usage_evidence.cost._MAX_BOUND", 2)
     with meter._lock:
-        forced = meter._trim_ids()
+        forced = meter._trim_ids([])
     for psid, rec, ident in forced:
         meter._emit_avatar(psid, rec, confirmed=False, extra_s=30.0, identity=ident)
     rows = meter.drain(10)
@@ -1007,3 +1007,54 @@ def test_the_meter_starts_no_thread_and_imports_without_side_effects():
     import backend.application.usage_evidence.cost as cost_module
 
     assert not hasattr(cost_module, "flush_logs") and not hasattr(cost_module, "_LOG_QUEUE")
+
+
+# -- review round 9: no log under a meter lock ------------------------------------------------------------
+
+
+class _ReentrantHandler(logging.Handler):
+    """A log handler that calls back into the meter, as a metrics/log hook might."""
+
+    def __init__(self, meter):
+        super().__init__()
+        self.meter = meter
+
+    def handle(self, record):
+        self.meter.avatar_open("rt", "from-handler")
+        self.meter.bind("from-handler", IDENTITY)
+        self.meter.avatar_close("from-handler")
+
+
+def _with_reentrant_handler(meter, scenario):
+    target = logging.getLogger("backend.application.usage_evidence.cost")
+    handler = _ReentrantHandler(meter)
+    target.addHandler(handler)
+    done = threading.Event()
+
+    def run():
+        try:
+            scenario()
+        finally:
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    try:
+        assert done.wait(5), "deadlock: the meter logged while holding its lock"
+    finally:
+        target.removeHandler(handler)
+
+
+def test_eviction_logs_outside_the_lock_so_a_reentrant_handler_cannot_deadlock(meter, monkeypatch):
+    monkeypatch.setattr("backend.application.usage_evidence.cost._MAX_BOUND", 3)
+    meter._ids.clear()
+
+    def scenario():
+        for n in range(10):  # identities over the limit
+            meter.bind(f"s{n}", IDENTITY)
+        for n in range(10):  # open avatars over the limit (none expired -> forced eviction)
+            meter.avatar_open("rt", f"p{n}")
+
+    _with_reentrant_handler(meter, scenario)
+    assert meter.evicted >= 7
+    meter._ids.clear()
+    meter._open.clear()
