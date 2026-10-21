@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import contextvars
+import queue
 import threading
 import time
 import uuid
@@ -38,6 +39,11 @@ _expected: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.Con
 
 LLM, TTS, AVATAR = "LLM", "TTS", "AVATAR"
 COST_KINDS = (LLM, TTS, AVATAR)
+_LOG_BURST = 20  # lines per reason before throttling to _LOG_RATE per second
+_LOG_RATE = 1.0
+_LOG_QUEUE: queue.Queue[str] = queue.Queue(maxsize=1000)
+_log_writer_lock = threading.Lock()
+_log_writer: threading.Thread | None = None
 _MAX_BOUND = 4096  # bound identities / open avatar sessions
 _MAX_ATTEMPT_KEYS = 4096
 _OPEN_MAX_AGE_S = 6 * 3600.0  # an avatar record older than this is settled as derived
@@ -55,6 +61,27 @@ class CostSample:
     fields: dict[str, Any] = field(default_factory=dict)  # kind-specific quantities
 
 
+def _write_logs() -> None:
+    """Daemon thread: the only place a log handler runs, so a slow or failing handler can
+    never block or break a live producer thread."""
+    while True:
+        message = _LOG_QUEUE.get()
+        try:
+            logger.error("%s", message)
+        except Exception:  # noqa: BLE001 - a broken handler must not kill the writer
+            pass
+        finally:
+            _LOG_QUEUE.task_done()
+
+
+def flush_logs(timeout: float = 2.0) -> bool:
+    """Wait until queued cost log lines were handed to the handlers (tests, shutdown)."""
+    deadline = time.monotonic() + timeout
+    while _LOG_QUEUE.unfinished_tasks and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return not _LOG_QUEUE.unfinished_tasks
+
+
 class CostMeter:
     def __init__(self) -> None:
         self.enabled = False
@@ -69,6 +96,9 @@ class CostMeter:
         ] = OrderedDict()
         self._unbound_pending: set[str] = set()  # unbind requested while an avatar was open
         self._attempts: OrderedDict[str, int] = OrderedDict()
+        self._log_buckets: dict[str, tuple[float, float, int]] = {}
+        self._log_lock = threading.Lock()
+        self.log_suppressed = 0  # lines not written (rate limit / full queue); counters stay exact
         self._lock = threading.Lock()
         self.dropped = 0  # buffer overflow
         self.unbound = 0  # no identity for the session: shown as "unknown", not zero
@@ -136,12 +166,17 @@ class CostMeter:
             if sid not in busy:
                 del self._ids[sid]
                 self.evicted += 1
-                logger.error("cost_evidence_evicted what=identity session=%s", sid)
+                self._safe_log(
+                    "evicted:identity", f"cost_evidence_evicted what=identity session={sid}"
+                )
         forced = []
         while len(self._ids) > _MAX_BOUND:
             sid, ident = self._ids.popitem(last=False)
             self.evicted += 1
-            logger.error("cost_evidence_evicted what=identity_in_use session=%s", sid)
+            self._safe_log(
+                "evicted:identity_in_use",
+                f"cost_evidence_evicted what=identity_in_use session={sid}",
+            )
             for psid, rec in list(self._open.items()):
                 if rec[0] == sid:
                     del self._open[psid]
@@ -149,15 +184,41 @@ class CostMeter:
             self._unbound_pending.discard(sid)
         return forced
 
+    def _safe_log(self, reason: str, message: str) -> None:
+        """The ONLY logging path of the meter. Never raises, never blocks, rate limited per
+        reason (burst, then ~1 line/s with the suppressed count on the next line). The
+        counters (lost, dropped, evicted...) are incremented by the callers for every sample."""
+        try:
+            now = time.monotonic()
+            with self._log_lock:
+                tokens, last, suppressed = self._log_buckets.get(reason, (_LOG_BURST, now, 0))
+                tokens = min(float(_LOG_BURST), tokens + (now - last) * _LOG_RATE)
+                if tokens < 1.0:
+                    self._log_buckets[reason] = (tokens, now, suppressed + 1)
+                    self.log_suppressed += 1
+                    return
+                self._log_buckets[reason] = (tokens - 1.0, now, 0)
+            if suppressed:
+                message += f" (+{suppressed} similar lines suppressed)"
+            global _log_writer
+            if _log_writer is None:
+                with _log_writer_lock:
+                    if _log_writer is None:
+                        _log_writer = threading.Thread(
+                            target=_write_logs, name="cost-evidence-log", daemon=True
+                        )
+                        _log_writer.start()
+            _LOG_QUEUE.put_nowait(message)
+        except Exception:  # noqa: BLE001 - logging can never reach the live path
+            self.log_suppressed += 1
+
     def lose(self, sample: CostSample, reason: str) -> None:
         """The one reconciliation line for a sample that had to be dropped for good."""
         self.lost += 1
-        logger.error(
-            "cost_evidence_lost key=%s tenant=%s kind=%s reason=%s",
-            sample.cost_key,
-            sample.identity.tenant_id,
-            sample.cost_kind,
-            reason,
+        self._safe_log(
+            "lost:" + reason,
+            f"cost_evidence_lost key={sample.cost_key} tenant={sample.identity.tenant_id} "
+            f"kind={sample.cost_kind} reason={reason}",
         )
 
     # -- producers (speech path safe) ----------------------------------------
@@ -209,17 +270,16 @@ class CostMeter:
                 self.lose(sample, "buffer_full")
         except Exception as exc:  # never reaches the live path
             self.lost += 1
-            logger.error(
-                "cost_evidence_lost reason=record_failed error_type=%s", type(exc).__name__
+            self._safe_log(
+                "lost:record_failed",
+                f"cost_evidence_lost reason=record_failed error_type={type(exc).__name__}",
             )
 
     def _late(self, key: str, tenant: str, kind: str) -> None:
         self.lost += 1
-        logger.error(
-            "cost_evidence_lost key=%s tenant=%s kind=%s reason=late_after_shutdown",
-            key,
-            tenant,
-            kind,
+        self._safe_log(
+            "lost:late_after_shutdown",
+            f"cost_evidence_lost key={key} tenant={tenant} kind={kind} reason=late_after_shutdown",
         )
 
     @property
@@ -323,7 +383,10 @@ class CostMeter:
             expired = self._trim_open() if len(self._open) > _MAX_BOUND else []
         if prior is not None:  # same provider session opened twice: settle the old one first
             self.reopened += 1
-            logger.error("cost_evidence_reopened provider_session=%s", provider_session_id)
+            self._safe_log(
+                "reopened",
+                f"cost_evidence_reopened provider_session={provider_session_id}",
+            )
             expired.append((provider_session_id, prior))
         for psid, rec in expired:  # emitted outside the lock: _push/_emit_avatar take it again
             self._emit_avatar(psid, rec, confirmed=False, extra_s=self.avatar_idle_bound_s)
@@ -345,7 +408,10 @@ class CostMeter:
         while len(self._open) > _MAX_BOUND:
             psid, rec = self._open.popitem(last=False)
             self.evicted += 1
-            logger.error("cost_evidence_evicted what=avatar_open provider_session=%s", psid)
+            self._safe_log(
+                "evicted:avatar_open",
+                f"cost_evidence_evicted what=avatar_open provider_session={psid}",
+            )
             out.append((psid, rec))
         return out
 

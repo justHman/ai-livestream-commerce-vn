@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 from datetime import datetime, timezone
@@ -23,7 +24,7 @@ from backend.application.execution_contract import ExecutionIdentity
 from backend.application.render.orchestrator import StreamOrchestrator
 from backend.application.usage_evidence import UsageEvidence, UsageEvidenceSettings, UsageSender
 from backend.application.usage_evidence import envelope
-from backend.application.usage_evidence.cost import CostMeter, CostSample, cost_meter
+from backend.application.usage_evidence.cost import CostMeter, CostSample, cost_meter, flush_logs
 from llm.engines.base import LLMRequest
 
 TENANT = "11111111-2222-4333-8444-555555555555"
@@ -37,6 +38,7 @@ FORBIDDEN = {"cost_usd", "cost_micros", "credit", "credits", "billable_quantity"
 def meter():
     cost_meter.configure(enabled=True)
     cost_meter._open.clear()
+    cost_meter._log_buckets.clear()
     cost_meter.bind("rt", IDENTITY)
     cost_meter.drain(10_000)
     for name in ("dropped", "unbound", "lost", "conflicts", "evicted"):
@@ -316,6 +318,7 @@ def test_overflow_logs_one_reconciliation_line_per_dropped_sample(meter, caplog)
     with caplog.at_level("ERROR"):
         llm(meter, "a")
         llm(meter, "b")
+    flush_logs()
     lines = [r.getMessage() for r in caplog.records if "cost_evidence_lost" in r.getMessage()]
     assert len(lines) == 1 and "key=b" in lines[0] and TENANT in lines[0] and "kind=LLM" in lines[0]
     assert meter.lost == 1
@@ -662,6 +665,7 @@ def test_a_sample_arriving_after_shutdown_is_counted_and_logged_not_silent(meter
     meter.close()
     with caplog.at_level("ERROR"):
         llm(meter, "late")
+    flush_logs()
     lines = [r.getMessage() for r in caplog.records if "late_after_shutdown" in r.getMessage()]
     assert len(lines) == 1 and "key=late" in lines[0] and TENANT in lines[0]
     assert meter.lost == 1 and not meter._buf
@@ -738,6 +742,7 @@ async def test_final_flush_with_a_failing_outbox_reports_each_unflushed_sample(m
     sender = UsageSender(FakeOutbox(fail=99), UsageEvidenceSettings(), cost=meter)
     with caplog.at_level("ERROR"):
         await sender.flush(5)
+    flush_logs()
     lines = [r.getMessage() for r in caplog.records if "shutdown_unflushed" in r.getMessage()]
     assert len(lines) == 3 and meter.lost == 3 and meter.buffered() == 0
     assert all(TENANT in line for line in lines)
@@ -747,6 +752,7 @@ def test_avatar_open_after_shutdown_is_counted_and_logged_at_open(meter, caplog)
     meter.close()
     with caplog.at_level("ERROR"):
         meter.avatar_open("rt", "late-ps")
+    flush_logs()
     lines = [r.getMessage() for r in caplog.records if "late_after_shutdown" in r.getMessage()]
     assert len(lines) == 1 and "key=late-ps" in lines[0] and "kind=AVATAR" in lines[0]
     assert meter.lost == 1 and meter.open_count() == 0
@@ -845,6 +851,7 @@ def test_a_meter_that_was_never_enabled_changes_no_state_at_all(caplog):
         assert fresh.lose_remaining("x") == 0
         assert fresh.expect("t", "b", "g") is None
     assert _snapshot(fresh) == before and not fresh._attempts
+    flush_logs()
     assert fresh._closed is False and not caplog.records
 
 
@@ -901,6 +908,7 @@ def test_reopening_an_open_provider_session_settles_the_old_record(meter, caplog
     rows = meter.drain(10)
     assert meter.reopened == 1 and meter.open_count() == 1
     assert [r.cost_key for r in rows] == ["ps"] and rows[0].usage_source == "derived"
+    flush_logs()
     assert any("cost_evidence_reopened" in r.getMessage() for r in caplog.records)
     meter.avatar_close("ps")
     assert len(meter.drain(10)) == 1  # and the new one closes normally
@@ -943,3 +951,76 @@ def test_a_session_without_execution_contract_stays_unbound_not_lost(meter):
     meter.avatar_open("plain", "ps-plain")
     meter.avatar_close("ps-plain")
     assert meter.unbound == 1 and meter.lost == 0 and meter.drain(1) == []
+
+
+# -- review round 7: logging can never touch the live path ----------------------------------------------
+
+
+class _BadHandler(logging.Handler):
+    def __init__(self, delay=0.0):
+        super().__init__()
+        self.delay = delay
+
+    def handle(self, record):
+        time.sleep(self.delay)
+        raise RuntimeError("log handler exploded")
+
+
+@pytest.fixture
+def bad_handler():
+    target = logging.getLogger("backend.application.usage_evidence.cost")
+    handler = _BadHandler()
+    target.addHandler(handler)
+    yield handler
+    target.removeHandler(handler)
+
+
+def test_a_throwing_log_handler_never_breaks_any_producer_entry_point(meter, bad_handler):
+    meter.configure(enabled=True, buffer=1)
+    llm(meter, "fill")
+    # every one of these triggers a log line (buffer_full / reopened / late); none may raise
+    llm(meter, "rejected")
+    meter.record_tts(
+        "rt",
+        utterance_id="u",
+        phrase_seq=0,
+        attempt=1,
+        provider="t",
+        characters=1,
+        audio_ms=1,
+        synth_ms=1,
+    )
+    meter.avatar_open("rt", "ps")
+    meter.avatar_open("rt", "ps")  # reopen -> log
+    meter.avatar_close("ps")
+    meter.close()
+    llm(meter, "late")  # late_after_shutdown -> log
+    meter.avatar_open("rt", "ps2")
+    assert meter.lose_remaining("x") >= 0
+    assert flush_logs()  # the writer thread survived the exploding handler
+    meter.configure(enabled=True)
+
+
+def test_a_slow_log_handler_does_not_block_the_producers(meter, bad_handler):
+    bad_handler.delay = 0.3
+    meter.configure(enabled=True, buffer=1)
+    llm(meter, "fill")
+    started = time.monotonic()
+    for n in range(100):
+        llm(meter, f"r{n}")  # each is refused and wants a log line
+    assert time.monotonic() - started < 0.25
+    assert meter.lost == 100
+    meter.configure(enabled=True)
+    flush_logs(5)
+
+
+def test_ten_thousand_refused_samples_log_few_lines_but_count_every_one(meter, caplog):
+    meter.configure(enabled=True, buffer=1)
+    llm(meter, "fill")
+    for n in range(10_000):
+        llm(meter, f"r{n}")
+    assert meter.lost == 10_000 and meter.dropped == 10_000
+    flush_logs()
+    lines = [r.getMessage() for r in caplog.records if "buffer_full" in r.getMessage()]
+    assert 1 <= len(lines) <= 40 and meter.log_suppressed >= 9_900
+    meter.configure(enabled=True)
