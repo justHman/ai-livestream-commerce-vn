@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import contextvars
-import queue
 import threading
 import time
 import uuid
@@ -41,9 +40,6 @@ LLM, TTS, AVATAR = "LLM", "TTS", "AVATAR"
 COST_KINDS = (LLM, TTS, AVATAR)
 _LOG_BURST = 20  # lines per reason before throttling to _LOG_RATE per second
 _LOG_RATE = 1.0
-_LOG_QUEUE: queue.Queue[str] = queue.Queue(maxsize=1000)
-_log_writer_lock = threading.Lock()
-_log_writer: threading.Thread | None = None
 _MAX_BOUND = 4096  # bound identities / open avatar sessions
 _MAX_ATTEMPT_KEYS = 4096
 _OPEN_MAX_AGE_S = 6 * 3600.0  # an avatar record older than this is settled as derived
@@ -59,27 +55,6 @@ class CostSample:
     model: str = ""
     usage_source: str = "measured"  # provider | measured | derived | unknown
     fields: dict[str, Any] = field(default_factory=dict)  # kind-specific quantities
-
-
-def _write_logs() -> None:
-    """Daemon thread: the only place a log handler runs, so a slow or failing handler can
-    never block or break a live producer thread."""
-    while True:
-        message = _LOG_QUEUE.get()
-        try:
-            logger.error("%s", message)
-        except Exception:  # noqa: BLE001 - a broken handler must not kill the writer
-            pass
-        finally:
-            _LOG_QUEUE.task_done()
-
-
-def flush_logs(timeout: float = 2.0) -> bool:
-    """Wait until queued cost log lines were handed to the handlers (tests, shutdown)."""
-    deadline = time.monotonic() + timeout
-    while _LOG_QUEUE.unfinished_tasks and time.monotonic() < deadline:
-        time.sleep(0.005)
-    return not _LOG_QUEUE.unfinished_tasks
 
 
 class CostMeter:
@@ -98,7 +73,9 @@ class CostMeter:
         self._attempts: OrderedDict[str, int] = OrderedDict()
         self._log_buckets: dict[str, tuple[float, float, int]] = {}
         self._log_lock = threading.Lock()
-        self.log_suppressed = 0  # lines not written (rate limit / full queue); counters stay exact
+        self.log_suppressed = (
+            0  # lines not written (rate limit or handler failure); counters stay exact
+        )
         self._lock = threading.Lock()
         self.dropped = 0  # buffer overflow
         self.unbound = 0  # no identity for the session: shown as "unknown", not zero
@@ -185,8 +162,9 @@ class CostMeter:
         return forced
 
     def _safe_log(self, reason: str, message: str) -> None:
-        """The ONLY logging path of the meter. Never raises, never blocks, rate limited per
-        reason (burst, then ~1 line/s with the suppressed count on the next line). The
+        """The ONLY logging path of the meter. Never raises and is rate limited per reason
+        (burst, then ~1 line/s with the suppressed count on the next line); the line itself is
+        written synchronously like every other log line of the service. The
         counters (lost, dropped, evicted...) are incremented by the callers for every sample."""
         try:
             now = time.monotonic()
@@ -199,17 +177,9 @@ class CostMeter:
                     return
                 self._log_buckets[reason] = (tokens - 1.0, now, 0)
             if suppressed:
-                message += f" (+{suppressed} similar lines suppressed)"
-            global _log_writer
-            if _log_writer is None:
-                with _log_writer_lock:
-                    if _log_writer is None:
-                        _log_writer = threading.Thread(
-                            target=_write_logs, name="cost-evidence-log", daemon=True
-                        )
-                        _log_writer.start()
-            _LOG_QUEUE.put_nowait(message)
-        except Exception:  # noqa: BLE001 - logging can never reach the live path
+                message += f" (+{suppressed} similar suppressed)"
+            logger.error("%s", message)
+        except Exception:  # noqa: BLE001 - a failing handler must never reach the live path
             self.log_suppressed += 1
 
     def lose(self, sample: CostSample, reason: str) -> None:
