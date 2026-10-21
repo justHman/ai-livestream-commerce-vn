@@ -125,6 +125,16 @@ async def sessions_start(
     if req.avatar_image_url is not None:
         _validate_image_host(req.avatar_image_url, d.config)
 
+    from backend.application.usage_evidence.cost import cost_meter
+
+    # An avatar opened while the backend starts already knows its identity (the contextvar is
+    # copied into the worker thread), so a start that fails after the provider session was
+    # created is still costed.
+    expect = (
+        cost_meter.expect(req.tenant_id, req.business_session_id, req.generation)
+        if req.execution_contract
+        else None
+    )
     try:
         result = await asyncio.to_thread(
             d.backend.start,
@@ -141,6 +151,8 @@ async def sessions_start(
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        cost_meter.expect_reset(expect)
 
     meta: dict[str, Any] = {"status": "active", "mode": result.mode}
     if req.voice_id is not None:
@@ -161,6 +173,18 @@ async def sessions_start(
             # Per-session gate; capabilities/commands/legacy guard all read it.
             meta["p0_rescue"] = True
     await d.store.set(result.session_id, meta)
+    if req.execution_contract:
+        from backend.application.execution_contract import ExecutionIdentity
+
+        cost_meter.bind(
+            result.session_id,
+            ExecutionIdentity(
+                tenant_id=req.tenant_id,
+                business_session_id=req.business_session_id,
+                runtime_session_id=result.session_id,
+                generation=req.generation,
+            ),
+        )
     await register_terminal_execution(d, result.session_id, meta)
     failures = getattr(d, "runtime_failures", None)
     if failures is not None:
@@ -533,6 +557,9 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
     backend_error: str | None = None
     try:
         await asyncio.to_thread(d.backend.stop, session_id)
+        from backend.application.usage_evidence.cost import cost_meter
+
+        cost_meter.unbind(session_id)  # after stop: the avatar close needs the identity
     except KeyError:
         # An unknown / already released backend session is "already cleaned" only when a
         # previous teardown is mid-flight: 019's retry flag OR the lease termination marker.

@@ -24,6 +24,8 @@ from backend.application.execution_contract import (
 
 EVENT_TYPE = "ai.execution.usage_evidence"
 COGS_EVENT_TYPE = "ai.usage.reported"
+COST_EVENT_TYPE = "ai.cost.reported"  # never a Kafka topic: cannot reach billing
+COST_SCHEMA = "p0.cost_evidence.v1"
 SCHEMA = "p0.usage_evidence.v1"
 CAP = "usage.evidence.v1"
 CAP_FIRST_BROADCAST = "usage.evidence.first_broadcast"
@@ -35,6 +37,18 @@ _UUID = re.compile(r"^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
 _PHASE_INTERVALS = ("warming", "selling", "closing", "ending")
 # ponytail: provisional until C-MEDIA-001/010 freezes a media-health field on Evidence.
 _MEDIA_REASON_PREFIXES = ("media_", "platform_")
+
+
+COST_FIELDS = {
+    "LLM": frozenset({"input_tokens", "output_tokens"}),
+    "TTS": frozenset({"characters", "audio_ms", "synth_ms"}),
+    "AVATAR": frozenset({"seconds", "started_at", "ended_at", "provider_session_id"}),
+}
+COST_USAGE_SOURCES = frozenset({"provider", "measured", "derived", "unknown"})
+
+
+class InvalidCostPayload(ValueError):
+    """A cost sample with a kind, source or field outside the allowlist (never sent)."""
 
 
 class InvalidIdentity(ValueError):
@@ -238,6 +252,68 @@ def build_cogs_body(
             },
         }
     )
+
+
+def cost_event_id(identity: ExecutionIdentity, cost_kind: str, cost_key: str) -> str:
+    return (
+        "uk:"
+        + hashlib.sha256(
+            length_prefixed(*_identity_values(identity), cost_kind, cost_key)
+        ).hexdigest()
+    )
+
+
+def build_cost_body(
+    identity: ExecutionIdentity,
+    *,
+    cost_kind: str,
+    cost_key: str,
+    occurred_at: datetime,
+    provider: str,
+    model: str,
+    usage_source: str,
+    fields: Mapping[str, Any],
+    producer_id: str,
+) -> tuple[str, bytes]:
+    """``ai.cost.reported``: measured quantities only. No price, cost_usd or credit, ever."""
+    allowed = COST_FIELDS.get(cost_kind)
+    if allowed is None or usage_source not in COST_USAGE_SOURCES:
+        raise InvalidCostPayload("cost_kind or usage_source not allowed")
+    if set(fields) - allowed:  # cost_usd, credit, billable, price... can never ride along
+        raise InvalidCostPayload("field not allowed for " + cost_kind)
+    eid = cost_event_id(identity, cost_kind, cost_key)
+    payload: dict[str, Any] = {
+        "schema": COST_SCHEMA,
+        "cost_kind": cost_kind,
+        "cost_key": cost_key,
+        "generation": identity.generation,
+        "provider": provider,
+        "model": model,
+        "usage_source": usage_source,
+        "occurred_at": utc_text(occurred_at),
+        "producer_id": producer_id,
+    }
+    for name, value in fields.items():
+        if name in ("started_at", "ended_at"):
+            payload.setdefault("window", {})[name] = utc_text(value)
+        elif name == "input_tokens" or name == "output_tokens" or value is not None:
+            payload[name] = value  # LLM tokens stay present as null when unknown
+    body = canonical(
+        {
+            "event_id": eid,
+            "event_type": COST_EVENT_TYPE,
+            "event_version": "1.0",
+            "tenant_id": identity.tenant_id,
+            "stream_id": identity.business_session_id,
+            "ai_session_id": identity.runtime_session_id,
+            "request_id": start_command_id(identity),
+            "timestamp": utc_text(occurred_at),
+            "payload": payload,
+        }
+    )
+    if len(body) > MAX_BODY:
+        raise InvalidIdentity("body too large")
+    return eid, body
 
 
 def derive_from_evidence(

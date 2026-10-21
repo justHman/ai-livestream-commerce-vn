@@ -16,6 +16,7 @@ verbatim on every attempt (only the timestamp and signature change).
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import hashlib
 import hmac
 import logging
@@ -30,6 +31,7 @@ from backend.application.terminal_outcomes import backoff_seconds
 
 from . import envelope
 from .outbox import StageBlocked, UsageOutbox  # noqa: F401
+from .cost import CostMeter, cost_meter as _default_cost_meter
 from .settings import CogsBuffer, UsageEvidenceSettings
 
 logger = logging.getLogger(__name__)
@@ -131,6 +133,7 @@ class UsageSender:
         session_store: Any = None,
         session_lock: Callable[[str], Any] | None = None,
         cogs: CogsBuffer | None = None,
+        cost: CostMeter | None = None,
         post: PostFn | None = None,
         unstaged_sessions: set[str] | None = None,
         clock: Callable[[], float] = time.time,
@@ -146,6 +149,9 @@ class UsageSender:
         # Must be the SAME lock the request path holds from staging through the save.
         self._session_lock = session_lock or _no_lock
         self._cogs = cogs
+        self._cost = cost if cost is not None else _default_cost_meter
+        self._cost_failures = 0
+        self._cost_retry_at = 0.0
         self._poster = HttpxPoster(settings.http_timeout) if post is None else None
         self._post: PostFn = post or self._poster  # type: ignore[assignment]
         self._clock = clock
@@ -574,6 +580,58 @@ class UsageSender:
                 logger.warning("usage cogs sample lost error_type=%s", type(exc).__name__)
         return stored
 
+    async def drain_cost(self) -> int:
+        """Flush buffered cost samples into the durable outbox. Best effort, never raises."""
+        meter = self._cost
+        stored = 0
+        if self._clock() < self._cost_retry_at:  # outbox unwell: samples wait in the buffer
+            return 0
+        pending = deque(meter.drain(max(self._batch, 100)))
+        try:
+            while pending:
+                sample = pending[0]  # popped only once it is stored or finally rejected
+                try:
+                    eid, body = envelope.build_cost_body(
+                        sample.identity,
+                        cost_kind=sample.cost_kind,
+                        cost_key=sample.cost_key,
+                        occurred_at=sample.occurred_at,
+                        provider=sample.provider,
+                        model=sample.model,
+                        usage_source=sample.usage_source,
+                        fields=sample.fields,
+                        producer_id=self._settings.producer_id,
+                    )
+                    outcome = await self._outbox.enqueue_cost(
+                        sample.identity,
+                        event_id=eid,
+                        cost_kind=sample.cost_kind,
+                        cost_key=sample.cost_key,
+                        occurred_at=sample.occurred_at,
+                        body=body,
+                    )
+                    if outcome == "conflict":
+                        meter.conflicts += 1
+                        logger.error("cost evidence CONFLICT id=%s; kept the first row", eid)
+                    else:
+                        stored += 1
+                except (envelope.InvalidIdentity, envelope.InvalidCostPayload) as exc:
+                    meter.lose(sample, type(exc).__name__)  # can never be delivered
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._cost_failures += 1
+                    self._cost_retry_at = self._clock() + min(30.0, 0.5 * 2**self._cost_failures)
+                    logger.warning("cost evidence write failed error_type=%s", type(exc).__name__)
+                    break  # the outbox is unwell: back off, everything unwritten stays buffered
+                pending.popleft()
+            else:
+                self._cost_failures = 0
+        finally:
+            for sample in reversed(pending):  # failure or cancellation: nothing is dropped
+                meter.requeue(sample)
+        return stored
+
     async def run_loop(self) -> None:
         while True:
             try:
@@ -581,6 +639,7 @@ class UsageSender:
                     self._last_sweep = self._clock()
                     await self.sweep()
                 await self.drain_cogs()
+                await self.drain_cost()
                 processed = await self.deliver_due()
             except asyncio.CancelledError:
                 raise
@@ -595,6 +654,12 @@ class UsageSender:
 
         async def passes() -> None:
             await self.drain_cogs()
+            self._cost_retry_at = 0.0  # shutdown: no backoff wait
+            while self._cost.buffered():
+                before = self._cost.buffered()
+                await self.drain_cost()
+                if self._cost.buffered() >= before:  # outbox failing: no progress
+                    break
             while await self.deliver_due():
                 pass
 
@@ -606,6 +671,9 @@ class UsageSender:
             logger.warning(
                 "usage evidence final flush incomplete error_type=%s", type(exc).__name__
             )
+        finally:
+            # What could not reach the outbox is reported one line per sample, then counted lost.
+            self._cost.lose_remaining("shutdown_unflushed")
 
     async def close(self) -> None:
         if self._poster is not None:

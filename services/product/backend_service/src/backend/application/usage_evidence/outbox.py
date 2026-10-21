@@ -483,6 +483,59 @@ class UsageOutbox:
 
         return await self._pg._command(run)
 
+    async def enqueue_cost(
+        self,
+        identity: ExecutionIdentity,
+        *,
+        event_id: str,
+        cost_kind: str,
+        cost_key: str,
+        occurred_at: datetime,
+        body: bytes,
+    ) -> str:
+        """Durable ``ai.cost.reported`` row: ``stored`` | ``duplicate`` | ``conflict``.
+
+        The cost kind lives in the unique key (``kind='cost:<KIND>'``) so LLM/TTS/AVATAR rows
+        never swallow each other. The same semantic key with different bytes is a producer
+        bug: reported as ``conflict``, never silently kept as a duplicate.
+        """
+        envelope.validate_identity(identity)
+        sha = hashlib.sha256(body).hexdigest()
+        kind = f"cost:{cost_kind}"
+
+        async def run() -> str:
+            async with self._pg._require_pool().acquire() as conn:
+                result = await conn.execute(
+                    f"""
+                    INSERT INTO usage_evidence_outbox
+                        (event_id, event_type, {_ID_COLUMNS}, kind, interval_id,
+                         occurred_at, body, body_sha256, status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'ready')
+                    ON CONFLICT DO NOTHING
+                    """,
+                    event_id,
+                    envelope.COST_EVENT_TYPE,
+                    *_key(identity),
+                    kind,
+                    cost_key,
+                    occurred_at,
+                    body,
+                    sha,
+                )
+                if result.endswith(" 1"):
+                    return "stored"
+                same = await conn.fetchval(
+                    "SELECT body_sha256 FROM usage_evidence_outbox "
+                    "WHERE (tenant_id, business_session_id, runtime_session_id, generation) "
+                    "= ($1, $2, $3, $4) AND kind = $5 AND interval_id = $6",
+                    *_key(identity),
+                    kind,
+                    cost_key,
+                )
+                return "duplicate" if same == sha else "conflict"
+
+        return await self._pg._command(run)
+
     # -- delivery ------------------------------------------------------------
 
     async def claim(self, limit: int, lease_seconds: float) -> list[dict[str, Any]]:

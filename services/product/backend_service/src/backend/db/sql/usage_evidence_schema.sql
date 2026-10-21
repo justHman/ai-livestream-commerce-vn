@@ -1,4 +1,6 @@
 -- P0-FB-017 / C-USAGE-EVIDENCE-001: durable signed usage-evidence outbox (Runtime Postgres).
+-- NOTE: CREATE TABLE IF NOT EXISTS never alters an existing CHECK. A table created before M7.3 is
+-- widened once by `python -m backend.application.usage_evidence.cost_migration` (never at startup).
 -- Applied ONLY when USAGE_EVIDENCE_ENABLED is set (PostgresRuntimeStore.apply_usage_evidence_schema);
 -- runtime_schema.sql, and so every disabled deployment, is untouched. Idempotent.
 
@@ -15,7 +17,7 @@ CREATE TABLE IF NOT EXISTS usage_evidence_sequence (
 
 CREATE TABLE IF NOT EXISTS usage_evidence_outbox (
     event_id            TEXT PRIMARY KEY CHECK (char_length(event_id) <= 255),
-    event_type          TEXT NOT NULL CHECK (event_type IN ('ai.execution.usage_evidence', 'ai.usage.reported')),
+    event_type          TEXT NOT NULL CHECK (event_type IN ('ai.execution.usage_evidence', 'ai.usage.reported', 'ai.cost.reported')),
     tenant_id           TEXT NOT NULL CHECK (tenant_id ~* '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$'),
     business_session_id TEXT NOT NULL CHECK (char_length(business_session_id) <= 255),
     runtime_session_id  TEXT NOT NULL CHECK (char_length(runtime_session_id) <= 255),

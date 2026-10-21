@@ -150,6 +150,50 @@ class PostgresRuntimeStore:
 
         await self._command(apply)
 
+    async def usage_cost_event_type_ready(self) -> bool:
+        """True when ``usage_evidence_outbox`` already accepts ``ai.cost.reported`` (read-only)."""
+
+        async def check() -> bool:
+            async with self._require_pool().acquire() as conn:
+                defs = await conn.fetch(
+                    "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint "
+                    "WHERE conrelid = 'usage_evidence_outbox'::regclass AND contype = 'c'"
+                )
+                return any("event_type" in r["d"] and "ai.cost.reported" in r["d"] for r in defs)
+
+        return await self._command(check)
+
+    async def migrate_usage_cost_event_type(self) -> bool:
+        """One controlled, transactional widening of the event_type CHECK. Idempotent.
+
+        Run once by an operator BEFORE the cost producer is enabled; startup never calls it.
+        Returns True when it changed the constraint, False when already widened.
+        """
+
+        async def migrate() -> bool:
+            async with self._require_pool().acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("LOCK TABLE usage_evidence_outbox IN ACCESS EXCLUSIVE MODE")
+                    rows = await conn.fetch(
+                        "SELECT conname, pg_get_constraintdef(oid) AS d FROM pg_constraint "
+                        "WHERE conrelid = 'usage_evidence_outbox'::regclass AND contype = 'c'"
+                    )
+                    old = [r["conname"] for r in rows if "event_type" in r["d"]]
+                    if any("ai.cost.reported" in r["d"] for r in rows if "event_type" in r["d"]):
+                        return False
+                    for name in old:
+                        await conn.execute(
+                            f'ALTER TABLE usage_evidence_outbox DROP CONSTRAINT "{name}"'
+                        )
+                    await conn.execute(
+                        "ALTER TABLE usage_evidence_outbox ADD CONSTRAINT "
+                        "usage_evidence_outbox_event_type_check CHECK (event_type IN "
+                        "('ai.execution.usage_evidence', 'ai.usage.reported', 'ai.cost.reported'))"
+                    )
+                    return True
+
+        return await self._command(migrate)
+
     async def persist_terminal(self, record: Any) -> Any:
         """Store the terminal record and its outbox row in ONE transaction.
 

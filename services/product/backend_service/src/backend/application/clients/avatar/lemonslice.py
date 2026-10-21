@@ -68,6 +68,7 @@ from backend.application.render.engines_base import (
     StreamingAvatarBackend,
 )
 from backend.application.render.windows import AudioWindow
+from backend.application.usage_evidence.cost import cost_meter
 
 log = logging.getLogger(__name__)
 
@@ -489,6 +490,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     ) -> None:
         self._mono = monotonic
         self._s = settings
+        cost_meter.avatar_idle_bound_s = float(getattr(settings, "idle_timeout_s", 0) or 0)
         self._room_factory = room_factory or self._default_room
         self._session_client = session_client_factory or _plugin_client_factory(
             settings, _load_plugin()
@@ -889,6 +891,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     "session_id_invalid", "LemonSlice returned an unusable session id"
                 )
             sess.provider_session_id = sid
+            cost_meter.avatar_open(room_name, sid)
             if s.keepalive_s > 0 and sess.provider_session_id:
                 sess.keepalive = asyncio.ensure_future(self._keepalive(sess))
             await self._wait_avatar_video(room)
@@ -1066,6 +1069,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             log.warning("lemonslice late session unknown error_type=%s", type(exc).__name__)
             return
         if isinstance(sid, str) and _SAFE_SESSION_ID.fullmatch(sid):
+            # Created after its caller gave up: start time is only known to be ~now (derived).
+            cost_meter.avatar_open(session_id, sid, derived=True)
             try:
                 await self._terminate_and_retain(
                     session_id, SimpleNamespace(provider_session_id=sid)
@@ -1281,6 +1286,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 new_sid = ""
                 raise LemonSliceError("session_id_invalid", "LemonSlice returned an unusable id")
             sess.provider_session_id = new_sid  # from here on a stop ends it
+            cost_meter.avatar_open(sess.room_name, new_sid)
             await self._wait_avatar_video(sess.room)
         except BaseException as exc:
             sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
@@ -1340,6 +1346,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             await self._end_provider_session(label, sid)  # stopped, or another one took over
             return
         sess.provider_session_id = sid
+        cost_meter.avatar_open(sess.room_name, sid)
         try:
             await self._wait_avatar_video(sess.room)
         except Exception:
@@ -1459,6 +1466,13 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     len(set(self._closing) | set(self._pending_terminate)),
                 )
         finally:
+            # Whatever the provider never confirmed ended is settled now as derived: the end is
+            # this moment plus the idle timeout, the latest it can still have been running.
+            # In `finally`: an early failure above must not skip it.
+            try:
+                cost_meter.avatar_settle_all(float(self._s.idle_timeout_s))
+            except Exception as exc:  # cost evidence must never block the cleanup below
+                log.warning("lemonslice avatar cost settle error_type=%s", type(exc).__name__)
             try:
                 if self._loop is not None:
                     self._run(self._close_client())
@@ -1585,6 +1599,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     + (s.request_timeout_s + 1 if self._async_post is None and guard else 0),
                 )
                 if 200 <= status < 300 or status in _TERMINAL_STATUS:
+                    cost_meter.avatar_close(sess.provider_session_id)  # provider-confirmed end
                     token = self._budget_tokens.get(sess.provider_session_id)
                     if token and self._budget is not None:
                         await self._budget.finish(token)

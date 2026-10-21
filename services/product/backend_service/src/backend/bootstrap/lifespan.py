@@ -19,6 +19,7 @@ import inspect
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -196,6 +197,7 @@ async def _start_usage_evidence(container: BootstrapContainer) -> None:
         return
     outbox = UsageOutbox(pg, producer_id=settings.producer_id)
     service = UsageEvidence(outbox, settings)
+    await _enable_cost_evidence(pg, settings)
     from backend.api.v1.execution import _locked
 
     sender = UsageSender(
@@ -212,11 +214,44 @@ async def _start_usage_evidence(container: BootstrapContainer) -> None:
     set_usage_evidence_capabilities(settings.capabilities())
 
 
+async def _enable_cost_evidence(pg: Any, settings: Any) -> None:
+    """M7.3: cost producer only if flagged AND the outbox CHECK was widened by the operator job."""
+    from backend.application.usage_evidence.cost import cost_meter
+
+    cost_meter.configure(enabled=False)
+    if not settings.cost_enabled:
+        return
+    try:
+        ready = await pg.usage_cost_event_type_ready()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Cost evidence check failed error_type=%s; producer stays off", type(exc).__name__
+        )
+        return
+    if not ready:
+        logger.error(
+            "Cost evidence enabled but usage_evidence_outbox CHECK is not widened; run "
+            "backend.application.usage_evidence.cost_migration once. Producer stays off"
+        )
+        return
+    cost_meter.configure(enabled=True, buffer=settings.cost_buffer)
+
+
 async def _stop_usage_evidence(container: BootstrapContainer) -> None:
     """Stop after the coordinator and before Postgres closes, with a bounded final flush."""
     from backend.application.execution_contract import set_usage_evidence_capabilities
 
     set_usage_evidence_capabilities(())
+    from backend.application.usage_evidence.cost import cost_meter
+
+    # render.stop_all may have outlived its stage timeout (it runs in a thread): give its
+    # avatar settle a short bounded moment before the final flush.
+    for _ in range(30):
+        if cost_meter.open_count() == 0:
+            break
+        await asyncio.sleep(0.1)
     task = getattr(container, "usage_evidence_task", None)
     if task is not None and not task.done():
         task.cancel()
@@ -232,6 +267,7 @@ async def _stop_usage_evidence(container: BootstrapContainer) -> None:
             await sender.flush(timeout)
         finally:
             await sender.close()
+    cost_meter.close()  # only after the final flush (and the avatar settle before it)
     # The service object stays: a request during shutdown still stages durably, and
     # the rows are delivered by the next process.
 
@@ -643,9 +679,11 @@ async def _shutdown(container: BootstrapContainer) -> None:
         ("coordinator", stop_coordinator),
         ("reducer", lambda: _stop_reducer_loop(container)),
         ("terminal.outbox", lambda: _stop_terminal_outcomes(container)),
-        ("usage.evidence", lambda: _stop_usage_evidence(container)),
         ("livekit.stop_all", stop_livekit),
+        # render.stop_all settles still-open avatar cost records; usage evidence flushes them
+        # into the outbox only after that, then turns the meter off.
         ("render.stop_all", stop_backend),
+        ("usage.evidence", lambda: _stop_usage_evidence(container)),
         ("clients.close", close_clients),
         ("authoring", close_authoring),
         ("postgres", close_postgres),
