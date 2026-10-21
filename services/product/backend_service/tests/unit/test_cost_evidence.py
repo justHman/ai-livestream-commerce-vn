@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -805,3 +806,140 @@ def test_no_state_entry_point_cell_is_silent_once_the_meter_was_enabled(meter, e
     after = (len(meter._buf), meter.lost, meter.dropped, meter.open_count())
     assert after != before, f"{entry} in state {state} left no trace"
     meter.configure(enabled=True)
+
+
+# -- review round 6 ----------------------------------------------------------------------------------
+
+
+def _snapshot(m):
+    return (
+        dict(m._ids),
+        dict(m._open),
+        list(m._buf),
+        set(m._unbound_pending),
+        (m.dropped, m.unbound, m.lost, m.conflicts, m.evicted, m.reopened),
+    )
+
+
+def test_a_meter_that_was_never_enabled_changes_no_state_at_all(caplog):
+    fresh = CostMeter()
+    before = _snapshot(fresh)
+    with caplog.at_level("DEBUG"):
+        fresh.bind("s", IDENTITY)
+        fresh.unbind("s")
+        fresh.record_llm("s", call_id="c", provider="p", model="m", input_tokens=1, output_tokens=1)
+        fresh.record_tts(
+            "s",
+            utterance_id="u",
+            phrase_seq=0,
+            attempt=fresh.next_attempt("s", "u", 0),
+            provider="t",
+            characters=1,
+            audio_ms=1,
+            synth_ms=1,
+        )
+        fresh.avatar_open("s", "ps")
+        fresh.avatar_close("ps")
+        fresh.avatar_settle_all(60.0)
+        fresh.close()
+        assert fresh.lose_remaining("x") == 0
+        assert fresh.expect("t", "b", "g") is None
+    assert _snapshot(fresh) == before and not fresh._attempts
+    assert fresh._closed is False and not caplog.records
+
+
+def test_configure_off_does_not_arm_the_meter():
+    fresh = CostMeter()
+    fresh.configure(enabled=False)
+    fresh.bind("s", IDENTITY)
+    assert fresh._ids == {}
+
+
+def test_record_cogs_has_no_caller_in_src_so_the_gate_changes_no_live_behaviour():
+    import re
+    from pathlib import Path
+
+    src = Path(envelope.__file__).parents[3]
+    callers = [
+        str(f) for f in src.rglob("*.py") if re.search(r"\.record_cogs\(", f.read_text("utf-8"))
+    ]
+    assert callers == []
+
+
+def test_admission_closes_atomically_with_lose_remaining(meter, caplog):
+    caplog.set_level("CRITICAL")
+    meter.configure(enabled=True, buffer=100000)
+    stop, total = threading.Event(), [0]
+
+    def produce():
+        n = 0
+        while not stop.is_set():
+            meter.record_llm(
+                "rt", call_id=f"c{n}", provider="p", model="m", input_tokens=1, output_tokens=1
+            )
+            n += 1
+        total[0] += n
+
+    threads = [threading.Thread(target=produce) for _ in range(4)]
+    [t.start() for t in threads]
+    time.sleep(0.05)
+    meter.lose_remaining("shutdown_unflushed")
+    assert meter.buffered() == 0
+    time.sleep(0.05)
+    stop.set()
+    [t.join() for t in threads]
+    assert meter.buffered() == 0  # nothing slipped in after the close
+    assert meter.lost == total[0]  # every sample was reported lost (drained or late)
+    meter.configure(enabled=True)
+
+
+def test_reopening_an_open_provider_session_settles_the_old_record(meter, caplog):
+    meter.avatar_idle_bound_s = 10.0
+    meter.avatar_open("rt", "ps")
+    with caplog.at_level("ERROR"):
+        meter.avatar_open("rt", "ps")
+    rows = meter.drain(10)
+    assert meter.reopened == 1 and meter.open_count() == 1
+    assert [r.cost_key for r in rows] == ["ps"] and rows[0].usage_source == "derived"
+    assert any("cost_evidence_reopened" in r.getMessage() for r in caplog.records)
+    meter.avatar_close("ps")
+    assert len(meter.drain(10)) == 1  # and the new one closes normally
+    meter.avatar_idle_bound_s = 0.0
+
+
+def test_an_avatar_opened_during_start_knows_its_identity_before_bind(meter):
+    """sessions_start announces the identity, backend.start opens the avatar (in a worker thread
+    and on the provider loop), and the start then FAILS: no bind ever happens."""
+    meter._ids.pop("rt", None)
+
+    async def scenario():
+        token = meter.expect(TENANT, "biz", "g1")
+        try:
+            loop = asyncio.new_event_loop()
+            runner = threading.Thread(target=loop.run_forever, daemon=True)
+            runner.start()
+
+            def start():  # what LemonSlice.start does: hop onto its own loop
+                async def open_then_fail():
+                    meter.avatar_open("rt", "ps-start")
+                    raise RuntimeError("start failed after the provider session existed")
+
+                return asyncio.run_coroutine_threadsafe(open_then_fail(), loop).result()
+
+            with pytest.raises(RuntimeError):
+                await asyncio.to_thread(start)
+            loop.call_soon_threadsafe(loop.stop)
+        finally:
+            meter.expect_reset(token)
+
+    asyncio.run(scenario())
+    assert meter.open_count() == 1
+    meter.avatar_close("ps-start")  # the rollback teardown: still no bind
+    sample = meter.drain(1)[0]
+    assert sample.identity == IDENTITY and meter.unbound == 0
+
+
+def test_a_session_without_execution_contract_stays_unbound_not_lost(meter):
+    meter.avatar_open("plain", "ps-plain")
+    meter.avatar_close("ps-plain")
+    assert meter.unbound == 1 and meter.lost == 0 and meter.drain(1) == []
