@@ -237,8 +237,8 @@ class FastReducer:
                 )
             state.pending.append(comment)
             state.pending = state.pending[-self._config.max_pending :]
-            if state.retry_at == float("inf"):
-                state.failures, state.retry_at = 0, 0.0
+            if len(state.provenance) > 4 * self._config.max_pending:
+                self._prune(state, session_id)  # bounded even while embedding is down
             if state.first_pending_ts is None:
                 state.first_pending_ts = comment.ts
             # Provenance travels beside the store (P0-FB-014): a retried
@@ -461,13 +461,18 @@ class FastReducer:
         state.wake_event.clear()
         state.failures, state.retry_at = 0, 0.0
         state.demand = state.demand[-self._config.max_pending :]
-        active_ids = {d["comment_id"] for d in state.demand}
-        active_ids.update(c.comment_id for c in state.pending)
-        state.cache = {cid: entry for cid, entry in state.cache.items() if cid in active_ids}
-        state.provenance = {
-            cid: record for cid, record in state.provenance.items() if cid in active_ids
-        }
+        self._prune(state, session_id)
         return batch
+
+    def _prune(self, state: _SessionState, session_id: str) -> None:
+        """Keep cache only for recent demand/pending; provenance for everything still
+        referenced (pending or a live cluster member) so decisions keep their source ids."""
+        pending_ids = {c.comment_id for c in state.pending}
+        cache_ids = {d["comment_id"] for d in state.demand} | pending_ids
+        state.cache = {cid: entry for cid, entry in state.cache.items() if cid in cache_ids}
+        store = self._stores.get(session_id)
+        live = pending_ids | (store.live_member_ids() if store is not None else set())
+        state.provenance = {cid: rec for cid, rec in state.provenance.items() if cid in live}
 
     # ------------------------------------------------------------------
     # Reconciliation (5.5-5.6) — invoked by the caller when due; never on the
@@ -575,9 +580,9 @@ class FastReducer:
                         state = self._sessions.get(session_id)
                         if state is not None:
                             state.failures += 1
-                            state.retry_at = (
-                                now + state.failures if state.failures < 3 else float("inf")
-                            )
+                            # backoff 1s, 2s, 3s, then a steady 60s; the batch is kept
+                            state.retry_at = now + (state.failures if state.failures < 3 else 60.0)
+                            self._prune(state, session_id)
                         logger.exception("reducer batch deferred session=%s", session_id)
                     drained = True
             if drained:

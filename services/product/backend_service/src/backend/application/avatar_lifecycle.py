@@ -29,8 +29,10 @@ class AvatarLifecycle:
         )
 
         d = self.d
+        absent = False
         try:
             meta = await d.store.get(session_id)
+            absent = not meta
             if meta:
                 d.backend.set_session_phase(
                     session_id, meta.get("execution_contract", {}).get("phase", "ready")
@@ -46,6 +48,16 @@ class AvatarLifecycle:
         if not reason:
             return
         self.pending[session_id] = reason
+        if receipt and absent and not receipt.get("prepare_meta"):
+            # Terminal record/meta already settled; only the paid media is owed.
+            await _release_media(d, session_id)
+            if receipt.get("stopped"):
+                _media_receipts(d).pop(session_id, None)
+                self.pending.pop(session_id, None)
+                self.next_attempt.pop(session_id, None)
+            else:
+                self.next_attempt[session_id] = asyncio.get_running_loop().time() + 60
+            return
         try:
             async with _locked(d.store, session_id) as fence:
                 meta = copy.deepcopy(await d.store.get(session_id))

@@ -1728,5 +1728,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             return None
         return {
             "playback_started_at": sess.channel.playback_started_at.get(utterance_id),
-            "playback_unconfirmed": utterance_id in sess.unconfirmed,
+            # A late completion retires the record, which clears the doubt.
+            "playback_unconfirmed": utterance_id in sess.unconfirmed
+            and sess.channel.is_unfinished(utterance_id),
         }

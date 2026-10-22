@@ -199,39 +199,43 @@ class OpenAICompatibleClient:
                     url,
                     json=body,
                     headers=self._headers(),
-                    timeout=self._timeout,
+                    timeout=deadline.http_timeout(self._timeout),
                     extensions={"trace": deadline.trace},
                 ) as resp:
                     deadline.response = resp
                     deadline.capture(resp.extensions.get("network_stream"))
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        deadline.check()
-                        if not line or line.startswith(":"):
-                            continue
-                        if line.startswith("data: "):
-                            payload = line[6:].strip()
-                            if payload == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(payload)
-                                reported = chunk.get("usage")
-                                if usage is not None and isinstance(reported, dict):
-                                    usage.update(
-                                        prompt_tokens=reported.get("prompt_tokens"),
-                                        completion_tokens=reported.get("completion_tokens"),
-                                    )
-                                choices = chunk.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    if content:
-                                        deadline.content.set()
-                                        started = True
-                                        yield content
-                            except json.JSONDecodeError:
+                    try:
+                        resp.raise_for_status()
+                        for line in resp.iter_lines():
+                            deadline.check()
+                            if not line or line.startswith(":"):
                                 continue
-                    deadline.check()
+                            if line.startswith("data: "):
+                                payload = line[6:].strip()
+                                if payload == "[DONE]":
+                                    break
+                                try:
+                                    chunk = json.loads(payload)
+                                    reported = chunk.get("usage")
+                                    if usage is not None and isinstance(reported, dict):
+                                        usage.update(
+                                            prompt_tokens=reported.get("prompt_tokens"),
+                                            completion_tokens=reported.get("completion_tokens"),
+                                        )
+                                    choices = chunk.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            deadline.content.set()
+                                            started = True
+                                            yield content
+                                except json.JSONDecodeError:
+                                    continue
+                        deadline.check()
+                    finally:
+                        # Before the with-exit hands the connection back to the pool.
+                        deadline.release()
                 return
             except TimeoutError as exc:
                 raise LLMClientError("LLM stream deadline exceeded or cancelled") from exc

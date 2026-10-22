@@ -767,6 +767,9 @@ class ClusterStore:
         """Total clusters currently held (public read for the reducer seam)."""
         return len(self._clusters)
 
+    def live_member_ids(self) -> set[str]:
+        return {cid for c in self._clusters.values() for cid in c.member_ids}
+
     def stats(self) -> dict:
         """Content-safe counters (no raw viewer text)."""
         failure = self.last_reconciliation_failure

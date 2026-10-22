@@ -6,6 +6,8 @@ import socket
 import threading
 import time
 
+import httpx
+
 
 TOTAL_TIMEOUT_S = 60.0
 FIRST_CONTENT_TIMEOUT_S = 15.0
@@ -30,6 +32,8 @@ class StreamDeadline:
         self.expired = threading.Event()
         self.cancel = _CANCEL.get()
         self.sock = None
+        self._lock = threading.Lock()  # owns sock/response vs the watcher
+        self.released = False
         self.response = None
         self.worker = threading.Thread(target=self._watch, daemon=True)
 
@@ -44,13 +48,30 @@ class StreamDeadline:
             raise TimeoutError("LLM streaming deadline/cancellation exceeded")
 
     def _interrupt(self):
-        if self.sock is not None:
-            try:
-                self.sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-        if self.response is not None:
-            self.response.close()
+        # Under the lock: once released the connection may belong to another request.
+        with self._lock:
+            if self.released:
+                return
+            if self.sock is not None:
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            if self.response is not None:
+                self.response.close()
+
+    def release(self):
+        """Give up ownership BEFORE httpx can return the connection to its pool."""
+        with self._lock:
+            self.released = True
+            self.sock = self.response = None
+
+    def http_timeout(self, per_op):
+        """Per-request httpx budget: connect/pool/write/read never outlive the deadline."""
+        now = time.monotonic()
+        limit = self.total if self.content.is_set() else min(self.first, self.total)
+        budget = max(0.001, min(per_op, limit - now))
+        return httpx.Timeout(budget)
 
     def _watch(self):
         while not self.done.wait(0.02):

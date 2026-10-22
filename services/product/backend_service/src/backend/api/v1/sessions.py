@@ -561,7 +561,10 @@ async def stop_session_internal(d: Any, session_id: str) -> dict[str, Any]:
 
     async with _locked(d.store, session_id) as fence:
         result = await _stop_cancelled_session(d, session_id, fence)
-    _media_receipts(d).pop(session_id, None)
+    # The terminal record may be complete while the provider still bills: the
+    # receipt (retry obligation) goes away only once media is confirmed stopped.
+    if _media_receipts(d).get(session_id, {}).get("stopped"):
+        _media_receipts(d).pop(session_id, None)
     return result
 
 

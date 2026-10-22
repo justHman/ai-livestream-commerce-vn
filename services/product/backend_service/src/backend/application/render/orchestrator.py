@@ -837,9 +837,11 @@ class StreamOrchestrator:
             if playback_info is not None:
                 info = playback_info(session_id, audio_window.utterance_id)
                 if info and info.get("playback_unconfirmed"):
-                    raise PlaybackUnconfirmed(
+                    exc = PlaybackUnconfirmed(
                         "Avatar chưa xác nhận phát xong; đã dừng lượt nói tiếp."
                     )
+                    exc.utterance_id = audio_window.utterance_id
+                    raise exc
 
     def _remaining_deadline(self, chunker: TextChunker) -> float | None:
         """Seconds until the buffer latency deadline, or None when no deadline.

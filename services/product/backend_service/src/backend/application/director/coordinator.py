@@ -53,6 +53,7 @@ from .state import StreamState
 from backend.application.render.locks import SessionLockRegistry
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
+from backend.application.clients.tts.self_hosted import TTSClientError
 from ..render.orchestrator import PlaybackUnconfirmed, StreamOrchestrator, StreamingControllerConfig
 from ..text_chunker import FixedChunkPolicyConfig
 from ..script_authoring.approved_speech import SpeechRejected
@@ -214,7 +215,11 @@ class DirectorCoordinator:
         # viewer-demand input; False/absent = the legacy raw-comment feed.
         # Runtime engineering selector, NOT a Product Rule.
         self._reducer_mode: set[str] = set()
-        self._uncertain_playback: set[str] = set()
+        # Unconfirmed avatar playback: bounded recovery, never a permanent freeze.
+        self._uncertain_playback: dict[str, float] = {}  # session -> frozen until (monotonic)
+        self._unconfirmed_streak: dict[str, int] = {}
+        self._tts_failures: dict[str, int] = {}  # consecutive TTS/empty-audio failures
+        self._recovery_tasks: dict[str, asyncio.Task] = {}
         # Sessions whose 013 truthful-outcome opt-in actually fired. Reducer
         # mode refuses to decide for a session that is not in here.
         self._reducer_ready: set[str] = set()
@@ -398,7 +403,12 @@ class DirectorCoordinator:
                 task.cancel()
         if self.approved_speech is not None:
             self.approved_speech.cleanup(session_id)
-        self._uncertain_playback.discard(session_id)
+        self._uncertain_playback.pop(session_id, None)
+        self._unconfirmed_streak.pop(session_id, None)
+        self._tts_failures.pop(session_id, None)
+        recovery = self._recovery_tasks.pop(session_id, None)
+        if recovery is not None and not recovery.done():
+            recovery.cancel()
         entry = (
             self._orchestrator_registry.get(session_id)
             if self._orchestrator_registry is not None
@@ -546,7 +556,8 @@ class DirectorCoordinator:
     # -- P0-FB-016 Hold / closing start fence ---------------------------------
     def _frozen(self, session_id: str) -> bool:
         """Held, closing or ending: ingest continues, no new turn starts."""
-        return session_id in self._uncertain_playback or (
+        until = self._uncertain_playback.get(session_id)
+        return (until is not None and time.monotonic() < until) or (
             self.approved_speech is not None and bool(self.approved_speech.blocked(session_id))
         )
 
@@ -587,10 +598,56 @@ class DirectorCoordinator:
                         self._record_cancelled(session_id, decision, "hard_expired")
                         expired.append(decision.turn_id)
             self._last_tick[session_id] = ds.now()
+        self._clear_unconfirmed(session_id)  # a merchant Resume always unlocks
         event = self._playback_events.get(session_id)
         if event is not None:
             event.set()
         return expired
+
+    # -- unconfirmed avatar playback: bounded recovery ---------------------------
+    TTS_MAX_CONSECUTIVE_FAILURES = 3
+    UNCONFIRMED_GRACE_S = 3.0  # wait for a late completion before draining the buffer
+    UNCONFIRMED_MAX_STREAK = 3  # consecutive unconfirmed utterances before it is severe
+
+    def _clear_unconfirmed(self, session_id: str) -> None:
+        self._uncertain_playback.pop(session_id, None)
+        self._unconfirmed_streak.pop(session_id, None)
+        task = self._recovery_tasks.pop(session_id, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _recover_unconfirmed(self, session_id: str, utterance_id: str) -> None:
+        """Wait briefly for the late completion; else drain the avatar buffer, then unfreeze.
+
+        No replay: the avatar may still be speaking the old audio, so replaying would
+        double it. A late completion resets the streak; only repeated failures are severe.
+        """
+        deadline = time.monotonic() + self.UNCONFIRMED_GRACE_S
+        confirmed = False
+        while time.monotonic() < deadline:
+            info_fn = getattr(self._backend, "playback_info", None)
+            info = info_fn(session_id, utterance_id) if info_fn is not None else None
+            if not info or not info.get("playback_unconfirmed"):
+                confirmed = True
+                break
+            await asyncio.sleep(min(0.1, self.UNCONFIRMED_GRACE_S / 10))
+        if confirmed:
+            self._unconfirmed_streak.pop(session_id, None)
+        else:
+            try:
+                await asyncio.to_thread(self._backend.interrupt, session_id)
+            except Exception:
+                logger.warning("unconfirmed playback drain failed session=%s", session_id)
+            if self._unconfirmed_streak.get(session_id, 0) >= self.UNCONFIRMED_MAX_STREAK:
+                logger.error("playback unconfirmed repeatedly session=%s", session_id)
+                self._uncertain_playback[session_id] = float("inf")
+                if self.runtime_failures is not None:
+                    self.runtime_failures.fail(session_id, PlaybackUnconfirmed("repeated"), None)
+                return
+        self._uncertain_playback.pop(session_id, None)
+        event = self._playback_events.get(session_id)
+        if event is not None:
+            event.set()
 
     def ingest(
         self,
@@ -1680,6 +1737,8 @@ class DirectorCoordinator:
             )
             history.append(completed)
             st.decisions_emitted += 1
+            self._unconfirmed_streak.pop(session_id, None)
+            self._tts_failures.pop(session_id, None)
             st.last_decision_ts = time.monotonic()
             ds = self._runtime._sessions.get(session_id)
             if ds is not None:
@@ -1709,14 +1768,22 @@ class DirectorCoordinator:
                 # delivery: no later unit may play ahead of this one.
                 self._invalidate_queued(session_id, reason="unit_failed")
             if isinstance(exc, PlaybackUnconfirmed):
-                self._uncertain_playback.add(session_id)
+                streak = self._unconfirmed_streak.get(session_id, 0) + 1
+                self._unconfirmed_streak[session_id] = streak
+                self._uncertain_playback[session_id] = time.monotonic() + self.UNCONFIRMED_GRACE_S
                 self._invalidate_queued(session_id, reason="playback_unconfirmed")
+                old = self._recovery_tasks.get(session_id)
+                if old is not None and not old.done():
+                    old.cancel()
+                self._recovery_tasks[session_id] = asyncio.create_task(
+                    self._recover_unconfirmed(session_id, getattr(exc, "utterance_id", ""))
+                )
                 logger.error(
                     "playback unconfirmed session=%s turn=%s; no automatic replay",
                     session_id,
                     decision.turn_id,
                 )
-            if self.runtime_failures is not None:
+            if self.runtime_failures is not None and not isinstance(exc, PlaybackUnconfirmed):
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):
                     logger.warning(
@@ -1743,7 +1810,15 @@ class DirectorCoordinator:
                 ):
                     self._record_cancelled(session_id, decision, "generation_revision")
                     return True
-                self.runtime_failures.fail(session_id, exc, decision.revision_token)
+                if isinstance(exc, TTSClientError):
+                    # Empty/invalid audio: the cursor did not advance, so the next turn
+                    # retries; only repeated consecutive failures end the session.
+                    self._tts_failures[session_id] = self._tts_failures.get(session_id, 0) + 1
+                if (
+                    not isinstance(exc, TTSClientError)
+                    or self._tts_failures[session_id] >= self.TTS_MAX_CONSECUTIVE_FAILURES
+                ):
+                    self.runtime_failures.fail(session_id, exc, decision.revision_token)
                 logger.error(
                     "speech pipeline failed session=%s turn=%s class=%s detail=%s",
                     session_id,

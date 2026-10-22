@@ -463,6 +463,10 @@ class AvatarAudioChannel:
         except Exception as exc:
             self._break(f"stream abort failed error_type={type(exc).__name__}")
 
+    def is_unfinished(self, utterance_id: str) -> bool:
+        """True while a timed-out utterance has no matched completion (late finish retires it)."""
+        return utterance_id in self._by_id
+
     async def wait_finished(self, utterance_id: str, timeout_s: float) -> bool:
         """True only if ``lk.playback_finished`` was matched to THIS utterance (even if early)."""
         rec = self._by_id.get(utterance_id)
