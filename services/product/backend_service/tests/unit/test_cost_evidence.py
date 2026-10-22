@@ -1075,3 +1075,26 @@ async def test_cost_retry_backoff_is_bounded_after_long_outage(meter, failures):
     now[0] = 131.0
     await sender.drain_cost()
     assert len(outbox.rows) == 1 and sender._cost_failures == 0
+
+
+@pytest.mark.parametrize("attempts", [1, 1023, 1024, 1025, 5000, 10**6])
+def test_outbox_deliver_backoff_never_overflows(attempts):
+    from backend.application.terminal_outcomes import backoff_seconds
+
+    assert backoff_seconds(attempts, base=1.0, cap=300.0, rng=lambda: 1.0) <= 300.0
+    assert backoff_seconds(1025, base=1.0, cap=300.0, rng=lambda: 1.0) == 300.0
+
+
+async def test_cost_backoff_max_is_30s_and_never_raises_over_5000_failures(meter):
+    now = [0.0]
+    outbox = FakeOutbox(fail=5000)
+    sender = UsageSender(outbox, UsageEvidenceSettings(), cost=meter, clock=lambda: now[0])
+    llm(meter, "long")
+    for _ in range(5000):
+        now[0] += 1000.0
+        await sender.drain_cost()
+        assert sender._cost_retry_at - now[0] <= 30.0
+    assert sender._cost_failures == 5000 and meter.lost == 0
+    now[0] += 1000.0
+    await sender.drain_cost()
+    assert sender._cost_failures == 0 and len(outbox.rows) == 1
