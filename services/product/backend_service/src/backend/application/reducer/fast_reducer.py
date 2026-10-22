@@ -597,9 +597,12 @@ class FastReducer:
                 return
             state = self._sessions[session_id]
             state.wake_event.clear()
+            waiter = asyncio.ensure_future(state.wake_event.wait())
             try:
-                await asyncio.wait_for(state.wake_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
+                done, _ = await asyncio.wait({waiter}, timeout=remaining)
+            finally:
+                waiter.cancel()
+            if not done:
                 return
 
     async def run_loop(self) -> None:
@@ -643,10 +646,13 @@ class FastReducer:
             if remaining == float("inf"):
                 await self._any_wake.wait()
                 continue
+            # asyncio.wait, not wait_for: on Python 3.11 wait_for swallows a cancel that
+            # arrives together with the wake, so Stop/shutdown could hang forever.
+            waiter = asyncio.ensure_future(self._any_wake.wait())
             try:
-                await asyncio.wait_for(self._any_wake.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                continue  # deadline matured; loop drains it
+                await asyncio.wait({waiter}, timeout=remaining)
+            finally:
+                waiter.cancel()
 
     # ------------------------------------------------------------------
     # Observability

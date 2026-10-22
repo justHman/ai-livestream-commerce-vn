@@ -624,11 +624,9 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
 
         meta, state = await _load(d.store, session_id)
         await failure_monitor.persist_pending_locked(session_id, meta, state, fence)
-    entry = d.orchestrators.get(session_id)
-    if entry is not None:
-        orchestrator = entry["orchestrator"]
-        await orchestrator.cancel(session_id)
-    await _release_media(d, session_id)  # no-op once stopped; retries a deferred stop
+    await _release_media(
+        d, session_id
+    )  # cancels the orchestrator, then stops media; no-op once stopped
     backend_error = _media_receipts(d).get(session_id, {}).get("error")
     if backend_error and getattr(d, "terminal_outcomes", None) is None:
         raise HTTPException(status_code=503, detail={"code": "media_cleanup_retry", "retry": True})

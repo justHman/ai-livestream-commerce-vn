@@ -407,6 +407,7 @@ class _Server:
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen(4)
+        self.sock.settimeout(5)  # never block forever
         self.handler, self.stop = handler, threading.Event()
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -442,7 +443,13 @@ class _Server:
             conn.close()
 
     def close(self):
+        import socket
+
         self.stop.set()
+        try:  # wake the blocked accept(): closing alone does not interrupt it on Linux
+            socket.create_connection(self.sock.getsockname(), timeout=1).close()
+        except OSError:
+            pass
         self.sock.close()
 
 
