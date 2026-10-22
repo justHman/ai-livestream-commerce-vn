@@ -513,3 +513,97 @@ def test_llm_retry_without_stream_options_gets_a_fresh_deadline():
         assert out == ["x"]
     finally:
         server.close()
+
+
+@pytest.mark.asyncio
+async def test_run_loop_backoff_doubles_and_bisects_from_second_failure():
+    now = [1001.0]
+
+    class Broken:
+        def encode(self, texts):
+            raise RuntimeError("down")
+
+    reducer = FastReducer(embedder=Broken(), now_fn=lambda: now[0])
+    for cid in ("a", "b", "c", "d"):
+        reducer.notify_new_events("s", comment(cid))
+    state = reducer._sessions["s"]
+    task = asyncio.create_task(reducer.run_loop())
+    seen = []
+    try:
+        for attempt in range(1, 4):
+            for _ in range(200):
+                if state.failures == attempt:
+                    break
+                await asyncio.sleep(0.005)
+            assert state.failures == attempt
+            seen.append((state.retry_at - now[0], state.batch_limit))
+            now[0] += 100
+            reducer.notify_new_events("s")
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert seen == [(1.0, None), (2.0, 2), (4.0, 1)]
+
+
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_llm_http_error_is_an_llm_client_error_with_body(status):
+    from backend.application.clients.llm import LLMClientError
+
+    def handler(conn, n):
+        conn.recv(65536)
+        body = b"nope"
+        conn.sendall(
+            b"HTTP/1.1 %d X\r\nContent-Length: 4\r\nConnection: close\r\n\r\n" % status + body
+        )
+        return False
+
+    server = _Server(handler)
+    try:
+        with pytest.raises(LLMClientError, match=f"HTTP {status} nope"):
+            _stream(server, total=5, first=5)
+    finally:
+        server.close()
+
+
+@pytest.mark.asyncio
+async def test_sweeper_does_not_fail_an_end_that_is_waiting_for_provider_stop():
+    import threading
+    from backend.api.v1.sessions import stop_session_internal
+    from backend.application.avatar_lifecycle import AvatarLifecycle
+    from backend.application.execution_contract import ExecutionState
+    from .test_avatar_lifecycle import container
+
+    entered, release, calls = threading.Event(), threading.Event(), []
+
+    def stop(sid):
+        calls.append(sid)
+        entered.set()
+        release.wait(5)
+
+    d = container(
+        SimpleNamespace(
+            stop=stop,
+            session_ids=lambda: (),
+            set_session_phase=lambda *a: None,
+            lifecycle_status=lambda *a: None,
+        )
+    )
+    raw = ExecutionState(
+        tenant_id="t",
+        business_session_id="b",
+        runtime_session_id="s",
+        generation="g1",
+        phase="ready",
+        runtime_ready=True,
+    )
+    await d.store.set("s", {"execution_contract": raw.model_dump(mode="json")})
+    end = asyncio.create_task(stop_session_internal(d, "s"))
+    await asyncio.to_thread(entered.wait, 5)
+    service = AvatarLifecycle(d)
+    await service.check("s")  # sweeper runs while the End waits for stop
+    meta = await d.store.get("s")
+    assert meta["execution_contract"]["phase"] == "ready"
+    assert "avatar_stop_reason" not in meta and "s" not in service.pending
+    release.set()
+    await end
+    assert calls == ["s"] and "s" not in d.media_cleanup_pending

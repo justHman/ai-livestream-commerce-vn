@@ -583,6 +583,7 @@ async def _release_media(d: Any, session_id: str) -> None:
     entry = d.orchestrators.get(session_id)
     if entry is not None:
         await entry["orchestrator"].cancel(session_id)
+    receipt["inflight"] = True  # the lifecycle sweeper must not treat this wait as a failure
     try:
         await asyncio.to_thread(d.backend.stop, session_id)
     except KeyError:
@@ -607,6 +608,8 @@ async def _release_media(d: Any, session_id: str) -> None:
         )
     else:
         receipt["stopped"] = True
+    finally:
+        receipt["inflight"] = False
     if receipt["stopped"]:
         receipt.pop("error", None)
         from backend.application.usage_evidence.cost import cost_meter

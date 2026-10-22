@@ -40,24 +40,28 @@ class AvatarLifecycle:
         except Exception:
             log.warning("avatar safety using local phase session=%s", session_id)
         receipt = _media_receipts(d).get(session_id)
-        reason = self.pending.get(session_id) or (
-            "CLEANUP_PENDING"
-            if receipt
-            else await asyncio.to_thread(d.backend.lifecycle_status, session_id, self.ready_ttl_s)
+        if receipt and not self.pending.get(session_id) and not receipt.get("prepare_meta"):
+            # A bare cleanup receipt is a retry obligation, never a media-failure
+            # signal: an End command may be waiting on backend.stop right now, and a
+            # successful stop must keep that End's own outcome (not FAILED).
+            if receipt.get("inflight"):
+                return
+            await _release_media(d, session_id)
+            if not receipt.get("stopped"):
+                self.next_attempt[session_id] = asyncio.get_running_loop().time() + 60
+            elif absent:
+                _media_receipts(d).pop(session_id, None)
+                self.next_attempt.pop(session_id, None)
+            else:
+                await stop_session_internal(d, session_id)  # settle with the stored outcome
+                self.next_attempt.pop(session_id, None)
+            return
+        reason = self.pending.get(session_id) or await asyncio.to_thread(
+            d.backend.lifecycle_status, session_id, self.ready_ttl_s
         )
         if not reason:
             return
         self.pending[session_id] = reason
-        if receipt and absent and not receipt.get("prepare_meta"):
-            # Terminal record/meta already settled; only the paid media is owed.
-            await _release_media(d, session_id)
-            if receipt.get("stopped"):
-                _media_receipts(d).pop(session_id, None)
-                self.pending.pop(session_id, None)
-                self.next_attempt.pop(session_id, None)
-            else:
-                self.next_attempt[session_id] = asyncio.get_running_loop().time() + 60
-            return
         try:
             async with _locked(d.store, session_id) as fence:
                 meta = copy.deepcopy(await d.store.get(session_id))

@@ -623,7 +623,6 @@ class FastReducer:
                     except Exception:
                         state = self._sessions.get(session_id)
                         if state is not None:
-                            state.failures += 1
                             self._note_failure(state, session_id, now)
                         logger.exception("reducer batch deferred session=%s", session_id)
                     drained = True

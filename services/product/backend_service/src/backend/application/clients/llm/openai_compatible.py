@@ -205,6 +205,11 @@ class OpenAICompatibleClient:
                     headers=self._headers(),
                     timeout=deadline.http_timeout(self._timeout),
                 ) as resp:
+                    if resp.status_code >= 400:
+                        try:
+                            resp.read()  # inside the with: the body is gone once it closes
+                        except httpx.HTTPError:
+                            pass
                     resp.raise_for_status()
                     for line in resp.iter_lines():
                         deadline.check()
@@ -244,7 +249,6 @@ class OpenAICompatibleClient:
                     body.pop("stream_options")
                     continue
                 try:
-                    resp.read()  # a streaming error body is unread until now
                     detail = (resp.text or "")[:300]
                 except httpx.HTTPError:
                     detail = ""
