@@ -45,7 +45,18 @@ def _start_reducer_loop(container: BootstrapContainer) -> None:
     reducer = getattr(container, "reducer", None)
     if reducer is None:
         return
-    container.reducer_loop_task = asyncio.create_task(reducer.run_loop(), name="reducer-loop")
+
+    async def supervise():
+        while True:
+            try:
+                await reducer.run_loop()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("reducer worker failed; restarting")
+            await asyncio.sleep(1.0)
+
+    container.reducer_loop_task = asyncio.create_task(supervise(), name="reducer-loop")
 
 
 async def _stop_reducer_loop(container: BootstrapContainer) -> None:

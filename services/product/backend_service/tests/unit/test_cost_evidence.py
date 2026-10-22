@@ -118,8 +118,8 @@ class _Tts:
     name = "fake"
 
     def stream_audio(self, phrase, *, session_id, utterance_id):
-        yield SimpleNamespace(duration_ms=300)
-        yield SimpleNamespace(duration_ms=200)
+        yield SimpleNamespace(duration_ms=300, pcm=b"\x00\x00", sample_rate=16000)
+        yield SimpleNamespace(duration_ms=200, pcm=b"\x00\x00", sample_rate=16000)
 
 
 def _run_tts(phrase_seq, text="xin chao", tts=None):
@@ -141,7 +141,7 @@ def test_tts_phrases_of_one_utterance_make_separate_rows_and_a_retry_a_new_attem
 def test_tts_row_is_recorded_even_when_the_provider_fails_midway(meter):
     class Boom(_Tts):
         def stream_audio(self, phrase, *, session_id, utterance_id):
-            yield SimpleNamespace(duration_ms=100)
+            yield SimpleNamespace(duration_ms=100, pcm=b"\x00\x00", sample_rate=16000)
             raise RuntimeError("tts down")
 
     with pytest.raises(RuntimeError):

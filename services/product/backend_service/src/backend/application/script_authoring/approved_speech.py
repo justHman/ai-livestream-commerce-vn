@@ -359,6 +359,8 @@ class ApprovedSpeech:
         self.source = source
         self._pinned: dict[str, ExecutionEnvelope] = {}
         self._epochs: dict[str, int] = {}
+        self._next_epoch = 0
+        self._llm_cancellations: dict[str, set[Any]] = {}
         # natural answers already judged: (product id, text) per session
         self._said_ok: dict[str, set[tuple[str, str]]] = {}
         # P0-FB-016 start fence: "held", "closing" or "ending". Unlike the
@@ -373,7 +375,30 @@ class ApprovedSpeech:
         self.lease_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     def cancel(self, session_id: str) -> None:
-        self._epochs[session_id] = self._epochs.get(session_id, 0) + 1
+        for event in self._llm_cancellations.get(session_id, ()):
+            event.set()
+        self._next_epoch += 1
+        self._epochs[session_id] = self._next_epoch
+
+    def _epoch(self, session_id: str) -> int:
+        if session_id not in self._epochs:
+            self.cancel(session_id)
+        return self._epochs[session_id]
+
+    def cleanup(self, session_id: str) -> None:
+        # Tokens are globally unique, so removing the epoch cannot revive an old
+        # thread, even if this session id is reused. No growing tombstone map.
+        self.cancel(session_id)
+        for mapping in (
+            self._pinned,
+            self._said_ok,
+            self._epochs,
+            self._blocked,
+            self._lease_expiry,
+        ):
+            mapping.pop(session_id, None)
+        self._runtime_failed.discard(session_id)
+        self._llm_cancellations.pop(session_id, None)
 
     def block(self, session_id: str, reason: str | None) -> None:
         if reason is None:
@@ -419,6 +444,7 @@ class ApprovedSpeech:
         self._said_ok.pop(session_id, None)
 
     async def resolve(self, session_id: str) -> ExecutionEnvelope:
+        epoch = self._epoch(session_id)
         meta = await self.store.get(session_id)
         if not meta or meta.get("status") not in ("active",):
             raise SpeechRejected("inactive_session")
@@ -526,6 +552,7 @@ class ApprovedSpeech:
                 tuple(products),
             )
             envelope.check_time()
+            self._fence(session_id, epoch, lambda: True)
             pinned = self._pinned.setdefault(session_id, envelope)
             if pinned != envelope:
                 raise SpeechRejected("stale_execution_envelope")
@@ -549,7 +576,7 @@ class ApprovedSpeech:
         completed_text: str = "",
         question_text: str | None = None,
     ) -> ValidatedSpeech:
-        epoch = self._epochs.get(session_id, 0)
+        epoch = self._epoch(session_id)
         if route != "director":
             # Director turns may be prepared while held; they wait at the
             # coordinator start boundary. Any other route would start now.
@@ -584,10 +611,8 @@ class ApprovedSpeech:
                 if route != "director":
                     self.check_start(session_id)
                 return speech
-            if llm is None or getattr(llm, "name", "none") == "none":
-                raise SpeechRejected("generation_unavailable")
             answers = [answer for p in candidates for answer in p.answers()]
-            if not answers:
+            if not answers or llm is None or getattr(llm, "name", "none") == "none":
                 # nothing approved to say: never improvise
                 text, trusted = deflection_for(question, []), True
             else:
@@ -602,8 +627,21 @@ class ApprovedSpeech:
                     text, trusted = wrap_natural(question_text or text, natural), True
                 else:
                     self._fence(session_id, epoch, live)  # a cancelled turn starts no fallback call
-                    text = await self._select(llm, session_id, epoch, live, text, answers)
-                    if text in answers:
+                    try:
+                        text = await self._select(llm, session_id, epoch, live, text, answers)
+                    except SpeechRejected:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "answer fallback unavailable session=%s error_type=%s",
+                            session_id,
+                            type(exc).__name__,
+                        )
+                        self._fence(session_id, epoch, live)
+                        text = DEFLECTION
+                    if text == DEFLECTION:
+                        trusted = True
+                    elif text in answers:
                         generated = True  # only a whole approved fact is valid
                     else:
                         text, trusted = deflection_for(question, answers), True
@@ -645,21 +683,44 @@ class ApprovedSpeech:
             raise SpeechRejected("cancelled_speech")
 
     async def _run_llm(self, llm, request, session_id, epoch, live) -> str:
+        import threading
+        from backend.application.clients.llm.stream_deadline import (
+            TOTAL_TIMEOUT_S,
+            streaming_cancellation,
+        )
+
         self._fence(session_id, epoch, live)
+        cancelled = threading.Event()
+        events = self._llm_cancellations.setdefault(session_id, set())
+        events.add(cancelled)
 
         def collect():
             parts = []
             size = 0
-            for chunk in llm.stream_chunks(request, session_id=session_id):
-                if epoch != self._epochs.get(session_id, 0) or not live():
-                    raise SpeechRejected("cancelled_speech")
-                size += len(chunk.text)
-                if size > 16000:
-                    raise SpeechRejected("generated_unit_too_large")
-                parts.append(chunk.text)
+            with streaming_cancellation(cancelled):
+                stream = llm.stream_chunks(request, session_id=session_id)
+                try:
+                    for chunk in stream:
+                        if cancelled.is_set():
+                            raise TimeoutError("LLM preparation deadline exceeded")
+                        self._fence(session_id, epoch, live)
+                        size += len(chunk.text)
+                        if size > 16000:
+                            raise SpeechRejected("generated_unit_too_large")
+                        parts.append(chunk.text)
+                finally:
+                    close = getattr(stream, "close", None)
+                    if close is not None:
+                        close()
             return "".join(parts)
 
-        return await asyncio.to_thread(collect)
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(collect), TOTAL_TIMEOUT_S)
+        finally:
+            cancelled.set()
+            events.discard(cancelled)
+            if not events and self._llm_cancellations.get(session_id) is events:
+                self._llm_cancellations.pop(session_id, None)
 
     async def _select(self, llm, session_id, epoch, live, question, answers) -> str:
         from llm.engines.base import LLMRequest

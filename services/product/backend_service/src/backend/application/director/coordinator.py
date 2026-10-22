@@ -53,6 +53,7 @@ from .state import StreamState
 from backend.application.render.locks import SessionLockRegistry
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
+from backend.application.clients.tts.self_hosted import TTSClientError
 from ..render.orchestrator import StreamOrchestrator, StreamingControllerConfig
 from ..text_chunker import FixedChunkPolicyConfig
 from ..script_authoring.approved_speech import SpeechRejected
@@ -214,6 +215,7 @@ class DirectorCoordinator:
         # viewer-demand input; False/absent = the legacy raw-comment feed.
         # Runtime engineering selector, NOT a Product Rule.
         self._reducer_mode: set[str] = set()
+        self._tts_failures: dict[str, int] = {}  # consecutive TTS/empty-audio failures
         # Sessions whose 013 truthful-outcome opt-in actually fired. Reducer
         # mode refuses to decide for a session that is not in here.
         self._reducer_ready: set[str] = set()
@@ -395,6 +397,9 @@ class DirectorCoordinator:
         for task in tasks:
             if task is not None and not task.done():
                 task.cancel()
+        if self.approved_speech is not None:
+            self.approved_speech.cleanup(session_id)
+        self._tts_failures.pop(session_id, None)
         entry = (
             self._orchestrator_registry.get(session_id)
             if self._orchestrator_registry is not None
@@ -551,10 +556,17 @@ class DirectorCoordinator:
             return False
         # ponytail: the Director selection window is the hard-expiry horizon
         # (exact windows REQUIRES_VALIDATION); swap in the validated value.
+        newest = decision.occurred_at_bounds[1]
+        if session_id in self._reducer_mode and newest > 0:
+            # Reducer provenance is wall-clock occurred_at; Director comments
+            # use seconds since attach. Never mix these clocks on resume.
+            return time.time() - newest > ds.director.cfg.selection_window_sec
         seen = {c.id: c.t for c in ds.director.state.rolling_comments}
         times = [seen[i] for i in decision.cluster_member_ids if i in seen]
         # Unknown (pruned) members are older than the window: fail closed.
         return not times or ds.now() - max(times) > ds.director.cfg.selection_window_sec
+
+    TTS_MAX_CONSECUTIVE_FAILURES = 3
 
     def resume(self, session_id: str) -> list[str]:
         """Re-check queued Q&A age before anything plays; called after unblock.
@@ -1669,6 +1681,7 @@ class DirectorCoordinator:
             )
             history.append(completed)
             st.decisions_emitted += 1
+            self._tts_failures.pop(session_id, None)
             st.last_decision_ts = time.monotonic()
             ds = self._runtime._sessions.get(session_id)
             if ds is not None:
@@ -1724,7 +1737,15 @@ class DirectorCoordinator:
                 ):
                     self._record_cancelled(session_id, decision, "generation_revision")
                     return True
-                self.runtime_failures.fail(session_id, exc, decision.revision_token)
+                if isinstance(exc, TTSClientError):
+                    # Empty/invalid audio: the cursor did not advance, so the next turn
+                    # retries; only repeated consecutive failures end the session.
+                    self._tts_failures[session_id] = self._tts_failures.get(session_id, 0) + 1
+                if (
+                    not isinstance(exc, TTSClientError)
+                    or self._tts_failures[session_id] >= self.TTS_MAX_CONSECUTIVE_FAILURES
+                ):
+                    self.runtime_failures.fail(session_id, exc, decision.revision_token)
                 logger.error(
                     "speech pipeline failed session=%s turn=%s class=%s detail=%s",
                     session_id,

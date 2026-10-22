@@ -67,6 +67,7 @@ include = ["backend*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+timeout = 300  # safety net: a hung test fails with a stack dump instead of freezing CI
 testpaths = ["tests"]
 markers = [
   "live: release-evidence E2E requiring real LLM/TTS/avatar gateways (skip when env absent)",

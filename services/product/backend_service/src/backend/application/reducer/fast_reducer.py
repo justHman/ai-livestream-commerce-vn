@@ -136,6 +136,13 @@ class _SessionState:
     embed_calls: int = 0
     cache_hits: int = 0
     wake_notifications: int = 0
+    failures: int = 0
+    inflight: set = field(default_factory=set)  # comment ids of the batch being embedded
+    batch_limit: Optional[int] = None  # bisect: max items per attempt after repeated failure
+    item_failures: dict = field(default_factory=dict)  # comment_id -> failed attempts
+    quarantined: int = 0
+    last_batch: list = field(default_factory=list)
+    retry_at: float = 0.0
     # P0-FB-014: per-session catalog + current product, used by run_once
     # routing in place of the process-global config. Without it two sessions
     # would resolve product candidates against each other's catalog.
@@ -234,6 +241,9 @@ class FastReducer:
                     source_lag_ms(comment.ts),
                 )
             state.pending.append(comment)
+            state.pending = state.pending[-self._config.max_pending :]
+            if len(state.provenance) > 4 * self._config.max_pending:
+                self._prune(state, session_id)  # bounded even while embedding is down
             if state.first_pending_ts is None:
                 state.first_pending_ts = comment.ts
             # Provenance travels beside the store (P0-FB-014): a retried
@@ -336,7 +346,10 @@ class FastReducer:
         state = self._sessions.get(session_id)
         if state is None or state.first_pending_ts is None:
             return None
-        return state.first_pending_ts + self._config.microbatch_max_wait_ms / 1000.0
+        return max(
+            state.retry_at,
+            state.first_pending_ts + self._config.microbatch_max_wait_ms / 1000.0,
+        )
 
     def drain_batch(self, session_id: str, now: float) -> list[AcceptedComment]:
         """Return and clear the pending batch (bounded, oldest dropped).
@@ -371,9 +384,23 @@ class FastReducer:
         it; clustering/ranking are NOT implemented here (C5/C6 scope).
         """
         state = self._sessions.setdefault(session_id, _SessionState())
-        batch = self.drain_batch(session_id, now)
+        # Acknowledge only after successful processing. New arrivals while encode
+        # runs stay pending; a failed encode leaves the original batch retryable.
+        batch = list(state.pending[-self._config.max_pending :])
+        if state.batch_limit is not None:
+            batch = batch[: state.batch_limit]
         if not batch:
             return []
+        state.inflight = {c.comment_id for c in batch}
+        state.last_batch = [c.comment_id for c in batch]
+        try:
+            return await self._process_batch(state, session_id, batch, now)
+        finally:
+            state.inflight = set()
+
+    async def _process_batch(
+        self, state: _SessionState, session_id: str, batch: list, now: float
+    ) -> list[AcceptedComment]:
         new_only = [
             c
             for c in batch
@@ -384,6 +411,10 @@ class FastReducer:
             state.cache_hits += cache_hits
         if new_only:
             vectors = await asyncio.to_thread(self._embedder.encode, [c.text for c in new_only])
+            if self._sessions.get(session_id) is not state:
+                return []  # stopped/replaced while the worker was suspended
+            if len(vectors) != len(new_only):
+                raise ValueError("embedding result count mismatch")
             state.embed_calls += 1
             for comment, vector in zip(new_only, vectors):
                 state.cache[comment.comment_id] = (comment.text, list(vector))
@@ -441,7 +472,51 @@ class FastReducer:
                 )
         # Write-path expiry keeps store memory bounded as the horizon advances (5.4).
         store.expire(now)
+        acknowledged = {id(c) for c in batch}
+        state.pending = [c for c in state.pending if id(c) not in acknowledged]
+        state.first_pending_ts = state.pending[0].ts if state.pending else None
+        state.wake_event.clear()
+        state.failures, state.retry_at = 0, 0.0
+        state.batch_limit = None
+        for c in batch:
+            state.item_failures.pop(c.comment_id, None)
+        state.demand = state.demand[-self._config.max_pending :]
+        self._prune(state, session_id)
         return batch
+
+    MAX_ITEM_FAILURES = 3
+
+    def _note_failure(self, state: _SessionState, session_id: str, now: float) -> None:
+        """Bounded backoff; from the 2nd failure bisect the batch to isolate a poison item,
+        and quarantine (log + drop) a single item that keeps failing alone."""
+        state.failures += 1
+        state.retry_at = now + min(2.0 ** (state.failures - 1), 30.0)
+        batch = state.last_batch
+        for cid in batch:
+            state.item_failures[cid] = state.item_failures.get(cid, 0) + 1
+        if len(batch) == 1 and state.item_failures[batch[0]] >= self.MAX_ITEM_FAILURES:
+            state.pending = [c for c in state.pending if c.comment_id != batch[0]]
+            state.item_failures.pop(batch[0], None)
+            state.quarantined += 1
+            state.batch_limit = None
+            state.failures, state.retry_at = 0, 0.0
+            state.first_pending_ts = state.pending[0].ts if state.pending else None
+            logger.error(
+                "reducer quarantined a comment that cannot be embedded session=%s", session_id
+            )
+        elif state.failures >= 2 and len(batch) > 1:
+            state.batch_limit = max(1, len(batch) // 2)
+        self._prune(state, session_id)
+
+    def _prune(self, state: _SessionState, session_id: str) -> None:
+        """Keep cache only for recent demand/pending; provenance for everything still
+        referenced (pending or a live cluster member) so decisions keep their source ids."""
+        pending_ids = {c.comment_id for c in state.pending} | state.inflight
+        cache_ids = {d["comment_id"] for d in state.demand} | pending_ids
+        state.cache = {cid: entry for cid, entry in state.cache.items() if cid in cache_ids}
+        store = self._stores.get(session_id)
+        live = pending_ids | (store.live_member_ids() if store is not None else set())
+        state.provenance = {cid: rec for cid, rec in state.provenance.items() if cid in live}
 
     # ------------------------------------------------------------------
     # Reconciliation (5.5-5.6) — invoked by the caller when due; never on the
@@ -522,9 +597,12 @@ class FastReducer:
                 return
             state = self._sessions[session_id]
             state.wake_event.clear()
+            waiter = asyncio.ensure_future(state.wake_event.wait())
             try:
-                await asyncio.wait_for(state.wake_event.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
+                done, _ = await asyncio.wait({waiter}, timeout=remaining)
+            finally:
+                waiter.cancel()
+            if not done:
                 return
 
     async def run_loop(self) -> None:
@@ -543,7 +621,13 @@ class FastReducer:
             for session_id in list(self._sessions):
                 deadline = self.pending_deadline(session_id, now)
                 if deadline is not None and deadline <= now:
-                    await self.run_once(session_id, now)
+                    try:
+                        await self.run_once(session_id, now)
+                    except Exception:
+                        state = self._sessions.get(session_id)
+                        if state is not None:
+                            self._note_failure(state, session_id, now)
+                        logger.exception("reducer batch deferred session=%s", session_id)
                     drained = True
             if drained:
                 continue
@@ -559,10 +643,16 @@ class FastReducer:
             session_id, deadline = min(pending, key=lambda item: item[1])
             remaining = max(0.0, deadline - now)
             self._any_wake.clear()
+            if remaining == float("inf"):
+                await self._any_wake.wait()
+                continue
+            # asyncio.wait, not wait_for: on Python 3.11 wait_for swallows a cancel that
+            # arrives together with the wake, so Stop/shutdown could hang forever.
+            waiter = asyncio.ensure_future(self._any_wake.wait())
             try:
-                await asyncio.wait_for(self._any_wake.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                continue  # deadline matured; loop drains it
+                await asyncio.wait({waiter}, timeout=remaining)
+            finally:
+                waiter.cancel()
 
     # ------------------------------------------------------------------
     # Observability

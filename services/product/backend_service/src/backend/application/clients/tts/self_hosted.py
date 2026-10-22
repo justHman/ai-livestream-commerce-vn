@@ -73,6 +73,11 @@ class TTSClientError(RuntimeError):
     """Typed transport failure for a TTS client."""
 
 
+def validate_pcm(pcm: bytes, sample_rate: int) -> None:
+    if not pcm or len(pcm) % 2 or sample_rate <= 0:
+        raise TTSClientError("TTS returned empty or invalid PCM16 audio")
+
+
 VOICES_MAX = 200
 VOICES_INSPECT_MAX = 1_000
 VOICES_BODY_MAX_BYTES = 1_048_576
@@ -446,7 +451,10 @@ class SelfHostedTTSClient:
         resolved_voice = (voice or self._voice_id or "").strip()
         if resolved_voice:
             body["voice"] = resolved_voice
-        pcm = change_tempo(self._stream_openai_pcm(url, body), rate, self._tempo)
+        pcm = self._stream_openai_pcm(url, body)
+        validate_pcm(pcm, rate)
+        pcm = change_tempo(pcm, rate, self._tempo)
+        validate_pcm(pcm, rate)
         duration_ms = int(len(pcm) / (2 * rate) * 1000)
         return TTSResult(
             pcm16=pcm,
@@ -478,6 +486,7 @@ class SelfHostedTTSClient:
         sample_rate = int(resp.headers.get("x-audio-sample-rate", "24000"))
         duration_ms = int(resp.headers.get("x-audio-duration-ms", "0"))
         engine = resp.headers.get("x-audio-engine", "")
+        validate_pcm(resp.content, sample_rate)
         return TTSResult(
             pcm16=resp.content or b"",
             sample_rate=sample_rate,
