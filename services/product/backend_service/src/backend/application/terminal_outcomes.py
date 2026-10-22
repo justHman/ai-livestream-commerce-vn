@@ -231,7 +231,7 @@ def backoff_seconds(
     rng: Callable[[], float] = random.random,
 ) -> float:
     """Capped exponential backoff with jitter (implementation defaults, DR-CONFIG-001)."""
-    delay = min(cap, base * (2 ** max(0, attempts - 1)))
+    delay = min(cap, base * (2 ** min(64, max(0, attempts - 1))))
     return delay * (0.5 + rng() / 2)
 
 

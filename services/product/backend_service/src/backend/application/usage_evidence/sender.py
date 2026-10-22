@@ -621,7 +621,9 @@ class UsageSender:
                     raise
                 except Exception as exc:
                     self._cost_failures += 1
-                    self._cost_retry_at = self._clock() + min(30.0, 0.5 * 2**self._cost_failures)
+                    self._cost_retry_at = self._clock() + min(
+                        30.0, 0.5 * 2 ** min(self._cost_failures, 6)
+                    )
                     logger.warning("cost evidence write failed error_type=%s", type(exc).__name__)
                     break  # the outbox is unwell: back off, everything unwritten stays buffered
                 pending.popleft()
