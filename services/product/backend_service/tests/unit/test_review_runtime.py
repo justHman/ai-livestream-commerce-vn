@@ -75,59 +75,23 @@ async def test_no_tts_windows_does_not_complete_turn(case_factory):
 
 
 @pytest.mark.asyncio
-async def test_unconfirmed_playback_recovers_after_bounded_wait_without_replay(case_factory):
+async def test_unconfirmed_playback_never_freezes_the_live(case_factory, caplog):
+    from backend.application.render.orchestrator import StreamOrchestrator
+
     case = await case_factory()
     co, sid = case.d.coordinator, case.sid
-    co.UNCONFIRMED_GRACE_S = 0.05
-    interrupts = []
-    case.backend.interrupt = lambda s: interrupts.append(s)
-    case.backend.playback_info = lambda *a: {"playback_unconfirmed": True}
-    turn = decision(case)
-    await co._maybe_speak(sid, turn)
-    assert co._completed_speech[sid]["state"] == "playback_unconfirmed"
-    assert not turn.completed_at
-    assert co._frozen(sid)
-    await co._recovery_tasks[sid]
-    assert interrupts == [sid] and not co._frozen(sid)  # buffer drained, then unlocked
-    case.backend.playback_info = lambda *a: {"playback_unconfirmed": False}
-    count = len(case.tts.calls)
-    assert await co._maybe_speak(sid, decision(case))
-    assert len(case.tts.calls) > count and co._unconfirmed_streak.get(sid) is None
-
-
-@pytest.mark.asyncio
-async def test_late_completion_unlocks_and_resets_streak(case_factory):
-    case = await case_factory()
-    co, sid = case.d.coordinator, case.sid
-    co.UNCONFIRMED_GRACE_S = 1.0
-    state = {"unconfirmed": True}
-    case.backend.playback_info = lambda *a: {"playback_unconfirmed": state["unconfirmed"]}
-    interrupts = []
-    case.backend.interrupt = lambda s: interrupts.append(s)
-    await co._maybe_speak(sid, decision(case))
-    assert co._frozen(sid) and co._unconfirmed_streak[sid] == 1
-    state["unconfirmed"] = False  # completion arrives late
-    await co._recovery_tasks[sid]
-    assert not co._frozen(sid) and sid not in co._unconfirmed_streak and not interrupts
-
-
-@pytest.mark.asyncio
-async def test_repeated_unconfirmed_is_severe_and_resume_unlocks(case_factory):
-    case = await case_factory()
-    co, sid = case.d.coordinator, case.sid
-    co.UNCONFIRMED_GRACE_S = 0.02
     failed = []
     co.runtime_failures = SimpleNamespace(fail=lambda *a: failed.append(a), tick=lambda *a: None)
-    case.backend.interrupt = lambda s: None
     case.backend.playback_info = lambda *a: {"playback_unconfirmed": True}
-    for n in range(1, 4):
-        co._uncertain_playback.pop(sid, None)
-        await co._maybe_speak(sid, decision(case))
-        await co._recovery_tasks[sid]
-        assert bool(failed) == (n == 3)
-    assert co._frozen(sid)
-    co.resume(sid)
-    assert not co._frozen(sid) and sid not in co._unconfirmed_streak
+    before = StreamOrchestrator.playback_unconfirmed_total
+    for _ in range(2):  # one and two unconfirmed utterances in a row
+        turn = decision(case)
+        assert await co._maybe_speak(sid, turn)
+        assert co._completed_speech[sid]["state"] == "completed"
+        assert not co._frozen(sid)
+    assert not failed
+    assert StreamOrchestrator.playback_unconfirmed_total == before + 2
+    assert "playback unconfirmed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -226,40 +190,40 @@ async def test_embedding_cache_pruned_to_horizon_and_hard_cap():
 
 
 @pytest.mark.asyncio
-async def test_reducer_backs_off_to_a_slow_retry_and_retains_failed_batch():
-    now = [1001.0]
-    calls = []
+async def test_poison_comment_is_bisected_and_quarantined_while_others_proceed():
+    reducer = FastReducer(embedder=Embedder(), now_fn=lambda: 1001.0)
+    for cid in ("ok1", "broken", "ok2", "ok3"):
+        reducer.notify_new_events("s", comment(cid))
+    state = reducer._sessions["s"]
+    for _ in range(30):
+        if not state.pending:
+            break
+        try:
+            await reducer.run_once("s", 1001.0)
+        except RuntimeError:
+            reducer._note_failure(state, "s", 1001.0)
+    assert not state.pending and state.quarantined == 1
+    done = {d["comment_id"] for d in state.demand}
+    assert done == {"ok1", "ok2", "ok3"}
+    assert "broken" not in state.provenance and not state.item_failures
 
-    class Broken:
+
+@pytest.mark.asyncio
+async def test_inflight_batch_keeps_provenance_when_pending_overflows():
+    holder = {}
+
+    class Overflow:
         def encode(self, texts):
-            calls.append(texts)
-            raise RuntimeError("down")
+            for i in range(30):  # arrivals while encode runs push q1 out of pending
+                holder["r"].notify_new_events("s", comment(f"n{i}"))
+            return [[1.0, 0.0] for _ in texts]
 
-    reducer = FastReducer(embedder=Broken(), now_fn=lambda: now[0])
-    reducer.notify_new_events("s", comment("broken"))
-    task = asyncio.create_task(reducer.run_loop())
-    try:
-        for attempt in range(3):
-            for _ in range(100):
-                if reducer._sessions["s"].failures == attempt + 1:
-                    break
-                await asyncio.sleep(0.005)
-            assert reducer._sessions["s"].failures == attempt + 1
-            now[0] += 10
-            reducer.notify_new_events("s")
-        await asyncio.sleep(0.03)
-        assert len(calls) == 3  # third failure: 60s backoff, no hot loop
-        assert reducer.pending_count("s") == 1
-        now[0] += 61  # no new comment needed: the time-based retry fires
-        reducer.notify_new_events("s")
-        for _ in range(100):
-            if len(calls) == 4:
-                break
-            await asyncio.sleep(0.005)
-        assert len(calls) == 4 and reducer.pending_count("s") == 1
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    reducer = holder["r"] = FastReducer(
+        embedder=Overflow(), config=FastReducerConfig(max_pending=5), now_fn=lambda: 1001.0
+    )
+    reducer.notify_new_events("s", comment("q1"))
+    await reducer.run_once("s", 1001.0)
+    assert reducer.comment_provenance("s", "q1") is not None
 
 
 @pytest.mark.asyncio
@@ -291,41 +255,6 @@ def test_tts_rejects_empty_or_unaligned_pcm(pcm):
     tts = SelfHostedTTSClient(base_url="http://tts", http_client=client)
     with pytest.raises(TTSClientError):
         tts.synthesize("Xin chào")
-    client.close()
-
-
-@pytest.mark.parametrize("mode", ["heartbeat", "content", "blocked"])
-def test_llm_heartbeat_or_endless_content_has_absolute_deadline(mode):
-    import threading
-    from backend.application.clients.llm import OpenAICompatibleClient, ChatRequest, LLMClientError
-
-    closed = threading.Event()
-
-    class Endless(httpx.SyncByteStream):
-        def __iter__(self):
-            until = time.monotonic() + 0.5
-            if mode == "blocked":
-                closed.wait(0.5)
-            while time.monotonic() < until and not closed.wait(0.005):
-                yield (
-                    b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
-                    if mode == "content"
-                    else b": heartbeat\n\n"
-                )
-
-        def close(self):
-            closed.set()
-
-    client = httpx.Client(
-        transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Endless()))
-    )
-    llm = OpenAICompatibleClient(base_url="http://llm", http_client=client)
-    llm._total_timeout, llm._first_content_timeout = 0.12, 0.04
-    start = time.monotonic()
-    with pytest.raises(LLMClientError, match="deadline"):
-        list(llm.chat_stream(ChatRequest(messages=[])))
-    assert closed.is_set()
-    assert time.monotonic() - start < 1
     client.close()
 
 
@@ -393,19 +322,6 @@ async def test_media_cleanup_obligation_survives_terminal_record_completion():
     await service.check("s")
     assert "s" not in d.media_cleanup_pending and "s" not in service.pending
     assert calls[-1] == "s" and len(calls) >= 6
-
-
-def test_released_deadline_never_shuts_down_a_pooled_connection():
-    from backend.application.clients.llm.stream_deadline import StreamDeadline
-
-    shut = []
-    sock = SimpleNamespace(shutdown=lambda how: shut.append(how))
-    deadline = StreamDeadline(0.01, 0.01)
-    deadline.sock = sock
-    deadline.release()  # connection about to return to the pool
-    time.sleep(0.03)
-    deadline._interrupt()
-    assert not shut and deadline.sock is None
 
 
 def test_first_content_deadline_bounds_headers_wait_on_reused_connection():
@@ -479,3 +395,121 @@ async def test_empty_audio_is_retried_before_ending_the_session(case_factory):
         await co._maybe_speak(sid, turn)
         assert not turn.completed_at
         assert bool(failed) == (n == 3)
+
+
+class _Server:
+    """Tiny TCP HTTP server: handler(conn, n) is called once per request on a connection."""
+
+    def __init__(self, handler):
+        import socket
+        import threading
+
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.handler, self.stop = handler, threading.Event()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.sock.getsockname()[1]}"
+
+    def _run(self):
+        import threading
+
+        while not self.stop.is_set():
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn):
+        try:
+            n = 0
+            while self.handler(conn, n):
+                n += 1
+        except OSError:
+            pass
+        finally:
+            try:  # drain the unread request body so close is a FIN, not an RST
+                conn.shutdown(1)
+                conn.settimeout(0.2)
+                while conn.recv(65536):
+                    pass
+            except OSError:
+                pass
+            conn.close()
+
+    def close(self):
+        self.stop.set()
+        self.sock.close()
+
+
+_SSE = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+_TOKEN = b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+_BAD = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+
+def _stream(server, total, first, timeout=30, usage=False):
+    from backend.application.clients.llm import OpenAICompatibleClient, ChatRequest
+
+    llm = OpenAICompatibleClient(base_url=server.url, timeout=timeout)
+    llm._total_timeout, llm._first_content_timeout = total, first
+    start = time.monotonic()
+    try:
+        return list(
+            llm.chat_stream(ChatRequest(messages=[], include_usage=usage))
+        ), time.monotonic() - start
+    finally:
+        llm.close()
+
+
+@pytest.mark.parametrize("mode", ["heartbeat", "endless", "token_then_silence"])
+def test_llm_stream_deadlines_without_watcher_threads(mode):
+    from backend.application.clients.llm import LLMClientError
+
+    def handler(conn, n):
+        conn.recv(65536)
+        conn.sendall(_SSE)
+        if mode == "token_then_silence":
+            conn.sendall(_TOKEN)
+            time.sleep(2)
+            return False
+        for _ in range(100):
+            conn.sendall(b": hb\n\n" if mode == "heartbeat" else _TOKEN)
+            time.sleep(0.05)
+        return False
+
+    server = _Server(handler)
+    try:
+        start = time.monotonic()
+        with pytest.raises(LLMClientError):
+            _stream(server, total=0.6, first=0.3)
+        # heartbeat: first-content check (~0.3s); endless: total check (~0.6s);
+        # silence after a token: bounded by the per-request read timeout.
+        assert time.monotonic() - start < 1.5
+    finally:
+        server.close()
+
+
+def test_llm_retry_without_stream_options_gets_a_fresh_deadline():
+    calls = []
+
+    def handler(conn, n):
+        conn.recv(65536)
+        time.sleep(0.2)
+        calls.append(1)
+        if len(calls) == 1:
+            conn.sendall(_BAD)
+            return False
+        conn.sendall(_SSE + _TOKEN + b"data: [DONE]\n\n")
+        return False
+
+    server = _Server(handler)
+    try:
+        # two 0.2s waits exceed one shared 0.3s first-content budget, not a per-attempt one
+        out, _ = _stream(server, total=5, first=0.3, usage=True)
+        assert out == ["x"]
+    finally:
+        server.close()

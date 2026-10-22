@@ -499,6 +499,13 @@ def spoken(case):
 async def play_next(case):
     """Decide exactly as the coordinator does (on a projection), then speak for real."""
     co, d = case.d.coordinator, case.d
+    # Harness determinism: the background scheduler would prefetch/queue turns while this
+    # helper projects and then clears the queue; stop it so only this helper decides.
+    stale = [co._tasks.get(case.sid), *co._prepare_tasks.get(case.sid, ())]
+    for task in stale:
+        if task is not None and not task.done():
+            task.cancel()
+    await asyncio.gather(*[t for t in stale if t is not None], return_exceptions=True)
     projection = co._projected_director(case.sid)
     turn = projection.decide([], now=d.director.get_session(case.sid).now())
     turn.revision_token = d.director.current_generation_token(case.sid)

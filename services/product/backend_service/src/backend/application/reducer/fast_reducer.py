@@ -137,6 +137,11 @@ class _SessionState:
     cache_hits: int = 0
     wake_notifications: int = 0
     failures: int = 0
+    inflight: set = field(default_factory=set)  # comment ids of the batch being embedded
+    batch_limit: Optional[int] = None  # bisect: max items per attempt after repeated failure
+    item_failures: dict = field(default_factory=dict)  # comment_id -> failed attempts
+    quarantined: int = 0
+    last_batch: list = field(default_factory=list)
     retry_at: float = 0.0
     # P0-FB-014: per-session catalog + current product, used by run_once
     # routing in place of the process-global config. Without it two sessions
@@ -382,8 +387,20 @@ class FastReducer:
         # Acknowledge only after successful processing. New arrivals while encode
         # runs stay pending; a failed encode leaves the original batch retryable.
         batch = list(state.pending[-self._config.max_pending :])
+        if state.batch_limit is not None:
+            batch = batch[: state.batch_limit]
         if not batch:
             return []
+        state.inflight = {c.comment_id for c in batch}
+        state.last_batch = [c.comment_id for c in batch]
+        try:
+            return await self._process_batch(state, session_id, batch, now)
+        finally:
+            state.inflight = set()
+
+    async def _process_batch(
+        self, state: _SessionState, session_id: str, batch: list, now: float
+    ) -> list[AcceptedComment]:
         new_only = [
             c
             for c in batch
@@ -460,14 +477,41 @@ class FastReducer:
         state.first_pending_ts = state.pending[0].ts if state.pending else None
         state.wake_event.clear()
         state.failures, state.retry_at = 0, 0.0
+        state.batch_limit = None
+        for c in batch:
+            state.item_failures.pop(c.comment_id, None)
         state.demand = state.demand[-self._config.max_pending :]
         self._prune(state, session_id)
         return batch
 
+    MAX_ITEM_FAILURES = 3
+
+    def _note_failure(self, state: _SessionState, session_id: str, now: float) -> None:
+        """Bounded backoff; from the 2nd failure bisect the batch to isolate a poison item,
+        and quarantine (log + drop) a single item that keeps failing alone."""
+        state.failures += 1
+        state.retry_at = now + min(2.0 ** (state.failures - 1), 30.0)
+        batch = state.last_batch
+        for cid in batch:
+            state.item_failures[cid] = state.item_failures.get(cid, 0) + 1
+        if len(batch) == 1 and state.item_failures[batch[0]] >= self.MAX_ITEM_FAILURES:
+            state.pending = [c for c in state.pending if c.comment_id != batch[0]]
+            state.item_failures.pop(batch[0], None)
+            state.quarantined += 1
+            state.batch_limit = None
+            state.failures, state.retry_at = 0, 0.0
+            state.first_pending_ts = state.pending[0].ts if state.pending else None
+            logger.error(
+                "reducer quarantined a comment that cannot be embedded session=%s", session_id
+            )
+        elif state.failures >= 2 and len(batch) > 1:
+            state.batch_limit = max(1, len(batch) // 2)
+        self._prune(state, session_id)
+
     def _prune(self, state: _SessionState, session_id: str) -> None:
         """Keep cache only for recent demand/pending; provenance for everything still
         referenced (pending or a live cluster member) so decisions keep their source ids."""
-        pending_ids = {c.comment_id for c in state.pending}
+        pending_ids = {c.comment_id for c in state.pending} | state.inflight
         cache_ids = {d["comment_id"] for d in state.demand} | pending_ids
         state.cache = {cid: entry for cid, entry in state.cache.items() if cid in cache_ids}
         store = self._stores.get(session_id)
@@ -580,9 +624,7 @@ class FastReducer:
                         state = self._sessions.get(session_id)
                         if state is not None:
                             state.failures += 1
-                            # backoff 1s, 2s, 3s, then a steady 60s; the batch is kept
-                            state.retry_at = now + (state.failures if state.failures < 3 else 60.0)
-                            self._prune(state, session_id)
+                            self._note_failure(state, session_id, now)
                         logger.exception("reducer batch deferred session=%s", session_id)
                     drained = True
             if drained:

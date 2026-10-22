@@ -93,10 +93,6 @@ from ..text_chunker import (
 logger = logging.getLogger(__name__)
 
 
-class PlaybackUnconfirmed(RuntimeError):
-    """Media was sent but completion is unknown; never retry automatically."""
-
-
 class _PhraseWaitTimeout(TTSClientError):
     """Lookahead worker exceeded its synthesis budget."""
 
@@ -145,6 +141,8 @@ class StreamOrchestrator:
     ``run()`` is the entry point; ``cancel()`` is the barge-in hook called from
     /lite/interrupt or DirectorCoordinator interrupt arbitration.
     """
+
+    playback_unconfirmed_total = 0  # process-wide metric, no control-flow effect
 
     def __init__(
         self,
@@ -833,15 +831,17 @@ class StreamOrchestrator:
                 return
             bridge.put(video_window)
         if audio_window.is_final and not self._cancel_event.is_set():
+            # Observability only: the script keeps going (never freezes the live).
             playback_info = getattr(self._backend, "playback_info", None)
-            if playback_info is not None:
-                info = playback_info(session_id, audio_window.utterance_id)
-                if info and info.get("playback_unconfirmed"):
-                    exc = PlaybackUnconfirmed(
-                        "Avatar chưa xác nhận phát xong; đã dừng lượt nói tiếp."
-                    )
-                    exc.utterance_id = audio_window.utterance_id
-                    raise exc
+            info = playback_info(session_id, audio_window.utterance_id) if playback_info else None
+            if info and info.get("playback_unconfirmed"):
+                StreamOrchestrator.playback_unconfirmed_total += 1
+                logger.warning(
+                    "avatar playback unconfirmed session=%s utterance=%s total=%d",
+                    session_id,
+                    audio_window.utterance_id,
+                    StreamOrchestrator.playback_unconfirmed_total,
+                )
 
     def _remaining_deadline(self, chunker: TextChunker) -> float | None:
         """Seconds until the buffer latency deadline, or None when no deadline.

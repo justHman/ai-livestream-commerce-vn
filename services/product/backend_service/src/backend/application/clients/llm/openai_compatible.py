@@ -152,7 +152,11 @@ class OpenAICompatibleClient:
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                detail = (resp.text or "")[:300]
+                try:
+                    resp.read()  # a streaming error body is unread until now
+                    detail = (resp.text or "")[:300]
+                except httpx.HTTPError:
+                    detail = ""
                 raise LLMClientError(f"LLM chat: HTTP {resp.status_code} {detail}") from exc
             data = resp.json() if resp.content else {}
             choices = data.get("choices", [])
@@ -187,11 +191,11 @@ class OpenAICompatibleClient:
         body = self._build_body(req)
         body["stream"] = True
         started = False
-        with StreamDeadline(self._total_timeout, self._first_content_timeout) as deadline:
-            yield from self._chat_stream_guarded(client, url, body, usage, started, deadline)
+        yield from self._chat_stream_guarded(client, url, body, usage, started)
 
-    def _chat_stream_guarded(self, client, url, body, usage, started, deadline):
+    def _chat_stream_guarded(self, client, url, body, usage, started):
         while True:
+            deadline = StreamDeadline(self._total_timeout, self._first_content_timeout)
             try:
                 deadline.check()
                 with client.stream(
@@ -200,42 +204,34 @@ class OpenAICompatibleClient:
                     json=body,
                     headers=self._headers(),
                     timeout=deadline.http_timeout(self._timeout),
-                    extensions={"trace": deadline.trace},
                 ) as resp:
-                    deadline.response = resp
-                    deadline.capture(resp.extensions.get("network_stream"))
-                    try:
-                        resp.raise_for_status()
-                        for line in resp.iter_lines():
-                            deadline.check()
-                            if not line or line.startswith(":"):
-                                continue
-                            if line.startswith("data: "):
-                                payload = line[6:].strip()
-                                if payload == "[DONE]":
-                                    break
-                                try:
-                                    chunk = json.loads(payload)
-                                    reported = chunk.get("usage")
-                                    if usage is not None and isinstance(reported, dict):
-                                        usage.update(
-                                            prompt_tokens=reported.get("prompt_tokens"),
-                                            completion_tokens=reported.get("completion_tokens"),
-                                        )
-                                    choices = chunk.get("choices", [])
-                                    if choices:
-                                        delta = choices[0].get("delta", {})
-                                        content = delta.get("content", "")
-                                        if content:
-                                            deadline.content.set()
-                                            started = True
-                                            yield content
-                                except json.JSONDecodeError:
-                                    continue
+                    resp.raise_for_status()
+                    for line in resp.iter_lines():
                         deadline.check()
-                    finally:
-                        # Before the with-exit hands the connection back to the pool.
-                        deadline.release()
+                        if not line or line.startswith(":"):
+                            continue
+                        if line.startswith("data: "):
+                            payload = line[6:].strip()
+                            if payload == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(payload)
+                                reported = chunk.get("usage")
+                                if usage is not None and isinstance(reported, dict):
+                                    usage.update(
+                                        prompt_tokens=reported.get("prompt_tokens"),
+                                        completion_tokens=reported.get("completion_tokens"),
+                                    )
+                                choices = chunk.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        deadline.content.set()
+                                        started = True
+                                        yield content
+                            except json.JSONDecodeError:
+                                continue
                 return
             except TimeoutError as exc:
                 raise LLMClientError("LLM stream deadline exceeded or cancelled") from exc
@@ -247,7 +243,11 @@ class OpenAICompatibleClient:
                     self._usage_rejected = True
                     body.pop("stream_options")
                     continue
-                detail = (resp.text or "")[:300]
+                try:
+                    resp.read()  # a streaming error body is unread until now
+                    detail = (resp.text or "")[:300]
+                except httpx.HTTPError:
+                    detail = ""
                 raise LLMClientError(f"LLM chat stream: HTTP {resp.status_code} {detail}") from exc
 
     def close(self) -> None:
