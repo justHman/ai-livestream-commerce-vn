@@ -53,7 +53,7 @@ from .state import StreamState
 from backend.application.render.locks import SessionLockRegistry
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
-from ..render.orchestrator import StreamOrchestrator, StreamingControllerConfig
+from ..render.orchestrator import PlaybackUnconfirmed, StreamOrchestrator, StreamingControllerConfig
 from ..text_chunker import FixedChunkPolicyConfig
 from ..script_authoring.approved_speech import SpeechRejected
 
@@ -214,6 +214,7 @@ class DirectorCoordinator:
         # viewer-demand input; False/absent = the legacy raw-comment feed.
         # Runtime engineering selector, NOT a Product Rule.
         self._reducer_mode: set[str] = set()
+        self._uncertain_playback: set[str] = set()
         # Sessions whose 013 truthful-outcome opt-in actually fired. Reducer
         # mode refuses to decide for a session that is not in here.
         self._reducer_ready: set[str] = set()
@@ -395,6 +396,9 @@ class DirectorCoordinator:
         for task in tasks:
             if task is not None and not task.done():
                 task.cancel()
+        if self.approved_speech is not None:
+            self.approved_speech.cleanup(session_id)
+        self._uncertain_playback.discard(session_id)
         entry = (
             self._orchestrator_registry.get(session_id)
             if self._orchestrator_registry is not None
@@ -542,7 +546,9 @@ class DirectorCoordinator:
     # -- P0-FB-016 Hold / closing start fence ---------------------------------
     def _frozen(self, session_id: str) -> bool:
         """Held, closing or ending: ingest continues, no new turn starts."""
-        return self.approved_speech is not None and bool(self.approved_speech.blocked(session_id))
+        return session_id in self._uncertain_playback or (
+            self.approved_speech is not None and bool(self.approved_speech.blocked(session_id))
+        )
 
     def _hard_expired(self, session_id: str, decision: Decision) -> bool:
         """Q&A older than the hard-expiry horizon by its original comment time."""
@@ -551,6 +557,11 @@ class DirectorCoordinator:
             return False
         # ponytail: the Director selection window is the hard-expiry horizon
         # (exact windows REQUIRES_VALIDATION); swap in the validated value.
+        newest = decision.occurred_at_bounds[1]
+        if session_id in self._reducer_mode and newest > 0:
+            # Reducer provenance is wall-clock occurred_at; Director comments
+            # use seconds since attach. Never mix these clocks on resume.
+            return time.time() - newest > ds.director.cfg.selection_window_sec
         seen = {c.id: c.t for c in ds.director.state.rolling_comments}
         times = [seen[i] for i in decision.cluster_member_ids if i in seen]
         # Unknown (pruned) members are older than the window: fail closed.
@@ -1697,6 +1708,14 @@ class DirectorCoordinator:
                 # Late rejection (pre-media check, guarded media boundary) or a failed
                 # delivery: no later unit may play ahead of this one.
                 self._invalidate_queued(session_id, reason="unit_failed")
+            if isinstance(exc, PlaybackUnconfirmed):
+                self._uncertain_playback.add(session_id)
+                self._invalidate_queued(session_id, reason="playback_unconfirmed")
+                logger.error(
+                    "playback unconfirmed session=%s turn=%s; no automatic replay",
+                    session_id,
+                    decision.turn_id,
+                )
             if self.runtime_failures is not None:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):
@@ -1736,7 +1755,13 @@ class DirectorCoordinator:
                 logger.exception(
                     "speech pipeline failed session=%s turn=%s", session_id, decision.turn_id
                 )
-            failure_state = "playback_timeout" if isinstance(exc, TimeoutError) else "failed"
+            failure_state = (
+                "playback_unconfirmed"
+                if isinstance(exc, PlaybackUnconfirmed)
+                else "playback_timeout"
+                if isinstance(exc, TimeoutError)
+                else "failed"
+            )
             await self._emit(
                 session_id,
                 {

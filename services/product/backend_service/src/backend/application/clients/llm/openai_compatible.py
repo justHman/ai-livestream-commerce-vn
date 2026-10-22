@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 import httpx
+from .stream_deadline import FIRST_CONTENT_TIMEOUT_S, TOTAL_TIMEOUT_S, StreamDeadline
 
 
 class LLMClientError(RuntimeError):
@@ -71,6 +72,8 @@ class OpenAICompatibleClient:
         timeout: float = 60.0,
         max_retries: int = 0,
         http_client: Optional[httpx.Client] = None,
+        total_timeout: float = TOTAL_TIMEOUT_S,
+        first_content_timeout: float = FIRST_CONTENT_TIMEOUT_S,
     ) -> None:
         base = (base_url or os.environ.get("LLM_BASE_URL", "") or "").strip()
         if not base:
@@ -96,6 +99,8 @@ class OpenAICompatibleClient:
         self._timeout = float(timeout)
         self._max_retries = int(max_retries)
         self._client = http_client
+        self._total_timeout = min(float(total_timeout), self._timeout)
+        self._first_content_timeout = min(float(first_content_timeout), self._total_timeout)
         # stream_options rejected once by this server: never sent again (tokens stay unknown)
         self._usage_rejected = False
 
@@ -182,11 +187,26 @@ class OpenAICompatibleClient:
         body = self._build_body(req)
         body["stream"] = True
         started = False
+        with StreamDeadline(self._total_timeout, self._first_content_timeout) as deadline:
+            yield from self._chat_stream_guarded(client, url, body, usage, started, deadline)
+
+    def _chat_stream_guarded(self, client, url, body, usage, started, deadline):
         while True:
             try:
-                with client.stream("POST", url, json=body, headers=self._headers()) as resp:
+                deadline.check()
+                with client.stream(
+                    "POST",
+                    url,
+                    json=body,
+                    headers=self._headers(),
+                    timeout=self._timeout,
+                    extensions={"trace": deadline.trace},
+                ) as resp:
+                    deadline.response = resp
+                    deadline.capture(resp.extensions.get("network_stream"))
                     resp.raise_for_status()
                     for line in resp.iter_lines():
+                        deadline.check()
                         if not line or line.startswith(":"):
                             continue
                         if line.startswith("data: "):
@@ -206,11 +226,15 @@ class OpenAICompatibleClient:
                                     delta = choices[0].get("delta", {})
                                     content = delta.get("content", "")
                                     if content:
+                                        deadline.content.set()
                                         started = True
                                         yield content
                             except json.JSONDecodeError:
                                 continue
+                    deadline.check()
                 return
+            except TimeoutError as exc:
+                raise LLMClientError("LLM stream deadline exceeded or cancelled") from exc
             except httpx.RequestError as exc:
                 raise LLMClientError(f"LLM chat stream failed: {exc}") from exc
             except httpx.HTTPStatusError as exc:

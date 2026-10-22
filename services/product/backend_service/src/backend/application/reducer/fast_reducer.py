@@ -136,6 +136,8 @@ class _SessionState:
     embed_calls: int = 0
     cache_hits: int = 0
     wake_notifications: int = 0
+    failures: int = 0
+    retry_at: float = 0.0
     # P0-FB-014: per-session catalog + current product, used by run_once
     # routing in place of the process-global config. Without it two sessions
     # would resolve product candidates against each other's catalog.
@@ -234,6 +236,9 @@ class FastReducer:
                     source_lag_ms(comment.ts),
                 )
             state.pending.append(comment)
+            state.pending = state.pending[-self._config.max_pending :]
+            if state.retry_at == float("inf"):
+                state.failures, state.retry_at = 0, 0.0
             if state.first_pending_ts is None:
                 state.first_pending_ts = comment.ts
             # Provenance travels beside the store (P0-FB-014): a retried
@@ -336,7 +341,10 @@ class FastReducer:
         state = self._sessions.get(session_id)
         if state is None or state.first_pending_ts is None:
             return None
-        return state.first_pending_ts + self._config.microbatch_max_wait_ms / 1000.0
+        return max(
+            state.retry_at,
+            state.first_pending_ts + self._config.microbatch_max_wait_ms / 1000.0,
+        )
 
     def drain_batch(self, session_id: str, now: float) -> list[AcceptedComment]:
         """Return and clear the pending batch (bounded, oldest dropped).
@@ -371,7 +379,9 @@ class FastReducer:
         it; clustering/ranking are NOT implemented here (C5/C6 scope).
         """
         state = self._sessions.setdefault(session_id, _SessionState())
-        batch = self.drain_batch(session_id, now)
+        # Acknowledge only after successful processing. New arrivals while encode
+        # runs stay pending; a failed encode leaves the original batch retryable.
+        batch = list(state.pending[-self._config.max_pending :])
         if not batch:
             return []
         new_only = [
@@ -384,6 +394,10 @@ class FastReducer:
             state.cache_hits += cache_hits
         if new_only:
             vectors = await asyncio.to_thread(self._embedder.encode, [c.text for c in new_only])
+            if self._sessions.get(session_id) is not state:
+                return []  # stopped/replaced while the worker was suspended
+            if len(vectors) != len(new_only):
+                raise ValueError("embedding result count mismatch")
             state.embed_calls += 1
             for comment, vector in zip(new_only, vectors):
                 state.cache[comment.comment_id] = (comment.text, list(vector))
@@ -441,6 +455,18 @@ class FastReducer:
                 )
         # Write-path expiry keeps store memory bounded as the horizon advances (5.4).
         store.expire(now)
+        acknowledged = {id(c) for c in batch}
+        state.pending = [c for c in state.pending if id(c) not in acknowledged]
+        state.first_pending_ts = state.pending[0].ts if state.pending else None
+        state.wake_event.clear()
+        state.failures, state.retry_at = 0, 0.0
+        state.demand = state.demand[-self._config.max_pending :]
+        active_ids = {d["comment_id"] for d in state.demand}
+        active_ids.update(c.comment_id for c in state.pending)
+        state.cache = {cid: entry for cid, entry in state.cache.items() if cid in active_ids}
+        state.provenance = {
+            cid: record for cid, record in state.provenance.items() if cid in active_ids
+        }
         return batch
 
     # ------------------------------------------------------------------
@@ -543,7 +569,16 @@ class FastReducer:
             for session_id in list(self._sessions):
                 deadline = self.pending_deadline(session_id, now)
                 if deadline is not None and deadline <= now:
-                    await self.run_once(session_id, now)
+                    try:
+                        await self.run_once(session_id, now)
+                    except Exception:
+                        state = self._sessions.get(session_id)
+                        if state is not None:
+                            state.failures += 1
+                            state.retry_at = (
+                                now + state.failures if state.failures < 3 else float("inf")
+                            )
+                        logger.exception("reducer batch deferred session=%s", session_id)
                     drained = True
             if drained:
                 continue
@@ -559,6 +594,9 @@ class FastReducer:
             session_id, deadline = min(pending, key=lambda item: item[1])
             remaining = max(0.0, deadline - now)
             self._any_wake.clear()
+            if remaining == float("inf"):
+                await self._any_wake.wait()
+                continue
             try:
                 await asyncio.wait_for(self._any_wake.wait(), timeout=remaining)
             except asyncio.TimeoutError:

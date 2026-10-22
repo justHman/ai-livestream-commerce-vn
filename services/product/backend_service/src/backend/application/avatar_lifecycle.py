@@ -20,7 +20,7 @@ class AvatarLifecycle:
 
     async def check(self, session_id: str) -> None:
         from backend.api.v1.execution import _locked, _save, _defer_usage
-        from backend.api.v1.sessions import stop_session_internal
+        from backend.api.v1.sessions import _media_receipts, _release_media, stop_session_internal
         from backend.application.execution_contract import (
             Evidence,
             ExecutionIdentity,
@@ -29,47 +29,65 @@ class AvatarLifecycle:
         )
 
         d = self.d
-        async with _locked(d.store, session_id) as fence:
-            meta = copy.deepcopy(await d.store.get(session_id))
-            raw = (meta or {}).get("execution_contract", {})
-            phase = raw.get("phase", "ready")
-            d.backend.set_session_phase(session_id, phase)
-            reason = self.pending.get(session_id) or await asyncio.to_thread(
-                d.backend.lifecycle_status, session_id, self.ready_ttl_s
-            )
-            if not reason:
-                return
-            self.pending[session_id] = reason
-            log.warning("avatar safety stop session=%s reason=%s", session_id, reason)
-            if reason == "RUNTIME_READY_TTL_EXPIRED":
-                log.warning("Phiên chuẩn bị đã hết thời gian chờ lên sóng; hãy chuẩn bị lại")
-            # Fence producers before persistence. Provider I/O runs outside this short lock.
-            d.approved_speech.block(session_id, "ending")
-            d.approved_speech.cancel(session_id)
-            if raw and raw.get("phase") not in {"ended", "failed"}:
-                state = ExecutionState.model_validate(raw)
-                ev = Evidence(
-                    **state.model_dump(include=set(ExecutionIdentity.model_fields)),
-                    sequence=state.sequence + 1,
-                    kind="terminal",
-                    phase="failed",
-                    reason_code="execution_failed",
-                    occurred_at=datetime.now(timezone.utc),
+        try:
+            meta = await d.store.get(session_id)
+            if meta:
+                d.backend.set_session_phase(
+                    session_id, meta.get("execution_contract", {}).get("phase", "ready")
                 )
-                updated = apply_evidence(state, ev)
-                meta["execution_contract"] = updated.model_dump(mode="json")
-                meta["execution_failure_class"] = (
-                    "runtime_error" if reason == "RUNTIME_READY_TTL_EXPIRED" else "media_failed"
-                )
-                meta["avatar_stop_reason"] = reason
-                _defer_usage(d, meta, state, updated, ev, session_id)
-                try:
+        except Exception:
+            log.warning("avatar safety using local phase session=%s", session_id)
+        receipt = _media_receipts(d).get(session_id)
+        reason = self.pending.get(session_id) or (
+            "CLEANUP_PENDING"
+            if receipt
+            else await asyncio.to_thread(d.backend.lifecycle_status, session_id, self.ready_ttl_s)
+        )
+        if not reason:
+            return
+        self.pending[session_id] = reason
+        try:
+            async with _locked(d.store, session_id) as fence:
+                meta = copy.deepcopy(await d.store.get(session_id))
+                if not meta and receipt and receipt.get("prepare_meta"):
+                    # A failed prepare may never have committed its first Redis
+                    # write. Keep the original execution identity for settlement.
+                    from backend.api.v1.terminal_guard import register_terminal_execution
+
+                    meta = copy.deepcopy(receipt["prepare_meta"])
+                    await register_terminal_execution(d, session_id, meta)
                     await _save(d.store, session_id, meta, fence)
-                except BaseException:
-                    # A failed save must neither leave paid media alive nor delete its meta.
-                    # Teardown is owned by the backend even if this task is cancelled.
-                    await asyncio.to_thread(d.backend.stop, session_id)
-                    raise
+                raw = (meta or {}).get("execution_contract", {})
+                phase = raw.get("phase", "ready")
+                d.backend.set_session_phase(session_id, phase)
+                log.warning("avatar safety stop session=%s reason=%s", session_id, reason)
+                if reason == "RUNTIME_READY_TTL_EXPIRED":
+                    log.warning("Phiên chuẩn bị đã hết thời gian chờ lên sóng; hãy chuẩn bị lại")
+                # Fence producers before persistence. Provider I/O runs outside this short lock.
+                d.approved_speech.block(session_id, "ending")
+                d.approved_speech.cancel(session_id)
+                if raw and raw.get("phase") not in {"ended", "failed"}:
+                    state = ExecutionState.model_validate(raw)
+                    ev = Evidence(
+                        **state.model_dump(include=set(ExecutionIdentity.model_fields)),
+                        sequence=state.sequence + 1,
+                        kind="terminal",
+                        phase="failed",
+                        reason_code="execution_failed",
+                        occurred_at=datetime.now(timezone.utc),
+                    )
+                    updated = apply_evidence(state, ev)
+                    meta["execution_contract"] = updated.model_dump(mode="json")
+                    meta["execution_failure_class"] = (
+                        "runtime_error" if reason == "RUNTIME_READY_TTL_EXPIRED" else "media_failed"
+                    )
+                    meta["avatar_stop_reason"] = reason
+                    _defer_usage(d, meta, state, updated, ev, session_id)
+                    await _save(d.store, session_id, meta, fence)
+        except BaseException:
+            d.approved_speech.cancel(session_id)
+            await asyncio.shield(_release_media(d, session_id))
+            raise
         # Existing stop owns reconciliation, publisher, durable terminal/usage and metadata.
         # It acquires a fresh lock after the failure state was committed above.
         await stop_session_internal(d, session_id)
@@ -95,7 +113,11 @@ class AvatarLifecycle:
         try:
             while True:
                 now = asyncio.get_running_loop().time()
-                for sid in set(self.d.backend.session_ids()) | set(self.pending):
+                for sid in (
+                    set(self.d.backend.session_ids())
+                    | set(self.pending)
+                    | set(getattr(self.d, "media_cleanup_pending", {}))
+                ):
                     task = self.tasks.get(sid)
                     if (task is None or task.done()) and now >= self.next_attempt.get(sid, 0):
                         self.tasks[sid] = asyncio.create_task(self._attempt(sid))

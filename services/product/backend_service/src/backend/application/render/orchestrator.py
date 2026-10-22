@@ -68,6 +68,7 @@ from backend.application.clients.tts.self_hosted import (
     TTSClientError,
     phrase_wait_budget_s,
     synthesis_cancellation,
+    validate_pcm,
 )
 from backend.application.contracts.llm_engines import LLMEngine, LLMRequest
 from backend.application.contracts.tts_engines import TTSEngine
@@ -90,6 +91,10 @@ from ..text_chunker import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PlaybackUnconfirmed(RuntimeError):
+    """Media was sent but completion is unknown; never retry automatically."""
 
 
 class _PhraseWaitTimeout(TTSClientError):
@@ -443,30 +448,35 @@ class StreamOrchestrator:
         """
         from backend.application.usage_evidence.cost import cost_meter
 
-        if not cost_meter.enabled:
-            yield from self._tts.stream_audio(
-                phrase, session_id=session_id, utterance_id=utterance_id
-            )
-            return
-        attempt = cost_meter.next_attempt(session_id, utterance_id, phrase.seq)
+        attempt = (
+            cost_meter.next_attempt(session_id, utterance_id, phrase.seq)
+            if cost_meter.enabled
+            else 0
+        )
         t0, audio_ms = time.perf_counter(), 0
+        received = False
         try:
             for audio_window in self._tts.stream_audio(
                 phrase, session_id=session_id, utterance_id=utterance_id
             ):
+                validate_pcm(audio_window.pcm, audio_window.sample_rate)
+                received = True
                 audio_ms += audio_window.duration_ms
                 yield audio_window
+            if not received and not self._cancel_event.is_set():
+                raise TTSClientError("TTS returned no audio windows")
         finally:
-            cost_meter.record_tts(
-                session_id,
-                utterance_id=utterance_id,
-                phrase_seq=phrase.seq,
-                attempt=attempt,
-                provider=str(getattr(self._tts, "name", "") or type(self._tts).__name__),
-                characters=len(phrase.text),
-                audio_ms=audio_ms,
-                synth_ms=int((time.perf_counter() - t0) * 1000),
-            )
+            if cost_meter.enabled:
+                cost_meter.record_tts(
+                    session_id,
+                    utterance_id=utterance_id,
+                    phrase_seq=phrase.seq,
+                    attempt=attempt,
+                    provider=str(getattr(self._tts, "name", "") or type(self._tts).__name__),
+                    characters=len(phrase.text),
+                    audio_ms=audio_ms,
+                    synth_ms=int((time.perf_counter() - t0) * 1000),
+                )
 
     def _synthesize_phrase(
         self,
@@ -822,6 +832,14 @@ class StreamOrchestrator:
             if self._cancel_event.is_set():
                 return
             bridge.put(video_window)
+        if audio_window.is_final and not self._cancel_event.is_set():
+            playback_info = getattr(self._backend, "playback_info", None)
+            if playback_info is not None:
+                info = playback_info(session_id, audio_window.utterance_id)
+                if info and info.get("playback_unconfirmed"):
+                    raise PlaybackUnconfirmed(
+                        "Avatar chưa xác nhận phát xong; đã dừng lượt nói tiếp."
+                    )
 
     def _remaining_deadline(self, chunker: TextChunker) -> float | None:
         """Seconds until the buffer latency deadline, or None when no deadline.

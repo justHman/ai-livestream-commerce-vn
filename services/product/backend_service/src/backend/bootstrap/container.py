@@ -83,6 +83,7 @@ class BootstrapContainer:
     runtime_failures: Any = None
     runtime_failures_task: Any = None
     avatar_lifecycle_task: Any = None
+    media_cleanup_pending: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # -- P0-FB-017 durable signed usage evidence (default OFF, fail closed) --
     # UsageEvidence or None. Set by the lifespan only when USAGE_EVIDENCE_ENABLED and a

@@ -172,31 +172,54 @@ async def sessions_start(
         if req.rescue_commands and rescue_switch_on():  # start-time only
             # Per-session gate; capabilities/commands/legacy guard all read it.
             meta["p0_rescue"] = True
-    await d.store.set(result.session_id, meta)
+    try:
+        await _register_started_session(d, result.session_id, meta, req, cost_meter)
+    except BaseException:
+        # start has allocated paid media. Keep a receipt even if the metadata
+        # write succeeded remotely but its acknowledgement was lost.
+        receipts = _media_receipts(d)
+        receipts[result.session_id] = {"stopped": False, "prepare_meta": meta}
+        d.approved_speech.cancel(result.session_id)
+        try:
+            await asyncio.shield(_release_media(d, result.session_id))
+        except BaseException:
+            logger.error("prepare rollback deferred session=%s", result.session_id)
+        raise
+    out = result.public_dict()  # frontend-safe only
+    if req.has_avatar_or_voice_override():
+        out["avatar_override_applied"] = True
+        out["avatar_applied"] = override_mode == "avatar_and_voice"
+    if req.rescue_commands:
+        out["rescue_commands"] = bool(meta.get("p0_rescue"))
+    return out
+
+
+async def _register_started_session(d, session_id, meta, req, cost_meter):
+    await d.store.set(session_id, meta)
     if req.execution_contract:
         from backend.application.execution_contract import ExecutionIdentity
 
         cost_meter.bind(
-            result.session_id,
+            session_id,
             ExecutionIdentity(
                 tenant_id=req.tenant_id,
                 business_session_id=req.business_session_id,
-                runtime_session_id=result.session_id,
+                runtime_session_id=session_id,
                 generation=req.generation,
             ),
         )
-    await register_terminal_execution(d, result.session_id, meta)
+    await register_terminal_execution(d, session_id, meta)
     failures = getattr(d, "runtime_failures", None)
     if failures is not None:
-        failures.register(result.session_id, meta)
+        failures.register(session_id, meta)
     if d.livekit_publishers is not None:
-        d.livekit_publishers.activate(result.session_id)
+        d.livekit_publishers.activate(session_id)
     if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
         try:
             await d.pg_store.upsert_session(
-                result.session_id,
+                session_id,
                 status="active",
-                mode=result.mode,
+                mode=meta["mode"],
                 render_backend=d.config.render_backend if d.config else None,
                 avatar_id=req.avatar_id,
             )
@@ -205,17 +228,8 @@ async def sessions_start(
         except Exception:
             logger.warning(
                 "Postgres persistence failed session=%s operation=upsert_session",
-                result.session_id,
+                session_id,
             )
-    out = result.public_dict()  # frontend-safe only
-    if req.has_avatar_or_voice_override():
-        # lets the API detect a Runtime that ignores the override fields; avatar_applied says whether the avatar took effect
-        out["avatar_override_applied"] = True
-        out["avatar_applied"] = override_mode == "avatar_and_voice"
-    if req.rescue_commands:
-        # R4-R2: report whether the marker was accepted; the API follows this.
-        out["rescue_commands"] = bool(meta.get("p0_rescue"))
-    return out
 
 
 @_router.post("/sessions/{session_id}/say")
@@ -520,6 +534,12 @@ async def sessions_stop(
 async def stop_session_internal(d: Any, session_id: str) -> dict[str, Any]:
     """The whole /stop effect, shared with lease-expiry completion. Idempotent."""
     d.approved_speech.cancel(session_id)
+    # Disconnect paid media BEFORE Redis, ingestion reconciliation or receipts.
+    # The lifecycle sweeper retains this work until metadata settlement succeeds.
+    await _release_media(d, session_id)
+    cleanup = getattr(d.approved_speech, "cleanup", None)
+    if cleanup is not None and (d.coordinator is None or not d.coordinator.has(session_id)):
+        cleanup(session_id)
     # Wave 2: stop the DirectorCoordinator for this session (before teardown).
     if d.coordinator is not None and d.coordinator.has(session_id):
         # stop() returns the delivery counter as of teardown; comments that
@@ -540,7 +560,55 @@ async def stop_session_internal(d: Any, session_id: str) -> dict[str, Any]:
     from .execution import _locked
 
     async with _locked(d.store, session_id) as fence:
-        return await _stop_cancelled_session(d, session_id, fence)
+        result = await _stop_cancelled_session(d, session_id, fence)
+    _media_receipts(d).pop(session_id, None)
+    return result
+
+
+def _media_receipts(d: Any) -> dict:
+    receipts = getattr(d, "media_cleanup_pending", None)
+    if receipts is None:
+        receipts = d.media_cleanup_pending = {}
+    return receipts
+
+
+async def _release_media(d: Any, session_id: str) -> None:
+    receipts = _media_receipts(d)
+    receipt = receipts.setdefault(session_id, {"stopped": False})
+    if receipt["stopped"]:
+        return
+    entry = d.orchestrators.get(session_id)
+    if entry is not None:
+        await entry["orchestrator"].cancel(session_id)
+    try:
+        await asyncio.to_thread(d.backend.stop, session_id)
+    except KeyError:
+        # Preserve legacy unknown-session behavior unless this is a retry or
+        # rollback of a known allocation whose stop result was ambiguous.
+        from backend.application.budget_lease import termination_pending
+
+        if (
+            not receipt.get("attempted")
+            and not receipt.get("prepare_meta")
+            and not await terminal_retry_pending(d, session_id)
+            and not await termination_pending(d, session_id)
+        ):
+            receipts.pop(session_id, None)
+            raise HTTPException(status_code=404, detail="unknown session_id") from None
+        receipt["stopped"] = True
+    except Exception as exc:
+        receipt["attempted"] = True
+        receipt["error"] = type(exc).__name__
+        logger.error(
+            "media cleanup deferred session=%s error_type=%s", session_id, type(exc).__name__
+        )
+    else:
+        receipt["stopped"] = True
+    if receipt["stopped"]:
+        receipt.pop("error", None)
+        from backend.application.usage_evidence.cost import cost_meter
+
+        cost_meter.unbind(session_id)
 
 
 async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) -> dict[str, Any]:
@@ -554,25 +622,10 @@ async def _stop_cancelled_session(d: Any, session_id: str, fence: Any = None) ->
     if entry is not None:
         orchestrator = entry["orchestrator"]
         await orchestrator.cancel(session_id)
-    backend_error: str | None = None
-    try:
-        await asyncio.to_thread(d.backend.stop, session_id)
-        from backend.application.usage_evidence.cost import cost_meter
-
-        cost_meter.unbind(session_id)  # after stop: the avatar close needs the identity
-    except KeyError:
-        # An unknown / already released backend session is "already cleaned" only when a
-        # previous teardown is mid-flight: 019's retry flag OR the lease termination marker.
-        from backend.application.budget_lease import termination_pending
-
-        if not await terminal_retry_pending(d, session_id) and not await termination_pending(
-            d, session_id
-        ):
-            raise HTTPException(status_code=404, detail="unknown session_id")
-    except Exception as exc:
-        if getattr(d, "terminal_outcomes", None) is None:
-            raise
-        backend_error = type(exc).__name__
+    await _release_media(d, session_id)  # no-op once stopped; retries a deferred stop
+    backend_error = _media_receipts(d).get(session_id, {}).get("error")
+    if backend_error and getattr(d, "terminal_outcomes", None) is None:
+        raise HTTPException(status_code=503, detail={"code": "media_cleanup_retry", "retry": True})
     from backend.application.budget_lease import keep_for_unstaged
 
     # Media cleanup and the 019 terminal record come FIRST and are never blocked by usage
