@@ -131,7 +131,7 @@ async def test_guard_retries_repair_the_specific_problem(reason):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", [1, 2, 3])
+@pytest.mark.parametrize("limit", [0, 1, 2, 3])
 async def test_each_attempt_reserves_budget_and_never_exceeds_it(limit):
     service, repos, llm, set_id, before, index = await shipping_part()
     reserve = AsyncMock(side_effect=[True] * limit + [False])
@@ -140,9 +140,11 @@ async def test_each_attempt_reserves_budget_and_never_exceeds_it(limit):
     status = await repair_part(service, set_id, before, index)
     assert len(llm.prompts) == limit
     assert reserve.await_count == min(limit + 1, 3)
+    if limit == 2:  # production repo cap: friendly rejection, text untouched
+        assert status["error_message"] == "AI chưa viết lại được phần này, giữ bản hiện tại."
     assert all(c.kwargs == {"operation_id": status["workflow_id"]} for c in reserve.call_args_list)
     assert status["error_code"] == (
-        "part_content_rejected" if limit == 3 else "part_model_budget_exhausted"
+        "part_model_budget_exhausted" if limit == 0 else "part_content_rejected"
     )
     assert (await _text(repos, set_id, "P1"))[1] == before
 

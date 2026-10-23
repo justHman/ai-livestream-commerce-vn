@@ -3113,6 +3113,9 @@ class ScriptAuthoringServiceImpl:
                 + current.spoken_text
             )
             new_segment = None
+            # Up to 3 tries, but the durable budget (writes<2 per job in Postgres)
+            # is the real cap: the 3rd reserve() normally returns False. The
+            # "name the missing point" hint helps from the 2nd try on.
             for attempt in (1, 2, 3):
                 budget = getattr(self._repos, "model_budget", None)
                 if budget is not None:
@@ -3124,7 +3127,14 @@ class ScriptAuthoringServiceImpl:
                         await self._fail_job(job, "part_budget_unavailable")
                         return
                     if not reserved:
-                        await self._fail_job(job, "part_model_budget_exhausted")
+                        # attempt > 1: earlier tries were rejected by guard/gate,
+                        # so report the content, not the budget.
+                        await self._fail_job(
+                            job,
+                            "part_content_rejected"
+                            if attempt > 1
+                            else "part_model_budget_exhausted",
+                        )
                         return
                 raw = await self._with_lease_heartbeat(lambda: ordered.llm(prompt), job=job)
                 check = {
