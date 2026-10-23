@@ -3056,6 +3056,11 @@ class ScriptAuthoringServiceImpl:
             "product_id": job.product_id,
             "status": job.status.value,
             "error_code": job.error_code,
+            "error_message": (
+                "AI chưa viết lại được phần này, giữ bản hiện tại."
+                if job.error_code == "part_content_rejected"
+                else ""
+            ),
         }
 
     async def _run_regenerate_part_job(self, job, item, script_set, llm_fn) -> None:
@@ -3098,12 +3103,20 @@ class ScriptAuthoringServiceImpl:
             prior_rows = await self._repos.segments.list_by_plan(plan.id)
             row_version = max(s.version for s in prior_rows if s.segment_index == index)
             prompt = build_unit_prompt(ordered.session, product, roles, index)
+            rewrite_instruction = (
+                "\nViết khác đi, không sao chép nguyên văn bản đang có hoặc lặp các câu; "
+                "vẫn giữ đủ các ý bắt buộc, số liệu và điều kiện được phép."
+            )
+            prompt += rewrite_instruction
             prompt += (
                 "\nChỉ soạn lại phần được chọn, giữ đúng vai trò và các thông tin được phép. Bản đang có:\n"
                 + current.spoken_text
             )
             new_segment = None
-            for attempt in (1, 2):
+            # Up to 3 tries, but the durable budget (writes<2 per job in Postgres)
+            # is the real cap: the 3rd reserve() normally returns False. The
+            # "name the missing point" hint helps from the 2nd try on.
+            for attempt in (1, 2, 3):
                 budget = getattr(self._repos, "model_budget", None)
                 if budget is not None:
                     try:
@@ -3114,7 +3127,14 @@ class ScriptAuthoringServiceImpl:
                         await self._fail_job(job, "part_budget_unavailable")
                         return
                     if not reserved:
-                        await self._fail_job(job, "part_model_budget_exhausted")
+                        # attempt > 1: earlier tries were rejected by guard/gate,
+                        # so report the content, not the budget.
+                        await self._fail_job(
+                            job,
+                            "part_content_rejected"
+                            if attempt > 1
+                            else "part_model_budget_exhausted",
+                        )
                         return
                 raw = await self._with_lease_heartbeat(lambda: ordered.llm(prompt), job=job)
                 check = {
@@ -3129,15 +3149,25 @@ class ScriptAuthoringServiceImpl:
                 if text is None:
                     text = salvage_unit_text(raw, why, **check)
                 if text is None:
+                    detail = (
+                        uncovered_claims(raw or "", spec.must)
+                        if why == "coverage"
+                        else offending_phrases(raw, why, check["approved"])
+                    )
                     logger.warning(
                         "script part rejected by guard product=%s part=%s attempt=%s reason=%s detail=%s",
                         item.product_id,
                         index,
                         attempt,
                         why,
-                        offending_phrases(raw, why, check["approved"]),
+                        detail,
                     )
-                    prompt += retry_hint(why, raw, check["approved"])
+                    if why == "coverage":
+                        prompt += _COVERAGE_RETRY + " | ".join(detail)
+                    elif why in ("truncated", "too_long"):
+                        prompt += _SHORTER_RETRY
+                    else:
+                        prompt += retry_hint(why, raw, check["approved"])
                     continue
                 low, high = role_bounds_s(spec.role)
                 result = self._gate.run_segment(
@@ -3157,13 +3187,16 @@ class ScriptAuthoringServiceImpl:
                         attempt,
                         [v.rule_id for v in result.violations][:6],
                     )
-                    prompt = build_unit_repair_prompt(
-                        ordered.session,
-                        product,
-                        roles,
-                        index,
-                        failed_text=text,
-                        problems=[v.message for v in result.violations],
+                    prompt = (
+                        build_unit_repair_prompt(
+                            ordered.session,
+                            product,
+                            roles,
+                            index,
+                            failed_text=text,
+                            problems=[f"{v.rule_id}: {v.message}" for v in result.violations],
+                        )
+                        + rewrite_instruction
                     )
                     continue
                 new_segment = ScriptSegment(
@@ -3178,6 +3211,8 @@ class ScriptAuthoringServiceImpl:
                 )
                 break
             if new_segment is None:
+                # Rejection is a terminal no-op: never replace saved user text
+                # with an extractive fallback or move the selected version.
                 await self._fail_job(job, "part_content_rejected")
                 return
             selected = [new_segment if s.id == current.id else s for s in selected]

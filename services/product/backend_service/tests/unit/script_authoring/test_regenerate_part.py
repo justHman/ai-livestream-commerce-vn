@@ -1,9 +1,229 @@
 """A part repair must not replace siblings or publish rejected content."""
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 from test_ordered_generation import _service, _new_set, _run, FakeLLM, _text
+from backend.application.script_authoring.gate.results import (
+    GateRunResult,
+    RuleSetFingerprint,
+    RuleViolation,
+    Severity,
+)
 from backend.application.script_authoring.service import ScriptAuthoringError
+from backend.application.script_authoring.service_impl import _COVERAGE_RETRY, _SHORTER_RETRY
+
+
+SHIPPING = ("Giao hàng trong ba ngày.", "Không giao hàng vào chủ nhật.")
+
+
+class RepairLLM(FakeLLM):
+    repair = None
+
+    def __call__(self, prompt):
+        if self.repair is None:
+            return super().__call__(prompt)
+        self.prompts.append(prompt)
+        return self.repair(prompt)
+
+
+async def shipping_part():
+    llm = RepairLLM()
+    service, repos = _service(llm)
+    set_id = (
+        await service.create_script_set(
+            name="Giao hàng",
+            transition_policy="ORDER_AWARE",
+            product_ids=["P1"],
+            brief={
+                "product_facts": {
+                    "P1": {
+                        "product_name": "Gel XYZ",
+                        "prices": ["100000 VND"],
+                        "allowed_claims": list(SHIPPING),
+                        "claims_by_type": {"shipping": list(SHIPPING)},
+                    }
+                }
+            },
+        )
+    )["id"]
+    await _run(service, repos, set_id)
+    _, before = await _text(repos, set_id, "P1")
+    segments = [await repos.segments.get(sid) for sid in before.segment_version_ids]
+    index = next(s.segment_index for s in segments if all(c in s.spoken_text for c in SHIPPING))
+    llm.prompts.clear()
+    return service, repos, llm, set_id, before, index
+
+
+async def repair_part(service, set_id, before, index):
+    started = await service.regenerate_segment(
+        set_id=set_id,
+        product_id="P1",
+        segment_index=index,
+        idempotency_key="repair",
+        expected_version_id=before.id,
+    )
+    return await wait_job(service, set_id, "P1", started["workflow_id"])
+
+
+@pytest.mark.asyncio
+async def test_coverage_retry_names_only_the_missing_claim():
+    service, repos, llm, set_id, before, index = await shipping_part()
+
+    def reply(prompt):
+        if _COVERAGE_RETRY in prompt:
+            assert prompt.split(_COVERAGE_RETRY)[-1] == SHIPPING[1]
+            return " ".join(SHIPPING)
+        return SHIPPING[0]
+
+    llm.repair = reply
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed"
+    assert len(llm.prompts) == 2
+    assert "không sao chép nguyên văn" in llm.prompts[0]
+    _, after = await _text(repos, set_id, "P1")
+    assert after.id != before.id
+
+
+@pytest.mark.asyncio
+async def test_repeated_missing_claim_keeps_all_saved_content_and_reports_failure():
+    service, repos, llm, set_id, before, index = await shipping_part()
+    item, _ = await _text(repos, set_id, "P1")
+    versions = dict(repos.versions.rows)
+    segments = dict(repos.segments.rows)
+    llm.repair = lambda prompt: SHIPPING[0]
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "failed"
+    assert status["error_code"] == "part_content_rejected"
+    assert status["error_message"] == "AI chưa viết lại được phần này, giữ bản hiện tại."
+    assert len(llm.prompts) == 3
+    after_item, after = await _text(repos, set_id, "P1")
+    assert after_item == item and after == before
+    assert repos.versions.rows == versions and repos.segments.rows == segments
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["cta", "truncated", "too_long"])
+async def test_guard_retries_repair_the_specific_problem(reason):
+    service, repos, llm, set_id, before, index = await shipping_part()
+    # CTA shares a sentence with a mandatory claim, so cutting it cannot salvage coverage.
+    bad = {
+        "cta": "Giao hàng trong ba ngày, nhắn tin cho mình nhé. " + SHIPPING[1],
+        "truncated": " ".join(SHIPPING).rstrip("."),
+        "too_long": " ".join(SHIPPING) + " Mọi người tham khảo nhé." * 50,
+    }[reason]
+
+    def reply(prompt):
+        # Require both repairs before succeeding: exercises the new third attempt.
+        if len(llm.prompts) < 3:
+            return bad
+        if reason == "cta":
+            assert prompt.count("('nhắn tin')") == 2
+        else:
+            assert prompt.count(_SHORTER_RETRY) == 2
+        return " ".join(SHIPPING)
+
+    llm.repair = reply
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed" and len(llm.prompts) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [0, 1, 2, 3])
+async def test_each_attempt_reserves_budget_and_never_exceeds_it(limit):
+    service, repos, llm, set_id, before, index = await shipping_part()
+    reserve = AsyncMock(side_effect=[True] * limit + [False])
+    repos.model_budget = SimpleNamespace(reserve=reserve)
+    llm.repair = lambda prompt: SHIPPING[0]
+    status = await repair_part(service, set_id, before, index)
+    assert len(llm.prompts) == limit
+    assert reserve.await_count == min(limit + 1, 3)
+    if limit == 2:  # production repo cap: friendly rejection, text untouched
+        assert status["error_message"] == "AI chưa viết lại được phần này, giữ bản hiện tại."
+    assert all(c.kwargs == {"operation_id": status["workflow_id"]} for c in reserve.call_args_list)
+    assert status["error_code"] == (
+        "part_model_budget_exhausted" if limit == 0 else "part_content_rejected"
+    )
+    assert (await _text(repos, set_id, "P1"))[1] == before
+
+
+@pytest.mark.asyncio
+async def test_gate_retry_identifies_each_failed_rule(monkeypatch):
+    service, repos, llm, set_id, before, index = await shipping_part()
+    violations = (
+        RuleViolation(rule_id="VN_SPELLING_TONE", severity=Severity.ERROR, message="Sửa dấu câu."),
+        RuleViolation(rule_id="TTS_ACRONYM", severity=Severity.ERROR, message="Đọc thành chữ."),
+        RuleViolation(
+            rule_id="SPEECH_DURATION_SEGMENT", severity=Severity.ERROR, message="Rút ngắn phần."
+        ),
+    )
+    real_gate = service._gate.run_segment
+    calls = []
+
+    def gate(text, context):
+        calls.append(text)
+        if len(calls) == 1:
+            return GateRunResult(
+                scope="segment", fingerprint=RuleSetFingerprint(), violations=violations
+            )
+        return real_gate(text, context)
+
+    monkeypatch.setattr(service._gate, "run_segment", gate)
+
+    def reply(prompt):
+        if len(llm.prompts) > 1:
+            for violation in violations:
+                assert f"{violation.rule_id}: {violation.message}" in prompt
+            assert "không sao chép nguyên văn" in prompt
+        return " ".join(SHIPPING)
+
+    llm.repair = reply
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed" and len(llm.prompts) == 2
+
+
+@pytest.mark.asyncio
+async def test_cta_sentence_is_salvaged_without_another_model_call():
+    service, repos, llm, set_id, before, index = await shipping_part()
+    llm.repair = lambda prompt: " ".join(SHIPPING) + " Nhắn tin cho mình nhé."
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed" and len(llm.prompts) == 1
+    _, after = await _text(repos, set_id, "P1")
+    assert "Nhắn tin" not in after.spoken_text
+
+
+@pytest.mark.asyncio
+async def test_rejection_does_not_overwrite_edits_saved_while_model_runs(monkeypatch):
+    service, repos, llm, set_id, before, index = await shipping_part()
+    entered, release = asyncio.Event(), asyncio.Event()
+    heartbeat = service._with_lease_heartbeat
+
+    async def paused_call(fn, **kwargs):
+        entered.set()
+        await release.wait()
+        return await heartbeat(fn, **kwargs)
+
+    monkeypatch.setattr(service, "_with_lease_heartbeat", paused_call)
+    llm.repair = lambda prompt: SHIPPING[0]
+    task = asyncio.create_task(repair_part(service, set_id, before, index))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await service.save_draft(
+            set_id=set_id,
+            product_id="P1",
+            display_text=before.display_text + "\nBản mình đã sửa.",
+            spoken_text=None,
+            revision=None,
+        )
+        saved_item, saved = await _text(repos, set_id, "P1")
+    finally:
+        release.set()
+    status = await task
+    assert status["error_code"] == "part_content_rejected" and status["error_message"]
+    after_item, after = await _text(repos, set_id, "P1")
+    assert after_item == saved_item and after == saved
 
 
 async def wait_job(service, set_id, pid, job_id):
