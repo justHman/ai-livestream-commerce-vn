@@ -9,12 +9,15 @@ retry, response parsing, and typed transport errors. No model-engine code.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 import httpx
 from .stream_deadline import FIRST_CONTENT_TIMEOUT_S, TOTAL_TIMEOUT_S, StreamDeadline
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClientError(RuntimeError):
@@ -126,7 +129,15 @@ class OpenAICompatibleClient:
             "stream": req.stream,
         }
         if self._reasoning_effort:
-            body["reasoning_effort"] = self._reasoning_effort
+            if (
+                self._reasoning_effort.lower() == "none"
+                and str(body["model"]).lower().startswith("qwen")
+                and "/compatible-mode" in self._base_url
+            ):
+                # DashScope hybrid Qwen uses a boolean switch, not OpenAI's effort enum.
+                body["enable_thinking"] = False
+            else:
+                body["reasoning_effort"] = self._reasoning_effort
         if req.stop:
             body["stop"] = req.stop
         if req.seed:
@@ -165,8 +176,18 @@ class OpenAICompatibleClient:
             choice = choices[0]
             message = choice.get("message", {}) if isinstance(choice, dict) else {}
             text = message.get("content", "") if isinstance(message, dict) else ""
+            text = text if isinstance(text, str) else ""
             finish = choice.get("finish_reason", "stop") if isinstance(choice, dict) else "stop"
             usage = data.get("usage", {}) or {}
+            if not text.strip() or finish == "length":
+                reasoning = message.get("reasoning_content") if isinstance(message, dict) else None
+                logger.warning(
+                    "LLM incomplete content finish=%s completion_tokens=%s reasoning_chars=%s chars=%s",
+                    finish,
+                    usage.get("completion_tokens"),
+                    len(reasoning) if isinstance(reasoning, str) else 0,
+                    len(text),
+                )
             return LLMResult(
                 text=text,
                 finish_reason=finish,
@@ -196,6 +217,7 @@ class OpenAICompatibleClient:
     def _chat_stream_guarded(self, client, url, body, usage, started):
         while True:
             deadline = StreamDeadline(self._total_timeout, self._first_content_timeout)
+            content_chars, reasoning_chars, finish = 0, 0, None
             try:
                 deadline.check()
                 with client.stream(
@@ -229,14 +251,26 @@ class OpenAICompatibleClient:
                                     )
                                 choices = chunk.get("choices", [])
                                 if choices:
+                                    finish = choices[0].get("finish_reason") or finish
                                     delta = choices[0].get("delta", {})
+                                    reasoning = delta.get("reasoning_content")
+                                    if isinstance(reasoning, str):
+                                        reasoning_chars += len(reasoning)
                                     content = delta.get("content", "")
-                                    if content:
+                                    if isinstance(content, str) and content:
                                         deadline.content.set()
                                         started = True
+                                        content_chars += len(content)
                                         yield content
                             except json.JSONDecodeError:
                                 continue
+                if not started or finish == "length":
+                    logger.warning(
+                        "LLM incomplete stream finish=%s reasoning_chars=%s chars=%s",
+                        finish,
+                        reasoning_chars,
+                        content_chars,
+                    )
                 return
             except TimeoutError as exc:
                 raise LLMClientError("LLM stream deadline exceeded or cancelled") from exc
