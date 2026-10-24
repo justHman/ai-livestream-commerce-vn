@@ -26,7 +26,7 @@ from .lifespan import build_lifespan
 logger = logging.getLogger(__name__)
 
 
-def _build_director_pipeline(config, backend, engine_manager, hub=None):
+def _build_director_pipeline(config, backend, engine_manager, hub=None, store=None):
     """Construct the agentic Director pipeline (P0-01).
 
     Returns ``(runtime, coordinator, reducer)`` or ``(None, None, None)`` when
@@ -56,6 +56,8 @@ def _build_director_pipeline(config, backend, engine_manager, hub=None):
         # The container's hub: without it every coordinator.* event (speak_finished, the API's
         # auto-end trigger) is silently dropped.
         hub=hub,
+        session_store=store,
+        engine_manager=engine_manager,
     )
     return runtime, coordinator, reducer
 
@@ -79,7 +81,7 @@ def _build_container(config, container: BootstrapContainer | None) -> BootstrapC
 
     hub = ControlHub()
     director, coordinator, reducer = _build_director_pipeline(
-        config, backend, engine_manager, hub=hub
+        config, backend, engine_manager, hub=hub, store=store
     )
 
     return create_container(

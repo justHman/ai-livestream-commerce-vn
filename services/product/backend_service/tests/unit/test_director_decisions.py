@@ -561,15 +561,25 @@ def test_answered_cluster_is_not_selected_again(monkeypatch: pytest.MonkeyPatch)
     state.products[0].is_introduced = True
     director = Director(state=state, cfg=StreamConfig(max_clusters_per_product=4))
     comments = [
-        Comment(id="price-1", text="áo hoodie giá bao nhiêu", embedding=[1.0, 0.0], t=10.0),
-        Comment(id="price-2", text="hoodie nhiêu tiền", embedding=[1.0, 0.0], t=10.1),
+        Comment(
+            id="price-1",
+            text="áo hoodie giá bao nhiêu",
+            embedding=[1.0, 0.0],
+            t=10.0,
+            intent="price",
+        ),
+        Comment(
+            id="price-2", text="hoodie nhiêu tiền", embedding=[1.0, 0.0], t=10.1, intent="price"
+        ),
     ]
 
     director.state.products[0].stage_turn_index = 2
     first = director.decide(comments, now=10.0)
     director.mark_answered(first)
     expanded = comments + [
-        Comment(id="price-3", text="hoodie giá sao shop", embedding=[1.0, 0.0], t=10.5)
+        Comment(
+            id="price-3", text="hoodie giá sao shop", embedding=[1.0, 0.0], t=10.5, intent="price"
+        )
     ]
     second = director.decide(expanded, now=11.0)
 

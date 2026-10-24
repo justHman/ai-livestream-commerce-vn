@@ -71,18 +71,7 @@ def _validate_image_host(image_url: str, config: Any) -> None:
         ) from None
 
 
-class _SessionTTS:
-    """Apply the validated voice override to this session without changing shared state."""
-
-    def __init__(self, tts: Any, *, voice_id: str | None) -> None:
-        self._tts = tts
-        self._voice_id = voice_id
-
-    def stream_audio(self, chunk: Any, **kwargs: Any):
-        from tts.engines.base import TTSRequest
-
-        kwargs["req"] = TTSRequest(text=chunk.text, voice=self._voice_id)
-        yield from self._tts.stream_audio(chunk, **kwargs)
+from backend.application.session_tts import SessionTTS as _SessionTTS  # noqa: E402
 
 
 @_router.post("/sessions")

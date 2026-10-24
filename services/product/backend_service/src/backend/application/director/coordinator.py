@@ -144,7 +144,11 @@ class DirectorCoordinator:
         audio_window_callback: Any = None,
         completed_history_size: int = 10,
         reducer: Any = None,
+        session_store: Any = None,
+        engine_manager: Any = None,
     ) -> None:
+        self._session_store = session_store
+        self._engine_manager = engine_manager
         self._runtime = runtime
         # Factory inputs for building a FRESH StreamOrchestrator + queue +
         # metrics per _maybe_speak() call. Sharing one orchestrator across
@@ -1425,6 +1429,20 @@ class DirectorCoordinator:
             live=lambda: self._speech_live(session_id, decision),
         )
 
+    async def _session_tts(self, session_id: str) -> Any:
+        """Default TTS bound to the session's voice_id (from store meta), if any."""
+        if self._session_store is None or self._tts is None:
+            return self._tts
+        from backend.application.session_tts import wrap_session_tts
+
+        try:
+            meta = await self._session_store.get(session_id)
+        except Exception:  # noqa: BLE001 - voice lookup must never block speech
+            logger.warning("session voice lookup failed session=%s", session_id, exc_info=True)
+            return self._tts
+        voice_id = (meta or {}).get("voice_id")
+        return wrap_session_tts(self._tts, voice_id, self._engine_manager)
+
     async def _maybe_speak(self, session_id: str, decision: Decision) -> bool:
         """Attempt to acquire the lock and run the orchestrator for a decision.
 
@@ -1552,11 +1570,12 @@ class DirectorCoordinator:
             if self._audio_window_callback is not None:
                 await self._audio_window_callback(window)
 
+        session_tts = await self._session_tts(session_id)
         orchestrator = StreamOrchestrator(
             llm=self._llm,
-            tts=self.approved_speech.guarded_tts(speech, self._tts, live=live, emit=self._emit)
+            tts=self.approved_speech.guarded_tts(speech, session_tts, live=live, emit=self._emit)
             if speech is not None
-            else self._tts,
+            else session_tts,
             backend=self._backend,
             queue=queue,
             metrics=metrics,

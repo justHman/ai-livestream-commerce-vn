@@ -54,6 +54,9 @@ class StreamConfig:
     max_qa_clusters_per_window: int = 2
     qa_window_hard_timeout_sec: float = 45.0
     qa_topic_cooldown_sec: float = 120.0
+    # 'unknown' intent lumps unrelated comments together: short cooldown, and any new
+    # comment counts as new content (see decision.py).
+    qa_unknown_topic_cooldown_sec: float = 15.0
     answer_cache_variants: int = 3
     prepared_turn_depth: int = 3
     transient_retry_count: int = 1
