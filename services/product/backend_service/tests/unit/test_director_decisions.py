@@ -793,3 +793,17 @@ def test_minimum_cluster_size_comes_from_the_environment(monkeypatch: pytest.Mon
     assert StreamConfig.from_env().qa_min_cluster_size == 1
     monkeypatch.setenv("DIRECTOR_QA_MIN_CLUSTER_SIZE", "abc")
     assert StreamConfig.from_env().qa_min_cluster_size == 2
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 3), ("1", 1), ("5", 5), ("0", 1), ("99", 5), ("abc", 3)],
+)
+def test_qa_clusters_per_window_comes_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: int
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("DIRECTOR_MAX_QA_CLUSTERS_PER_WINDOW", raising=False)
+    else:
+        monkeypatch.setenv("DIRECTOR_MAX_QA_CLUSTERS_PER_WINDOW", raw)
+    assert StreamConfig.from_env().max_qa_clusters_per_window == expected
