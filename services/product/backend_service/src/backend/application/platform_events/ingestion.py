@@ -560,6 +560,27 @@ class PlatformEventIngestionService:
             return "p0_source_stream_id_mismatch"
         return None
 
+    def _live_follow_rejected(self, session_id: str, event: PlatformEvent, reason: str) -> None:
+        """Report a comment refused at intake with a normalized reason (IDs only)."""
+        from backend.application.live_follow import LiveFollowRecorder
+
+        recorder = getattr(self._coordinator, "live_follow", None)
+        if (
+            event.type != "viewer.comment"
+            or not isinstance(recorder, LiveFollowRecorder)
+            or not recorder.enabled
+            or getattr(self._coordinator, "has", lambda _s: False)(session_id) is not True
+        ):
+            return
+        code = (
+            "expired"
+            if reason == _REASON_STALE
+            else "duplicate_content"
+            if reason == "replay_flood"
+            else "safety_filtered"
+        )
+        recorder.rejected_before_runtime(session_id, event.event_id, code)
+
     def _notify_reducer(
         self, session_id: str, event: PlatformEvent, comment_id: Optional[str]
     ) -> None:
@@ -635,6 +656,7 @@ class PlatformEventIngestionService:
             result["status"] = EventStatus.REJECTED.value
             result["reason"] = reason
             self._rejection_counts[reason] = self._rejection_counts.get(reason, 0) + 1
+            self._live_follow_rejected(session_id, event, reason)
             await self._persist_rejected(session_id, event, reason)
             # Replay-flood is a bounded-window rejection, not permanent
             # delivery ownership. A retry after expiry must be reevaluated.

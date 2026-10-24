@@ -133,6 +133,9 @@ class Director:
         # answered, as an excursion that resumes at the same cursor).
         self.order_locked: bool = False
         self.safety_intents: frozenset[str] = frozenset()
+        # Observation only (live-follow): ``(reason, member_ids)`` the last decide skipped for
+        # a still-retriable reason. Never read by the decision logic.
+        self.tick_skips: list[tuple[str, tuple[str, ...]]] = []
 
     def is_high_value(self, envelope: Any) -> bool:
         """Whether one reducer envelope clears the high-value predicate.
@@ -245,6 +248,7 @@ class Director:
     def decide(self, comments: list[Comment], now: float) -> Decision:
         """Produce the next Decision given recent comments and the clock."""
         pivot_queue_before = set(self.state.cursor.pivot_queue)
+        self.tick_skips = []
         return self._stamp(self._decide(comments, now), now, pivot_queue_before)
 
     def _stamp(
@@ -290,6 +294,7 @@ class Director:
         from .reducer_input import attach_provenance, select_scored
 
         pivot_queue_before = set(self.state.cursor.pivot_queue)
+        self.tick_skips = []
         by_cluster = {s.envelope.cluster_id: s for s in selections}
         ranked = select_scored(self, selections, now=now)
         high_value_ids = high_value_ids or (lambda _cid: False)
@@ -450,6 +455,7 @@ class Director:
                         topic_key,
                         until - now,
                     )
+                    self.tick_skips.append(("topic_cooldown", tuple(item.cluster.member_ids)))
                     continue
                 eligible.append(item)
         ranked = eligible

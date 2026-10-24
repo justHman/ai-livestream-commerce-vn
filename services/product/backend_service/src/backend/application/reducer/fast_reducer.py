@@ -189,6 +189,21 @@ class FastReducer:
         # last typed failure, so a failed pass never crashes the fast lane.
         self._reconciliation_failures: dict[str, int] = {}
         self._last_reconciliation_failure: dict[str, ReconciliationFailure] = {}
+        # Optional read-only observer ``(session_id, store, now)`` called after the store's
+        # membership changed (batch assigned/expired, reconciliation). Failures are logged
+        # and ignored: observation never affects clustering.
+        self.membership_observer: Optional[Callable[[str, ClusterStore, float], None]] = None
+
+    def _observe_membership(self, session_id: str, store: ClusterStore, now: float) -> None:
+        observer = self.membership_observer
+        if observer is None:
+            return
+        try:
+            observer(session_id, store, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "membership observer failed session=%s error=%s", session_id, type(exc).__name__
+            )
 
     # ------------------------------------------------------------------
     # Per-session cluster store (5.3)
@@ -472,6 +487,7 @@ class FastReducer:
                 )
         # Write-path expiry keeps store memory bounded as the horizon advances (5.4).
         store.expire(now)
+        self._observe_membership(session_id, store, now)
         acknowledged = {id(c) for c in batch}
         state.pending = [c for c in state.pending if id(c) not in acknowledged]
         state.first_pending_ts = state.pending[0].ts if state.pending else None
@@ -561,6 +577,7 @@ class FastReducer:
             self._reconcile_split_total.get(session_id, 0) + result.split
         )
         self._last_reconcile[session_id] = result
+        self._observe_membership(session_id, store, now)
         return result
 
     # ------------------------------------------------------------------
