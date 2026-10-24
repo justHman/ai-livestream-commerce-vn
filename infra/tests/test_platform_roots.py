@@ -30,9 +30,7 @@ def test_platform_roots_and_legacy_references() -> None:
     assert "lmcache==0.5.2" in lmcache_df, "lmcache pin must be immutable"
     # Flag only best-effort install fallback patterns (|| true, || echo optional), not HEALTHCHECK fail-loudness.
     install_lines = [
-        line
-        for line in lmcache_df.splitlines()
-        if "pip install" in line or "apt-get" in line or "apk add" in line
+        line for line in lmcache_df.splitlines() if "pip install" in line or "apt-get" in line or "apk add" in line
     ]
     for line in install_lines:
         assert "||" not in line, f"install line must fail-loud, not fallback: {line.strip()}"
@@ -67,13 +65,5 @@ def test_platform_roots_and_legacy_references() -> None:
         assert "services/lmcache/" not in text
 
     assert (
-        ROOT
-        / "services"
-        / "product"
-        / "backend_service"
-        / "src"
-        / "backend"
-        / "db"
-        / "sql"
-        / "runtime_schema.sql"
+        ROOT / "services" / "product" / "backend_service" / "src" / "backend" / "db" / "sql" / "runtime_schema.sql"
     ).is_file()

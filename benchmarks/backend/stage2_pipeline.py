@@ -134,7 +134,9 @@ class _TimedTTS(TTSEngine):
     def stream_audio(self, *args, **kwargs):
         for window in self.inner.stream_audio(*args, **kwargs):
             if not self._saw_audio:
-                self.last_first_audio_ms = (time.perf_counter() - self._turn_started) * 1_000
+                self.last_first_audio_ms = (
+                    time.perf_counter() - self._turn_started
+                ) * 1_000
                 self._saw_audio = True
             yield window
         self.last_total_ms = (time.perf_counter() - self._turn_started) * 1_000
@@ -157,7 +159,9 @@ def _latency_samples(report: dict) -> dict[str, list[float]]:
         }
     legacy = report.get("latency_ms") or report.get("p95_latency_ms") or {}
     return {
-        stage: [float(value)] for stage, value in legacy.items() if isinstance(value, (int, float))
+        stage: [float(value)]
+        for stage, value in legacy.items()
+        if isinstance(value, (int, float))
     }
 
 
@@ -391,9 +395,7 @@ async def _run_full_loop(
         )
         for _ in range(3):
             decision = await perform(price + size + trust)
-            if decision.cluster_member_ids and any(
-                "qa-trust" in item for item in decision.cluster_member_ids
-            ):
+            if decision.cluster_member_ids and any("qa-trust" in item for item in decision.cluster_member_ids):
                 break
 
         excursion_comments = _product_comments(
@@ -458,7 +460,9 @@ async def _run_full_loop(
         )
         resume = await perform(cooled)
 
-        qa_answers = sum(turn["action"] in ("answer_fact", "answer_cluster") for turn in turns)
+        qa_answers = sum(
+            turn["action"] in ("answer_fact", "answer_cluster") for turn in turns
+        )
         coverage = {
             "opening_turns": sum(turn["stage"] == "opening" for turn in turns),
             "product_lifecycle": _REQUIRED_LIFECYCLE_STAGES <= pivot_stages,
@@ -477,7 +481,10 @@ async def _run_full_loop(
             and coverage["pivot_enter"]
             and coverage["pivot_resume"]
         )
-        p95 = {stage: round(_percentile95(values), 3) for stage, values in latency_samples.items()}
+        p95 = {
+            stage: round(_percentile95(values), 3)
+            for stage, values in latency_samples.items()
+        }
         critical_stage = max(p95, key=p95.get)
         return {
             "lane": lane,
@@ -580,7 +587,9 @@ def _sandbox_endpoint_transport() -> dict[str, Any]:
     base_url = os.environ.get("STAGE2_BASE_URL", "http://127.0.0.1:8800").rstrip("/")
     request = urllib.request.Request(
         f"{base_url}/api/v1/admin/sandbox/verify",
-        data=json.dumps({"speech_text": "Stage 2 sandbox playback verification."}).encode("utf-8"),
+        data=json.dumps({"speech_text": "Stage 2 sandbox playback verification."}).encode(
+            "utf-8"
+        ),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -610,7 +619,11 @@ def run_sandbox(
                 turn_started = time.perf_counter()
                 result = transport()
                 speech = next(
-                    (layer for layer in result.get("layers", []) if layer.get("name") == "speech"),
+                    (
+                        layer
+                        for layer in result.get("layers", [])
+                        if layer.get("name") == "speech"
+                    ),
                     {},
                 )
                 confirmed = result.get("ready") is True and speech.get("status") == "pass"
@@ -739,7 +752,9 @@ def main() -> None:
         timeout_sec=args.timeout_sec,
     )
     baseline = (
-        json.loads(Path(args.baseline).read_text(encoding="utf-8")) if args.baseline else None
+        json.loads(Path(args.baseline).read_text(encoding="utf-8"))
+        if args.baseline
+        else None
     )
     if args.lane != "all" and "latency_samples_ms" in result:
         result["regression"] = compare_p95(result, baseline)

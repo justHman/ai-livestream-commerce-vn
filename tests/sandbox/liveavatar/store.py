@@ -31,7 +31,8 @@ class SessionStore(ABC):
         ...
 
     @abstractmethod
-    async def exists(self, session_id: str) -> bool: ...
+    async def exists(self, session_id: str) -> bool:
+        ...
 
 
 class InMemorySessionStore(SessionStore):

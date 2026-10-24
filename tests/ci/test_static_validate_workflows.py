@@ -715,9 +715,7 @@ def test_reusable_deploy_job_without_environment_rejected():
             "jobs": {
                 "deploy": {
                     "steps": [
-                        {
-                            "run": "aws ecs update-service --cluster c --service s --task-definition t"
-                        }
+                        {"run": "aws ecs update-service --cluster c --service s --task-definition t"}
                     ]
                 }
             },
@@ -737,9 +735,7 @@ def test_reusable_deploy_job_environment_inputs_env_passes():
                 "deploy": {
                     "environment": "${{ inputs.env }}",
                     "steps": [
-                        {
-                            "run": "aws ecs update-service --cluster c --service s --task-definition t"
-                        }
+                        {"run": "aws ecs update-service --cluster c --service s --task-definition t"}
                     ],
                 }
             },
@@ -762,8 +758,8 @@ def test_container_image_override_rejected():
                     "steps": [
                         {
                             "run": (
-                                'overrides=$(jq -nc --arg img "$candidate" '
-                                '\'{containerOverrides:[{"name":"backend","image":$img}]}\')'
+                                "overrides=$(jq -nc --arg img \"$candidate\" "
+                                "'{containerOverrides:[{\"name\":\"backend\",\"image\":$img}]}')"
                             )
                         }
                     ]
@@ -790,7 +786,7 @@ def test_register_task_definition_flow_passes():
                                 '"$MIGRATE_TASK_ARN" --query taskDefinition)\n'
                                 "new_task=$(aws ecs register-task-definition --cli-input-json "
                                 '"$task" --query taskDefinition.taskDefinitionArn --output text)\n'
-                                'run_id=$(aws ecs run-task --cluster "$ECS_CLUSTER" '
+                                "run_id=$(aws ecs run-task --cluster \"$ECS_CLUSTER\" "
                                 '--task-definition "$new_task" ...)'
                             )
                         }
@@ -849,9 +845,7 @@ def test_smoke_url_liveness_rejected():
             "jobs": {
                 "preflight": {
                     "steps": [
-                        {
-                            "run": 'echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"'
-                        }
+                        {"run": 'echo "smoke_url=$scheme://$dns/api/v1/health/live" >> "$GITHUB_OUTPUT"'}
                     ]
                 }
             }
@@ -869,9 +863,7 @@ def test_smoke_url_readiness_passes():
             "jobs": {
                 "preflight": {
                     "steps": [
-                        {
-                            "run": 'echo "smoke_url=$scheme://$dns/api/v1/health/ready" >> "$GITHUB_OUTPUT"'
-                        }
+                        {"run": 'echo "smoke_url=$scheme://$dns/api/v1/health/ready" >> "$GITHUB_OUTPUT"'}
                     ]
                 }
             }
@@ -885,7 +877,15 @@ def test_smoke_url_liveness_path_strip_rejected():
     """Path-stripping logic that assumes the /live suffix is also rejected."""
     r = _result()
     validate_smoke_readiness(
-        {"jobs": {"smoke": {"steps": [{"run": '-Base "${SMOKE_URL%/api/v1/health/live}" \\'}]}}},
+        {
+            "jobs": {
+                "smoke": {
+                    "steps": [
+                        {"run": '-Base "${SMOKE_URL%/api/v1/health/live}" \\'}
+                    ]
+                }
+            }
+        },
         r,
     )
     assert not r.passed
@@ -906,7 +906,8 @@ def test_gh_api_actions_permission_missing_rejected():
                     "steps": [
                         {
                             "run": (
-                                'conclusion=$(gh api "repos/x/actions/runs?head_sha=a" --jq y)'
+                                'conclusion=$(gh api "repos/x/actions/runs?head_sha=a" '
+                                "--jq y)"
                             ),
                             "env": {"GH_TOKEN": "${{ github.token }}"},
                         }
@@ -973,7 +974,13 @@ def test_gh_api_non_governed_endpoint_ignored():
     validate_gh_api_actions_permission(
         {
             "permissions": {"contents": "read"},
-            "jobs": {"v": {"steps": [{"run": 'gh api "repos/x/issues" --jq y'}]}},
+            "jobs": {
+                "v": {
+                    "steps": [
+                        {"run": 'gh api "repos/x/issues" --jq y'}
+                    ]
+                }
+            },
         },
         r,
     )
@@ -1025,7 +1032,7 @@ def test_superseded_workflow_without_deploy_mutation_passes(tmp_path):
         "name: _tombstone\n"
         "on:\n"
         "  push:\n"
-        '    branches: ["**"]\n'
+        "    branches: [\"**\"]\n"
         "jobs: {}\n"
     )
     r = ValidationResult(str(wf))

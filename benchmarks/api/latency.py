@@ -3,7 +3,6 @@
 Usage:
   python benchmarks/api/latency.py --base https://api.livento.me --token $BK --out .runtime/bench-<ts>.json
 """
-
 from __future__ import annotations
 
 import argparse

@@ -41,17 +41,15 @@ from livekit import rtc
 
 room = rtc.Room()
 await room.connect(
-    LIVEKIT_URL, rtc.RoomJoinToken(api_key=LK_API_KEY, api_secret=LK_API_SECRET, room="avatar")
+    LIVEKIT_URL,
+    rtc.RoomJoinToken(api_key=LK_API_KEY, api_secret=LK_API_SECRET, room="avatar")
 )
 source = rtc.VideoSource()
 track = rtc.LocalVideoTrack.create_video_track("avatar-face", source)
-await room.local_participant.publish_track(
-    track,
-    rtc.TrackPublishOptions(
-        source=rtc.TrackSource.SOURCE_CAMERA,
-        video_codec=rtc.VideoCodec.H264,
-    ),
-)
+await room.local_participant.publish_track(track, rtc.TrackPublishOptions(
+    source=rtc.TrackSource.SOURCE_CAMERA,
+    video_codec=rtc.VideoCodec.H264,
+))
 ```
 
 ### 2. Idle loop (75 frames at 25 fps)
@@ -64,10 +62,9 @@ idle_frame = np.full((480, 640, 3), (32, 128, 160), dtype=np.uint8)
 for _ in range(75):
     # push one RGB frame to LiveKit
     frame = rtc.VideoFrame(
-        width=640,
-        height=480,
+        width=640, height=480,
         buffer=rtc.VideoBuffer.from_ndarray(idle_frame, rtc.VideoBufferType.RGB),
-        timestamp_us=int(time.time() * 1_000_000),
+        timestamp_us=int(time.time() * 1_000_000)
     )
     await source.capture_frame(frame)
     await asyncio.sleep(1 / 25)

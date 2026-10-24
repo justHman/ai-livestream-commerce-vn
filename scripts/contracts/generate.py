@@ -418,7 +418,6 @@ CONTROL_SCHEMA = {
     },
 }
 
-
 def generate_artifacts(service_name: str) -> list[Path]:
     """Regenerate the committed artifacts for one service; return written paths."""
     service = SERVICES[service_name]

@@ -140,13 +140,11 @@ Schema (LLM decides avatar action deterministically):
 from pydantic import BaseModel
 from typing import Literal
 
-
 class Utterance(BaseModel):
-    speech: str  # text host speaks
-    action: Literal["wave", "smile", "point", "neutral", "angry", "happy", "nod"]
-    product_id: str | None  # product being discussed
+    speech: str                                # text host speaks
+    action: Literal["wave","smile","point","neutral","angry","happy","nod"]
+    product_id: str | None                     # product being discussed
     is_final: bool
-
 
 resp = await llm_client.chat.completions.create(
     model="cyankiwi/Qwen3.5-4B-AWQ-4bit",

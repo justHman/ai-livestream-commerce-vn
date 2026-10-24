@@ -62,9 +62,9 @@ def test_container_build_passes_enabled_per_row() -> None:
     """
     job = _container_build_job()
     enabled = job["with"].get("enabled", "")
-    assert (
-        "contains(fromJson(needs.affected-area.outputs.services_json), matrix.service)" in enabled
-    ), "container-build must pass enabled = (service in services_json) per matrix row"
+    assert "contains(fromJson(needs.affected-area.outputs.services_json), matrix.service)" in enabled, (
+        "container-build must pass enabled = (service in services_json) per matrix row"
+    )
 
 
 def test_container_build_job_if_skips_when_no_services() -> None:

@@ -17,5 +17,9 @@ def test_terraform_module_sources_resolve_from_each_environment() -> None:
     assert environments
 
     for config in environments:
-        for source in re.findall(r'^\s*source\s*=\s*"([^"\n]+)"', config.read_text(), re.MULTILINE):
-            assert (config.parent / source).resolve().is_dir(), f"{config}: missing module {source}"
+        for source in re.findall(
+            r'^\s*source\s*=\s*"([^"\n]+)"', config.read_text(), re.MULTILINE
+        ):
+            assert (config.parent / source).resolve().is_dir(), (
+                f"{config}: missing module {source}"
+            )

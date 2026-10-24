@@ -165,7 +165,6 @@ def _factory(room_holder):
     def make(url, token):
         room_holder["room"] = _FakeRoom()
         return room_holder["room"]
-
     return make
 
 
@@ -204,7 +203,6 @@ async def test_publish_start_fails_loud_when_sdk_missing(monkeypatch):
         "LIVEKIT_API_SECRET": "s",
     }
     import sys
-
     monkeypatch.setitem(sys.modules, "livekit.rtc", None)  # force ImportError on import
     pub = AudioTrackPublisher("sess", env=env, rtc_factory=None)
     with pytest.raises(RuntimeError, match="livekit-rtc"):
@@ -258,10 +256,7 @@ def publish_enabled(env: Optional[dict[str, str]] = None) -> bool:
     """True only when publish flag + LiveKit credentials are all present."""
     source = env if env is not None else os.environ
     flag = str(source.get("LIVEKIT_PUBLISH", "0")).lower() in (
-        "1",
-        "true",
-        "on",
-        "yes",
+        "1", "true", "on", "yes",
     )
     if not flag:
         return False
@@ -297,8 +292,8 @@ class AudioTrackPublisher:
         self._started = False
         self._enabled = publish_enabled(env)
         self._frames_published = 0
-        self._room_ctx = None  # async context manager (real or fake)
-        self._audio_track = None  # track exposing capture_frame
+        self._room_ctx = None        # async context manager (real or fake)
+        self._audio_track = None      # track exposing capture_frame
 
     @property
     def enabled(self) -> bool:
@@ -334,14 +329,9 @@ class AudioTrackPublisher:
 
     def _mint_publish_token(self, key: str, secret: str) -> str:
         from .livekit_tokens import mint_room_token
-
         return mint_room_token(
-            api_key=key,
-            api_secret=secret,
-            room=self.room_name,
-            identity=self.identity,
-            can_publish=True,
-            can_subscribe=False,
+            api_key=key, api_secret=secret, room=self.room_name,
+            identity=self.identity, can_publish=True, can_subscribe=False,
         )
 
     def _connect(self, url: str, token: str):
@@ -373,7 +363,6 @@ class AudioTrackPublisher:
             # Test fake already attached the track on the room object.
             return getattr(room, "_audio_track", None) or room.track
         from livekit import rtc  # type: ignore
-
         opts = rtc.AudioTrackOptions(
             name=f"tts-{self.session_id}",
             sample_rate=24000,
@@ -411,15 +400,12 @@ class AudioTrackPublisher:
             track.capture_frame({"pcm": pcm, "sample_rate": sample_rate})
             return
         from livekit import rtc  # type: ignore
-
         bytes_per_frame = int(sample_rate * num_channels * 2 * _FRAME_MS / 1000)
         for i in range(0, len(pcm), bytes_per_frame):
-            chunk = pcm[i : i + bytes_per_frame]
+            chunk = pcm[i:i + bytes_per_frame]
             if len(chunk) < bytes_per_frame:
                 break
-            frame = rtc.AudioFrame(
-                chunk, sample_rate, num_channels, len(chunk) // (num_channels * 2)
-            )
+            frame = rtc.AudioFrame(chunk, sample_rate, num_channels, len(chunk) // (num_channels * 2))
             track.capture_frame(frame)
 
     async def stop(self) -> None:
@@ -431,9 +417,8 @@ class AudioTrackPublisher:
             await self._room_ctx.__aexit__(None, None, None)
         self._room_ctx = None
         self._audio_track = None
-        log.info(
-            "livekit_publish stopped session=%s frames=%s", self.session_id, self._frames_published
-        )
+        log.info("livekit_publish stopped session=%s frames=%s",
+                 self.session_id, self._frames_published)
         self._started = False
 
 
@@ -598,13 +583,8 @@ async def test_insert_director_decision_returns_id():
     store = PostgresRuntimeStore("postgresql://u:p@h:5432/runtime")
     store._pool = _FakePool()
     rid = await store.insert_director_decision(
-        "sess-1",
-        "answer_cluster",
-        product_id="P001",
-        score=0.8,
-        phase="selling",
-        utterance="Kem nay SPF50 nhe",
-        reason="cluster match",
+        "sess-1", "answer_cluster", product_id="P001", score=0.8, phase="selling",
+        utterance="Kem nay SPF50 nhe", reason="cluster match",
     )
     assert rid == 1
 
@@ -750,16 +730,9 @@ def test_app_lifecycle_connects_and_closes_pg_store(monkeypatch):
     backend = config.build_render_backend()
     store = config.build_store()
     deps = v1.V1Deps(
-        backend=backend,
-        store=store,
-        hub=v1.ControlHub(),
-        director=None,
-        engine_manager=None,
-        config=config,
-        locks=None,
-        orchestrators={},
-        coordinator=None,
-        pg_store=pg,
+        backend=backend, store=store, hub=v1.ControlHub(),
+        director=None, engine_manager=None, config=config,
+        locks=None, orchestrators={}, coordinator=None, pg_store=pg,
     )
     app = create_app(config=config, deps=deps)
 
@@ -784,7 +757,6 @@ def test_app_lifecycle_skips_pg_when_no_database_url(monkeypatch):
     config = AppConfig.from_env()
     # build pg store from config — should be a disabled store.
     from core.db.postgres_store import PostgresRuntimeStore
-
     pg = PostgresRuntimeStore(config.database_url)
     assert pg.enabled is False
 ```
@@ -818,38 +790,35 @@ from contextlib import asynccontextmanager
 Inside `create_app`, before `app.include_router(v1.router)`, replace the bare `app = FastAPI(...)` construction with a lifespan-wrapped one. The lifespan must run for BOTH the env-driven path and the injected-deps path. Concretely, after `v1.init_deps(...)` is resolved (either branch), add:
 
 ```python
-pg = getattr(deps, "pg_store", None) if deps is not None else None
-# Env-driven path: build the pg store from config when DATABASE_URL is set.
-if deps is None and config.database_url:
-    from .db.postgres_store import PostgresRuntimeStore
+    pg = getattr(deps, "pg_store", None) if deps is not None else None
+    # Env-driven path: build the pg store from config when DATABASE_URL is set.
+    if deps is None and config.database_url:
+        from .db.postgres_store import PostgresRuntimeStore
+        pg = PostgresRuntimeStore(config.database_url)
+        # Attach to the V1Deps we are about to init.
+    if deps is None:
+        # pg will be wired into V1Deps below; stash on a local for the lifespan.
+        pass
 
-    pg = PostgresRuntimeStore(config.database_url)
-    # Attach to the V1Deps we are about to init.
-if deps is None:
-    # pg will be wired into V1Deps below; stash on a local for the lifespan.
-    pass
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        if pg is not None and getattr(pg, "enabled", False):
+            try:
+                await pg.connect()
+                await pg.apply_schema()
+            except Exception as exc:
+                # Fail loud but do not crash the server: a broken runtime DB
+                # should not take the control plane down. /health/ready will
+                # surface it; rows simply won't persist.
+                print(f"[server] Postgres runtime store unavailable: {exc}")
+        yield
+        if pg is not None and getattr(pg, "enabled", False):
+            try:
+                await pg.close()
+            except Exception:
+                pass
 
-
-@asynccontextmanager
-async def _lifespan(_app: FastAPI):
-    if pg is not None and getattr(pg, "enabled", False):
-        try:
-            await pg.connect()
-            await pg.apply_schema()
-        except Exception as exc:
-            # Fail loud but do not crash the server: a broken runtime DB
-            # should not take the control plane down. /health/ready will
-            # surface it; rows simply won't persist.
-            print(f"[server] Postgres runtime store unavailable: {exc}")
-    yield
-    if pg is not None and getattr(pg, "enabled", False):
-        try:
-            await pg.close()
-        except Exception:
-            pass
-
-
-app = FastAPI(title="VN Live-Commerce Host — core API", lifespan=_lifespan)
+    app = FastAPI(title="VN Live-Commerce Host — core API", lifespan=_lifespan)
 ```
 
 Then, in the env-driven branch, pass `pg_store=pg` into the `V1Deps(...)` constructor. In the injected-deps branch, `deps.pg_store` is already set by the caller (or stays None).
@@ -921,26 +890,15 @@ class _FakePgStore:
         self.sessions: list = []
         self.snapshots: list = []
 
-    async def connect(self):
-        pass
+    async def connect(self): pass
+    async def apply_schema(self): pass
+    async def close(self): pass
 
-    async def apply_schema(self):
-        pass
-
-    async def close(self):
-        pass
-
-    async def upsert_session(self, sid, **kw):
-        self.sessions.append((sid, kw))
-
+    async def upsert_session(self, sid, **kw): self.sessions.append((sid, kw))
     async def insert_viewer_msg(self, sid, text, **kw):
-        self.viewer_msgs.append((sid, text, kw))
-        return len(self.viewer_msgs)
-
+        self.viewer_msgs.append((sid, text, kw)); return len(self.viewer_msgs)
     async def insert_director_decision(self, sid, action, **kw):
-        self.director_decisions.append((sid, action, kw))
-        return len(self.director_decisions)
-
+        self.director_decisions.append((sid, action, kw)); return len(self.director_decisions)
     async def insert_product_snapshot(self, sid, products):
         self.snapshots.append((sid, products))
 
@@ -954,16 +912,9 @@ def _app_with_pg(pg, monkeypatch) -> TestClient:
     config = AppConfig.from_env()
     backend = config.build_render_backend()
     deps = v1.V1Deps(
-        backend=backend,
-        store=config.build_store(),
-        hub=v1.ControlHub(),
-        director=None,
-        engine_manager=None,
-        config=config,
-        locks=None,
-        orchestrators={},
-        coordinator=None,
-        pg_store=pg,
+        backend=backend, store=config.build_store(), hub=v1.ControlHub(),
+        director=None, engine_manager=None, config=config,
+        locks=None, orchestrators={}, coordinator=None, pg_store=pg,
     )
     return TestClient(create_app(config=config, deps=deps))
 
@@ -987,22 +938,13 @@ def test_lite_ingest_no_pg_behaves_unchanged(monkeypatch):
     monkeypatch.setenv("APP_ENV", "dev")
     config = AppConfig.from_env()
     deps = v1.V1Deps(
-        backend=config.build_render_backend(),
-        store=config.build_store(),
-        hub=v1.ControlHub(),
-        director=None,
-        engine_manager=None,
-        config=config,
-        locks=None,
-        orchestrators={},
-        coordinator=None,
-        pg_store=None,
+        backend=config.build_render_backend(), store=config.build_store(),
+        hub=v1.ControlHub(), director=None, engine_manager=None, config=config,
+        locks=None, orchestrators={}, coordinator=None, pg_store=None,
     )
     with TestClient(create_app(config=config, deps=deps)) as client:
-        r = client.post(
-            "/api/v1/lite/ingest",
-            json={"session_id": "x", "comments": [], "viewer_count": 0, "msg_rate": 0},
-        )
+        r = client.post("/api/v1/lite/ingest",
+                        json={"session_id": "x", "comments": [], "viewer_count": 0, "msg_rate": 0})
         # Director not enabled -> 501, but no persistence crash.
         assert r.status_code in (501, 409)
 ```
@@ -1020,17 +962,15 @@ Expected: FAIL — `lite_start` does not call `pg_store.upsert_session`.
 In `lite_start`, after `await d.store.set(...)`, add (before `return result.public_dict()`):
 
 ```python
-if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
-    try:
-        await d.pg_store.upsert_session(
-            result.session_id,
-            status="active",
-            mode=result.mode,
-            render_backend=d.config.render_backend if d.config else None,
-            avatar_id=req.avatar_id,
-        )
-    except Exception:
-        pass  # fire-and-forget; log at debug
+    if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
+        try:
+            await d.pg_store.upsert_session(
+                result.session_id, status="active", mode=result.mode,
+                render_backend=d.config.render_backend if d.config else None,
+                avatar_id=req.avatar_id,
+            )
+        except Exception:
+            pass  # fire-and-forget; log at debug
 ```
 
 In `lite_attach`, after `info = await asyncio.to_thread(d.director.attach, ...)` succeeds, add (before the coordinator start):
@@ -1048,18 +988,14 @@ In `lite_attach`, after `info = await asyncio.to_thread(d.director.attach, ...)`
 In `lite_ingest` (coordinator path), after `d.coordinator.ingest(...)`, and in the sync fallback path after `result = await asyncio.to_thread(...)`, add for each comment:
 
 ```python
-if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
-    for c in req.comments:
-        try:
-            await d.pg_store.insert_viewer_msg(
-                req.session_id,
-                c.text,
-                author="viewer",
-                comment_id=None,
-                source="platform",
-            )
-        except Exception:
-            pass
+    if d.pg_store is not None and getattr(d.pg_store, "enabled", False):
+        for c in req.comments:
+            try:
+                await d.pg_store.insert_viewer_msg(
+                    req.session_id, c.text, author="viewer", comment_id=None, source="platform",
+                )
+            except Exception:
+                pass
 ```
 
 In `lite_chat`, after the coordinator accepts the comment (the 202 path), add the same `insert_viewer_msg` call with `payload.text` and `payload.author`.
@@ -1069,19 +1005,17 @@ In `lite_chat`, after the coordinator accepts the comment (the 202 path), add th
 In `core/director/coordinator.py`, find the `_maybe_speak` site where `decision` is finalized (around line 345-430). After the decision is acted on (the `await self._emit(...)` for `coordinator.speak_started`), add:
 
 ```python
-if self._pg_store is not None and getattr(self._pg_store, "enabled", False):
-    try:
-        await self._pg_store.insert_director_decision(
-            session_id,
-            decision.action,
-            product_id=decision.product_id,
-            score=decision.score,
-            phase=decision.phase if hasattr(decision, "phase") else None,
-            utterance=getattr(decision, "text", None),
-            reason=decision.reason,
-        )
-    except Exception:
-        logger.debug("pg insert_director_decision failed", exc_info=True)
+        if self._pg_store is not None and getattr(self._pg_store, "enabled", False):
+            try:
+                await self._pg_store.insert_director_decision(
+                    session_id, decision.action,
+                    product_id=decision.product_id, score=decision.score,
+                    phase=decision.phase if hasattr(decision, "phase") else None,
+                    utterance=getattr(decision, "text", None),
+                    reason=decision.reason,
+                )
+            except Exception:
+                logger.debug("pg insert_director_decision failed", exc_info=True)
 ```
 
 Add `pg_store: Optional[Any] = None` to `DirectorCoordinator.__init__` and store as `self._pg_store = pg_store`. Update the constructor call in `core/server.py` to pass `pg_store=pg` (the same `pg` built in Task 4).
