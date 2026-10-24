@@ -144,7 +144,17 @@ class DirectorCoordinator:
         audio_window_callback: Any = None,
         completed_history_size: int = 10,
         reducer: Any = None,
+        session_store: Any = None,
+        engine_manager: Any = None,
     ) -> None:
+        self._session_store = session_store
+        self._voice_lookup_timeout_s = 1.5
+        self._voice_cache: dict[str, str | None] = {}
+        self._voice_rejected: set[str] = set()
+        # Per-session generation token: stop() drops it so late callbacks of a stopped
+        # (or restarted) session never write back into the cache.
+        self._voice_gen: dict[str, object] = {}
+        self._engine_manager = engine_manager
         self._runtime = runtime
         # Factory inputs for building a FRESH StreamOrchestrator + queue +
         # metrics per _maybe_speak() call. Sharing one orchestrator across
@@ -400,6 +410,9 @@ class DirectorCoordinator:
         if self.approved_speech is not None:
             self.approved_speech.cleanup(session_id)
         self._tts_failures.pop(session_id, None)
+        self._voice_cache.pop(session_id, None)
+        self._voice_rejected.discard(session_id)
+        self._voice_gen.pop(session_id, None)
         entry = (
             self._orchestrator_registry.get(session_id)
             if self._orchestrator_registry is not None
@@ -1425,6 +1438,44 @@ class DirectorCoordinator:
             live=lambda: self._speech_live(session_id, decision),
         )
 
+    async def _session_tts(self, session_id: str) -> Any:
+        """Default TTS bound to the session's voice_id (store meta), if any.
+
+        The lookup is time-boxed; on timeout/error the last voice read for this session
+        (or the default) is used so a slow store never stalls speech.
+        """
+        if self._session_store is None or self._tts is None:
+            return self._tts
+        if session_id in self._voice_rejected:
+            return self._tts
+        from backend.application.session_tts import wrap_session_tts
+
+        gen = self._voice_gen.setdefault(session_id, object())
+        try:
+            meta = await asyncio.wait_for(
+                self._session_store.get(session_id), self._voice_lookup_timeout_s
+            )
+            if self._voice_gen.get(session_id) is gen:
+                self._voice_cache[session_id] = (meta or {}).get("voice_id")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - voice lookup must never block speech
+            logger.warning(
+                "session voice lookup failed session=%s, using cached/default",
+                session_id,
+                exc_info=True,
+            )
+        return wrap_session_tts(
+            self._tts,
+            self._voice_cache.get(session_id),
+            self._engine_manager,
+            on_reject=lambda: (
+                self._voice_rejected.add(session_id)
+                if self._voice_gen.get(session_id) is gen
+                else None
+            ),
+        )
+
     async def _maybe_speak(self, session_id: str, decision: Decision) -> bool:
         """Attempt to acquire the lock and run the orchestrator for a decision.
 
@@ -1552,24 +1603,27 @@ class DirectorCoordinator:
             if self._audio_window_callback is not None:
                 await self._audio_window_callback(window)
 
-        orchestrator = StreamOrchestrator(
-            llm=self._llm,
-            tts=self.approved_speech.guarded_tts(speech, self._tts, live=live, emit=self._emit)
-            if speech is not None
-            else self._tts,
-            backend=self._backend,
-            queue=queue,
-            metrics=metrics,
-            fixed_config=self._fixed_config,
-            controller_config=self._controller_config,
-            audio_window_callback=(
-                self.approved_speech.guarded_audio(speech, live=live, callback=opening_audio)
-                if speech is not None
-                else self._audio_window_callback
-            ),
-        )
-        self._register_speaking(session_id, orchestrator, queue)
         try:
+            session_tts = await self._session_tts(session_id)
+            orchestrator = StreamOrchestrator(
+                llm=self._llm,
+                tts=self.approved_speech.guarded_tts(
+                    speech, session_tts, live=live, emit=self._emit
+                )
+                if speech is not None
+                else session_tts,
+                backend=self._backend,
+                queue=queue,
+                metrics=metrics,
+                fixed_config=self._fixed_config,
+                controller_config=self._controller_config,
+                audio_window_callback=(
+                    self.approved_speech.guarded_audio(speech, live=live, callback=opening_audio)
+                    if speech is not None
+                    else self._audio_window_callback
+                ),
+            )
+            self._register_speaking(session_id, orchestrator, queue)
             await self._emit(
                 session_id,
                 {

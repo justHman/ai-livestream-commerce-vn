@@ -23,6 +23,7 @@ scoring above cfg.interrupt_score_threshold may cut off the avatar.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Callable, Optional, Sequence
 from uuid import uuid4
@@ -36,6 +37,8 @@ from .hooks import HookPool
 from .pivot import should_enter_pivot, should_exit_pivot
 from .scoring import ScoredCluster, rank_clusters
 from .state import Phase, ProductStatus, StreamState
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -423,6 +426,12 @@ class Director:
                 # lone high-value or safety question used to be lost (BR-QA-001).
                 # It is relaxed for high-value clusters only.
                 if item.cluster.size < c.qa_min_cluster_size and not high:
+                    logger.info(
+                        "comment skipped reason=size_gate size=%s min=%s intent=%s",
+                        item.cluster.size,
+                        c.qa_min_cluster_size,
+                        item.cluster.intent,
+                    )
                     continue
                 product_id = item.cluster.product_id or cur.product_id
                 topic_key = f"{product_id}:{item.cluster.intent}"
@@ -430,8 +439,17 @@ class Director:
                 prior_members = set(prior_signature.split("\n")) if prior_signature else set()
                 current_members = set(item.cluster.members)
                 novel_members = current_members - prior_members
-                has_new_content = len(novel_members) >= 2
-                if now < s.topic_cooldown_until.get(topic_key, 0.0) and not has_new_content:
+                # 'unknown' clusters mix unrelated comments: one new comment is new content.
+                has_new_content = len(novel_members) >= (
+                    1 if item.cluster.intent == "unknown" else 2
+                )
+                until = s.topic_cooldown_until.get(topic_key, 0.0)
+                if now < until and not has_new_content:
+                    logger.info(
+                        "comment skipped reason=topic_cooldown topic=%s remaining_s=%.1f",
+                        topic_key,
+                        until - now,
+                    )
                     continue
                 eligible.append(item)
         ranked = eligible
@@ -730,7 +748,11 @@ class Director:
                 self.state.closing_qa_answered += 1
             self.state.topic_cooldown_until[topic_key] = (
                 decision.completed_at or decision.decided_at
-            ) + self.cfg.qa_topic_cooldown_sec
+            ) + (
+                min(self.cfg.qa_topic_cooldown_sec, self.cfg.qa_unknown_topic_cooldown_sec)
+                if topic == "unknown"
+                else self.cfg.qa_topic_cooldown_sec
+            )
             self.state.qa_last_comment_signature[topic_key] = "\n".join(
                 sorted(set(decision.cluster_members))
             )
