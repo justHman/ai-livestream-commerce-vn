@@ -77,6 +77,16 @@ class ScriptAuthoringService(Protocol):
         revision: int | None,
     ) -> dict[str, Any] | None: ...
 
+    async def save_draft_parts(
+        self,
+        *,
+        set_id: str,
+        product_id: str,
+        parts: list[dict[str, Any]],
+        expected_version_id: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any] | None: ...
+
     async def submit_for_gate(self, *, set_id: str, product_id: str) -> dict[str, Any] | None: ...
 
     async def preview_product(
@@ -101,6 +111,7 @@ class ScriptAuthoringService(Protocol):
         segment_index: int,
         idempotency_key: str,
         expected_version_id: str | None = None,
+        part_id: str | None = None,
     ) -> dict[str, Any] | None: ...
 
     async def fix_with_ai(

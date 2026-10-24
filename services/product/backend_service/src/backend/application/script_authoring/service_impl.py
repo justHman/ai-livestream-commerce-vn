@@ -31,6 +31,7 @@ import re
 import socket
 import time
 import uuid
+from datetime import datetime, timezone
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
@@ -99,6 +100,15 @@ from backend.application.script_authoring.generation.ordered_units import (
     role_bounds_s,
     role_title,
 )
+from backend.application.script_authoring.generation.unit_brief import (
+    RECAP_RETRY,
+    build_unit_briefs,
+    find_brief,
+    provenance,
+    public_brief,
+    recap_violation,
+    spec_from_brief,
+)
 from backend.application.script_authoring.generation.planner import (
     AuthoritativeContext as PlannerAuthoritativeContext,
     PlanRejectionError,
@@ -160,6 +170,12 @@ _COVERAGE_RETRY = "\n\nLần trước thiếu ý BẮT BUỘC. Phải nói đủ
 _SHORTER_RETRY = (
     "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 4 câu, kết thúc trọn câu."
 )
+
+
+def _neighbor_gist(segment: ScriptSegment) -> str:
+    """Bounded neighbour context for a rewrite: the beginning of the part, as data."""
+    text = " ".join(segment.spoken_text.split())
+    return text if len(text) <= 160 else text[:160].rsplit(" ", 1)[0] + "..."
 
 
 # Floor for one product's own script (the owner approves the text); only rejects trivial lines.
@@ -676,6 +692,7 @@ class ScriptAuthoringServiceImpl:
         item_revision: int,
         existing_version_ids: set[str],
         job: GenerationJob | None = None,
+        segments: Sequence[ScriptSegment] = (),
     ) -> None:
         """Write workflow-persisted items + new version / gate run in one tx.
 
@@ -700,6 +717,8 @@ class ScriptAuthoringServiceImpl:
                         self._config.recovery_lease_seconds,
                         conn=conn,
                     )
+                for segment in segments:
+                    await self._repos.segments.insert(segment, conn=conn)
                 # Insert immutable version + gate run rows BEFORE the item
                 # update: script_items.current_version_id has a FK to
                 # script_versions.id, so the version must exist first.
@@ -1495,13 +1514,17 @@ class ScriptAuthoringServiceImpl:
             return write(index, prompt, continuity)
 
         def plan_generate():
+            # The typed brief is stored with the plan BEFORE the first write, so a later
+            # regenerate reuses it instead of re-planning the part.
+            briefs = build_unit_briefs(roles, product, lambda: new_id("part"))["parts"]
             candidates = [
                 {
                     "title": role_title(spec.role),
                     "intent": spec.role,
                     "target_duration_s": int(role_bounds_s(spec.role)[1]),
+                    "brief": brief,
                 }
-                for spec in roles
+                for spec, brief in zip(roles, briefs)
             ]
             return len(candidates), candidates
 
@@ -1797,24 +1820,52 @@ class ScriptAuthoringServiceImpl:
         )
         for item in items:
             version = versions_by_id.get(item.current_version_id)
-            if version is not None and version.segment_version_ids:
-                selected = [
-                    await self._repos.segments.get(sid) for sid in version.segment_version_ids
-                ]
-                wire["items"][item.product_id]["current_version"]["parts"] = [
-                    {
-                        "segment_index": s.segment_index,
-                        "display_text": s.display_text,
-                        **(
-                            {"needs_regeneration": True}
-                            if s.status is ScriptState.GATE_FAILED
-                            else {}
-                        ),
-                    }
-                    for s in selected
-                    if s is not None
-                ]
+            if version is not None:
+                parts = await self._parts_wire(version)
+                current = wire["items"][item.product_id]["current_version"]
+                if parts:
+                    current["parts"] = parts
+                # Counted from the CURRENT selected parts, each part once; never from batch history.
+                current["needs_attention_count"] = sum(
+                    1 for p in parts if p.get("needs_regeneration")
+                )
         return wire
+
+    async def _parts_wire(self, version: ScriptVersion) -> list[dict[str, Any]]:
+        """Per-part projection of the selected segments (additive, legacy-safe)."""
+        plans: dict[str, ProductScriptPlan | None] = {}
+        parts: list[dict[str, Any]] = []
+        for sid in version.segment_version_ids:
+            s = await self._repos.segments.get(sid)
+            if s is None:
+                continue
+            if s.plan_id not in plans:
+                plans[s.plan_id] = await self._repos.plans.get(s.plan_id)
+            plan = plans[s.plan_id]
+            prov = s.provenance or {}
+            # Unknown legacy stays null: never defaulted to "llm".
+            source = prov.get("source")
+            fallback = source == "fallback"
+            failed = s.status is ScriptState.GATE_FAILED
+            part: dict[str, Any] = {
+                "part_id": s.part_id,
+                "segment_id": s.id,
+                "segment_index": s.segment_index,
+                "display_text": s.display_text,
+                "source": source,
+                "fallback_reason_code": (
+                    prov.get("fallback_reason_code", "unknown")
+                    if fallback
+                    else ("unknown" if failed and source is None else None)
+                ),
+                "brief": public_brief(find_brief(plan.unit_briefs if plan else None, s.part_id)),
+                # Projection slot; the repeated-opening detector arrives in a later PR.
+                "repeated_opening": False,
+            }
+            if fallback or failed:
+                part["needs_regeneration"] = True
+            parts.append(part)
+        return parts
 
     async def get_script_set(self, *, set_id: str) -> dict[str, Any] | None:
         script_set = await self._repos.script_sets.get(set_id)
@@ -1981,6 +2032,134 @@ class ScriptAuthoringServiceImpl:
             workflow, bridge, item_revision=item.revision, existing_version_ids=existing
         )
         return {"ok": True, "product_id": product_id, "state": item.state.name}
+
+    async def save_draft_parts(
+        self,
+        *,
+        set_id: str,
+        product_id: str,
+        parts: list[dict[str, Any]],
+        expected_version_id: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Structured save: unchanged parts keep segment + provenance, edited parts become
+        manual segments with the same part_id/brief, new parts get a fresh part_id.
+
+        Repeating the same payload is a no-op (nothing changed), so ``idempotency_key`` needs
+        no separate bookkeeping.
+        """
+        script_set = await self._repos.script_sets.get(set_id)
+        if script_set is None:
+            self._raise_not_found("script set", set_id)
+        item = await self._repos.items.get_by_product(set_id, product_id)
+        if item is None:
+            self._raise_not_found("product script", product_id)
+        if item.current_version_id != expected_version_id:
+            raise ScriptAuthoringError(
+                "stale_revision", "Kịch bản đã thay đổi. Tải lại bản hiện tại trước khi lưu."
+            )
+        current_version = await self._repos.versions.get(item.current_version_id)
+        if current_version is None or not current_version.segment_version_ids:
+            raise ScriptAuthoringError(
+                "illegal_transition", "Bản hiện tại chưa chia phần; lưu dạng văn bản."
+            )
+        selected = [await self._repos.segments.get(i) for i in current_version.segment_version_ids]
+        if any(s is None for s in selected):
+            raise ScriptAuthoringError("illegal_transition", "Thiếu dữ liệu phần của bản hiện tại.")
+        by_id = {s.id: s for s in selected}
+        by_part = {s.part_id: s for s in selected if s.part_id}
+        if not parts or any(not str(p.get("display_text", "")).strip() for p in parts):
+            raise ScriptAuthoringError("invalid_parts", "Mỗi phần phải có nội dung.")
+        rows: dict[str, list[ScriptSegment]] = {}
+
+        async def plan_rows(plan_id: str) -> list[ScriptSegment]:
+            if plan_id not in rows:
+                rows[plan_id] = await self._repos.segments.list_by_plan(plan_id)
+            return rows[plan_id]
+
+        final: list[ScriptSegment] = []
+        created: list[ScriptSegment] = []
+        used: set[str] = set()
+        base_plan = selected[0].plan_id
+        next_index = max(r.segment_index for r in await plan_rows(base_plan)) + 1
+        for p in parts:
+            text = p["display_text"]
+            old = None
+            if p.get("segment_id"):
+                old = by_id.get(p["segment_id"])
+                if old is None or (p.get("part_id") and old.part_id != p["part_id"]):
+                    raise ScriptAuthoringError(
+                        "stale_revision", "Kịch bản đã thay đổi. Tải lại bản hiện tại."
+                    )
+            elif p.get("part_id"):
+                old = by_part.get(p["part_id"])
+            if old is not None and old.id in used:
+                raise ScriptAuthoringError("invalid_parts", "Một phần bị lặp trong danh sách.")
+            spoken = compile_spoken_text(text).spoken_text
+            if old is not None:
+                used.add(old.id)
+                if old.display_text.strip() == text.strip():
+                    final.append(old)
+                    continue
+                version = max(
+                    r.version
+                    for r in await plan_rows(old.plan_id)
+                    if r.segment_index == old.segment_index
+                )
+                seg = old.model_copy(
+                    update={
+                        "id": new_id("segment"),
+                        "display_text": text,
+                        "spoken_text": spoken,
+                        "status": ScriptState.DRAFT,
+                        "version": version + 1,
+                        "provenance": provenance("manual"),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            else:
+                seg = ScriptSegment(
+                    id=new_id("segment"),
+                    script_item_id=item.id,
+                    plan_id=base_plan,
+                    segment_index=next_index,
+                    display_text=text,
+                    spoken_text=spoken,
+                    status=ScriptState.DRAFT,
+                    part_id=new_id("part"),
+                    provenance=provenance("manual"),
+                )
+                next_index += 1
+            created.append(seg)
+            final.append(seg)
+        ids = [s.id for s in final]
+        if not created and ids == current_version.segment_version_ids:
+            return {"ok": True, "product_id": product_id, "state": item.state.name}
+        bridge = _SyncPersistBridge()
+        workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
+        workflow.versions = await self._repos.versions.list_by_item(item.id)
+        try:
+            workflow.create_manual_draft(
+                display_text="\n\n".join(s.display_text for s in final),
+                spoken_text="\n\n".join(s.spoken_text for s in final),
+                segment_version_ids=ids,
+                plan_version=current_version.plan_version,
+            )
+        except IllegalTransitionError as exc:
+            raise ScriptAuthoringError("illegal_transition", str(exc)) from exc
+        await self._persist_workflow(
+            workflow,
+            bridge,
+            item_revision=item.revision,
+            existing_version_ids={current_version.id},
+            segments=created,
+        )
+        return {
+            "ok": True,
+            "product_id": product_id,
+            "state": item.state.name,
+            "version_id": workflow.current_version.id,
+        }
 
     async def submit_for_gate(self, *, set_id: str, product_id: str) -> dict[str, Any] | None:
         script_set = await self._repos.script_sets.get(set_id)
@@ -2219,6 +2398,7 @@ class ScriptAuthoringServiceImpl:
         segment_index: int,
         idempotency_key: str,
         expected_version_id: str | None = None,
+        part_id: str | None = None,
     ) -> dict[str, Any] | None:
         self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
@@ -2235,6 +2415,7 @@ class ScriptAuthoringServiceImpl:
             if expected_version_id is not None and (
                 existing.input_snapshot.get("source_version_id") != expected_version_id
                 or existing.input_snapshot.get("segment_index") != segment_index
+                or existing.input_snapshot.get("part_id") != part_id
             ):
                 raise ScriptAuthoringError(
                     "idempotency_conflict", "part request does not match original source"
@@ -2268,6 +2449,7 @@ class ScriptAuthoringServiceImpl:
             input_snapshot={
                 "source_version_id": expected_version_id,
                 "segment_index": segment_index,
+                "part_id": part_id,
                 "script_set_id": set_id,
             }
             if expected_version_id
@@ -3080,6 +3262,7 @@ class ScriptAuthoringServiceImpl:
         bridge = _SyncPersistBridge()
         revisions = {item.id: item.revision}
         index = int(job.input_snapshot["segment_index"])
+        part_id = job.input_snapshot.get("part_id")
         source_id = job.input_snapshot["source_version_id"]
         try:
             if item.current_version_id != source_id or item.state is ScriptState.APPROVED:
@@ -3093,10 +3276,20 @@ class ScriptAuthoringServiceImpl:
             if any(s is None for s in selected):
                 await self._fail_job(job, "part_source_missing")
                 return
-            current = next((s for s in selected if s.segment_index == index), None)
+            # Stable part_id wins; the index is only a compatibility key (cards can be reordered).
+            current = next(
+                (
+                    s
+                    for s in selected
+                    if (s.part_id == part_id if part_id else s.segment_index == index)
+                ),
+                None,
+            )
             if current is None:
                 await self._fail_job(job, "part_not_found")
                 return
+            index = current.segment_index
+            position = selected.index(current)
             plan = await self._repos.plans.get(current.plan_id)
             if plan is None:
                 await self._fail_job(job, "part_source_missing")
@@ -3104,16 +3297,44 @@ class ScriptAuthoringServiceImpl:
             ordered = self._ordered_batch(
                 script_set, llm_fn, target_duration_s=plan.target_duration_s
             )
-            roles = ordered.roles[item.product_id]
-            if index >= len(roles):
-                await self._fail_job(job, "part_source_changed")
-                return
             product = ordered.products[item.product_id]
-            spec = roles[index]
+            brief = find_brief(plan.unit_briefs, current.part_id)
+            if brief is not None:
+                # Reuse the immutable brief written with the plan: no re-planning, so a recap
+                # stays a recap even if the planner would split the facts differently today.
+                roles = [spec_from_brief(b) for b in plan.unit_briefs["parts"]]
+                spec_index = [b["part_id"] for b in plan.unit_briefs["parts"]].index(
+                    current.part_id
+                )
+                known = {*product.claims, *product.discounts}
+                spec = roles[spec_index]
+                if any(c not in known for c in (*spec.claims, *spec.promos)):
+                    await self._fail_job(job, "part_facts_changed")
+                    return
+            else:
+                roles = ordered.roles[item.product_id]
+                spec_index = index
+                if index >= len(roles):
+                    await self._fail_job(job, "part_source_changed")
+                    return
+            spec = roles[spec_index]
             facts = self._product_facts(script_set.brief, item.product_id)
             prior_rows = await self._repos.segments.list_by_plan(plan.id)
             row_version = max(s.version for s in prior_rows if s.segment_index == index)
-            prompt = build_unit_prompt(ordered.session, product, roles, index)
+            others = [x for x in selected if x is not current]
+            prompt = build_unit_prompt(
+                ordered.session,
+                product,
+                roles,
+                spec_index,
+                before=_neighbor_gist(selected[position - 1]) if position > 0 else "",
+                after=_neighbor_gist(selected[position + 1])
+                if position + 1 < len(selected)
+                else "",
+                used_openings=tuple(
+                    dict.fromkeys(" ".join(x.spoken_text.split()[:5]) for x in others)
+                )[:24],
+            )
             rewrite_instruction = (
                 "\nViết khác đi, không sao chép nguyên văn bản đang có hoặc lặp các câu; "
                 "vẫn giữ đủ các ý bắt buộc, số liệu và điều kiện được phép."
@@ -3195,6 +3416,13 @@ class ScriptAuthoringServiceImpl:
                     else:
                         prompt += retry_hint(why, raw, check["approved"])
                     continue
+                if spec.revisit and recap_violation(text):
+                    job.input_snapshot["last_rejection"] = (
+                        "Phần này cần là lời nhắc lại nhưng đang giống phần giới thiệu. "
+                        "Giữ bản hiện tại."
+                    )
+                    prompt += RECAP_RETRY
+                    continue
                 low, high = role_bounds_s(spec.role)
                 result = self._gate.run_segment(
                     text,
@@ -3231,7 +3459,7 @@ class ScriptAuthoringServiceImpl:
                             ordered.session,
                             product,
                             roles,
-                            index,
+                            spec_index,
                             failed_text=text,
                             problems=[f"{v.rule_id}: {v.message}" for v in result.violations],
                         )
@@ -3246,6 +3474,7 @@ class ScriptAuthoringServiceImpl:
                         "display_text": text,
                         "spoken_text": text,
                         "status": ScriptState.DRAFT,
+                        "provenance": provenance("llm"),
                     }
                 )
                 break
