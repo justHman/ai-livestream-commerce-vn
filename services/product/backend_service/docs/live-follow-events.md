@@ -21,7 +21,7 @@ gates, and adds no LLM call.
 {
   "type": "live_follow.<name>",
   "schema_version": 1,
-  "source_event_id": "stable per fact, e.g. turn:<turn_id>:completed:1",
+  "source_event_id": "<stream_epoch[:8]>:<fact>, unique per fact and epoch, e.g. 7324264f:turn:<turn_id>:completed:1",
   "tenant_id": "...", "business_session_id": "...", "runtime_session_id": "...",
   "generation": "execution_contract generation",
   "stream_epoch": "random per coordinator session start",
@@ -83,7 +83,9 @@ One terminal per `turn_id` (first terminal wins; a late failure never overwrites
 ```
 * `completed` only after the speech pipeline finished and `mark_spoken` ran (selected /
   speak_started are never "answered"). Q&A: `response_kind` = `answer | deflection`
-  (deflection = one of the fixed "chua du thong tin / ngoai le" texts); script turns:
+  (deflection = the validated speech text equals one of the fixed "chua du thong tin /
+  ngoai le" deflection texts; the speech boundary has no structured kind yet, so a change
+  of those texts must update `answer_context.is_deflection`); script turns:
   `script`. `coverage_scope` is always `cluster`: never per-member coverage.
 * `cancelled` reason_code: `interrupt | hard_expired | superseded | content_rejected |
   session_stopped | cancelled`. `failed`: `failed | playback_timeout | preparation_failed`.
@@ -179,6 +181,20 @@ turns (<= 200 member ids each).
 Apply events with `follow_sequence > watermark` after loading a snapshot; on a
 `stream_epoch` change or sequence gap, reload. The snapshot lives in Runtime memory: a
 Runtime restart loses it (the API's own persisted projection is the durable record).
+
+## Behaviour notes
+
+* A retired session (stop / re-attach) stops its drain: facts already queued (closing
+  outcomes) may still go out for 3 s, and never once a new generation of the same session
+  id exists. Per-session state is bounded (2000 comments, 40 turns, revisions only for live
+  clusters).
+* Closing/ending is re-applied every tick and on every membership sync, so a comment that
+  arrives under the fence is also finalized.
+* Expiry vs capacity uses the platform timestamp the recorder keeps from the first time it
+  sees a comment. A comment that is already older than the 75 s horizon when the reducer
+  batch runs is expired before the recorder ever sees it and gets no event.
+* `DIRECTOR_MAX_QA_CLUSTERS_PER_WINDOW` default 3 changes Director behaviour even with the
+  live-follow flag off (product-owner request): up to 3 Q&A clusters per window, not 2.
 
 ## UI mapping hints (for API/Web)
 

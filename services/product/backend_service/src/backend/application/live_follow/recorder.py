@@ -82,6 +82,9 @@ COMMENT_HISTORY = 2000
 SNAPSHOT_COMMENTS = 200
 TURN_HISTORY = 10
 MEMBERSHIP_SYNC_MIN_INTERVAL_SEC = 1.0
+# After a session is retired its already queued facts (e.g. the closing outcomes) may still
+# drain for this long; anything later, or anything once a new generation exists, is dropped.
+RETIRE_GRACE_SEC = 3.0
 
 EmitFn = Callable[[str, dict], Awaitable[None]]
 
@@ -172,6 +175,7 @@ class _Comment:
         "turn_id",
         "cluster_id",
         "seq",
+        "ts",
     )
 
     def __init__(self, comment_id: str, event_id: Optional[str], key: Optional[str]) -> None:
@@ -184,6 +188,7 @@ class _Comment:
         self.turn_id: Optional[str] = None
         self.cluster_id: Optional[str] = None
         self.seq = 0
+        self.ts: Optional[float] = None  # platform time, kept here: the reducer prunes its own
 
     def view(self) -> dict:
         return {
@@ -218,6 +223,7 @@ class _Session:
         self.closing_reason: Optional[str] = None
         self.last_sync = 0.0
         self.tick_deferred: set[str] = set()
+        self.retired_at: Optional[float] = None
 
 
 class LiveFollowRecorder:
@@ -242,8 +248,10 @@ class LiveFollowRecorder:
             self._sessions[session_id] = _Session()
 
     def retire(self, session_id: str) -> None:
-        """Stop recording; already queued events still drain, then the state is gone."""
-        self._sessions.pop(session_id, None)
+        """Stop recording; queued facts drain for RETIRE_GRACE_SEC unless a new generation starts."""
+        state = self._sessions.pop(session_id, None)
+        if state is not None:
+            state.retired_at = time.monotonic()
 
     def bind(self, session_id: str, identity: Optional[dict]) -> None:
         """Remember tenant/business session/generation for the envelope (IDs only)."""
@@ -272,7 +280,8 @@ class LiveFollowRecorder:
         return {
             "type": EVENT_PREFIX + kind,
             "schema_version": SCHEMA_VERSION,
-            "source_event_id": source_event_id,
+            # The epoch prefix keeps ids unique across a restart of the follow stream.
+            "source_event_id": f"{state.epoch[:8]}:{source_event_id}",
             "tenant_id": ident.get("tenant_id"),
             "business_session_id": ident.get("business_session_id"),
             "runtime_session_id": ident["runtime_session_id"],
@@ -312,13 +321,26 @@ class LiveFollowRecorder:
 
     async def _drain(self, session_id: str, state: _Session) -> None:
         try:
-            while state.queue:
+            while state.queue and self._deliverable(session_id, state):
                 event = state.queue.popleft()
                 await self._emit(session_id, event)  # the coordinator's emit is time-boxed
+            if not self._deliverable(session_id, state):
+                state.queue.clear()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("live_follow drain failed error=%s", type(exc).__name__)
+
+    def _deliverable(self, session_id: str, state: _Session) -> bool:
+        """Generation fence: a replaced or long-retired session's facts are never sent."""
+        current = self._sessions.get(session_id)
+        if current is state:
+            return True
+        if current is not None:
+            return False  # a newer generation owns this session id
+        return (
+            state.retired_at is not None and time.monotonic() - state.retired_at < RETIRE_GRACE_SEC
+        )
 
     async def flush(self, session_id: str) -> None:
         state = self._sessions.get(session_id)
@@ -332,7 +354,8 @@ class LiveFollowRecorder:
         if comment is None:
             comment = state.comments[comment_id] = _Comment(comment_id, None, None)
             while len(state.comments) > COMMENT_HISTORY:
-                state.comments.popitem(last=False)
+                evicted, _ = state.comments.popitem(last=False)
+                state.tick_deferred.discard(evicted)
         state.comments.move_to_end(comment_id)
         return comment
 
@@ -352,6 +375,8 @@ class LiveFollowRecorder:
             turn_id,
         )
         comment.seq = state.seq
+        if final:
+            state.tick_deferred.discard(comment.comment_id)
 
     @_safe
     def sync_membership(
@@ -387,6 +412,8 @@ class LiveFollowRecorder:
             if record is not None:
                 comment.event_id = record[0]
                 comment.key = comment_key(record[1])
+            if comment.ts is None:
+                comment.ts = float(record[2]) if record is not None else now
             comment.cluster_id = cluster_id
             touched.add(cluster_id)
             if before is not None:
@@ -431,7 +458,8 @@ class LiveFollowRecorder:
                 continue
             else:
                 record = provenance(comment_id)
-                aged = record is not None and now - float(record[2]) >= horizon_sec
+                ts = comment.ts if comment.ts is not None else (record[2] if record else None)
+                aged = ts is not None and now - float(ts) >= horizon_sec
                 (expired if aged else capacity).append(comment_id)
         state.membership = {cid: cluster for cid, (cluster, _intent) in membership.items()}
         if changes:
@@ -454,6 +482,14 @@ class LiveFollowRecorder:
         self._skip(session_id, state, expired, "expired", True)
         self._skip(session_id, state, capacity, "capacity_exceeded", True)
         self._skip(session_id, state, recently, "topic_recently_answered", True)
+        # Retention: revisions only for clusters that still exist.
+        state.cluster_revision = {
+            cid: rev
+            for cid, rev in state.cluster_revision.items()
+            if cid in set(state.membership.values())
+        }
+        if state.closing_reason is not None:
+            self._close_open(session_id, state)  # members that arrive under the fence
 
     @_safe
     def note_tick_skips(
@@ -524,7 +560,7 @@ class LiveFollowRecorder:
                 session_id,
                 state,
                 kind,
-                f"{kind}:{reason}:{anchor}:{part}",
+                f"{kind}:{reason}:{turn_id or '-'}:{anchor}:{part}:{state.seq + 1}",
                 {
                     "comment_ids": chunk_ids,
                     "event_ids": chunk_events,
@@ -544,19 +580,22 @@ class LiveFollowRecorder:
     def close_pending(self, session_id: str, reason: str) -> None:
         """Closing/ended: nothing waiting will be answered. Final for every open comment."""
         state = self._session(session_id)
-        if state.closing_reason == reason:
-            return
-        state.closing_reason = reason
+        state.closing_reason = state.closing_reason or reason
+        self._close_open(session_id, state)
+
+    def _close_open(self, session_id: str, state: _Session) -> None:
         waiting = [
             c.comment_id for c in state.comments.values() if not c.final and c.state != "answered"
         ]
-        self._skip(session_id, state, waiting, reason, True)
+        self._skip(session_id, state, waiting, state.closing_reason or "session_closed", True)
 
     # ------------------------------------------------------------------ turns
 
     @_safe
     def turn_selected(self, session_id: str, decision: Any, ds: Any) -> None:
         state = self._session(session_id)
+        if decision.turn_id in state.turns:
+            return  # already announced (queue time, then again before speaking): members stay frozen
         kind = _turn_kind(decision.action)
         entry: dict[str, Any] = {
             "turn_id": decision.turn_id,

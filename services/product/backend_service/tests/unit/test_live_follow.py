@@ -143,7 +143,7 @@ async def test_envelope_is_stable_ordered_and_scoped():
         "s",
     )
     assert first["generation"] == "g1" and first["schema_version"] == 1
-    assert first["source_event_id"] == "selected:turn-1"
+    assert first["source_event_id"].endswith(":selected:turn-1")
     assert len({e["source_event_id"] for e in events}) == len(events)
 
 
@@ -275,7 +275,6 @@ async def test_answered_member_keeps_answer_when_cluster_expires_or_reassigns():
 @pytest.mark.asyncio
 async def test_unanswered_comment_gets_final_reason_when_it_leaves_the_store():
     recorder, sent = _recorder()
-    _members(recorder, {"old": ("cl-1", "price"), "new": ("cl-2", "price")})
     # "old" aged past the horizon; "new" was cut by a bound while still fresh.
     old_ts = time.time() - 300
 
@@ -283,7 +282,11 @@ async def test_unanswered_comment_gets_final_reason_when_it_leaves_the_store():
         record = _prov(cid)
         return (record[0], record[1], old_ts if cid == "old" else time.time())
 
-    recorder.sync_membership("s", {}, prov, now=time.time(), horizon_sec=75.0, force=True)
+    both = {"old": ("cl-1", "price"), "new": ("cl-2", "price")}
+    recorder.sync_membership("s", both, prov, now=time.time(), horizon_sec=75.0, force=True)
+    recorder.sync_membership(
+        "s", {}, lambda _c: None, now=time.time(), horizon_sec=75.0, force=True
+    )
     events = await _drain(recorder, sent)
     reasons = {
         e["comment_ids"][0]: (e["reason_code"], e["final"])
@@ -418,6 +421,179 @@ async def test_hold_and_resume_are_positions():
     recorder.hold("s", ds, None)
     phases = [e["position"]["phase"] for e in await _drain(recorder, sent)]
     assert phases == ["holding", "preparing"]
+
+
+# ------------------------------------------------------- review regressions (PR #124)
+
+
+@pytest.mark.asyncio
+async def test_reattach_never_emits_events_of_the_old_generation():
+    gate = asyncio.Event()
+    sent: list[dict] = []
+
+    async def emit(_sid, event):
+        await gate.wait()
+        sent.append(event)
+
+    recorder = LiveFollowRecorder(emit=emit, enabled=True)
+    recorder.begin("s")
+    old_epoch = recorder._sessions["s"].epoch
+    for index in range(5):
+        recorder.rejected_before_runtime("s", f"old{index}", "expired")
+    await asyncio.sleep(0)  # the drain task is now blocked inside emit
+    recorder.retire("s")
+    recorder.begin("s")
+    recorder.rejected_before_runtime("s", "new0", "expired")
+    gate.set()
+    await recorder.flush("s")
+    await asyncio.sleep(0.01)
+    old = [e for e in sent if e["stream_epoch"] == old_epoch]
+    assert len(old) <= 1  # only the event already inside emit when the session was replaced
+    assert [e["event_ids"] for e in sent if e["stream_epoch"] != old_epoch] == [["new0"]]
+
+
+@pytest.mark.asyncio
+async def test_retired_backlog_is_dropped_after_the_grace_period(monkeypatch):
+    from backend.application.live_follow import recorder as module
+
+    monkeypatch.setattr(module, "RETIRE_GRACE_SEC", 0.0)
+    sent: list[dict] = []
+    gate = asyncio.Event()
+
+    async def emit(_sid, event):
+        await gate.wait()
+        sent.append(event)
+
+    recorder = LiveFollowRecorder(emit=emit, enabled=True)
+    recorder.begin("s")
+    for index in range(50):
+        recorder.rejected_before_runtime("s", f"e{index}", "expired")
+    await asyncio.sleep(0)
+    recorder.retire("s")
+    gate.set()
+    await asyncio.sleep(0.01)
+    assert len(sent) <= 1
+
+
+@pytest.mark.asyncio
+async def test_comment_arriving_after_closing_is_finalized():
+    recorder, sent = _recorder()
+    _members(recorder, {"c1": ("cl-1", "price")})
+    recorder.close_pending("s", "session_closing")
+    _members(recorder, {"c1": ("cl-1", "price"), "late": ("cl-1", "price")})
+    recorder.close_pending("s", "session_closing")  # a later tick: nothing new to say
+    events = await _drain(recorder, sent)
+    skipped = [
+        (e["comment_ids"], e["reason_code"]) for e in events if e["type"].endswith("skipped")
+    ]
+    assert skipped == [(["c1"], "session_closing"), (["late"], "session_closing")]
+
+
+@pytest.mark.asyncio
+async def test_real_reducer_expiry_is_expired_not_capacity_exceeded():
+    from backend.application.director.embeddings import HashingEmbedder
+    from backend.application.reducer import FastReducer
+
+    recorder, sent = _recorder()
+    clock = [1000.0]
+    reducer = FastReducer(embedder=HashingEmbedder(), now_fn=lambda: clock[0])
+    reducer.membership_observer = lambda sid, store, now: recorder.sync_membership(
+        sid,
+        store.membership(),
+        lambda cid: reducer.comment_provenance(sid, cid),
+        now=now,
+        horizon_sec=store.config.rolling_horizon_sec,
+        force=True,
+    )
+
+    def accept(cid, text, ts):
+        reducer.notify_new_events(
+            "s", comment=AcceptedComment(event_id=f"e-{cid}", comment_id=cid, text=text, ts=ts)
+        )
+
+    accept("old", "giá bao nhiêu vậy shop", clock[0])
+    await reducer.run_once("s", clock[0])
+    clock[0] += 76
+    accept("new", "còn hàng không shop", clock[0])
+    await reducer.run_once("s", clock[0])
+    events = await _drain(recorder, sent)
+    reasons = [
+        (e["comment_ids"], e["reason_code"])
+        for e in events
+        if e["type"].endswith("comment.skipped")
+    ]
+    assert reasons == [(["old"], "expired")]
+
+
+@pytest.mark.asyncio
+async def test_two_failures_of_the_same_comment_have_distinct_source_event_ids():
+    recorder, sent = _recorder()
+    ds, _ = _ds()
+    _members(recorder, {"c1": ("cl-1", "price")})
+    for turn_id in ("t1", "t2"):
+        turn = _qa(turn_id=turn_id, members=("c1",))
+        recorder.turn_selected("s", turn, ds)
+        recorder.turn_ended("s", turn, ds, status="failed", reason="failed")
+    events = await _drain(recorder, sent)
+    deferred = [e for e in events if e["type"].endswith("comment.deferred")]
+    assert len(deferred) == 2
+    assert len({e["source_event_id"] for e in deferred}) == 2
+    assert len({e["source_event_id"] for e in events}) == len(events)
+
+
+@pytest.mark.asyncio
+async def test_new_epoch_does_not_reuse_source_event_ids():
+    first, sent_a = _recorder()
+    first.rejected_before_runtime("s", "e1", "expired")
+    a = (await _drain(first, sent_a))[0]
+    second, sent_b = _recorder()
+    second.rejected_before_runtime("s", "e1", "expired")
+    b = (await _drain(second, sent_b))[0]
+    assert a["source_event_id"] != b["source_event_id"]
+
+
+@pytest.mark.asyncio
+async def test_turn_selected_after_terminal_keeps_outcome_and_members():
+    recorder, sent = _recorder()
+    ds, _ = _ds()
+    _members(recorder, {"c1": ("cl-1", "price")})
+    turn = _qa(members=("c1",))
+    recorder.turn_selected("s", turn, ds)
+    recorder.turn_completed("s", turn, ds, response_kind="answer", completed_at=time.time())
+    recorder.turn_selected("s", _qa(members=("c1", "late")), ds)  # replay by the coordinator
+    events = await _drain(recorder, sent)
+    assert _types(events).count("cluster.turn_selected") == 1
+    entry = recorder.snapshot("s")["turns"][0]
+    assert (entry["status"], entry["outcome_revision"], entry["member_ids"]) == (
+        "completed",
+        1,
+        ["c1"],
+    )
+    states = {c["comment_id"]: c["state"] for c in recorder.snapshot("s")["comments"]}
+    assert states == {"c1": "answered"}
+
+
+@pytest.mark.asyncio
+async def test_long_session_state_stays_bounded():
+    recorder = LiveFollowRecorder(emit=None, enabled=True)
+    recorder.begin("s")
+    state = recorder._sessions["s"]
+    live: dict[str, tuple[str, str]] = {}
+    for index in range(6000):
+        cid, cluster = f"c{index}", f"cl-{index}"
+        live[cid] = (cluster, "price")
+        if len(live) > 30:  # the store keeps a small live set; older members/clusters leave
+            live.pop(next(iter(live)))
+        recorder.note_tick_skips("s", [("topic_cooldown", (cid,))])
+        recorder.sync_membership(
+            "s", live, lambda _c: None, now=time.time(), horizon_sec=75.0, force=True
+        )
+    from backend.application.live_follow.recorder import COMMENT_HISTORY, QUEUE_MAX
+
+    assert len(state.cluster_revision) <= 60
+    assert len(state.tick_deferred) <= COMMENT_HISTORY
+    assert len(state.comments) <= COMMENT_HISTORY
+    assert len(state.queue) <= QUEUE_MAX and len(state.membership) <= 30
 
 
 # ---------------------------------------------------------------- composition

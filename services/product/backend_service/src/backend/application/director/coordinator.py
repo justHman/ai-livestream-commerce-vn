@@ -1826,7 +1826,8 @@ class DirectorCoordinator:
             if decision.action in ("answer_fact", "answer_cluster"):
                 from ..script_authoring.answer_context import is_deflection
 
-                response_kind = "deflection" if is_deflection(spoken_script) else "answer"
+                checked = speech.text if speech is not None else spoken_script
+                response_kind = "deflection" if is_deflection(checked) else "answer"
             else:
                 response_kind = "script"
             self.live_follow.turn_completed(
