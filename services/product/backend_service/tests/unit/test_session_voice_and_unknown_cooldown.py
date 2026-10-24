@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import json
 import logging
 from types import SimpleNamespace
 
+from backend.application.session_tts import SessionTTS
 from backend.application.director.coordinator import DirectorCoordinator
 from backend.application.director.decision import Comment, Director
 from backend.application.director.config import StreamConfig
@@ -75,13 +79,16 @@ async def test_store_failure_falls_back():
     assert await c._session_tts("s") is tts
 
 
-def _director(cooldown=120.0):
+def _director(cooldown=120.0, gap=0.0):
     state = StreamState(
         phase=Phase.SELLING,
         products=[ProductState(product_id="P1", name="Ao", is_introduced=True, stage_turn_index=2)],
     )
     d = Director(
-        state=state, cfg=StreamConfig(qa_min_cluster_size=1, qa_topic_cooldown_sec=cooldown)
+        state=state,
+        cfg=StreamConfig(
+            qa_min_cluster_size=1, qa_topic_cooldown_sec=cooldown, qa_unknown_min_gap_sec=gap
+        ),
     )
     d.state.qa_window_open = True
     d.state.qa_window_started_at = 0.0
@@ -132,3 +139,104 @@ def test_known_intent_cooldown_unchanged():
     ]
     d.mark_spoken(d.decide(price, now=10.5))
     assert d.state.topic_cooldown_until["P1:price"] >= 10.5 + 100
+
+
+# ---- review fixes: store timeout/cache, TTS voice rejection, min gap ----
+
+
+async def test_hanging_store_still_speaks_with_default():
+    c, tts = _coord({"voice_id": "Trúc Ly"})
+    c._voice_lookup_timeout_s = 0.05
+
+    async def hang(sid):
+        await asyncio.sleep(30)
+
+    c._session_store.get = hang
+    assert await c._session_tts("s") is tts
+
+
+async def test_store_failure_after_success_uses_cached_voice():
+    c, tts = _coord({"voice_id": "Trúc Ly"})
+    await c._session_tts("s")
+
+    async def boom(sid):
+        raise RuntimeError("down")
+
+    c._session_store.get = boom
+    second = await c._session_tts("s")
+    list(second.stream_audio(SimpleNamespace(text="x")))
+    assert tts.reqs[-1].voice == "Trúc Ly"
+
+
+def _remote_engine(handler):
+    import httpx
+
+    from backend.application.clients.composition import RemoteHttpTTSEngine
+    from backend.application.clients.tts.self_hosted import SelfHostedTTSClient
+
+    client = SelfHostedTTSClient(
+        base_url="http://fake",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    return RemoteHttpTTSEngine(client, sample_rate=24000)
+
+
+def _handler(calls, status_for_bad):
+    import httpx
+
+    def handler(request):
+        voice = json.loads(request.content).get("voice")
+        calls.append(voice)
+        if voice == "Ghost":
+            return httpx.Response(status_for_bad, text="unknown voice")
+        return httpx.Response(
+            200, headers={"x-audio-sample-rate": "24000"}, content=b"\x01\x00" * 2400
+        )
+
+    return handler
+
+
+def _chunk():
+    from backend.application.text_chunker import TextChunk
+
+    return TextChunk(session_id="s", utterance_id="u", seq=0, text="xin chao", is_final=True)
+
+
+async def test_rejected_voice_falls_back_once_and_is_remembered():
+    calls: list = []
+    engine = _remote_engine(_handler(calls, 400))
+    c = DirectorCoordinator(
+        runtime=None,
+        llm=None,
+        tts=engine,
+        backend=None,
+        session_store=_Store({"voice_id": "Ghost"}),
+    )
+    first = await c._session_tts("s")
+    assert list(first.stream_audio(_chunk(), session_id="s", utterance_id="u"))
+    second = await c._session_tts("s")
+    assert (second is engine, calls) == (True, ["Ghost", None])
+
+
+async def test_server_error_is_not_swallowed_as_voice_rejection():
+    import pytest
+
+    from backend.application.clients.tts.self_hosted import TTSClientError
+
+    engine = _remote_engine(_handler([], 500))
+    wrapped = SessionTTS(engine, voice_id="Ghost")
+    with pytest.raises(TTSClientError):
+        list(wrapped.stream_audio(_chunk(), session_id="s", utterance_id="u"))
+
+
+def test_unknown_min_gap_defers_then_answers_without_dropping(caplog):
+    d = _director(gap=3.0)
+    first = [_unknown(1, 10.0, [1.0, 0.0])]
+    d.mark_spoken(d.decide(first, now=10.5))
+    second = first + [_unknown(2, 11.0, [0.0, 1.0])]
+    with caplog.at_level(logging.INFO):
+        early = copy.deepcopy(d).decide(second, now=11.5)
+    assert early.action not in {"answer_fact", "answer_cluster"}
+    assert "comment skipped reason=min_gap" in caplog.text
+    late = d.decide(second, now=14.5)
+    assert late.action in {"answer_fact", "answer_cluster"}

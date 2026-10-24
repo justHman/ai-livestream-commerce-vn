@@ -140,6 +140,7 @@ class StreamState:
     qa_window_started_at: float = 0.0
     qa_window_stage_index: int = -1
     topic_cooldown_until: dict[str, float] = field(default_factory=dict)
+    last_unknown_answer_at: float = float("-inf")
     answer_variants: dict[tuple[str, str, int, int], list[str]] = field(default_factory=dict)
     answer_variant_index: dict[tuple[str, str, int, int], int] = field(default_factory=dict)
     qa_topic_last_answered: dict[str, float] = field(default_factory=dict)
