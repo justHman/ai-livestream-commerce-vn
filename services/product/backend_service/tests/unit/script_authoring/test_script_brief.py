@@ -271,3 +271,164 @@ def test_brief_round_trips_to_the_same_unit_spec():
     doc = build_unit_briefs([spec], ProductBrief(product_id="X", name="X"), lambda: "part:1")
     assert doc["parts"][0]["speech_act"] == "recap"
     assert spec_from_brief(doc["parts"][0]) == spec
+
+
+async def _recap_part(service, repos, set_id):
+    _, before = await _text(repos, set_id, "P2")
+    version = await _parts(service, set_id, "P2")
+    recap = next(p for p in version["parts"] if p["brief"]["speech_act"] == "recap")
+    return before, version, recap
+
+
+async def _regen(service, set_id, before, part, key, **extra):
+    started = await service.regenerate_segment(
+        set_id=set_id,
+        product_id="P2",
+        segment_index=part["segment_index"],
+        part_id=part["part_id"],
+        idempotency_key=key,
+        expected_version_id=before.id,
+        **extra,
+    )
+    return await wait_job(service, set_id, "P2", started["workflow_id"])
+
+
+@pytest.mark.asyncio
+async def test_price_change_blocks_regenerate_before_any_model_call():
+    import copy
+
+    from test_ordered_generation import BRIEF
+
+    llm = RepairLLM()
+    service, repos = _service(llm)
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id)
+    before, _version, recap = await _recap_part(service, repos, set_id)
+    changed = copy.deepcopy(BRIEF)
+    changed["product_facts"]["P2"]["prices"] = ["120000.00 VND"]
+    stored = repos.script_sets.rows[set_id]
+    stored.brief = service._brief_from_dict(changed, stored.brief.transition_policy)
+    llm.prompts.clear()
+    status = await _regen(service, set_id, before, recap, "price")
+    assert status["status"] == "failed" and status["error_code"] == "part_facts_changed"
+    assert llm.prompts == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_part_without_brief_is_not_replanned_unless_owner_picks_intent():
+    llm = RepairLLM()
+    service, repos = _service(llm)
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id)
+    before, version, recap = await _recap_part(service, repos, set_id)
+    plan = await repos.plans.get((await repos.segments.get(recap["segment_id"])).plan_id)
+    plan.unit_briefs = None  # plan written before briefs existed
+    llm.prompts.clear()
+    status = await _regen(service, set_id, before, recap, "legacy")
+    assert status["status"] == "failed" and status["error_code"] == "part_brief_unavailable"
+    assert llm.prompts == []
+    # an explicit choice that does not fit this part is still refused
+    opening = version["parts"][0]
+    status = await _regen(service, set_id, before, opening, "legacy-open", intent="recap")
+    assert status["error_code"] == "part_brief_unavailable"
+    llm.repair = lambda prompt: (
+        "Mình nhắc lại nhanh nhé. " + " ".join(c for c in P2_ITEMS if c in prompt)
+    )
+    status = await _regen(service, set_id, before, recap, "legacy-recap", intent="recap")
+    assert status["status"] == "completed", status
+    assert "NHẮC LẠI" in llm.prompts[0]
+
+
+def _same_parts(parts):
+    return [
+        {"part_id": p["part_id"], "segment_id": p["segment_id"], "display_text": p["display_text"]}
+        for p in parts
+    ]
+
+
+@pytest.mark.asyncio
+async def test_structured_save_receipt_replays_and_rejects_other_payloads():
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id, seconds=60)
+    _, before = await _text(repos, set_id, "P1")
+    payload = _same_parts((await _parts(service, set_id))["parts"])
+    payload[1] = {**payload[1], "display_text": "Mình sửa phần này."}
+    args = dict(set_id=set_id, product_id="P1", expected_version_id=before.id)
+    first = await service.save_draft_parts(parts=payload, idempotency_key="save-1", **args)
+    # the response was lost; the very same request is retried against the old expected version
+    again = await service.save_draft_parts(parts=payload, idempotency_key="save-1", **args)
+    assert again["version_id"] == first["version_id"] and again["idempotent"] is True
+    assert (await _text(repos, set_id, "P1"))[1].id == first["version_id"]
+    other = [{**payload[0], "display_text": "Khác hẳn."}, *payload[1:]]
+    with pytest.raises(ScriptAuthoringError) as conflict:
+        await service.save_draft_parts(parts=other, idempotency_key="save-1", **args)
+    assert conflict.value.code == "idempotency_conflict"
+
+
+@pytest.mark.asyncio
+async def test_lost_save_race_is_stale_revision_and_writes_no_segment():
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id, seconds=60)
+    item, before = await _text(repos, set_id, "P1")
+    payload = _same_parts((await _parts(service, set_id))["parts"])
+    payload[1] = {**payload[1], "display_text": "Mình sửa phần này."}
+    rows = dict(repos.segments.rows)
+    listed = repos.versions.list_by_item
+
+    async def rival_commits_first(item_id, **kw):
+        repos.items.rows[item.id].revision += 1  # another request committed in between
+        return await listed(item_id, **kw)
+
+    repos.versions.list_by_item = rival_commits_first
+    with pytest.raises(ScriptAuthoringError) as lost:
+        await service.save_draft_parts(
+            set_id=set_id, product_id="P1", parts=payload, expected_version_id=before.id
+        )
+    assert lost.value.code == "stale_revision"
+    assert repos.segments.rows == rows
+
+
+@pytest.mark.asyncio
+async def test_gate_repair_keeps_neighbours_and_opening_inventory(monkeypatch):
+    from backend.application.script_authoring.gate.results import (
+        GateRunResult,
+        RuleSetFingerprint,
+        RuleViolation,
+        Severity,
+    )
+
+    llm = RepairLLM()
+    service, repos = _service(llm)
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id)
+    before, _version, recap = await _recap_part(service, repos, set_id)
+    real = service._gate.run_segment
+    calls = []
+
+    def gate(text, context):
+        calls.append(text)
+        if len(calls) == 1:
+            return GateRunResult(
+                scope="segment",
+                fingerprint=RuleSetFingerprint(),
+                violations=(
+                    RuleViolation(rule_id="TTS_ACRONYM", severity=Severity.ERROR, message="Sửa."),
+                ),
+            )
+        return real(text, context)
+
+    monkeypatch.setattr(service._gate, "run_segment", gate)
+    seen = []
+
+    def reply(prompt):
+        seen.append(prompt)
+        return "Mình nhắc lại nhanh nhé. " + " ".join(c for c in P2_ITEMS if c in prompt)
+
+    llm.repair = reply
+    status = await _regen(service, set_id, before, recap, "repair-ctx")
+    assert status["status"] == "completed" and len(seen) == 2
+    for prompt in seen:
+        assert "Phần liền trước trong kịch bản" in prompt
+        assert "Cách mở đầu các phần khác đã dùng" in prompt

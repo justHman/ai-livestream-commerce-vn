@@ -23,6 +23,7 @@ Design decisions:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -34,7 +35,7 @@ import uuid
 from datetime import datetime, timezone
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -103,6 +104,7 @@ from backend.application.script_authoring.generation.ordered_units import (
 from backend.application.script_authoring.generation.unit_brief import (
     RECAP_RETRY,
     build_unit_briefs,
+    facts_revision,
     find_brief,
     provenance,
     public_brief,
@@ -170,6 +172,33 @@ _COVERAGE_RETRY = "\n\nLần trước thiếu ý BẮT BUỘC. Phải nói đủ
 _SHORTER_RETRY = (
     "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 4 câu, kết thúc trọn câu."
 )
+
+
+def _legacy_spec(intent: str | None, roles: list[UnitSpec], index: int) -> UnitSpec | None:
+    """Temporary brief for a part saved before briefs existed, from the owner's explicit choice.
+
+    # ponytail: the facts of the part are still taken from the re-planned unit at ``index``;
+    # that is only trustworthy when the owner picked the intent knowing the part. Upgrade path:
+    # a planner-version snapshot on old plans.
+    """
+    if intent not in ("recap", "intro") or index >= len(roles):
+        return None
+    base = roles[index]
+    if intent == "intro":
+        return replace(
+            base,
+            role="intro",
+            claims=(),
+            promos=(),
+            must=(),
+            with_price=False,
+            with_cta=False,
+            revisit=False,
+            bridge=False,
+        )
+    if not base.claims or base.role in ("opening", "intro", "closing"):
+        return None
+    return replace(base, revisit=True, with_cta=False)
 
 
 def _neighbor_gist(segment: ScriptSegment) -> str:
@@ -693,6 +722,7 @@ class ScriptAuthoringServiceImpl:
         existing_version_ids: set[str],
         job: GenerationJob | None = None,
         segments: Sequence[ScriptSegment] = (),
+        receipt: tuple[str, str] | None = None,
     ) -> None:
         """Write workflow-persisted items + new version / gate run in one tx.
 
@@ -717,6 +747,15 @@ class ScriptAuthoringServiceImpl:
                         self._config.recovery_lease_seconds,
                         conn=conn,
                     )
+                if segments:
+                    # CAS before any insert: a concurrent save that lost the race must
+                    # surface as stale_revision, not as a unique-constraint 500.
+                    for pending in persisted.values():
+                        fresh = await self._repos.items.get(pending.id, conn=conn)
+                        if fresh is not None and fresh.revision != item_revision:
+                            raise StaleRevisionError(
+                                f"script_item {pending.id}: revision {item_revision} not current"
+                            )
                 for segment in segments:
                     await self._repos.segments.insert(segment, conn=conn)
                 # Insert immutable version + gate run rows BEFORE the item
@@ -731,6 +770,8 @@ class ScriptAuthoringServiceImpl:
                     await self._repos.gate_runs.insert(workflow.last_gate_run, conn=conn)
                 for item in persisted.values():
                     await self._repos.items.update(item, expected_revision=item_revision, conn=conn)
+                if receipt is not None:
+                    await self._repos.idempotency.register(*receipt, conn=conn)
         except StaleRevisionError as exc:
             raise ScriptAuthoringError("stale_revision", str(exc)) from exc
 
@@ -2045,8 +2086,9 @@ class ScriptAuthoringServiceImpl:
         """Structured save: unchanged parts keep segment + provenance, edited parts become
         manual segments with the same part_id/brief, new parts get a fresh part_id.
 
-        Repeating the same payload is a no-op (nothing changed), so ``idempotency_key`` needs
-        no separate bookkeeping.
+        With ``idempotency_key`` the receipt (payload hash + new version id) is committed in the
+        same transaction as the version: same key + same payload replays the result, same key +
+        another payload is ``idempotency_conflict``.
         """
         script_set = await self._repos.script_sets.get(set_id)
         if script_set is None:
@@ -2054,6 +2096,39 @@ class ScriptAuthoringServiceImpl:
         item = await self._repos.items.get_by_product(set_id, product_id)
         if item is None:
             self._raise_not_found("product script", product_id)
+        fingerprint = payload_hash = ""
+        if idempotency_key:
+            fingerprint = hashlib.sha256(
+                f"save_parts|{item.id}|{idempotency_key}".encode()
+            ).hexdigest()
+            payload_hash = hashlib.sha256(
+                json.dumps(
+                    [
+                        expected_version_id,
+                        [
+                            [p.get("part_id"), p.get("segment_id"), p.get("display_text")]
+                            for p in parts
+                        ],
+                    ],
+                    ensure_ascii=False,
+                ).encode()
+            ).hexdigest()
+            recorded = await self._repos.idempotency.get(fingerprint)
+            if recorded is not None:
+                # Receipt committed with the version itself: a lost response is replayed even
+                # though the item has moved on to that very version.
+                recorded_hash, _, version_id = recorded.partition(":")
+                if recorded_hash != payload_hash:
+                    raise ScriptAuthoringError(
+                        "idempotency_conflict", "idempotency key was already used for another save"
+                    )
+                return {
+                    "ok": True,
+                    "product_id": product_id,
+                    "state": item.state.name,
+                    "version_id": version_id,
+                    "idempotent": True,
+                }
         if item.current_version_id != expected_version_id:
             raise ScriptAuthoringError(
                 "stale_revision", "Kịch bản đã thay đổi. Tải lại bản hiện tại trước khi lưu."
@@ -2153,6 +2228,9 @@ class ScriptAuthoringServiceImpl:
             item_revision=item.revision,
             existing_version_ids={current_version.id},
             segments=created,
+            receipt=(fingerprint, f"{payload_hash}:{workflow.current_version.id}")
+            if fingerprint
+            else None,
         )
         return {
             "ok": True,
@@ -2399,6 +2477,7 @@ class ScriptAuthoringServiceImpl:
         idempotency_key: str,
         expected_version_id: str | None = None,
         part_id: str | None = None,
+        intent: str | None = None,
     ) -> dict[str, Any] | None:
         self._require_accepting()
         script_set = await self._repos.script_sets.get(set_id)
@@ -2416,6 +2495,7 @@ class ScriptAuthoringServiceImpl:
                 existing.input_snapshot.get("source_version_id") != expected_version_id
                 or existing.input_snapshot.get("segment_index") != segment_index
                 or existing.input_snapshot.get("part_id") != part_id
+                or existing.input_snapshot.get("intent") != intent
             ):
                 raise ScriptAuthoringError(
                     "idempotency_conflict", "part request does not match original source"
@@ -2450,6 +2530,7 @@ class ScriptAuthoringServiceImpl:
                 "source_version_id": expected_version_id,
                 "segment_index": segment_index,
                 "part_id": part_id,
+                "intent": intent,
                 "script_set_id": set_id,
             }
             if expected_version_id
@@ -3302,39 +3383,42 @@ class ScriptAuthoringServiceImpl:
             if brief is not None:
                 # Reuse the immutable brief written with the plan: no re-planning, so a recap
                 # stays a recap even if the planner would split the facts differently today.
+                if brief.get("facts_revision") != facts_revision(product):
+                    # Prices/claims changed since the brief was written: never mix old intent
+                    # with new facts silently, and never spend a model call on it.
+                    await self._fail_job(job, "part_facts_changed")
+                    return
                 roles = [spec_from_brief(b) for b in plan.unit_briefs["parts"]]
                 spec_index = [b["part_id"] for b in plan.unit_briefs["parts"]].index(
                     current.part_id
                 )
-                known = {*product.claims, *product.discounts}
-                spec = roles[spec_index]
-                if any(c not in known for c in (*spec.claims, *spec.promos)):
-                    await self._fail_job(job, "part_facts_changed")
-                    return
             else:
-                roles = ordered.roles[item.product_id]
+                # Legacy part without a stored brief: the role is NOT guessed from re-planning.
+                # Only an explicit owner choice (recap/intro) builds a temporary brief.
+                roles = list(ordered.roles[item.product_id])
                 spec_index = index
-                if index >= len(roles):
-                    await self._fail_job(job, "part_source_changed")
+                temp = _legacy_spec(job.input_snapshot.get("intent"), roles, index)
+                if temp is None:
+                    await self._fail_job(job, "part_brief_unavailable")
                     return
+                roles[index] = temp
             spec = roles[spec_index]
             facts = self._product_facts(script_set.brief, item.product_id)
             prior_rows = await self._repos.segments.list_by_plan(plan.id)
             row_version = max(s.version for s in prior_rows if s.segment_index == index)
             others = [x for x in selected if x is not current]
-            prompt = build_unit_prompt(
-                ordered.session,
-                product,
-                roles,
-                spec_index,
-                before=_neighbor_gist(selected[position - 1]) if position > 0 else "",
-                after=_neighbor_gist(selected[position + 1])
+            # The same immutable context reaches EVERY prompt of this operation (first write,
+            # guard retries and gate repairs alike).
+            context = {
+                "before": _neighbor_gist(selected[position - 1]) if position > 0 else "",
+                "after": _neighbor_gist(selected[position + 1])
                 if position + 1 < len(selected)
                 else "",
-                used_openings=tuple(
+                "used_openings": tuple(
                     dict.fromkeys(" ".join(x.spoken_text.split()[:5]) for x in others)
                 )[:24],
-            )
+            }
+            prompt = build_unit_prompt(ordered.session, product, roles, spec_index, **context)
             rewrite_instruction = (
                 "\nViết khác đi, không sao chép nguyên văn bản đang có hoặc lặp các câu; "
                 "vẫn giữ đủ các ý bắt buộc, số liệu và điều kiện được phép."
@@ -3462,6 +3546,7 @@ class ScriptAuthoringServiceImpl:
                             spec_index,
                             failed_text=text,
                             problems=[f"{v.rule_id}: {v.message}" for v in result.violations],
+                            **context,
                         )
                         + rewrite_instruction
                     )

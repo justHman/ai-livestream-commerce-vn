@@ -338,6 +338,38 @@ async def test_plan_briefs_and_segment_provenance_roundtrip(pg_url: str) -> None
 
 
 @pytest.mark.asyncio
+async def test_concurrent_segment_version_is_reported_as_a_lost_race(pg_url: str) -> None:
+    from backend.application.script_authoring.repositories import StaleRevisionError
+
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        item = _item(s.id)
+        await repos.items.insert(item)
+        plan = ProductScriptPlan(
+            id=new_id("plan"), script_item_id=item.id, product_id="p1", target_duration_s=60, K=1
+        )
+        await repos.plans.insert(plan)
+
+        def seg() -> ScriptSegment:
+            return ScriptSegment(
+                id=new_id("segment"),
+                script_item_id=item.id,
+                plan_id=plan.id,
+                segment_index=0,
+                version=2,
+                spoken_text="x",
+            )
+
+        await repos.segments.insert(seg())
+        with pytest.raises(StaleRevisionError):
+            await repos.segments.insert(seg())
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
 async def test_version_immutable_and_get_approved(pg_url: str) -> None:
     repos = await _connect(pg_url)
     try:

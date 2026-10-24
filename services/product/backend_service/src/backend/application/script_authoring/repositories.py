@@ -359,7 +359,8 @@ class PlanRepository(_Repo):
 
     @staticmethod
     async def _insert_segment(c, segment: ScriptSegment) -> None:
-        await c.execute(
+        await _execute_segment_insert(
+            c,
             f"INSERT INTO script_segments ({_SEGMENT_INS}) "
             f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
             segment.id,
@@ -442,7 +443,8 @@ class SegmentRepository(_Repo):
 
     @staticmethod
     async def _insert_segment(c, segment: ScriptSegment) -> None:
-        await c.execute(
+        await _execute_segment_insert(
+            c,
             f"INSERT INTO script_segments ({_SEGMENT_INS}) "
             f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
             segment.id,
@@ -1100,6 +1102,16 @@ class IdempotencyRepository(_Repo):
             batch_id,
             conn=conn,
         )
+
+
+async def _execute_segment_insert(c, sql: str, *args) -> None:
+    """A concurrent writer already took this (plan, index, version): report it as a lost race."""
+    try:
+        await c.execute(sql, *args)
+    except Exception as exc:
+        if exc.__class__.__name__ == "UniqueViolationError":
+            raise StaleRevisionError("segment version already written by another request") from exc
+        raise
 
 
 class _NullTransaction:

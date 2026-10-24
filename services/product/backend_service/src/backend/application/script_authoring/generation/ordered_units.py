@@ -1070,8 +1070,20 @@ def build_unit_repair_prompt(
     failed_text: str,
     problems: list[str],
     tail: str = "",
+    before: str = "",
+    after: str = "",
+    used_openings: tuple[str, ...] = (),
 ) -> str:
-    base = build_unit_prompt(session, product, specs, index, tail=tail)
+    base = build_unit_prompt(
+        session,
+        product,
+        specs,
+        index,
+        tail=tail,
+        before=before,
+        after=after,
+        used_openings=used_openings,
+    )
     # Legacy long-form duration advice asks for compact prices to inflate the
     # estimator. Ordered speech requires prices in words: keep the measured
     # bound, but repair length through content rather than its notation.

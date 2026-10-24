@@ -192,6 +192,8 @@ class RegenerateReq(BaseModel):
     expected_version_id: str | None = Field(default=None, min_length=1, max_length=128)
     # Stable part identity; preferred over the path index, which is only a compatibility key.
     part_id: str | None = Field(default=None, min_length=1, max_length=128)
+    # Owner's explicit choice for a legacy part whose brief was never stored.
+    intent: Literal["recap", "intro"] | None = None
 
 
 class FixReq(BaseModel):
@@ -490,6 +492,7 @@ async def regenerate_segment(
             idempotency_key=key,
             **({"expected_version_id": req.expected_version_id} if req.expected_version_id else {}),
             **({"part_id": req.part_id} if req.part_id else {}),
+            **({"intent": req.intent} if req.intent else {}),
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc

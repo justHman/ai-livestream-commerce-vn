@@ -112,6 +112,7 @@ class ScriptAuthoringService(Protocol):
         idempotency_key: str,
         expected_version_id: str | None = None,
         part_id: str | None = None,
+        intent: str | None = None,
     ) -> dict[str, Any] | None: ...
 
     async def fix_with_ai(
