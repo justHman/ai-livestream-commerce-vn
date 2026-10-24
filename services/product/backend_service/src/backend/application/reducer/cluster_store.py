@@ -770,6 +770,12 @@ class ClusterStore:
     def live_member_ids(self) -> set[str]:
         return {cid for c in self._clusters.values() for cid in c.member_ids}
 
+    def membership(self) -> dict[str, tuple[str, str]]:
+        """``{comment_id: (cluster_id, intent)}`` for every live member (read-only)."""
+        return {
+            cid: (c.cluster_id, c.intent) for c in self._clusters.values() for cid in c.member_ids
+        }
+
     def stats(self) -> dict:
         """Content-safe counters (no raw viewer text)."""
         failure = self.last_reconciliation_failure

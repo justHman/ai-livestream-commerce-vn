@@ -50,6 +50,7 @@ from .session_context import DirectorRuntime
 from .routing import route_comment
 from .state import StreamState
 
+from backend.application.live_follow import LiveFollowRecorder
 from backend.application.render.locks import SessionLockRegistry
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
@@ -221,6 +222,10 @@ class DirectorCoordinator:
         # it is consulted ONLY for sessions in reducer mode, so a legacy session
         # is byte-for-byte unchanged.
         self._reducer = reducer
+        # Live-follow facts (position + comment outcomes). Inert unless
+        # RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED is on; its emit never blocks speech.
+        self.live_follow = LiveFollowRecorder(emit=self._emit)
+        self._wire_live_follow()
         # Per-session decision-input mode. True = the reducer is the only
         # viewer-demand input; False/absent = the legacy raw-comment feed.
         # Runtime engineering selector, NOT a Product Rule.
@@ -244,6 +249,48 @@ class DirectorCoordinator:
     @reducer.setter
     def reducer(self, value) -> None:
         self._reducer = value
+        self._wire_live_follow()
+
+    def _wire_live_follow(self) -> None:
+        if self._reducer is not None and self.live_follow.enabled:
+            self._reducer.membership_observer = self._on_membership
+
+    def _on_membership(self, session_id: str, store, now: float, *, force: bool = True) -> None:
+        if session_id not in self._tasks or session_id not in self._reducer_mode:
+            return
+        reducer = self._reducer
+        self.live_follow.sync_membership(
+            session_id,
+            store.membership(),
+            lambda comment_id: reducer.comment_provenance(session_id, comment_id),
+            now=now,
+            horizon_sec=store.config.rolling_horizon_sec,
+            force=force,
+        )
+
+    def _live_follow_tick(self, session_id: str, ds) -> None:
+        """Per-tick observation: hold/closing facts and age-based membership expiry."""
+        if not self.live_follow.enabled:
+            return
+        blocked = self.approved_speech.blocked(session_id) if self.approved_speech else None
+        self.live_follow.hold(session_id, ds, "held" if blocked == "held" else None)
+        if blocked == "closing":
+            self.live_follow.close_pending(session_id, "session_closing")
+        elif blocked == "ending":
+            self.live_follow.close_pending(session_id, "session_closed")
+        store = self._reducer.session_store(session_id) if self._reducer is not None else None
+        if store is not None:
+            self._on_membership(session_id, store, time.time(), force=False)
+
+    def live_follow_snapshot(self, session_id: str) -> Optional[dict]:
+        """Bounded current live-follow state, or None when the session is not attached."""
+        ds = self._runtime._sessions.get(session_id)
+        if ds is None or session_id not in self._tasks:
+            return None
+        store = self._reducer.session_store(session_id) if self._reducer is not None else None
+        if store is not None:
+            self._on_membership(session_id, store, time.time(), force=True)
+        return self.live_follow.snapshot(session_id, ds)
 
     def set_reducer_mode(self, session_id: str, enabled: bool = True) -> None:
         """Select the decision input for one session.
@@ -349,6 +396,7 @@ class DirectorCoordinator:
             self._runtime.attach(session_id, products, cfg=cfg, hooks=hooks)
 
         self._queues[session_id] = ChatQueue(session_id)
+        self.live_follow.begin(session_id)
         self._decision_queue[session_id] = deque()
         self._speech_queue[session_id] = deque()
         self._prepare_tasks[session_id] = set()
@@ -397,6 +445,16 @@ class DirectorCoordinator:
             self.approved_speech.block(session_id, None)
         attach_seq = self._delivery_seq.get(session_id, 0)
         current = self._current_speech.get(session_id)
+        self.live_follow.close_pending(session_id, "session_closed")
+        if current is not None:
+            self.live_follow.turn_ended(
+                session_id,
+                current,
+                self._runtime._sessions.get(session_id),
+                status="cancelled",
+                reason="session_stopped",
+            )
+        self.live_follow.retire(session_id)
         if current is not None:
             current.is_cancelled = True
         tasks = [
@@ -508,6 +566,13 @@ class DirectorCoordinator:
         if decision.is_cancelled:
             return
         decision.is_cancelled = True
+        self.live_follow.turn_ended(
+            session_id,
+            decision,
+            self._runtime._sessions.get(session_id),
+            status="cancelled",
+            reason=reason,
+        )
         if session_id not in self._stats or not self._runtime.has(session_id):
             return
         cancelled = {
@@ -956,6 +1021,7 @@ class DirectorCoordinator:
             return
         director: Director = ds.director
         state: StreamState = director.state
+        self._live_follow_tick(session_id, ds)
         fresh = queue.drain_window(self._cfg.window_sec)
         if session_id in self._reducer_mode:
             # Reducer mode (P0-FB-014): the bounded reducer is the only
@@ -1162,6 +1228,7 @@ class DirectorCoordinator:
                     # _decide the reducer branch runs - never a raw-comment feed.
                     decision = projection.decide(projection.state.rolling_comments, now=now)
                 self._stats[session_id].director_cycles += 1
+                self.live_follow.note_tick_skips(session_id, getattr(projection, "tick_skips", ()))
                 if decision.action in ("idle", "skip"):
                     self._stats[session_id].skips += 1
                     break
@@ -1175,6 +1242,7 @@ class DirectorCoordinator:
                 }
                 self._decision_queue[session_id].append(decision)
                 projection.mark_spoken(decision)
+                self.live_follow.turn_selected(session_id, decision, ds)
                 logger.info(
                     "director decision session=%s turn=%s action=%s product=%s stage=%s unit=%s "
                     "topic=%s queued_ahead=%d",
@@ -1302,6 +1370,13 @@ class DirectorCoordinator:
                     queue.remove(decision)
                 except ValueError:
                     pass
+            self.live_follow.turn_ended(
+                session_id,
+                decision,
+                self._runtime._sessions.get(session_id),
+                status="failed",
+                reason="preparation_failed",
+            )
             self._activated.discard(session_id)
             self._invalidate_queued(session_id, reason="terminal_preparation_failure")
             if self.runtime_failures is not None:
@@ -1598,6 +1673,8 @@ class DirectorCoordinator:
         first_audio_at: list[float] = []
 
         async def opening_audio(window):
+            if not first_audio_at:
+                self.live_follow.media_started(session_id, decision, ds)
             first_audio_at.append(time.monotonic())
             await self._record_opening_media(session_id, decision, window.utterance_id, speech)
             if self._audio_window_callback is not None:
@@ -1624,6 +1701,8 @@ class DirectorCoordinator:
                 ),
             )
             self._register_speaking(session_id, orchestrator, queue)
+            self.live_follow.turn_selected(session_id, decision, ds)  # no-op if announced
+            self.live_follow.speak_started(session_id, decision, ds)
             await self._emit(
                 session_id,
                 {
@@ -1744,6 +1823,20 @@ class DirectorCoordinator:
                 ds.director.mark_spoken(decision)
             await self._persist_decision(session_id, decision, text)
             self._after_speak(session_id, decision, text)
+            if decision.action in ("answer_fact", "answer_cluster"):
+                from ..script_authoring.answer_context import is_deflection
+
+                checked = speech.text if speech is not None else spoken_script
+                response_kind = "deflection" if is_deflection(checked) else "answer"
+            else:
+                response_kind = "script"
+            self.live_follow.turn_completed(
+                session_id,
+                decision,
+                ds,
+                response_kind=response_kind,
+                completed_at=time.time(),
+            )
             await self._emit(
                 session_id,
                 {
@@ -1812,6 +1905,13 @@ class DirectorCoordinator:
                     "speech pipeline failed session=%s turn=%s", session_id, decision.turn_id
                 )
             failure_state = "playback_timeout" if isinstance(exc, TimeoutError) else "failed"
+            self.live_follow.turn_ended(
+                session_id,
+                decision,
+                self._runtime._sessions.get(session_id),
+                status="failed",
+                reason=failure_state,
+            )
             await self._emit(
                 session_id,
                 {
