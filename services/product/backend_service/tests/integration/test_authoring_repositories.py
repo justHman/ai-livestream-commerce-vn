@@ -288,6 +288,139 @@ async def test_plan_and_segments_roundtrip(pg_url: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plan_briefs_and_segment_provenance_roundtrip(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        item = _item(s.id)
+        await repos.items.insert(item)
+        briefs = {"schema_version": 1, "parts": [{"part_id": "part:1", "role": "highlight"}]}
+        plan = ProductScriptPlan(
+            id=new_id("plan"),
+            script_item_id=item.id,
+            product_id="p1",
+            target_duration_s=600,
+            K=1,
+            unit_briefs=briefs,
+        )
+        await repos.plans.insert(plan)
+        fallback = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=item.id,
+            plan_id=plan.id,
+            segment_index=0,
+            spoken_text="a",
+            part_id="part:1",
+            provenance={"source": "fallback", "fallback_reason_code": "coverage_missing"},
+        )
+        legacy = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=item.id,
+            plan_id=plan.id,
+            segment_index=0,
+            version=2,
+            spoken_text="b",
+        )
+        await repos.segments.insert(fallback)
+        await repos.segments.insert(legacy)
+        loaded = await repos.plans.get(plan.id)
+        assert loaded is not None and loaded.unit_briefs == briefs
+        got = await repos.segments.get(fallback.id)
+        assert (
+            got.part_id == "part:1" and got.provenance["fallback_reason_code"] == "coverage_missing"
+        )
+        old = await repos.segments.get(legacy.id)
+        assert old.part_id is None and old.provenance is None
+        assert (await repos.plans.get_latest(item.id)).segments[0].id == legacy.id
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_segment_version_is_reported_as_a_lost_race(pg_url: str) -> None:
+    from backend.application.script_authoring.repositories import StaleRevisionError
+
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        item = _item(s.id)
+        await repos.items.insert(item)
+        plan = ProductScriptPlan(
+            id=new_id("plan"), script_item_id=item.id, product_id="p1", target_duration_s=60, K=1
+        )
+        await repos.plans.insert(plan)
+
+        def seg() -> ScriptSegment:
+            return ScriptSegment(
+                id=new_id("segment"),
+                script_item_id=item.id,
+                plan_id=plan.id,
+                segment_index=0,
+                version=2,
+                spoken_text="x",
+            )
+
+        await repos.segments.insert(seg())
+        with pytest.raises(StaleRevisionError):
+            await repos.segments.insert(seg())
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
+async def test_item_lock_serializes_two_concurrent_saves_and_version_clash_is_stale(
+    pg_url: str,
+) -> None:
+    import asyncio
+
+    from backend.application.script_authoring.repositories import StaleRevisionError
+
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        item = _item(s.id)
+        await repos.items.insert(item)
+        first_holds_lock = asyncio.Event()
+        release_first = asyncio.Event()
+        seen: dict[str, int | None] = {}
+
+        async def winner() -> None:
+            async with repos.transaction() as conn:
+                seen["winner"] = await repos.items.lock_revision(item.id, conn=conn)
+                first_holds_lock.set()
+                await release_first.wait()
+                await repos.items.update(item, expected_revision=0, conn=conn)
+
+        async def loser() -> None:
+            await first_holds_lock.wait()
+            async with repos.transaction() as conn:
+                # blocks on the row lock until the winner commits, then sees its revision
+                seen["loser"] = await repos.items.lock_revision(item.id, conn=conn)
+
+        tasks = [asyncio.create_task(winner()), asyncio.create_task(loser())]
+        await asyncio.sleep(0.3)
+        assert "loser" not in seen  # still waiting for the lock
+        release_first.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=20)
+        assert seen == {"winner": 0, "loser": 1}
+
+        v = ScriptVersion(
+            id=new_id("script_version"), script_item_id=item.id, version=1, spoken_text="a"
+        )
+        await repos.versions.insert(v)
+        clash = ScriptVersion(
+            id=new_id("script_version"), script_item_id=item.id, version=1, spoken_text="b"
+        )
+        with pytest.raises(StaleRevisionError):
+            await repos.versions.insert(clash)
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
 async def test_version_immutable_and_get_approved(pg_url: str) -> None:
     repos = await _connect(pg_url)
     try:

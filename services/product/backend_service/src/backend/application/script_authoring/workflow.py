@@ -485,6 +485,8 @@ class ProductGenerationWorkflow:
         *,
         display_text: str,
         spoken_text: str,
+        segment_version_ids: Optional[list[str]] = None,
+        plan_version: int = 1,
     ) -> None:
         """Create a manual DRAFT with zero semantic calls (task 9.4).
 
@@ -516,6 +518,8 @@ class ProductGenerationWorkflow:
             source=ScriptSource.MANUAL,
             display_text=display_text,
             spoken_text=spoken_text,
+            segment_version_ids=list(segment_version_ids or []),
+            plan_version=plan_version,
         )
         self._append_version(version)
         self.item.current_version_id = version.id

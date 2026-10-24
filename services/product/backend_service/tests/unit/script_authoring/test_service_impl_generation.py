@@ -141,6 +141,9 @@ class _FakeItemRepo:
     async def insert(self, item: ScriptItem, *, conn=None) -> None:
         self.rows[item.id] = item.model_copy(deep=True)
 
+    async def list_by_set(self, set_id: str, *, conn=None) -> list[ScriptItem]:
+        return [i.model_copy(deep=True) for i in self.rows.values() if i.script_set_id == set_id]
+
     async def update(self, item: ScriptItem, *, expected_revision: int, conn=None) -> None:
         current = self.rows.get(item.id)
         if current is None or expected_revision != current.revision:
@@ -178,6 +181,10 @@ class _FakeGateRunRepo:
 
     async def list_by_item(self, item_id: str, *, conn=None) -> list[GateRun]:
         return list(self._by_item.get(item_id, []))
+
+    async def latest_for_version(self, version_id: str, *, conn=None):
+        runs = [r for r in self.rows.values() if r.script_version_id == version_id]
+        return runs[-1] if runs else None
 
 
 class _FakeApprovalRepo:

@@ -990,6 +990,9 @@ def build_unit_prompt(
     *,
     tail: str = "",
     used_ctas: frozenset[str] = frozenset(),
+    before: str = "",
+    after: str = "",
+    used_openings: tuple[str, ...] = (),
 ) -> str:
     spec = specs[index]
     used = [c for s in specs[:index] for c in (*s.claims, *s.promos)]
@@ -1028,8 +1031,9 @@ def build_unit_prompt(
         )
     if spec.revisit:
         parts.append(
-            "Đây là phần nhắc lại cho người mới vào: diễn đạt KHÁC phần trước, "
-            "dẫn vào bằng một câu tư vấn hoặc tóm tắt; giữ nguyên số liệu, điều kiện. "
+            "Đây là phần NHẮC LẠI cho người mới vào, KHÔNG giới thiệu lần đầu: không chào lại, "
+            "không mở màn sản phẩm; mở bằng một chuyển ý nhắc lại tự nhiên, diễn đạt KHÁC phần "
+            "trước; giữ nguyên số liệu, điều kiện. "
             "Không giả vờ rằng có bình luận hay khách đặt mua nếu chưa có dữ liệu."
         )
     position = _position_line(product, spec)
@@ -1044,6 +1048,14 @@ def build_unit_prompt(
         )
     if tail:
         parts.append("Phần liền trước (không lặp lại cách diễn đạt này): " + tail)
+    if before:
+        parts.append("Phần liền trước trong kịch bản (tham khảo mạch, không chép lại): " + before)
+    if after:
+        parts.append("Phần liền sau trong kịch bản (đừng nói trước ý của phần đó): " + after)
+    if used_openings:
+        parts.append(
+            "Cách mở đầu các phần khác đã dùng, hãy mở bằng cách khác: " + " | ".join(used_openings)
+        )
     if used_ctas:
         parts.append("Các cụm kêu gọi đã dùng, đừng dùng lại: " + ", ".join(sorted(used_ctas)))
     return "\n".join(parts)
@@ -1058,8 +1070,20 @@ def build_unit_repair_prompt(
     failed_text: str,
     problems: list[str],
     tail: str = "",
+    before: str = "",
+    after: str = "",
+    used_openings: tuple[str, ...] = (),
 ) -> str:
-    base = build_unit_prompt(session, product, specs, index, tail=tail)
+    base = build_unit_prompt(
+        session,
+        product,
+        specs,
+        index,
+        tail=tail,
+        before=before,
+        after=after,
+        used_openings=used_openings,
+    )
     # Legacy long-form duration advice asks for compact prices to inflate the
     # estimator. Ordered speech requires prices in words: keep the measured
     # bound, but repair length through content rather than its notation.

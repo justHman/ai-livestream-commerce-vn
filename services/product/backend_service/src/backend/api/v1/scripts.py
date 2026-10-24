@@ -154,6 +154,22 @@ class DraftIn(BaseModel):
     revision: int | None = Field(default=None, ge=0)
 
 
+class DraftPartIn(BaseModel):
+    """One displayed part; ``segment_id`` is empty for a part the owner just added."""
+
+    part_id: str | None = Field(default=None, max_length=128)
+    segment_id: str | None = Field(default=None, max_length=128)
+    display_text: str = Field(min_length=1, max_length=200_000)
+
+
+class DraftPartsIn(BaseModel):
+    """Structured save: the exact ordered parts the owner sees (never a source claim)."""
+
+    expected_version_id: str = Field(min_length=1, max_length=128)
+    parts: list[DraftPartIn] = Field(min_length=1, max_length=200)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class GenerationPreviewReq(BaseModel):
     """No-LLM preview of planned work (Decision 11)."""
 
@@ -174,6 +190,10 @@ class RegenerateReq(BaseModel):
 
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
     expected_version_id: str | None = Field(default=None, min_length=1, max_length=128)
+    # Stable part identity; preferred over the path index, which is only a compatibility key.
+    part_id: str | None = Field(default=None, min_length=1, max_length=128)
+    # Owner's explicit choice for a legacy part whose brief was never stored.
+    intent: Literal["recap", "intro"] | None = None
 
 
 class FixReq(BaseModel):
@@ -330,6 +350,31 @@ async def put_draft(
     return result
 
 
+@_router.put("/script-sets/{set_id}/products/{product_id}/draft-parts")
+async def put_draft_parts(
+    set_id: str,
+    product_id: str,
+    req: DraftPartsIn,
+    request: Request,
+    _: None = Depends(viewer_auth),
+) -> dict[str, Any]:
+    """Structured save keeping each unchanged part's identity and provenance."""
+    service = _service(request)
+    try:
+        result = await service.save_draft_parts(
+            set_id=set_id,
+            product_id=product_id,
+            parts=[p.model_dump() for p in req.parts],
+            expected_version_id=req.expected_version_id,
+            idempotency_key=req.idempotency_key,
+        )
+    except ScriptAuthoringError as exc:
+        raise _raise_domain(exc) from exc
+    if result is None:
+        raise _domain_error(404, "not_found", f"script set {set_id} not found")
+    return result
+
+
 @_router.post("/script-sets/{set_id}/products/{product_id}/submit")
 async def submit_for_gate(
     set_id: str,
@@ -446,6 +491,8 @@ async def regenerate_segment(
             segment_index=segment_index,
             idempotency_key=key,
             **({"expected_version_id": req.expected_version_id} if req.expected_version_id else {}),
+            **({"part_id": req.part_id} if req.part_id else {}),
+            **({"intent": req.intent} if req.intent else {}),
         )
     except ScriptAuthoringError as exc:
         raise _raise_domain(exc) from exc

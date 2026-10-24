@@ -22,6 +22,11 @@ from backend.application.script_authoring.generation.continuity import (
     closing_fingerprint,
     extract_ctas,
 )
+from backend.application.script_authoring.generation.unit_brief import (
+    BRIEF_SCHEMA_VERSION,
+    PLANNER_VERSION,
+    provenance,
+)
 from backend.application.script_authoring.generation.segment_generator import (
     SegmentGenerationResult,
     SegmentStepOutcome,
@@ -130,6 +135,8 @@ class WorkflowDriver:
     previous_version_id: str | None = None
     previous_state: str | None = None
     replacement_failed: bool = False
+    # Stable part identity per unit index, from the briefs persisted with the plan.
+    part_ids: list = field(default_factory=list)
 
     def is_terminal(self) -> bool:
         return self.workflow.item.state in _TERMINAL
@@ -172,6 +179,15 @@ class WorkflowDriver:
         wf = self.workflow
         segment_count, candidates = self.plan_generate()
         wf.complete_planning(segment_count=segment_count)
+        briefs = [c.get("brief") for c in candidates[:segment_count]]
+        unit_briefs = None
+        if briefs and all(briefs):
+            self.part_ids = [b["part_id"] for b in briefs]
+            unit_briefs = {
+                "schema_version": BRIEF_SCHEMA_VERSION,
+                "planner_version": PLANNER_VERSION,
+                "parts": briefs,
+            }
         plan = ProductScriptPlan(
             id=wf.plan_id or new_id("plan"),
             script_item_id=wf.item.id,
@@ -193,6 +209,7 @@ class WorkflowDriver:
                 for idx, c in enumerate(candidates[:segment_count])
             ],
             fingerprint=wf.item.id,
+            unit_briefs=unit_briefs,
         )
         self.persist(plan)
 
@@ -265,6 +282,7 @@ class WorkflowDriver:
                 attempt=attempt,
                 gate_result=gate,
             )
+            self._stamp(candidate, index, "llm")
             self.persist(candidate)
             if wf.last_gate_run is not None:
                 self.persist(wf.last_gate_run)
@@ -334,11 +352,16 @@ class WorkflowDriver:
             index,
             reasons[:8],
         )
-        self.persist(
-            wf.record_failed_unit(
-                index, self.failed_unit_text(index), version=attempt + 1, message=message
-            )
+        fallback = wf.record_failed_unit(
+            index, self.failed_unit_text(index), version=attempt + 1, message=message
         )
+        self._stamp(fallback, index, "fallback", reasons)
+        self.persist(fallback)
+
+    def _stamp(self, segment, index: int, source: str, reasons=None) -> None:
+        if index < len(self.part_ids):
+            segment.part_id = self.part_ids[index]
+        segment.provenance = provenance(source, reasons)
 
     def _compile_and_gate(self) -> None:
         wf = self.workflow
@@ -378,6 +401,7 @@ class WorkflowDriver:
             "previous_state": self.previous_state,
             "replacement_failed": self.replacement_failed,
             "plan_version": self.plan_version,
+            "part_ids": list(self.part_ids),
         }
 
     def restore(self, state: dict) -> None:
@@ -396,6 +420,7 @@ class WorkflowDriver:
         wf.target_duration_s = state.get("target_duration_s")
         wf.semantic_calls = int(state.get("semantic_calls", 0))
         self.previous_version_id = state.get("previous_version_id")
+        self.part_ids = list(state.get("part_ids") or [])
         self.previous_state = state.get("previous_state")
         self.replacement_failed = bool(state.get("replacement_failed", False))
         self.plan_version = int(state.get("plan_version", self.plan_version))

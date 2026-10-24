@@ -52,11 +52,12 @@ _VERSION_COLS = (
 )
 _PLAN_COLS = (
     "id, script_item_id, version, product_id, target_duration_s, segment_count, "
-    "fingerprint, created_at"
+    "fingerprint, unit_briefs::text AS unit_briefs, created_at"
 )
 _SEGMENT_COLS = (
     "id, script_item_id, plan_id, segment_index, title, intent, target_duration_s, "
-    "display_text, spoken_text, status, version, created_at"
+    "display_text, spoken_text, status, version, part_id, provenance::text AS provenance, "
+    "created_at"
 )
 _GATE_COLS = (
     "id, script_item_id, is_full AS full, passed, rule_set_fingerprint, "
@@ -92,11 +93,12 @@ _VERSION_INS = (
 )
 _PLAN_INS = (
     "id, script_item_id, version, product_id, target_duration_s, segment_count, "
-    "fingerprint, created_at"
+    "fingerprint, unit_briefs, created_at"
 )
 _SEGMENT_INS = (
     "id, script_item_id, plan_id, segment_index, title, intent, "
-    "target_duration_s, display_text, spoken_text, status, version, created_at"
+    "target_duration_s, display_text, spoken_text, status, version, part_id, provenance, "
+    "created_at"
 )
 _GATE_INS = (
     "id, script_item_id, is_full, passed, rule_set_fingerprint, "
@@ -256,6 +258,13 @@ class ScriptSetRepository(_Repo):
 
 
 class ScriptItemRepository(_Repo):
+    async def lock_revision(self, item_id: str, *, conn) -> int | None:
+        """Row-lock the item inside the caller's transaction and return its revision."""
+        row = await self._fetchone(
+            "SELECT revision FROM script_items WHERE id = $1 FOR UPDATE", item_id, conn=conn
+        )
+        return row["revision"] if row else None
+
     async def insert(self, item: ScriptItem, *, conn=None) -> None:
         await self._execute(
             f"INSERT INTO script_items ({_ITEM_INS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
@@ -339,7 +348,7 @@ class PlanRepository(_Repo):
             async with c.transaction() if acquired else _null_transaction():
                 await c.execute(
                     f"INSERT INTO product_script_plans ({_PLAN_INS}) "
-                    f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)",
                     plan.id,
                     plan.script_item_id,
                     plan.version,
@@ -347,6 +356,7 @@ class PlanRepository(_Repo):
                     plan.target_duration_s,
                     plan.segment_count,
                     plan.fingerprint,
+                    json.dumps(plan.unit_briefs) if plan.unit_briefs is not None else None,
                     _dts(plan.created_at),
                 )
                 for segment in plan.segments:
@@ -356,9 +366,10 @@ class PlanRepository(_Repo):
 
     @staticmethod
     async def _insert_segment(c, segment: ScriptSegment) -> None:
-        await c.execute(
+        await _execute_segment_insert(
+            c,
             f"INSERT INTO script_segments ({_SEGMENT_INS}) "
-            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
             segment.id,
             segment.script_item_id,
             segment.plan_id,
@@ -370,6 +381,8 @@ class PlanRepository(_Repo):
             segment.spoken_text,
             segment.status.value,
             segment.version,
+            segment.part_id,
+            json.dumps(segment.provenance) if segment.provenance is not None else None,
             _dts(segment.created_at),
         )
 
@@ -395,7 +408,8 @@ class PlanRepository(_Repo):
     async def _with_segments(self, row, *, conn=None) -> ProductScriptPlan:
         rows = await self._fetchall(
             "SELECT id, script_item_id, plan_id, segment_index, title, intent, "
-            "target_duration_s, display_text, spoken_text, status, version, created_at "
+            "target_duration_s, display_text, spoken_text, status, version, part_id, "
+            "provenance::text AS provenance, created_at "
             "FROM script_segments WHERE plan_id = $1 ORDER BY segment_index, version",
             row["id"],
             conn=conn,
@@ -410,6 +424,7 @@ class PlanRepository(_Repo):
             latest_by_index[r["segment_index"]] = r
         data = dict(row)
         data["created_at"] = _iso(data["created_at"])
+        data["unit_briefs"] = _json_rows(data.get("unit_briefs"), None)
         data["K"] = data.pop("segment_count")
         data["segments"] = [
             self._segment_from_row(latest_by_index[i]) for i in sorted(latest_by_index)
@@ -419,6 +434,7 @@ class PlanRepository(_Repo):
     @staticmethod
     def _segment_from_row(row) -> ScriptSegment:
         data = dict(row)
+        data["provenance"] = _json_rows(data.get("provenance"), None)
         data["created_at"] = _iso(data["created_at"])
         return ScriptSegment.model_validate(data)
 
@@ -434,9 +450,10 @@ class SegmentRepository(_Repo):
 
     @staticmethod
     async def _insert_segment(c, segment: ScriptSegment) -> None:
-        await c.execute(
+        await _execute_segment_insert(
+            c,
             f"INSERT INTO script_segments ({_SEGMENT_INS}) "
-            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
             segment.id,
             segment.script_item_id,
             segment.plan_id,
@@ -448,6 +465,8 @@ class SegmentRepository(_Repo):
             segment.spoken_text,
             segment.status.value,
             segment.version,
+            segment.part_id,
+            json.dumps(segment.provenance) if segment.provenance is not None else None,
             _dts(segment.created_at),
         )
 
@@ -481,12 +500,23 @@ class SegmentRepository(_Repo):
         if row is None:
             return None
         data = dict(row)
+        data["provenance"] = _json_rows(data.get("provenance"), None)
         data["created_at"] = _iso(data["created_at"])
         return ScriptSegment.model_validate(data)
 
 
 class VersionRepository(_Repo):
     async def insert(self, version: ScriptVersion, *, conn=None) -> None:
+        try:
+            await self._insert(version, conn=conn)
+        except Exception as exc:
+            if exc.__class__.__name__ == "UniqueViolationError":
+                raise StaleRevisionError(
+                    "script version already written by another request"
+                ) from exc
+            raise
+
+    async def _insert(self, version: ScriptVersion, *, conn=None) -> None:
         await self._execute(
             f"INSERT INTO script_versions ({_VERSION_INS}) "
             f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::jsonb,$13)",
@@ -1089,6 +1119,16 @@ class IdempotencyRepository(_Repo):
             batch_id,
             conn=conn,
         )
+
+
+async def _execute_segment_insert(c, sql: str, *args) -> None:
+    """A concurrent writer already took this (plan, index, version): report it as a lost race."""
+    try:
+        await c.execute(sql, *args)
+    except Exception as exc:
+        if exc.__class__.__name__ == "UniqueViolationError":
+            raise StaleRevisionError("segment version already written by another request") from exc
+        raise
 
 
 class _NullTransaction:
