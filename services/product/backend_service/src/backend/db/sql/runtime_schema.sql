@@ -256,6 +256,13 @@ CREATE TABLE IF NOT EXISTS script_segments (
 
 CREATE INDEX IF NOT EXISTS idx_script_segments_item_id ON script_segments (script_item_id);
 
+-- Script coherence (additive, nullable, no backfill): immutable per-part briefs live on the
+-- plan; each segment version carries its stable part_id and normalized provenance.
+ALTER TABLE product_script_plans ADD COLUMN IF NOT EXISTS unit_briefs JSONB;
+ALTER TABLE script_segments
+    ADD COLUMN IF NOT EXISTS part_id TEXT,
+    ADD COLUMN IF NOT EXISTS provenance JSONB;
+
 CREATE TABLE IF NOT EXISTS script_generation_batches (
     id                    TEXT PRIMARY KEY,
     script_set_id         TEXT NOT NULL REFERENCES script_sets(id) ON DELETE CASCADE,

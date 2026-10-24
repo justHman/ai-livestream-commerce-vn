@@ -210,6 +210,8 @@ class ProductScriptPlan(BaseModel):
     # Exactly ``segment_count`` entries, index-aligned with segment order.
     segments: list[ScriptSegment] = Field(default_factory=list)
     fingerprint: str = Field(default="")
+    # Immutable typed briefs of the ordered parts (None for plans written before briefs existed).
+    unit_briefs: Optional[dict] = None
     created_at: str = Field(default_factory=lambda: _now_iso())
 
     @field_validator("segments")
@@ -237,6 +239,10 @@ class ScriptSegment(BaseModel):
     spoken_text: str = ""
     status: ScriptState = ScriptState.DRAFT
     version: int = Field(default=1, ge=1)
+    # Stable identity of the part across segment versions; None for legacy rows.
+    part_id: Optional[str] = None
+    # {"source": "llm"|"fallback"|"manual", "fallback_reason_code": ...}; None = unknown legacy.
+    provenance: Optional[dict] = None
     created_at: str = Field(default_factory=lambda: _now_iso())
 
 

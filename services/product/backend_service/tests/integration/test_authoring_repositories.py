@@ -288,6 +288,56 @@ async def test_plan_and_segments_roundtrip(pg_url: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plan_briefs_and_segment_provenance_roundtrip(pg_url: str) -> None:
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        item = _item(s.id)
+        await repos.items.insert(item)
+        briefs = {"schema_version": 1, "parts": [{"part_id": "part:1", "role": "highlight"}]}
+        plan = ProductScriptPlan(
+            id=new_id("plan"),
+            script_item_id=item.id,
+            product_id="p1",
+            target_duration_s=600,
+            K=1,
+            unit_briefs=briefs,
+        )
+        await repos.plans.insert(plan)
+        fallback = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=item.id,
+            plan_id=plan.id,
+            segment_index=0,
+            spoken_text="a",
+            part_id="part:1",
+            provenance={"source": "fallback", "fallback_reason_code": "coverage_missing"},
+        )
+        legacy = ScriptSegment(
+            id=new_id("segment"),
+            script_item_id=item.id,
+            plan_id=plan.id,
+            segment_index=0,
+            version=2,
+            spoken_text="b",
+        )
+        await repos.segments.insert(fallback)
+        await repos.segments.insert(legacy)
+        loaded = await repos.plans.get(plan.id)
+        assert loaded is not None and loaded.unit_briefs == briefs
+        got = await repos.segments.get(fallback.id)
+        assert (
+            got.part_id == "part:1" and got.provenance["fallback_reason_code"] == "coverage_missing"
+        )
+        old = await repos.segments.get(legacy.id)
+        assert old.part_id is None and old.provenance is None
+        assert (await repos.plans.get_latest(item.id)).segments[0].id == legacy.id
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
 async def test_version_immutable_and_get_approved(pg_url: str) -> None:
     repos = await _connect(pg_url)
     try:
