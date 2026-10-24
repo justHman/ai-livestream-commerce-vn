@@ -151,6 +151,9 @@ class DirectorCoordinator:
         self._voice_lookup_timeout_s = 1.5
         self._voice_cache: dict[str, str | None] = {}
         self._voice_rejected: set[str] = set()
+        # Per-session generation token: stop() drops it so late callbacks of a stopped
+        # (or restarted) session never write back into the cache.
+        self._voice_gen: dict[str, object] = {}
         self._engine_manager = engine_manager
         self._runtime = runtime
         # Factory inputs for building a FRESH StreamOrchestrator + queue +
@@ -409,6 +412,7 @@ class DirectorCoordinator:
         self._tts_failures.pop(session_id, None)
         self._voice_cache.pop(session_id, None)
         self._voice_rejected.discard(session_id)
+        self._voice_gen.pop(session_id, None)
         entry = (
             self._orchestrator_registry.get(session_id)
             if self._orchestrator_registry is not None
@@ -1446,11 +1450,13 @@ class DirectorCoordinator:
             return self._tts
         from backend.application.session_tts import wrap_session_tts
 
+        gen = self._voice_gen.setdefault(session_id, object())
         try:
             meta = await asyncio.wait_for(
                 self._session_store.get(session_id), self._voice_lookup_timeout_s
             )
-            self._voice_cache[session_id] = (meta or {}).get("voice_id")
+            if self._voice_gen.get(session_id) is gen:
+                self._voice_cache[session_id] = (meta or {}).get("voice_id")
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - voice lookup must never block speech
@@ -1463,7 +1469,11 @@ class DirectorCoordinator:
             self._tts,
             self._voice_cache.get(session_id),
             self._engine_manager,
-            on_reject=lambda: self._voice_rejected.add(session_id),
+            on_reject=lambda: (
+                self._voice_rejected.add(session_id)
+                if self._voice_gen.get(session_id) is gen
+                else None
+            ),
         )
 
     async def _maybe_speak(self, session_id: str, decision: Decision) -> bool:

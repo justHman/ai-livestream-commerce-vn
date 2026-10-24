@@ -248,3 +248,29 @@ async def test_text_error_does_not_mark_voice_rejected():
     with pytest.raises(TTSClientError):
         list(wrapped.stream_audio(_chunk(), session_id="s", utterance_id="u"))
     assert "s" not in c._voice_rejected
+
+
+async def test_stop_during_fallback_does_not_poison_restarted_session():
+    calls: list = []
+    inner = _handler(calls, 400)
+    holder: dict = {}
+
+    def handler(request):
+        if json.loads(request.content).get("voice") is None:
+            holder["c"].stop("s")  # session stopped while the default-voice fallback runs
+        return inner(request)
+
+    engine = _remote_engine(handler)
+    c = DirectorCoordinator(
+        runtime=SimpleNamespace(detach=lambda sid: None),
+        llm=None,
+        tts=engine,
+        backend=None,
+        session_store=_Store({"voice_id": "Ghost"}),
+    )
+    holder["c"] = c
+    wrapped = await c._session_tts("s")
+    assert list(wrapped.stream_audio(_chunk(), session_id="s", utterance_id="u"))
+    assert c._voice_rejected == set()
+    restarted = await c._session_tts("s")
+    assert restarted is not engine
