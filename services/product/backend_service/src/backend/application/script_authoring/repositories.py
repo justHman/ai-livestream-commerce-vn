@@ -967,7 +967,7 @@ class JobRepository(_Repo):
             await self._execute(
                 "UPDATE script_generation_jobs SET status=$2, plan_id=$3, "
                 "plan_segment_count=$4, current_segment_index=$5, attempt_count=$6, "
-                "error_code=$7, updated_at=NOW() WHERE id=$1",
+                "error_code=$7, input_snapshot=$8::jsonb, updated_at=NOW() WHERE id=$1",
                 job.id,
                 job.status.value,
                 job.plan_id,
@@ -975,13 +975,14 @@ class JobRepository(_Repo):
                 job.current_segment_index,
                 job.attempt_count,
                 job.error_code,
+                json.dumps(job.input_snapshot),
                 conn=conn,
             )
             return
         status = await self._execute(
             "UPDATE script_generation_jobs SET status=$2, plan_id=$3, "
             "plan_segment_count=$4, current_segment_index=$5, attempt_count=$6, "
-            "error_code=$10, lease_expires_at=NOW() + make_interval(secs => $7), updated_at=NOW() "
+            "error_code=$10, input_snapshot=$11::jsonb, lease_expires_at=NOW() + make_interval(secs => $7), updated_at=NOW() "
             "WHERE id=$1 AND lease_owner=$8 AND lease_epoch=$9 RETURNING id",
             job.id,
             job.status.value,
@@ -993,6 +994,7 @@ class JobRepository(_Repo):
             lease_owner,
             lease_epoch,
             job.error_code,
+            json.dumps(job.input_snapshot),
             conn=conn,
         )
         if status != "UPDATE 1":
@@ -1110,7 +1112,7 @@ class ModelWriteBudgetRepository(_Repo):
         row = await self._fetchone(
             "INSERT INTO script_model_write_budget(batch_id,product_id,unit_index,operation_id,writes) VALUES ($1,$2,$3,$4,1) "
             "ON CONFLICT (batch_id,product_id,unit_index,operation_id) DO UPDATE SET writes=script_model_write_budget.writes+1 "
-            "WHERE script_model_write_budget.writes<2 RETURNING writes",
+            "WHERE script_model_write_budget.writes<3 RETURNING writes",
             batch_id,
             product_id,
             index,

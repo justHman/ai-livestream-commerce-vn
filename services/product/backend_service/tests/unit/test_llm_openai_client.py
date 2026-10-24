@@ -80,6 +80,56 @@ def test_chat_returns_text():
     client.close()
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_qwen_none_disables_thinking_in_both_transports(monkeypatch, stream):
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "none")
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["enable_thinking"] is False
+        assert "reasoning_effort" not in body
+        if stream:
+            return httpx.Response(
+                200, content=b'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n'
+            )
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        client = OpenAICompatibleClient(
+            base_url="https://dashscope.example/compatible-mode",
+            model="qwen3.7-flash",
+            http_client=http,
+        )
+        req = ChatRequest(messages=[ChatMessage(role="user", content="hi")])
+        assert ("".join(client.chat_stream(req)) if stream else client.chat(req).text) == "OK"
+
+
+def test_reasoning_only_response_is_never_spoken(monkeypatch, caplog):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "reasoning_content": "private reasoning must not be spoken",
+                        },
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"completion_tokens": 900},
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        client = OpenAICompatibleClient(base_url="https://example.com", http_client=http)
+        result = client.chat(ChatRequest(messages=[]))
+    assert result.text == ""
+    assert "finish=length" in caplog.text and "reasoning_chars=" in caplog.text
+    assert "private reasoning" not in caplog.text
+
+
 def test_chat_stream_yields_deltas():
     client = httpx.Client(transport=_transport(stream_deltas=["Xin ", "chào"]))
     engine = OpenAICompatibleClient(base_url="http://llm:8001/", model="m", http_client=client)

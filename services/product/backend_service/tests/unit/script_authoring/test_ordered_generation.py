@@ -587,7 +587,7 @@ class RestrictionDroppingLLM(FakeLLM):
 
 
 @pytest.mark.asyncio
-async def test_missing_qualifier_falls_back_to_verbatim_claims_after_one_retry() -> None:
+async def test_missing_qualifier_falls_back_to_verbatim_claims_after_two_retries() -> None:
     claims = ["Bảo hành một năm.", "Chỉ áp dụng cho lỗi sản xuất.", "Do not use during pregnancy."]
     brief = {
         **BRIEF,
@@ -616,7 +616,7 @@ async def test_missing_qualifier_falls_back_to_verbatim_claims_after_one_retry()
     _item, version = await _text(repos, set_id, "P2")
     for claim in claims:
         assert claim in version.spoken_text  # every restriction spoken, verbatim
-    assert sum("BẮT BUỘC" in p for p in llm.prompts) == 1  # exactly one retry
+    assert sum("BẮT BUỘC" in p for p in llm.prompts) == 2  # three total writes
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     entry = next(p for p in snapshot["products"] if p["product_id"] == "P2")
     assert entry["fallback_units"][0]["reasons"] == ["guard:coverage"]

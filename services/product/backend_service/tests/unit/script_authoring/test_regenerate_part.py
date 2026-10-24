@@ -97,7 +97,7 @@ async def test_repeated_missing_claim_keeps_all_saved_content_and_reports_failur
     status = await repair_part(service, set_id, before, index)
     assert status["status"] == "failed"
     assert status["error_code"] == "part_content_rejected"
-    assert status["error_message"] == "AI chưa viết lại được phần này, giữ bản hiện tại."
+    assert status["error_message"] == f"Phần này chưa đạt vì thiếu: {SHIPPING[1]} Giữ bản hiện tại."
     assert len(llm.prompts) == 3
     after_item, after = await _text(repos, set_id, "P1")
     assert after_item == item and after == before
@@ -140,8 +140,11 @@ async def test_each_attempt_reserves_budget_and_never_exceeds_it(limit):
     status = await repair_part(service, set_id, before, index)
     assert len(llm.prompts) == limit
     assert reserve.await_count == min(limit + 1, 3)
-    if limit == 2:  # production repo cap: friendly rejection, text untouched
-        assert status["error_message"] == "AI chưa viết lại được phần này, giữ bản hiện tại."
+    if limit > 0:
+        assert (
+            status["error_message"]
+            == f"Phần này chưa đạt vì thiếu: {SHIPPING[1]} Giữ bản hiện tại."
+        )
     assert all(c.kwargs == {"operation_id": status["workflow_id"]} for c in reserve.call_args_list)
     assert status["error_code"] == (
         "part_model_budget_exhausted" if limit == 0 else "part_content_rejected"

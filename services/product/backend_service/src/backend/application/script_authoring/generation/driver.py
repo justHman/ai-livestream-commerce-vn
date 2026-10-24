@@ -280,11 +280,12 @@ class WorkflowDriver:
             ]
             self.unit_reasons.setdefault(index, []).extend(codes)
             logger.warning(
-                "script unit rejected by gate product=%s unit=%s attempt=%s rules=%s sample=%r",
+                "script unit rejected by gate product=%s unit=%s attempt=%s rules=%s detail=%s sample=%r",
                 self.product_id,
                 index,
                 attempt,
                 codes,
+                [v.message[:240] for v in gate.violations if v.rule_id in codes][:6],
                 result.spoken_text[:120],
             )
             last_failure = (result, gate)

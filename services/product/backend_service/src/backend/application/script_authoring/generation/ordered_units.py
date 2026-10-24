@@ -84,8 +84,8 @@ _GUIDE = {
     ),
     "highlight": (
         "Kể về những điểm hay bên dưới bằng lời của MC: mỗi điểm nói thành 1 đến 2 câu, có "
-        "cảm nhận hoặc hình dung khi dùng (không thêm thông số mới), xen một câu hỏi gợi mở hay "
-        "lời nhắn khán giả nếu hợp. 4 đến 7 câu. MỖI CÂU CHỈ MỘT CHỦ ĐỀ, không nối các ý khác "
+        "hình dung dịp sử dụng (không thêm đặc tính mới), xen một câu hỏi gợi mở hay "
+        "lời nhắn khán giả nếu hợp. 2 đến 4 câu. MỖI CÂU CHỈ MỘT CHỦ ĐỀ, không nối các ý khác "
         "chủ đề (ví dụ size với cách giặt) bằng 'và'. Giữ nguyên số liệu và ký hiệu size "
         "(S, M, L, XL...) viết liền, không tách chữ."
     ),
@@ -98,7 +98,7 @@ _GUIDE = {
     "assurance": (
         "Nói các ý bên dưới một cách trung thực và trấn an như người bán hàng tử tế: giải thích "
         "vì sao điều đó có lợi cho khách, nếu là điều kiện hay hạn chế thì nói rõ ràng, nhẹ "
-        "nhàng, không bán gắt. 3 đến 6 câu."
+        "nhàng, không bán gắt. 2 đến 4 câu, ưu tiên đủ điều kiện, bỏ câu đệm."
     ),
     "offer": (
         "Nói giá (đã đọc thành chữ bên dưới, chép đúng, không viết lại thành số) và ưu đãi nếu "
@@ -124,9 +124,10 @@ _STYLE_RULES = (
 )
 _TRUTH_RULES = (
     "Phần 'Thông tin được phép nói' là SỰ THẬT bạn phải giữ đúng, KHÔNG phải kịch bản để đọc "
-    "lại: hãy diễn đạt bằng lời của MC, sắp xếp cho tự nhiên và mở rộng bằng cảm nhận khi "
-    "dùng, tình huống sử dụng quen thuộc, lợi ích suy ra hợp lý, câu hỏi gợi mở và lời trấn "
-    "an. Thông tin của chủ shop có thể rất ngắn, việc của bạn là làm nó thành lời nói sinh "
+    "lại: hãy diễn đạt bằng lời của MC, sắp xếp cho tự nhiên, thêm câu hỏi gợi mở hoặc "
+    "tình huống sử dụng giả định; không bịa trải nghiệm cá nhân (đã mặc, sờ vào, dùng thử), "
+    "không suy ra công dụng, độ bền, cảm giác khi mặc hay cam kết mới. "
+    "Thông tin của chủ shop có thể rất ngắn, việc của bạn là làm nó thành lời nói sinh "
     "động. TUYỆT ĐỐI KHÔNG thêm: con số, giá, ưu đãi, thời hạn, bảo hành, chính sách, thông "
     "số, chất liệu, xuất xứ, chứng nhận không có trong thông tin; không hứa hiệu quả hay tác "
     "dụng sức khỏe; không nói 'bán chạy nhất', 'tốt nhất', 'hàng nghìn khách'; không so sánh "
@@ -194,6 +195,15 @@ _SIZE_ROW_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_END_RE = re.compile(r"[.!?…][\"'”’)\]]*$")
+# Reject foreign scripts before wording salvage; never silently delete a corrupted fact.
+_FOREIGN_SCRIPT_RE = re.compile(
+    r"[\u3400-\u9fff\uf900-\ufaff\U00020000-\U0003134f\u3040-\u30ff\uac00-\ud7af\ufffd]+"
+)
+_EXPERIENCE_RE = re.compile(
+    r"\b(?:mình|tôi)\s+(?:(?:đã|từng|có)\s+)?(?:dùng thử|mặc thử|sử dụng thử|trải nghiệm|sờ vào)"
+    r"|\bsờ vào (?:thấy|là)\b",
+    re.IGNORECASE,
+)
 # Viewer-address forms only; "trẻ em", "em bé", "anh em" are ordinary words, not address.
 _ADDRESS_RE = re.compile(
     r"\bquý (?:vị|khách)\b|\bcác anh chị\b|\banh chị\b|\bcác (?:anh|chị)\b"
@@ -334,6 +344,8 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     else:
         text = "\n\n".join(_paragraphs([_end(_ask_aloud(c)) for c in spec.claims], max_s))
     text = _KH_RE.sub("không", text or f"Mình giới thiệu thêm về {name}.")
+    if spec.revisit:
+        text = "Mình nhắc lại để các bạn mới theo dõi tiện tham khảo. " + text
     return compile_spoken_text(text).spoken_text
 
 
@@ -654,6 +666,39 @@ def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
     Accepted residuals: numbers swapped between two claims of one unit, prices with grouped
     thousands split by the model, and "Năm nay" read as a numeric unit (quality only).
     """
+    claim, text = _coverage_places(claim), _coverage_places(text)
+    # A scope split must never discard a restriction before the first scope
+    # (e.g. "Chỉ giao hàng toàn quốc ...").
+    for phrase in _RESTRICTION_PHRASES:
+        pattern = r"(?<!\w)" + phrase + r"(?!\w)"
+        if re.search(pattern, claim.lower()) and not re.search(pattern, text.lower()):
+            return False
+    # Bind delivery times to their geographic scope. A global bag of numbers would
+    # accept swapping national 2-3 days with inner-city 1 day, or dropping a city.
+    scope = re.compile(r"\b(?:toàn quốc|nội thành|ngoại thành)\b", re.IGNORECASE)
+    expected_scopes = list(scope.finditer(claim))
+    if len(expected_scopes) > 1 and re.search(r"giao|ship|vận chuyển", claim, re.IGNORECASE):
+        actual_scopes = list(scope.finditer(text))
+        for i, match in enumerate(expected_scopes):
+            piece = claim[
+                match.start() : expected_scopes[i + 1].start()
+                if i + 1 < len(expected_scopes)
+                else len(claim)
+            ]
+            candidates = [
+                text[
+                    m.start() : actual_scopes[j + 1].start()
+                    if j + 1 < len(actual_scopes)
+                    else len(text)
+                ]
+                for j, m in enumerate(actual_scopes)
+                if m.group().lower() == match.group().lower()
+            ]
+            if not any(claim_covered(piece, candidate) for candidate in candidates):
+                return False
+    for place in ("hà nội", "hồ chí minh", "nội thành", "ngoại thành", "toàn quốc"):
+        if place in claim.lower() and place not in text.lower():
+            return False
     spoken = _spoken_words(text)
     claim_words = _spoken_words(claim)
     n = len(claim_words)
@@ -699,6 +744,17 @@ def claim_covered(claim: str, text: str, context: tuple[str, ...] = ()) -> bool:
     if not words:
         return True
     return sum(1 for w in words if w in tokens) >= _COVERAGE * len(words)
+
+
+def _coverage_places(text: str) -> str:
+    """Only unambiguous Vietnamese city abbreviations, for comparison (never speech)."""
+    text = re.sub(
+        r"(?<!\w)(?:tp\.?\s*)?hcm(?!\w)|thành phố hồ chí minh",
+        "hồ chí minh",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"(?<!\w)hn(?!\w)", "hà nội", text, flags=re.IGNORECASE)
 
 
 def uncovered_claims(
@@ -747,6 +803,10 @@ def check_unit_text(
     """
     if not raw:
         return None, "empty"
+    if _FOREIGN_SCRIPT_RE.search(raw):
+        return None, "foreign_script"
+    if _EXPERIENCE_RE.search(raw):
+        return None, "personal_experience"
     text = _FENCE_RE.sub("", raw).strip().strip("\"'“”")
     text = _DASH_RE.sub(", ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -816,6 +876,8 @@ def offending_phrases(
         "bridge": (_BRIDGE_RE,),
         "address": (_ADDRESS_RE,),
         "position": (_POSITION_RE,),
+        "foreign_script": (_FOREIGN_SCRIPT_RE,),
+        "personal_experience": (_EXPERIENCE_RE,),
     }.get(why or "", ())
     hits: list[str] = []
     for pattern in patterns:
@@ -855,6 +917,19 @@ _RETRY_HINTS = {
 
 def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ()) -> str:
     """What to tell the model on the second attempt: the exact wording to drop, not just a reason code."""
+    if why == "foreign_script":
+        bad = ", ".join(_FOREIGN_SCRIPT_RE.findall(raw or ""))[:80]
+        return f"\nBản trước lẫn ký tự khác tiếng Việt: {bad}. Chỉ dùng tiếng Việt, viết lại trọn câu, giữ đúng thông tin."
+    if why == "empty":
+        return "\nBản trước rỗng. Trả về lời thoại tiếng Việt hoàn chỉnh, không trả suy nghĩ hay chuỗi rỗng."
+    if why == "personal_experience":
+        return (
+            "\nBản trước bịa trải nghiệm cá nhân: "
+            + ", ".join(_EXPERIENCE_RE.findall(raw or ""))[:100]
+            + ". Bỏ trải nghiệm đó, chỉ nêu thông tin được phép."
+        )
+    if why == "name_repeat":
+        return "\nBản trước lặp tên sản phẩm đầy đủ. Gọi là 'mẫu này' hoặc loại sản phẩm; không lặp tên thương hiệu."
     template = _RETRY_HINTS.get(why or "")
     phrases = offending_phrases(raw, why, approved)
     if template and phrases:
@@ -925,7 +1000,7 @@ def build_unit_prompt(
         "Viết ĐÚNG MỘT phần lời thoại để đọc thành tiếng, đủ dài và đủ ý như người nói thật "
         "(xem số câu ở vai trò bên dưới).",
         "Chỉ trả về lời thoại. Không tiêu đề, không markdown, không emoji, không chú thích, "
-        "không dấu gạch ngang dài.",
+        "không dấu gạch ngang dài. Chỉ dùng tiếng Việt; tên thương hiệu giữ nguyên.",
         _TRUTH_RULES,
         _COMMON_RULES,
         _STYLE_RULES,
@@ -947,10 +1022,9 @@ def build_unit_prompt(
         high = min(850, max(low, int(spec.target_seconds * _VOICE_CHARS_PER_S * 1.15)))
         parts.append(
             f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự tiếng Việt. "
-            "Mở rộng bằng giải thích dễ nghe, câu hỏi gợi mở, và nên chèn 1 đến 2 câu chuyện đời thường "
-            "quanh sản phẩm (hình dung dịp dùng, chuyện chọn đồ đi chơi, cảm giác khi mặc, trò chuyện với "
-            "khán giả) để lời nói tự nhiên và đủ dài; "
-            "không thêm thông số, cam kết, ưu đãi hay sự thật mới về sản phẩm."
+            "Đây là gợi ý, không kéo dài chỉ để đủ số câu hay ký tự. Ưu tiên nói đủ thông tin "
+            "và điều kiện trước, bỏ câu đệm; không thêm thông số, cam kết, ưu đãi, trải nghiệm "
+            "cá nhân hay sự thật mới về sản phẩm."
         )
     if spec.revisit:
         parts.append(
@@ -964,6 +1038,10 @@ def build_unit_prompt(
     parts.append(_facts_block(product, spec, used))
     if spec.with_cta:
         parts.append(_CTA_LINE)
+    elif spec.role not in ("opening", "closing", "sizes"):
+        parts.append(
+            "Phần này không có lời mời mua hay nhắn tin: không dùng đặt hàng, chốt đơn, giỏ hàng, nhắn mình, inbox."
+        )
     if tail:
         parts.append("Phần liền trước (không lặp lại cách diễn đạt này): " + tail)
     if used_ctas:
@@ -982,6 +1060,17 @@ def build_unit_repair_prompt(
     tail: str = "",
 ) -> str:
     base = build_unit_prompt(session, product, specs, index, tail=tail)
+    # Legacy long-form duration advice asks for compact prices to inflate the
+    # estimator. Ordered speech requires prices in words: keep the measured
+    # bound, but repair length through content rather than its notation.
+    problems = [
+        re.split(r"\s(?:KEEP|TRIM)\b", problem, maxsplit=1)[0]
+        + " Giữ nguyên số liệu và điều kiện, giá vẫn viết bằng chữ. Nếu quá dài, bỏ câu đệm; "
+        "nếu quá ngắn, diễn đạt thêm từ thông tin được phép, không bịa chi tiết."
+        if "KEEP the compact price/number tokens" in problem
+        else problem
+        for problem in problems
+    ]
     return (
         base
         + "\n\nBản trước bị từ chối:\n"
@@ -1008,6 +1097,7 @@ class BoundedLLM:
         self,
         fn: Callable[[str], str] | None,
         *,
+        repair_fn: Callable[[str], str] | None = None,
         attempts: int = 2,
         call_timeout_s: float = 60.0,
         job_deadline_s: float = 600.0,
@@ -1016,6 +1106,7 @@ class BoundedLLM:
         sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._fn = fn
+        self._repair_fn = repair_fn
         self._attempts = max(1, attempts)
         self._call_timeout_s = call_timeout_s
         self._deadline = clock() + job_deadline_s
@@ -1023,7 +1114,7 @@ class BoundedLLM:
         self._clock = clock
         self._sleep = sleep or (lambda seconds: time.sleep(seconds))
 
-    def __call__(self, prompt: str) -> str:
+    def __call__(self, prompt: str, *, repair: bool = False) -> str:
         if self._fn is None:
             raise ConnectionError("llm_unavailable")
         last: Exception | None = None
@@ -1032,7 +1123,11 @@ class BoundedLLM:
             if remaining <= 0:
                 raise LLMDeadlineError("generation deadline exceeded")
             try:
-                return self._call_once(prompt, min(self._call_timeout_s, remaining))
+                return self._call_once(
+                    prompt,
+                    min(self._call_timeout_s, remaining),
+                    self._repair_fn if repair and self._repair_fn is not None else self._fn,
+                )
             except Exception as exc:  # noqa: BLE001 - any provider failure is a transport failure
                 last = exc
                 # A timed-out sync request may already be billed and still running.
@@ -1046,11 +1141,11 @@ class BoundedLLM:
         assert last is not None
         raise last
 
-    def _call_once(self, prompt: str, timeout_s: float) -> str:
+    def _call_once(self, prompt: str, timeout_s: float, fn: Callable[[str], str]) -> str:
         # ponytail: a timed-out provider thread is abandoned, not killed (sync client);
         # the provider's own HTTP timeout ends it. Move to an async client to cancel.
         executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(self._fn, prompt)
+        future = executor.submit(fn, prompt)
         try:
             return future.result(timeout=timeout_s)
         except FutureTimeout as exc:
