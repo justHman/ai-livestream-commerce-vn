@@ -320,9 +320,24 @@ CREATE TABLE IF NOT EXISTS script_model_write_budget (
     product_id TEXT NOT NULL,
     unit_index INT NOT NULL CHECK (unit_index >= 0),
     operation_id TEXT NOT NULL,
-    writes INT NOT NULL CHECK (writes BETWEEN 1 AND 2),
+    writes INT NOT NULL CHECK (writes BETWEEN 1 AND 3),
     PRIMARY KEY (batch_id, product_id, unit_index, operation_id)
 );
+-- Existing installations retain CREATE TABLE's old two-write constraint.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'script_model_write_budget'::regclass
+          AND conname = 'script_model_write_budget_writes_check'
+          AND pg_get_constraintdef(oid) LIKE '%<= 2%'
+    ) THEN
+        ALTER TABLE script_model_write_budget
+            DROP CONSTRAINT script_model_write_budget_writes_check;
+        ALTER TABLE script_model_write_budget
+            ADD CONSTRAINT script_model_write_budget_writes_check CHECK (writes BETWEEN 1 AND 3);
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_script_jobs_item_id ON script_generation_jobs (script_item_id);
 
 -- Batch idempotency fingerprint -> batch_id (survives restart; first wins).

@@ -54,7 +54,7 @@ async def test_model_dispatch_budget_is_atomic_and_survives_reconnect(pg_url: st
         accepted = await asyncio.gather(
             *(repos.model_budget.reserve(batch.id, "p1", 1) for _ in range(10))
         )
-        assert sum(accepted) == 2
+        assert sum(accepted) == 3
     finally:
         await repos.close()
     repos = await _connect(pg_url)

@@ -86,7 +86,6 @@ from backend.application.script_authoring.generation.ordered_units import (
     ProductBrief,
     SessionBrief,
     UnitSpec,
-    WORDING_REASONS,
     build_unit_prompt,
     build_unit_repair_prompt,
     check_unit_text,
@@ -1311,7 +1310,8 @@ class ScriptAuthoringServiceImpl:
             roles=roles,
             llm=BoundedLLM(
                 llm_fn,
-                # Content repair owns the shared two-write budget. Retrying
+                repair_fn=self._unit_llm_fn(max_tokens=1400),
+                # Content repair owns the shared three-write budget. Retrying
                 # transport here would multiply dispatches and ambiguous bills.
                 attempts=1,
                 call_timeout_s=cfg.unit_llm_call_timeout_s,
@@ -1321,10 +1321,10 @@ class ScriptAuthoringServiceImpl:
             ),
         )
 
-    def _unit_llm_fn(self) -> Callable[[str], str] | None:
+    def _unit_llm_fn(self, max_tokens: int = _UNIT_MAX_TOKENS) -> Callable[[str], str] | None:
         """The engine's llm function with a larger output budget, when it supports one."""
         try:
-            return self._engine_manager.get_llm_fn(max_tokens=_UNIT_MAX_TOKENS)
+            return self._engine_manager.get_llm_fn(max_tokens=max_tokens)
         except Exception:  # noqa: BLE001 - fakes/older managers take no argument
             return None
 
@@ -1373,13 +1373,12 @@ class ScriptAuthoringServiceImpl:
         unit_writes: dict[int, int] = {}
 
         def write(index: int, prompt: str, continuity: ContinuityState) -> SegmentStepOutcome:
-            # Up to two writes per unit; the second asks for a shorter text after a cut/overlong
-            # reply. Every failed attempt is logged with its machine reason.
+            # Guards and gate repair share at most three writes (including the initial call).
             reason = "empty"
-            for attempt in (1, 2):
+            for attempt in (1, 2, 3):
                 # Guard retry and gate repair share ONE semantic budget, instead
                 # of nesting two-by-two calls for the same part.
-                if unit_writes.get(index, 0) >= 2:
+                if unit_writes.get(index, 0) >= 3:
                     return SegmentStepOutcome(
                         index=index, state=continuity, error="semantic_budget_exhausted"
                     )
@@ -1402,7 +1401,7 @@ class ScriptAuthoringServiceImpl:
                         )
                 unit_writes[index] = unit_writes.get(index, 0) + 1
                 try:
-                    raw = ordered.llm(prompt)
+                    raw = ordered.llm(prompt, repair=unit_writes[index] > 1)
                 except Exception as exc:  # noqa: BLE001 - provider/transport failure of this unit
                     code = f"llm_failed:{type(exc).__name__}"
                     logger.warning(
@@ -1458,12 +1457,12 @@ class ScriptAuthoringServiceImpl:
                     offending_phrases(raw, reason, check["approved"]),
                     (raw or "")[:120],
                 )
-                if reason in ("truncated", "too_long") and attempt == 1:
+                if reason in ("truncated", "too_long"):
                     prompt = prompt + _SHORTER_RETRY
-                if reason == "coverage" and attempt == 1:
+                elif reason == "coverage":
                     left_out = uncovered_claims(raw or "", roles[index].must)
                     prompt = prompt + _COVERAGE_RETRY + " | ".join(left_out)
-                elif reason in WORDING_REASONS and attempt == 1:
+                else:
                     prompt = prompt + retry_hint(reason, raw, check["approved"])
             return SegmentStepOutcome(index=index, state=continuity, error=f"guard:{reason}")
 
@@ -1487,7 +1486,10 @@ class ScriptAuthoringServiceImpl:
                 roles,
                 index,
                 failed_text=hint.source_text,
-                problems=hint.repair_instructions,
+                problems=[
+                    f"{rule}: {message}"
+                    for rule, message in zip(hint.failed_rule_ids, hint.repair_instructions)
+                ],
                 tail=continuity.previous_segment_tail,
             )
             return write(index, prompt, continuity)
@@ -1514,8 +1516,7 @@ class ScriptAuthoringServiceImpl:
             load_segment=loaders[1],
             load_version=loaders[2],
             fingerprint=self._generation_fingerprint(),
-            # initial write + at most ONE local repair per unit
-            max_segment_attempts=min(self._config.segment_max_attempts, 2),
+            max_segment_attempts=min(self._config.segment_max_attempts, 3),
             segment_gate_at=unit_gate,
             failed_unit_text=lambda index: fallback_unit_text(roles[index], product),
         )
@@ -1801,7 +1802,15 @@ class ScriptAuthoringServiceImpl:
                     await self._repos.segments.get(sid) for sid in version.segment_version_ids
                 ]
                 wire["items"][item.product_id]["current_version"]["parts"] = [
-                    {"segment_index": s.segment_index, "display_text": s.display_text}
+                    {
+                        "segment_index": s.segment_index,
+                        "display_text": s.display_text,
+                        **(
+                            {"needs_regeneration": True}
+                            if s.status is ScriptState.GATE_FAILED
+                            else {}
+                        ),
+                    }
                     for s in selected
                     if s is not None
                 ]
@@ -3057,7 +3066,9 @@ class ScriptAuthoringServiceImpl:
             "status": job.status.value,
             "error_code": job.error_code,
             "error_message": (
-                "AI chưa viết lại được phần này, giữ bản hiện tại."
+                job.input_snapshot.get(
+                    "last_rejection", "AI chưa viết lại được phần này, giữ bản hiện tại."
+                )
                 if job.error_code == "part_content_rejected"
                 else ""
             ),
@@ -3113,9 +3124,7 @@ class ScriptAuthoringServiceImpl:
                 + current.spoken_text
             )
             new_segment = None
-            # Up to 3 tries, but the durable budget (writes<2 per job in Postgres)
-            # is the real cap: the 3rd reserve() normally returns False. The
-            # "name the missing point" hint helps from the 2nd try on.
+            # The durable reservation and this loop both permit three total writes.
             for attempt in (1, 2, 3):
                 budget = getattr(self._repos, "model_budget", None)
                 if budget is not None:
@@ -3136,7 +3145,9 @@ class ScriptAuthoringServiceImpl:
                             else "part_model_budget_exhausted",
                         )
                         return
-                raw = await self._with_lease_heartbeat(lambda: ordered.llm(prompt), job=job)
+                raw = await self._with_lease_heartbeat(
+                    lambda: ordered.llm(prompt, repair=attempt > 1), job=job
+                )
                 check = {
                     "spec": spec,
                     "prices": product.prices,
@@ -3162,6 +3173,21 @@ class ScriptAuthoringServiceImpl:
                         why,
                         detail,
                     )
+                    explanations = {
+                        "foreign_script": "lẫn ký tự ngoài tiếng Việt",
+                        "personal_experience": "bịa trải nghiệm cá nhân",
+                        "empty": "AI trả về nội dung rỗng",
+                        "truncated": "câu chưa hoàn chỉnh",
+                        "too_long": "nội dung quá dài",
+                        "cta": "có lời mời đặt hàng hoặc nhắn tin sai vị trí",
+                        "hard_sell": "có lời thúc giục mua hàng",
+                    }
+                    job.input_snapshot["last_rejection"] = (
+                        "Phần này chưa đạt vì thiếu: " + " | ".join(detail)
+                        if why == "coverage"
+                        else "Phần này chưa đạt vì "
+                        + explanations.get(why, "cách diễn đạt chưa phù hợp")
+                    )[:600].rstrip(". ") + ". Giữ bản hiện tại."
                     if why == "coverage":
                         prompt += _COVERAGE_RETRY + " | ".join(detail)
                     elif why in ("truncated", "too_long"):
@@ -3180,12 +3206,25 @@ class ScriptAuthoringServiceImpl:
                     ),
                 )
                 if not result.passed:
+                    rules = {v.rule_id for v in result.violations if v.severity.value == "error"}
+                    job.input_snapshot["last_rejection"] = (
+                        "Phần này chưa đạt vì "
+                        + (
+                            "có thông tin chưa được xác nhận"
+                            if any(r.startswith("CLAIM_") for r in rules)
+                            else "nội dung quá dài hoặc quá ngắn"
+                            if "SPEECH_DURATION_SEGMENT" in rules
+                            else "lời thoại chưa đạt kiểm tra chính tả hoặc định dạng"
+                        )
+                        + ". Giữ bản hiện tại."
+                    )
                     logger.warning(
-                        "script part rejected by gate product=%s part=%s attempt=%s rules=%s",
+                        "script part rejected by gate product=%s part=%s attempt=%s rules=%s detail=%s",
                         item.product_id,
                         index,
                         attempt,
                         [v.rule_id for v in result.violations][:6],
+                        [v.message[:240] for v in result.violations][:6],
                     )
                     prompt = (
                         build_unit_repair_prompt(

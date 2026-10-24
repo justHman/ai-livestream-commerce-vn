@@ -11,7 +11,7 @@ class DurableBudget:
     async def reserve(self, batch, product, index, *, operation_id="full"):
         key = batch, product, index, operation_id
         used = self.writes.get(key, 0)
-        if used >= 2:
+        if used >= 3:
             return False
         self.writes[key] = used + 1
         return True
@@ -49,7 +49,7 @@ async def test_recovery_cannot_reset_a_consumed_part_budget():
     set_id = await _new_set(service)
     await _run(service, repos, set_id)
     _, source = await _text(repos, set_id, "P1")
-    # Capture dispatch, then simulate the original worker having spent its two
+    # Capture dispatch, then simulate the original worker having spent its three
     # requests before restarting, without changing the selected script version.
     queued = []
 
@@ -67,7 +67,7 @@ async def test_recovery_cannot_reset_a_consumed_part_budget():
     )
     job = await repos.jobs.get(start["workflow_id"])
     repos.model_budget = DurableBudget()
-    repos.model_budget.writes[job.batch_id, "P1", 1, job.id] = 2
+    repos.model_budget.writes[job.batch_id, "P1", 1, job.id] = 3
     calls = len(llm.prompts)
     await service._resume_job(job)
     assert job.error_code == "part_model_budget_exhausted"
