@@ -258,6 +258,13 @@ class ScriptSetRepository(_Repo):
 
 
 class ScriptItemRepository(_Repo):
+    async def lock_revision(self, item_id: str, *, conn) -> int | None:
+        """Row-lock the item inside the caller's transaction and return its revision."""
+        row = await self._fetchone(
+            "SELECT revision FROM script_items WHERE id = $1 FOR UPDATE", item_id, conn=conn
+        )
+        return row["revision"] if row else None
+
     async def insert(self, item: ScriptItem, *, conn=None) -> None:
         await self._execute(
             f"INSERT INTO script_items ({_ITEM_INS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
@@ -500,6 +507,16 @@ class SegmentRepository(_Repo):
 
 class VersionRepository(_Repo):
     async def insert(self, version: ScriptVersion, *, conn=None) -> None:
+        try:
+            await self._insert(version, conn=conn)
+        except Exception as exc:
+            if exc.__class__.__name__ == "UniqueViolationError":
+                raise StaleRevisionError(
+                    "script version already written by another request"
+                ) from exc
+            raise
+
+    async def _insert(self, version: ScriptVersion, *, conn=None) -> None:
         await self._execute(
             f"INSERT INTO script_versions ({_VERSION_INS}) "
             f"VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::jsonb,$13)",

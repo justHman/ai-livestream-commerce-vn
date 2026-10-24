@@ -432,3 +432,85 @@ async def test_gate_repair_keeps_neighbours_and_opening_inventory(monkeypatch):
     for prompt in seen:
         assert "Phần liền trước trong kịch bản" in prompt
         assert "Cách mở đầu các phần khác đã dùng" in prompt
+
+
+@pytest.mark.asyncio
+async def test_unchanged_save_spends_the_key_so_another_payload_conflicts():
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id, seconds=60)
+    _, before = await _text(repos, set_id, "P1")
+    payload = _same_parts((await _parts(service, set_id))["parts"])
+    args = dict(set_id=set_id, product_id="P1", expected_version_id=before.id)
+    same = await service.save_draft_parts(parts=payload, idempotency_key="K", **args)
+    assert same["version_id"] == before.id
+    changed = [{**payload[0], "display_text": "Mình sửa phần này."}, *payload[1:]]
+    with pytest.raises(ScriptAuthoringError) as conflict:
+        await service.save_draft_parts(parts=changed, idempotency_key="K", **args)
+    assert conflict.value.code == "idempotency_conflict"
+    assert (await _text(repos, set_id, "P1"))[1].id == before.id
+
+
+@pytest.mark.asyncio
+async def test_lost_race_on_reorder_writes_no_version():
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id, seconds=60)
+    item, before = await _text(repos, set_id, "P1")
+    payload = _same_parts((await _parts(service, set_id))["parts"])
+    payload[0], payload[1] = payload[1], payload[0]  # reorder only: no new segment
+    versions = dict(repos.versions.rows)
+    listed = repos.versions.list_by_item
+
+    async def rival_commits_first(item_id, **kw):
+        repos.items.rows[item.id].revision += 1
+        return await listed(item_id, **kw)
+
+    repos.versions.list_by_item = rival_commits_first
+    with pytest.raises(ScriptAuthoringError) as lost:
+        await service.save_draft_parts(
+            set_id=set_id, product_id="P1", parts=payload, expected_version_id=before.id
+        )
+    assert lost.value.code == "stale_revision"
+    assert repos.versions.rows == versions
+
+
+@pytest.mark.asyncio
+async def test_draft_parts_route_replays_conflicts_and_reports_stale():
+    from types import SimpleNamespace
+
+    import httpx
+    from fastapi import FastAPI
+
+    from backend.api.v1.scripts import _router
+    from backend.api.v1.router import viewer_auth
+
+    service, repos = _service(FakeLLM())
+    set_id = await _new_set(service)
+    await _generate(service, repos, set_id, seconds=60)
+    _, before = await _text(repos, set_id, "P1")
+    payload = _same_parts((await _parts(service, set_id))["parts"])
+    edited = [{**payload[1], "display_text": "Mình sửa phần này."}]
+    parts = [payload[0], *edited, *payload[2:]]
+    app = FastAPI()
+    app.include_router(_router)
+    app.dependency_overrides[viewer_auth] = lambda: None
+    app.state.container = SimpleNamespace(script_authoring_service=service)
+    url = f"/api/v1/script-sets/{set_id}/products/P1/draft-parts"
+    body = {"expected_version_id": before.id, "parts": parts, "idempotency_key": "route-1"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.put(url, json=body)
+        assert first.status_code == 200, first.text
+        # response lost: the client retries with the OLD expected version
+        replay = await client.put(url, json=body)
+        assert replay.status_code == 200 and replay.json()["idempotent"] is True
+        assert replay.json()["version_id"] == first.json()["version_id"]
+        other = {**body, "parts": [{**parts[0], "display_text": "Khác hẳn."}, *parts[1:]]}
+        conflict = await client.put(url, json=other)
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+        stale = await client.put(url, json={**body, "idempotency_key": "route-2"})
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "stale_revision"

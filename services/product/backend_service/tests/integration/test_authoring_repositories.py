@@ -370,6 +370,57 @@ async def test_concurrent_segment_version_is_reported_as_a_lost_race(pg_url: str
 
 
 @pytest.mark.asyncio
+async def test_item_lock_serializes_two_concurrent_saves_and_version_clash_is_stale(
+    pg_url: str,
+) -> None:
+    import asyncio
+
+    from backend.application.script_authoring.repositories import StaleRevisionError
+
+    repos = await _connect(pg_url)
+    try:
+        s = _set()
+        await repos.script_sets.insert(s)
+        item = _item(s.id)
+        await repos.items.insert(item)
+        first_holds_lock = asyncio.Event()
+        release_first = asyncio.Event()
+        seen: dict[str, int | None] = {}
+
+        async def winner() -> None:
+            async with repos.transaction() as conn:
+                seen["winner"] = await repos.items.lock_revision(item.id, conn=conn)
+                first_holds_lock.set()
+                await release_first.wait()
+                await repos.items.update(item, expected_revision=0, conn=conn)
+
+        async def loser() -> None:
+            await first_holds_lock.wait()
+            async with repos.transaction() as conn:
+                # blocks on the row lock until the winner commits, then sees its revision
+                seen["loser"] = await repos.items.lock_revision(item.id, conn=conn)
+
+        tasks = [asyncio.create_task(winner()), asyncio.create_task(loser())]
+        await asyncio.sleep(0.3)
+        assert "loser" not in seen  # still waiting for the lock
+        release_first.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=20)
+        assert seen == {"winner": 0, "loser": 1}
+
+        v = ScriptVersion(
+            id=new_id("script_version"), script_item_id=item.id, version=1, spoken_text="a"
+        )
+        await repos.versions.insert(v)
+        clash = ScriptVersion(
+            id=new_id("script_version"), script_item_id=item.id, version=1, spoken_text="b"
+        )
+        with pytest.raises(StaleRevisionError):
+            await repos.versions.insert(clash)
+    finally:
+        await repos.close()
+
+
+@pytest.mark.asyncio
 async def test_version_immutable_and_get_approved(pg_url: str) -> None:
     repos = await _connect(pg_url)
     try:

@@ -747,15 +747,22 @@ class ScriptAuthoringServiceImpl:
                         self._config.recovery_lease_seconds,
                         conn=conn,
                     )
-                if segments:
-                    # CAS before any insert: a concurrent save that lost the race must
-                    # surface as stale_revision, not as a unique-constraint 500.
-                    for pending in persisted.values():
-                        fresh = await self._repos.items.get(pending.id, conn=conn)
-                        if fresh is not None and fresh.revision != item_revision:
-                            raise StaleRevisionError(
-                                f"script_item {pending.id}: revision {item_revision} not current"
-                            )
+                # Lock + compare the item revision BEFORE any version/segment INSERT, so a save that
+                # lost the race (also a reorder/delete without new segments) is a 409 and writes
+                # nothing; the winner's commit is visible once the lock is released.
+                for pending in persisted.values():
+                    locked = getattr(self._repos.items, "lock_revision", None)
+                    current = (
+                        await locked(pending.id, conn=conn)
+                        if locked is not None
+                        else getattr(
+                            await self._repos.items.get(pending.id, conn=conn), "revision", None
+                        )
+                    )
+                    if current is not None and current != item_revision:
+                        raise StaleRevisionError(
+                            f"script_item {pending.id}: revision {item_revision} not current"
+                        )
                 for segment in segments:
                     await self._repos.segments.insert(segment, conn=conn)
                 # Insert immutable version + gate run rows BEFORE the item
@@ -2209,7 +2216,18 @@ class ScriptAuthoringServiceImpl:
             final.append(seg)
         ids = [s.id for s in final]
         if not created and ids == current_version.segment_version_ids:
-            return {"ok": True, "product_id": product_id, "state": item.state.name}
+            if fingerprint:
+                # The key is spent even when nothing changed, so reusing it for another
+                # payload is a conflict instead of a silent second version.
+                await self._repos.idempotency.register(
+                    fingerprint, f"{payload_hash}:{current_version.id}"
+                )
+            return {
+                "ok": True,
+                "product_id": product_id,
+                "state": item.state.name,
+                "version_id": current_version.id,
+            }
         bridge = _SyncPersistBridge()
         workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
         workflow.versions = await self._repos.versions.list_by_item(item.id)
