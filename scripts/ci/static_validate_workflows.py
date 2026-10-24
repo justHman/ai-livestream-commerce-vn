@@ -668,7 +668,9 @@ def _job_updates_ecs_service(job: dict) -> bool:
     if not isinstance(steps, list):
         return False
     return any(
-        isinstance(st, dict) and isinstance(st.get("run"), str) and "aws ecs update-service" in st["run"]
+        isinstance(st, dict)
+        and isinstance(st.get("run"), str)
+        and "aws ecs update-service" in st["run"]
         for st in steps
     )
 
@@ -772,7 +774,9 @@ def validate_reusable_deploy_environment(workflow: dict, result: ValidationResul
             name = env_ref
         elif isinstance(env_ref, dict):
             name = env_ref.get("name")
-        if isinstance(name, str) and (name.startswith("${{") or name in SUPPORTED_ENVIRONMENT_NAMES):
+        if isinstance(name, str) and (
+            name.startswith("${{") or name in SUPPORTED_ENVIRONMENT_NAMES
+        ):
             continue
         result.add_error(
             f"Reusable deploy job '{job_name}' updates an ECS service without a "

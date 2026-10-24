@@ -3,13 +3,23 @@
 
 Run: python scripts/ci/check_infra_module_boundaries.py
 """
+
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 INFRA = ROOT / "infra"
-CANONICAL = {"network", "security", "compute", "database", "loadbalancer", "storage", "secrets", "monitoring"}
+CANONICAL = {
+    "network",
+    "security",
+    "compute",
+    "database",
+    "loadbalancer",
+    "storage",
+    "secrets",
+    "monitoring",
+}
 FORBIDDEN = {"backend", "llm", "tts", "avatar", "renderer", "livekit", "lmcache", "workbench"}
 
 
@@ -29,7 +39,7 @@ def main() -> int:
             text = tf.read_text(encoding="utf-8")
             for match in call_re.finditer(text):
                 name = match.group(1)
-                body = text[match.end():]
+                body = text[match.end() :]
                 if name not in CANONICAL:
                     errors.append(f"{tf}: module {name!r} not in canonical set")
                 m = source_re.search(body)
@@ -57,7 +67,10 @@ def main() -> int:
         if "dynamodb_table" in text:
             errors.append(f"{backend}: still references DynamoDB locking")
         for tf in env.glob("*.tf"):
-            if re.search(r'terraform_remote_state|data\s+"terraform_remote_state"', tf.read_text(encoding="utf-8")):
+            if re.search(
+                r'terraform_remote_state|data\s+"terraform_remote_state"',
+                tf.read_text(encoding="utf-8"),
+            ):
                 errors.append(f"{tf}: cross-state reference")
     if len(keys) != len(set(keys)):
         errors.append(f"duplicate state keys: {keys}")
@@ -65,16 +78,27 @@ def main() -> int:
     # 5. LLM/TTS independence: no combined llm_tts task/service/capacity refs.
     for f in (INFRA / "modules" / "compute").glob("*.tf"):
         text = f.read_text(encoding="utf-8")
-        for m in re.finditer(r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group)"\s+"([a-z0-9_]+)"', text):
+        for m in re.finditer(
+            r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group)"\s+"([a-z0-9_]+)"',
+            text,
+        ):
             if "llm_tts" in m.group(2):
                 errors.append(f"{f}: combined llm_tts block {m.group(2)!r}")
-        if re.search(r'container_name\s*=\s*"tts"', text) and re.search(r'container_name\s*=\s*"llm"', text):
+        if re.search(r'container_name\s*=\s*"tts"', text) and re.search(
+            r'container_name\s*=\s*"llm"', text
+        ):
             errors.append(f"{f}: combined llm+tts containers in one service/task")
         # 6. No standalone LMCache: no dedicated launch template/ASG/CP/task/service.
-        for m in re.finditer(r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group)"\s+"lmcache"', text):
+        for m in re.finditer(
+            r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group)"\s+"lmcache"',
+            text,
+        ):
             errors.append(f"{f}: standalone LMCache block {m.group(2)!r}")
         # 7. No self-host LiveKit: no livekit ECS task/service/SG/capacity.
-        for m in re.finditer(r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group|aws_security_group)"\s+"livekit"', text):
+        for m in re.finditer(
+            r'resource\s+"(aws_ecs_task_definition|aws_ecs_service|aws_ecs_capacity_provider|aws_launch_template|aws_autoscaling_group|aws_security_group)"\s+"livekit"',
+            text,
+        ):
             errors.append(f"{f}: self-host LiveKit block {m.group(2)!r}")
         # 8. No internal model NLB: compute module declares no LB resources.
         if f.name != "loadbalancer" and "compute" in f.parts:
@@ -85,7 +109,7 @@ def main() -> int:
     prod_vars = (INFRA / "environments" / "prod" / "variables.tf").read_text(encoding="utf-8")
     if 'backend_capacity_provider == "FARGATE"' not in prod_vars:
         errors.append("prod: backend_capacity_provider must reject Spot")
-    if 'default     = 2' not in prod_vars or 'variable "desired_backend"' not in prod_vars:
+    if "default     = 2" not in prod_vars or 'variable "desired_backend"' not in prod_vars:
         pass  # desired_backend default checked below
     m = re.search(r'variable "desired_backend" \{.*?default\s*=\s*(\d+)', prod_vars, re.S)
     if m and int(m.group(1)) < 1:
@@ -105,11 +129,29 @@ def main() -> int:
 
     # 11. Adapter/engine ownership: backend receives only *_ADAPTER env; no
     # legacy/ambiguous selector values anywhere in envs or compute.
-    legacy = ("remote_http", "remote_avatar", "openai_compat", "mock", "none", "tone", "cloud_liveavatar", "self_host_")
-    for f in list((INFRA / "modules" / "compute").glob("*.tf")) + list((INFRA / "environments" / "dev").glob("*.tfvars.example")) + list((INFRA / "environments" / "staging").glob("*.tfvars.example")) + list((INFRA / "environments" / "prod").glob("*.tfvars.example")):
+    legacy = (
+        "remote_http",
+        "remote_avatar",
+        "openai_compat",
+        "mock",
+        "none",
+        "tone",
+        "cloud_liveavatar",
+        "self_host_",
+    )
+    for f in (
+        list((INFRA / "modules" / "compute").glob("*.tf"))
+        + list((INFRA / "environments" / "dev").glob("*.tfvars.example"))
+        + list((INFRA / "environments" / "staging").glob("*.tfvars.example"))
+        + list((INFRA / "environments" / "prod").glob("*.tfvars.example"))
+    ):
         text = f.read_text(encoding="utf-8")
         if f.name == "backend.tf":
-            if 'name      = "LLM_ENGINE"' in text or 'name      = "TTS_ENGINE"' in text or 'name      = "RENDER_BACKEND"' in text:
+            if (
+                'name      = "LLM_ENGINE"' in text
+                or 'name      = "TTS_ENGINE"' in text
+                or 'name      = "RENDER_BACKEND"' in text
+            ):
                 errors.append(f"{f}: backend receives engine selector")
         for term in legacy:
             if term in text and f.suffix == ".tfvars.example":
@@ -117,20 +159,24 @@ def main() -> int:
 
     # 12. Immutable digests: no mutable image tags in tfvars examples; every
     # service declares a circuit breaker.
-    for f in list((INFRA / "environments" / "dev").glob("*.tfvars.example")) + list((INFRA / "environments" / "staging").glob("*.tfvars.example")) + list((INFRA / "environments" / "prod").glob("*.tfvars.example")):
+    for f in (
+        list((INFRA / "environments" / "dev").glob("*.tfvars.example"))
+        + list((INFRA / "environments" / "staging").glob("*.tfvars.example"))
+        + list((INFRA / "environments" / "prod").glob("*.tfvars.example"))
+    ):
         text = f.read_text(encoding="utf-8")
         for m in re.finditer(r'image_[a-z]+\s*=\s*"([^"]+)"', text):
             if "@sha256:" not in m.group(1):
                 errors.append(f"{f}: mutable image tag {m.group(1)!r}")
     for f in (INFRA / "modules" / "compute").glob("*.tf"):
         text = f.read_text(encoding="utf-8")
-        if "resource \"aws_ecs_service\"" in text and "deployment_circuit_breaker" not in text:
+        if 'resource "aws_ecs_service"' in text and "deployment_circuit_breaker" not in text:
             errors.append(f"{f}: ECS service without circuit breaker")
 
     # 13. No plaintext token inputs: no backend_api_token/admin_api_token vars
     # anywhere; tfvars examples must not assign real token values.
     for f in (INFRA / "modules" / "secrets").glob("*.tf"):
-        if "variable \"backend_api_token\"" in f.read_text(encoding="utf-8"):
+        if 'variable "backend_api_token"' in f.read_text(encoding="utf-8"):
             errors.append(f"{f}: plaintext token variable")
 
     # 14. Root compose.yaml: local-only. Must have data+media profiles, no

@@ -20,7 +20,12 @@ def _voice_rejected(exc: Exception) -> bool:
 
 
 class SessionTTS:
-    """Apply the validated voice override to this session without changing shared state."""
+    """Apply the validated voice override to this session without changing shared state.
+
+    Fallback to the default voice only covers a rejection raised before the first audio
+    window of a chunk; later errors propagate unchanged. If the default voice fails too,
+    the error propagates and the session voice is retried next chunk.
+    """
 
     def __init__(
         self,
@@ -49,14 +54,22 @@ class SessionTTS:
         except Exception as exc:  # noqa: BLE001 - only a voice rejection before any audio falls back
             if not _voice_rejected(exc):
                 raise
+            fallback = self._tts.stream_audio(
+                chunk, **{**kwargs, "req": TTSRequest(text=chunk.text, voice=None)}
+            )
+            try:
+                first = next(fallback)
+            except StopIteration:
+                return
+            # Default voice worked, so the session voice was the culprit: remember it.
             logger.warning(
                 "session voice rejected by TTS, using default voice_id=%s", self._voice_id
             )
             self._voice_id = None
             if self._on_reject is not None:
                 self._on_reject()
-            kwargs["req"] = TTSRequest(text=chunk.text, voice=None)
-            yield from self._tts.stream_audio(chunk, **kwargs)
+            yield first
+            yield from fallback
             return
         yield first
         yield from stream

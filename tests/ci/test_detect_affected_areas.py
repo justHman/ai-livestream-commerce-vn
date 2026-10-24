@@ -31,7 +31,10 @@ ROOT = Path(__file__).resolve().parents[2]
         ("services/platform/redis/redis.dev.conf", ["platform_redis"]),
         ("workbench/src/main.ts", ["workbench"]),
         ("infra/environments/dev/main.tf", ["infra"]),
-        ("services/product/backend_service/src/backend/application/clients/avatar/liveavatar_sdk/lite_agent.py", ["backend_service"]),
+        (
+            "services/product/backend_service/src/backend/application/clients/avatar/liveavatar_sdk/lite_agent.py",
+            ["backend_service"],
+        ),
     ],
 )
 def test_direct_owner(path, expected):

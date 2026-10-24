@@ -10,6 +10,7 @@ default the base is the service's current task-def; use --base-task to start
 from a specific revision (e.g. the Terraform-managed revision with the right
 env, not a prior swap-task rev with stale env).
 """
+
 from __future__ import annotations
 
 import json
@@ -29,7 +30,7 @@ def main() -> int:
     if "--base-task" in args:
         idx = args.index("--base-task")
         base_task = args[idx + 1]
-        args = args[:idx] + args[idx + 2:]
+        args = args[:idx] + args[idx + 2 :]
     else:
         base_task = None
     cluster, service = args[0], args[1]
@@ -47,27 +48,70 @@ def main() -> int:
         sys.exit("no container=image pairs given")
 
     if base_task is None:
-        base_task = aws(["ecs", "describe-services", "--cluster", cluster, "--services", service,
-                         "--query", "services[0].taskDefinition", "--output", "text"]).strip()
+        base_task = aws(
+            [
+                "ecs",
+                "describe-services",
+                "--cluster",
+                cluster,
+                "--services",
+                service,
+                "--query",
+                "services[0].taskDefinition",
+                "--output",
+                "text",
+            ]
+        ).strip()
     print(f"base task: {base_task}")
-    td = json.loads(aws(["ecs", "describe-task-definition", "--task-definition", base_task,
-                         "--output", "json"]))
+    td = json.loads(
+        aws(["ecs", "describe-task-definition", "--task-definition", base_task, "--output", "json"])
+    )
     task = td["taskDefinition"]
     for c in task["containerDefinitions"]:
         if c["name"] in swaps:
             print(f"  {c['name']}: {c['image']} -> {swaps[c['name']]}")
             c["image"] = swaps[c["name"]]
-    for k in ("taskDefinitionArn", "revision", "status", "requiresAttributes",
-              "compatibilities", "registeredAt", "registeredBy", "deregisteredAt"):
+    for k in (
+        "taskDefinitionArn",
+        "revision",
+        "status",
+        "requiresAttributes",
+        "compatibilities",
+        "registeredAt",
+        "registeredBy",
+        "deregisteredAt",
+    ):
         task.pop(k, None)
-    out = aws(["ecs", "register-task-definition", "--cli-input-json",
-               json.dumps(task), "--query", "taskDefinition.taskDefinitionArn",
-               "--output", "text"])
+    out = aws(
+        [
+            "ecs",
+            "register-task-definition",
+            "--cli-input-json",
+            json.dumps(task),
+            "--query",
+            "taskDefinition.taskDefinitionArn",
+            "--output",
+            "text",
+        ]
+    )
     new_task = out.strip()
     print(f"new task: {new_task}")
-    aws(["ecs", "update-service", "--cluster", cluster, "--service", service,
-         "--task-definition", new_task, "--query", "service.taskDefinition",
-         "--output", "text"])
+    aws(
+        [
+            "ecs",
+            "update-service",
+            "--cluster",
+            cluster,
+            "--service",
+            service,
+            "--task-definition",
+            new_task,
+            "--query",
+            "service.taskDefinition",
+            "--output",
+            "text",
+        ]
+    )
     print(f"service {service} updated to {new_task}")
     return 0
 

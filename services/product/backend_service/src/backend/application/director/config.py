@@ -57,8 +57,6 @@ class StreamConfig:
     # 'unknown' intent lumps unrelated comments together: short cooldown, and any new
     # comment counts as new content (see decision.py).
     qa_unknown_topic_cooldown_sec: float = 15.0
-    # Minimum gap between two 'unknown' answers: a deferred comment is retried, not dropped.
-    qa_unknown_min_gap_sec: float = 10.0
     answer_cache_variants: int = 3
     prepared_turn_depth: int = 3
     transient_retry_count: int = 1

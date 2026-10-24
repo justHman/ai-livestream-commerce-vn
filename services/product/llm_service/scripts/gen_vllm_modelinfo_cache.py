@@ -30,6 +30,7 @@ Usage:
 Verify module_hash by fetching qwen3.py from the vLLM 0.22.0 tag:
   curl -sL https://raw.githubusercontent.com/vllm-project/vllm/v0.22.0/vllm/model_executor/models/qwen3.py | md5sum
 """
+
 from __future__ import annotations
 
 import argparse
@@ -65,8 +66,9 @@ QWEN3_MODELINFO = {
 QWEN3_MODULE_HASH = "110fffb133f8363ff09b733c36bd380f"
 
 
-def write_cache(out_dir: Path, module_name: str, class_name: str,
-                modelinfo: dict, module_hash: str) -> Path:
+def write_cache(
+    out_dir: Path, module_name: str, class_name: str, modelinfo: dict, module_hash: str
+) -> Path:
     fname = f"{module_name}-{class_name}".replace(".", "-") + ".json"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / fname
@@ -80,8 +82,13 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="output modelinfos/ dir")
     args = ap.parse_args()
     out = Path(args.out)
-    p = write_cache(out, "vllm.model_executor.models.qwen3",
-                    "Qwen3ForCausalLM", QWEN3_MODELINFO, QWEN3_MODULE_HASH)
+    p = write_cache(
+        out,
+        "vllm.model_executor.models.qwen3",
+        "Qwen3ForCausalLM",
+        QWEN3_MODELINFO,
+        QWEN3_MODULE_HASH,
+    )
     print(f"wrote {p}")
     print(f"  hash={QWEN3_MODULE_HASH}")
     print("  bake into image at $VLLM_CACHE_ROOT/modelinfos/ (default ~/.cache/vllm/modelinfos)")

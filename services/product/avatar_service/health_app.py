@@ -36,6 +36,4 @@ def health() -> dict[str, str]:
 def idle_frame() -> Response:
     if _IDLE_FRAME_BYTES is None:
         return Response(status_code=503, content="frame not ready")
-    return StreamingResponse(
-        BytesIO(_IDLE_FRAME_BYTES), media_type="image/jpeg"
-    )
+    return StreamingResponse(BytesIO(_IDLE_FRAME_BYTES), media_type="image/jpeg")

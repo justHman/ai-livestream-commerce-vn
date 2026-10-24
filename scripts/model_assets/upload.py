@@ -16,6 +16,7 @@ Run OFFLINE (before any billable stage apply). NEVER run HF cold pulls or S3
 syncs inside a billable stage window — S3 is the runtime source via
 scripts/model_assets/fetch_weights.sh.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,6 +34,7 @@ def run(cmd: list[str], cwd: str | None = None) -> None:
 def download_hf(repo: str, dest: Path, patterns: list[str] | None = None) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     from huggingface_hub import snapshot_download
+
     kwargs = {"repo_id": repo, "local_dir": str(dest)}
     if patterns:
         kwargs["allow_patterns"] = patterns
@@ -59,8 +61,11 @@ def main() -> int:
     ap.add_argument("--bucket", required=True)
     ap.add_argument("--region", default="ap-northeast-2")
     ap.add_argument("--cache", default=os.path.expanduser("~/.cache/ai-live-weights"))
-    ap.add_argument("--vieneu-local-dir", default="",
-                    help="Local .git checkout of the VieNeu-TTS-v3-Turbo weights (NOT public on HF). Required to seed vieneu/.")
+    ap.add_argument(
+        "--vieneu-local-dir",
+        default="",
+        help="Local .git checkout of the VieNeu-TTS-v3-Turbo weights (NOT public on HF). Required to seed vieneu/.",
+    )
     ap.add_argument("--skip-llm", action="store_true", help="Skip Qwen3.5-4B-AWQ HF pull + upload")
     ap.add_argument("--skip-neucodec", action="store_true", help="Skip neucodec HF pull + upload")
     args = ap.parse_args()
@@ -75,8 +80,11 @@ def main() -> int:
         llm_local = cache / "llm"
         has_weights = any(llm_local.glob("*.safetensors"))
         if not has_weights:
-            download_hf("Qwen/Qwen3-4B-AWQ", llm_local,
-                        patterns=["*.json", "*.safetensors", "*.model", "tokenizer*", "*.txt"])
+            download_hf(
+                "Qwen/Qwen3-4B-AWQ",
+                llm_local,
+                patterns=["*.json", "*.safetensors", "*.model", "tokenizer*", "*.txt"],
+            )
         upload_s3(llm_local, f"{base}/llm/", args.region)
 
     # TTS: VieNeu-TTS-v3-Turbo — HF public (pnnbao-ump/VieNeu-TTS-v3-Turbo).
@@ -85,17 +93,31 @@ def main() -> int:
     if args.vieneu_local_dir:
         stage_local(Path(args.vieneu_local_dir).resolve(), tts_local, "vieneu-local-dir")
     elif not (tts_local / "config.json").exists():
-        download_hf("pnnbao-ump/VieNeu-TTS-v3-Turbo", tts_local,
-                    patterns=["*.json", "*.safetensors", "*.model", "tokenizer*",
-                              "voices.json", "*.txt", "*.py", "*.wav"])
+        download_hf(
+            "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+            tts_local,
+            patterns=[
+                "*.json",
+                "*.safetensors",
+                "*.model",
+                "tokenizer*",
+                "voices.json",
+                "*.txt",
+                "*.py",
+                "*.wav",
+            ],
+        )
     upload_s3(tts_local, f"{base}/tts/vieneu/", args.region)
 
     # TTS: neucodec (codec decoder weights).
     if not args.skip_neucodec:
         nc_local = cache / "tts" / "neucodec"
         if not any(nc_local.glob("*.safetensors")) and not any(nc_local.glob("*.bin")):
-            download_hf("neuphonic/neucodec", nc_local,
-                        patterns=["*.json", "*.safetensors", "*.bin", "*.py", "*.txt"])
+            download_hf(
+                "neuphonic/neucodec",
+                nc_local,
+                patterns=["*.json", "*.safetensors", "*.bin", "*.py", "*.txt"],
+            )
         upload_s3(nc_local, f"{base}/tts/neucodec/", args.region)
 
     print(f"\nWeights uploaded to {base}/")

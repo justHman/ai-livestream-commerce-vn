@@ -12,6 +12,7 @@ service-scoped rollback (5.5 / design §6) WITHOUT touching AWS:
 Runnable: python scripts/ci/simulate_release_path.py [--fixture-dir <path>]
 Exit 0 = all gates behave as designed for eligible AND ineligible inputs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -72,7 +73,9 @@ def simulate(repo_root: Path, fixture_dir: Path) -> None:
     # 1. Tag parse (5.1)
     print("[5.1] tag parsing")
     tag = validate_service_tag("backend-v1.2.3")
-    _assert(tag["service"] == "backend_service" and tag["version"] == "v1.2.3", "backend-v1.2.3 parses")
+    _assert(
+        tag["service"] == "backend_service" and tag["version"] == "v1.2.3", "backend-v1.2.3 parses"
+    )
     for bad in ("backend-v1.2", "v1.2.3", "database-v1.2.3", "lmcache-v1.2.3", ""):
         try:
             validate_service_tag(bad)
@@ -111,8 +114,10 @@ def simulate(repo_root: Path, fixture_dir: Path) -> None:
 
     # 4. Exact-digest promotion (5.4)
     print("[5.4] digest promotion")
-    _assert("@sha256:" in digest and ":staging-" not in digest and ":dev-" not in digest,
-            f"promoted digest is immutable ({digest})")
+    _assert(
+        "@sha256:" in digest and ":staging-" not in digest and ":dev-" not in digest,
+        f"promoted digest is immutable ({digest})",
+    )
     _assert(digest == line["new_digest"], "promotion uses the exact recorded digest (no rebuild)")
 
     # 5. Service-scoped rollback (5.5)
@@ -122,11 +127,16 @@ def simulate(repo_root: Path, fixture_dir: Path) -> None:
     # rollback restores ONLY this service's previous task definition; the
     # _deploy-service rollback() path is a single update-service call with the
     # old task def (no other service is touched).
-    rollback_script = (
-        ROOT / ".github" / "workflows" / "_deploy-service.yml"
-    ).read_text(encoding="utf-8")
-    _assert("aws ecs update-service" in rollback_script, "rollback = update-service to old task def")
-    _assert("restoring $ECS_SERVICE to $old_task" in rollback_script, "rollback is per-service (ECS_SERVICE)")
+    rollback_script = (ROOT / ".github" / "workflows" / "_deploy-service.yml").read_text(
+        encoding="utf-8"
+    )
+    _assert(
+        "aws ecs update-service" in rollback_script, "rollback = update-service to old task def"
+    )
+    _assert(
+        "restoring $ECS_SERVICE to $old_task" in rollback_script,
+        "rollback is per-service (ECS_SERVICE)",
+    )
 
     print("\nALL 6.3 GATES PASS")
 

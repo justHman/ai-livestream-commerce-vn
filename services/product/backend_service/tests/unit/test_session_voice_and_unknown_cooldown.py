@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import logging
 from types import SimpleNamespace
@@ -79,16 +78,14 @@ async def test_store_failure_falls_back():
     assert await c._session_tts("s") is tts
 
 
-def _director(cooldown=120.0, gap=0.0):
+def _director(cooldown=120.0):
     state = StreamState(
         phase=Phase.SELLING,
         products=[ProductState(product_id="P1", name="Ao", is_introduced=True, stage_turn_index=2)],
     )
     d = Director(
         state=state,
-        cfg=StreamConfig(
-            qa_min_cluster_size=1, qa_topic_cooldown_sec=cooldown, qa_unknown_min_gap_sec=gap
-        ),
+        cfg=StreamConfig(qa_min_cluster_size=1, qa_topic_cooldown_sec=cooldown),
     )
     d.state.qa_window_open = True
     d.state.qa_window_started_at = 0.0
@@ -229,14 +226,25 @@ async def test_server_error_is_not_swallowed_as_voice_rejection():
         list(wrapped.stream_audio(_chunk(), session_id="s", utterance_id="u"))
 
 
-def test_unknown_min_gap_defers_then_answers_without_dropping(caplog):
-    d = _director(gap=3.0)
-    first = [_unknown(1, 10.0, [1.0, 0.0])]
-    d.mark_spoken(d.decide(first, now=10.5))
-    second = first + [_unknown(2, 11.0, [0.0, 1.0])]
-    with caplog.at_level(logging.INFO):
-        early = copy.deepcopy(d).decide(second, now=11.5)
-    assert early.action not in {"answer_fact", "answer_cluster"}
-    assert "comment skipped reason=min_gap" in caplog.text
-    late = d.decide(second, now=14.5)
-    assert late.action in {"answer_fact", "answer_cluster"}
+async def test_text_error_does_not_mark_voice_rejected():
+    import pytest
+
+    from backend.application.clients.tts.self_hosted import TTSClientError
+
+    def handler(request):
+        import httpx
+
+        return httpx.Response(422, text="input text invalid")
+
+    engine = _remote_engine(handler)
+    c = DirectorCoordinator(
+        runtime=None,
+        llm=None,
+        tts=engine,
+        backend=None,
+        session_store=_Store({"voice_id": "Ghost"}),
+    )
+    wrapped = await c._session_tts("s")
+    with pytest.raises(TTSClientError):
+        list(wrapped.stream_audio(_chunk(), session_id="s", utterance_id="u"))
+    assert "s" not in c._voice_rejected

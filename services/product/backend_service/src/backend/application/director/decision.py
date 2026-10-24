@@ -443,15 +443,6 @@ class Director:
                 has_new_content = len(novel_members) >= (
                     1 if item.cluster.intent == "unknown" else 2
                 )
-                if item.cluster.intent == "unknown":
-                    gap_left = s.last_unknown_answer_at + c.qa_unknown_min_gap_sec - now
-                    if gap_left > 0:
-                        logger.info(
-                            "comment skipped reason=min_gap topic=%s remaining_s=%.1f",
-                            topic_key,
-                            gap_left,
-                        )
-                        continue
                 until = s.topic_cooldown_until.get(topic_key, 0.0)
                 if now < until and not has_new_content:
                     logger.info(
@@ -762,8 +753,6 @@ class Director:
                 if topic == "unknown"
                 else self.cfg.qa_topic_cooldown_sec
             )
-            if topic == "unknown":
-                self.state.last_unknown_answer_at = decision.completed_at or decision.decided_at
             self.state.qa_last_comment_signature[topic_key] = "\n".join(
                 sorted(set(decision.cluster_members))
             )
