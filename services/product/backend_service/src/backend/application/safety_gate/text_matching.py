@@ -19,6 +19,47 @@ _LEET = str.maketrans({"1": "i", "0": "o", "3": "e", "@": "a", "$": "s"})
 _AMBIGUOUS = frozenset("ngu lon cac du buoi deo bui dien cut ham deu khung lao hon".split())
 _EXPLICIT_ABUSE = frozenset("lồn lờn cặc kặc đụ đù buồi đéo điên cứt hâm đểu khùng láo hỗn".split())
 
+# These folded phrases also name ordinary goods/requests. They still use the
+# original protected view; longer, unambiguous curated phrases match first.
+AMBIGUOUS_PHRASES = frozenset(
+    {
+        "do ngu",
+        "con ngu",
+        "do dien",
+        "du ma",
+        "con cac",
+        "cai lon",
+        "cai buoi",
+        "vai lon",
+        "vai ca lon",
+        "vai cac",
+        "vai buoi",
+        "con di",
+        "di me",
+        "di diem",
+        "cho de",
+        "bo may",
+        "ma may",
+    }
+)
+
+
+def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool) -> str:
+    """Keep curated phrase context before protecting ambiguous ASCII singletons.
+
+    Explicit benign accents still carry meaning (cái lớn != cái lồn). 'đi' is
+    a valid part of curated dismissal phrases such as 'cút mẹ đi'.
+    """
+    text = unicodedata.normalize("NFC", text).lower()
+    text = re.sub(
+        r"\w+",
+        lambda m: "benignword" if m[0] in _BENIGN_HOMOGRAPHS - {"đi"} else m[0],
+        text,
+    )
+    return matching_view(
+        text, join_symbols=join_symbols, protect_homographs=False, reduce_repeats=reduce_repeats
+    )
+
 
 def _protect_homographs(text: str) -> str:
     words = list(re.finditer(r"\w+", text))

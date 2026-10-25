@@ -1,7 +1,7 @@
 # Comment guard
 
-Curated toxicity and harassment resources retain their filenames and publish version 3
-through provenance/resource_versions. Unsafe-content remains at its existing version.
+Curated resources retain their filenames. Toxicity publishes version 4 and harassment
+version 3 through provenance/resource_versions. Unsafe-content remains at its existing version.
 No external dataset or dependency is loaded.
 
 Add a pattern only after project review of its category, public-source provenance and
@@ -59,13 +59,21 @@ compliments without an object, repeated characters and known keyboard runs.
 Matching is against the whole comment; mixed product questions or requests pass.
 Unknown Unicode letters are not treated as emoji or meaningless text.
 
-Explicit personal questions to the host are checked before ambiguous commerce:
+Explicit purchases take precedence over personal-looking buyer context: `mua`,
+`chốt`, quantity-bearing `lấy`/`đặt`, product codes, and shop inventory questions
+such as `chị bán đồ ăn không?`. `em lấy 2 bộ cho chồng được không?` and
+`em tên Lan chốt 2 cái được không?` (including ASCII) reach Coordinator/reducer
+and retain commerce fallback eligibility. A buyer's family or name is context.
+
+After clear purchases, explicit personal questions to the host precede vague commerce:
 a host pronoun/address plus a personal predicate (spouse, hometown, age, eating,
 drinking, sleeping, love, family, occupation, etc.) and interrogative evidence.
 `chị có định lấy chồng không?` and `chị quê Cần Thơ à?` are silent, as are their
 ASCII forms. Bare `lấy` and a city never establish commerce. A purchase use of
 `lấy` requires a quantity/unit/product/code; a city requires a shipping/destination
-verb. Concrete product evidence still preserves `chị mặc áo này size nào` and
+verb. `giao` and `bán hàng` alone cannot override a private-life predicate:
+`chị có chồng làm nghề giao hàng không?`, `chị có người yêu làm nghề bán hàng không?`
+and `chị sinh năm bao nhiêu?` remain silent, including ASCII. Concrete product evidence preserves `chị mặc áo này size nào` and
 `em dùng nước hoa gì`. Personal members dominate mixed clusters so no such member
 reaches an LLM, fallback or TTS. Final `not_answerable_non_commerce` is recorded
 without interruption or topic cooldown. Speech preparation checks this again.
@@ -102,3 +110,22 @@ Ambiguous ASCII abuse homographs without insult evidence deliberately favour the
 buyer (for example `cac`, `lon`, `do ngu`). This is curated coverage, not a universal
 Vietnamese moderation or intent classifier. Personal/product ambiguity and dialects
 remain finite-rule limitations; uncertainty in admission must keep passing onward.
+
+Round-three phrase matching checks curated multiword phrases before applying ASCII
+singleton homograph protection. This covers `óc lợn`, `cút mẹ đi`, `may an cut`,
+`con cac may`, `cút mẹ` and `đồ chó`, including punctuation and symbol joins.
+Toxicity v4 adds 70 reviewed accented/ASCII multiword entries, including `mày ăn cứt`
+and `con cặc mày`. Original benign accents remain protected in phrase views.
+Phrases whose complete ASCII form is itself ambiguous merchandise (`do ngu`,
+`cai lon`, `con cac`, etc.) retain the protected matching path; a longer targeted
+phrase such as `con cac may` supplies the missing evidence.
+
+`tests/unit/test_comment_guard_round3.py` exercises at least 60 examples per group:
+purchases with buyer names/family, personal questions containing vague sales words,
+and multiword abuse. All three groups use authenticated ASGI/HTTP ingestion with
+real safety and Coordinator/reducer spies. Personal silence also checks speech
+preparation, no LLM/TTS and no topic cooldown. The entire existing real-comment
+corpus (over 250 comments) is rechecked for safety false positives. The review
+message supplied four literal abuse misses out of fourteen; the regression lists
+those four plus ten related curated phrase cases, without claiming access to the
+reviewer's undisclosed ten strings.

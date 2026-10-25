@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .text_matching import matching_view
+from .text_matching import AMBIGUOUS_PHRASES, matching_view, phrase_matching_view
 
 __all__ = [
     "CuratedPatternSet",
@@ -53,6 +53,9 @@ class CuratedPatternSet:
         self.curated_by = curated_by
         self.match_patterns = frozenset(
             matching_view(p, join_symbols=True, protect_homographs=False) for p in patterns
+        )
+        self.phrase_patterns = frozenset(
+            p for p in self.match_patterns if len(p.split()) >= 2 and p not in AMBIGUOUS_PHRASES
         )
 
     @classmethod
@@ -102,6 +105,11 @@ def match_curated(text: str, sets: dict[str, CuratedPatternSet]) -> list[str]:
     Compare complete tokens/phrases in bounded, accent-folded matching views.
     Keep both punctuation boundaries and obfuscation joins; never mutate input.
     """
+    phrase_views = [
+        f" {phrase_matching_view(text, join_symbols=join, reduce_repeats=reduce)} "
+        for join in (False, True)
+        for reduce in (False, True)
+    ]
     views = [
         f" {matching_view(text, join_symbols=join, reduce_repeats=reduce)} "
         for join in (False, True)
@@ -111,7 +119,18 @@ def match_curated(text: str, sets: dict[str, CuratedPatternSet]) -> list[str]:
         kind
         for kind, pattern_set in sets.items()
         if (
-            any(f" {pattern} " in view for pattern in pattern_set.match_patterns for view in views)
+            (
+                any(
+                    f" {pattern} " in view
+                    for pattern in pattern_set.phrase_patterns
+                    for view in phrase_views
+                )
+                or any(
+                    f" {pattern} " in view
+                    for pattern in pattern_set.match_patterns
+                    for view in views
+                )
+            )
             if kind in {"toxicity", "harassment"}
             else any(pattern in text.lower() for pattern in pattern_set.patterns)
         )

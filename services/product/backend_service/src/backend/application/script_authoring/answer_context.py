@@ -176,7 +176,7 @@ def wrap_natural(question: str, answer: str) -> str:
 _HOST = re.compile(r"\b(?:anh|chi|em|co|ban|mc|kol|ad|admin)\b")
 _PERSONAL = re.compile(
     r"\b(?:lay chong|lay vo|ket hon|tuoi|doc than|nguoi yeu|ban trai|ban gai|vo|chong|"
-    r"gia dinh|que|song|lam nghe|nha o dau|thich an|an|uong|ngu|yeu|"
+    r"gia dinh|que|song|lam nghe|sinh nam|nha o dau|thich an|an|uong|ngu|yeu|"
     r"biet nhay|biet hat|hat|nhay|khoe|vui|buon|met|dep trai|xinh|ten|"
     r"choi|di dau|ranh|lam gi|o nha|cuoi|ghet|phim|nhac|bai hat|game|"
     r"bong da|du lich)\b"
@@ -210,9 +210,37 @@ _PURCHASE = re.compile(
 # Only concrete product evidence can disambiguate a personal-looking sentence.
 _PERSONAL_PRODUCT = re.compile(
     r"\b(?:san pham|ao|quan|giay|tui|size|kich co|chat lieu|vai|nuoc hoa|"
-    r"my pham|serum|son|dong ho|dao|gia ban|mua|ban hang|ban dao|ship|giao|"
+    r"my pham|serum|son|dong ho|dao|gia ban|mua|ban dao|ship|"
     r"chong nuoc|chong nang)\b"
 )
+# Purchase evidence takes precedence over buyer names and family context. A bare
+# lay/giao/ban hang is deliberately absent: it can describe the host's private life.
+_EXPLICIT_PURCHASE = re.compile(
+    r"\b(?:mua|chot|dat hang|dat don|order)\b|"
+    r"\b(?:lay|dat|giu|de|cho em|cho minh)\s+(?:\d+|mot|hai|ba|bon|nam)\b|"
+    r"\b(?:lay|dat|giu)\s+(?:cai|chiec|bo|hop|chai|goi|lo|doi|ma)\b|"
+    r"\b(?:\d+|mot|hai|ba|bon|nam)\s+(?:cai|chiec|bo|hop|chai|tui|kg|ky|goi|lo|doi|met|lit)\b|"
+    r"\b(?:ma\s+)?[a-z]+\d+[a-z0-9]*\b"
+)
+_SELLS = re.compile(r"(?:^|\b(?:chi|anh|em|co|shop)\s+)(?P<verb>ban)\s+(?!co\b|chua\b|la\b)(?=\w)")
+
+
+def _clear_purchase(question: str) -> bool:
+    normalized = _commerce_view(question)
+    if _EXPLICIT_PURCHASE.search(normalized):
+        return True
+    sale = _SELLS.search(normalized)
+    if not sale:
+        return False
+    # ASCII 'ban' can be the addressee 'bạn' or part of 'bạn trai/gái'.
+    if _PERSONAL.match(normalized, sale.start("verb")) or _PERSONAL.match(normalized, sale.end()):
+        return False
+    # 'chi ban do an' asks about inventory; 'chi co chong ban do an'
+    # asks about a spouse's occupation. Do not promote that third-party verb.
+    personal = _PERSONAL.search(normalized)
+    return personal is None or personal.start() >= sale.start("verb")
+
+
 _DESTINATION = re.compile(rf"\b(?:gui|ve)\s+(?:{fold_text(_CITY_NAMES)})\b")
 
 
@@ -260,7 +288,8 @@ def question_kind(question: str | None, facts: list[str]) -> str:
         normalized = _commerce_view(part)
         words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
         commerce = bool(
-            _SHOP_CONTEXT.search(normalized)
+            _clear_purchase(part)
+            or _SHOP_CONTEXT.search(normalized)
             or _PURCHASE.search(normalized)
             or _DESTINATION.search(normalized)
         )
@@ -283,7 +312,9 @@ def question_kind(question: str | None, facts: list[str]) -> str:
 
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
-    """Positive host + personal predicate + question evidence, before vague commerce."""
+    """Clear purchases win; otherwise host + personal predicate proves silence."""
+    if _clear_purchase(question):
+        return False
     addressed = re.sub(r"\bcó\b", "has", unicodedata.normalize("NFC", question).lower())
     folded = fold_text(addressed)
     host = _HOST.search(folded)
