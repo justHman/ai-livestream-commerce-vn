@@ -186,7 +186,7 @@ _HARD_COMMERCE = re.compile(
     r"\b[a-z]+\d+[a-z0-9]*\b|\b(?:co\s+)?ban\s+(?:do|dao|hang)\b|"
     r"\b\d+\s+(?:cai|chiec|bo|hop|chai|goi|lo|doi)\b"
 )
-_HOST = r"(?:chi chu|chu shop|admin|chi|em|anh|co|ban)"
+_HOST = r"(?:chi chu|chu shop|cua hang|shop|admin|chi|em|anh|co|ban)"
 _SOFT_GOODS = (
     r"(?:vay|ao|quan|giay|dao|vo goi|vo chan|bo do ngu|do ngu|do an|con bup be|con gau bong)"
 )
@@ -196,11 +196,15 @@ _SOFT_COMMERCE = re.compile(
 )
 # "chi co may xay khong?", "shop co vo dien thoai khong?": asking whether the shop has an item. Private-life
 # questions are vetoed earlier by is_off_topic; greetings about the host's state are not goods.
-_AVAILABILITY = re.compile(
-    r"\b(?:co|ban|con)\s+(?:\w+\s+){1,6}?(?:khong|chua|hong|ko)(?:\s+(?:a|ak|ah|nhe|nha|ha|vay|the|di|nhi|vay a))*\s*$"
-)
+_AVAILABILITY = re.compile(r"\b(?:co|ban|con)\s+(?:\w+\s+){1,6}?(?:khong|chua|hong|ko)\b")
+# Match a state predicate, not a word anywhere in a product name (ngôn ngữ,
+# máy hâm nóng, sách hay...). Privacy/state vetoes run before commerce keywords.
 _NOT_GOODS = re.compile(
-    r"\b(?:khoe|vui|on|ngon|met|buon|doi|khat|biet|nho|hieu|thay|quen|ranh|ban gi|buc|gio)\b"
+    r"\bco\s+(?:khoe|vui|on|ngon|met|buon|doi|khat|biet|nho|hieu|thay|quen|ranh|ban gi|buc|gio)"
+    r"\s+(?:khong|chua|hong|ko)\b|\bco\s+(?:biet|nho|hieu|thay|quen)\b"
+)
+_HOST_STATE = re.compile(
+    rf"\b{_HOST}\s+co\s+(?:khoe|vui|on|met|buon|doi|khat|ranh)\s+(?:khong|chua|hong|ko)\b"
 )
 _HOST_PRIVATE = re.compile(
     rf"\b{_HOST}\s+co\s+(?:bao nhieu\s+)?"
@@ -209,12 +213,12 @@ _HOST_PRIVATE = re.compile(
 )
 _CHILD_PRIVATE = re.compile(
     rf"\b{_HOST}\s+co\s+(?:(?:may|bao nhieu)\s+)?con"
-    r"(?:\s+(?:khong|chua|roi|a|ha|nhi|vay|nhe))*$|"
+    r"(?=$|\s+(?:khong|chua|hong|ko|roi|a|ha|nhi|vay|nhe)\b)|"
     rf"\b{_HOST}\s+co\s+con\s+(?:cai|ban|dat hang)\b"
 )
 _ASCII_SPOUSE = re.compile(
     rf"\b{_HOST}\s+co\s+(?:bao nhieu\s+)?vo"
-    r"(?:\s+chong\b|(?:\s+(?:khong|chua|roi|a|ha|nhi|vay))*$)"
+    r"(?:\s+chong\b|(?=$|\s+(?:khong|chua|hong|ko|roi|a|ha|nhi|vay)\b))"
 )
 # Existing direct questions without 'co'; anchored to the host, never a free
 # keyword scan through a buyer's food/product/family context.
@@ -296,6 +300,7 @@ def is_off_topic(question: str, facts: list[str]) -> bool:
         normalized = re.sub(r"\bcon(?=\s+ban\b)", "remaining", normalized)
     return bool(
         _HOST_PRIVATE.search(normalized)
+        or _HOST_STATE.search(normalized)
         or _DIRECT_PRIVATE.search(normalized)
         or _CHILD_PRIVATE.search(normalized)
         or _ASCII_SPOUSE.search(normalized)
