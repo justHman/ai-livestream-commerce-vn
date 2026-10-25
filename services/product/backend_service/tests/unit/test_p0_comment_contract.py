@@ -112,7 +112,7 @@ async def test_p0_binding_and_reducer_provenance():
     reducer = ReducerProbe()
     audit = AuditProbe()
     service = PlatformEventIngestionService(store=store, reducer=reducer, pg_store=audit)
-    valid = event("ắ😀" * 500)
+    valid = event("size? " + "ắ😀" * 497)  # 1000 original code points, real question intent
     result = await service.ingest("runtime-1", [valid])
     assert result["accepted"] == 1
     assert reducer.comments[0].text == valid.payload.text

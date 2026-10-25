@@ -154,7 +154,6 @@ async def test_social_chat_skipped_before_director(case_factory, monkeypatch, te
         "chất liệu gì vậy ad",
         "xin chào, còn hàng không",
         "haha giá sao",
-        "ok?",
         "mua",
         "bảo hành mấy năm",
         "đổi trả thế nào",

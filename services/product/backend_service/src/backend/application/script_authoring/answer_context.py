@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import zlib
+from functools import lru_cache
+
+from ..safety_gate.text_matching import fold_text
 
 from .generation.ordered_units import claim_covered
 
@@ -176,9 +180,7 @@ _STOP = frozenset(
 # A viewer's words are NEVER spoken back in the shop's voice: no list of words can prove that arbitrary text
 # holds no price, fee, promise, insult or personal detail. The fallback only says WHAT KIND of question it is.
 #
-# "Off topic" needs a positive sign: a question put to the host as a person (anh/chị/em/bạn/MC...) about
-# something personal, with no shopping word and no content word of the approved facts. Anything else that the
-# facts cannot answer is a shop question and goes to the shop, so "có chống nước không" is never "ngoài lề".
+# Personal host questions need positive evidence too; unrelated text is silent.
 _SHOP_WORDS = (
     "giá|bao nhiêu|size|kích cỡ|màu|chất liệu|vải|giao|ship|vận chuyển|nhận hàng|đổi|trả|bảo hành"
     "|hoàn tiền|cod|thanh toán|khuyến mãi|giảm giá|giảm|ưu đãi|còn hàng|hết hàng|còn size|còn màu"
@@ -201,16 +203,98 @@ _ASKING = re.compile(
     r"\?|(?<!\w)(?:không|chưa|hả|à|nhỉ|sao|gì|nào|đâu|chứ|ko|k)(?!\w)", re.IGNORECASE
 )
 
+_SHOP_CONTEXT = re.compile(
+    r"\b(?:gia|bao nhieu tien|size|kich co|mau|chat lieu|vai|ship|giao hang|van chuyen|nhan hang|doi tra|"
+    r"bao hanh|chinh sach|hoan tien|cod|thanh toan|khuyen mai|"
+    r"giam gia|uu dai|con hang|het hang|con size|con mau|co san|san hang|kho hang|"
+    r"mua|dat hang|san pham|giat|can nang|chieu cao|chinh hang|ao|quan|giay|tui|"
+    r"vay|mu|dong ho|my pham|serum|son|hoa don|hang|freeship|tra gop|order|tu van|cua hang|showroom|"
+    r"voucher|ma giam|chiet khau|chong nuoc|chong nang|cai nay|cai do|cai kia|"
+    r"mon nay|mon do|mau nay|do nay|loai nay|chiec nay|bo nay|hang nay|shop)\b"
+)
+_SHOP_REQUEST = re.compile(
+    r"\b(?:gia|bao nhieu|size|kich co|mau|ship|mua|dat hang|chot|tu van|xin link|"
+    r"con hang|chat lieu|chinh sach|doi tra|bao hanh|khuyen mai|giam gia|uu dai)\b"
+)
+_PRODUCT_NOUNS = re.compile(r"\b(?:ao|quan|giay|tui|vay|mu|dong ho|my pham|serum|son)\b")
+_FOLDED_ASKING = re.compile(
+    fold_text(_ASKING.pattern) + r"|\b(?:may|bao nhieu|bao lau|khi nao|bao gio)\b", re.IGNORECASE
+)
+
+
+def _commerce_view(text: str) -> str:
+    # Keep explicit non-commerce meanings before accent folding (mưa != mua,
+    # máu != màu, gia đình/quốc gia != giá). Other shopping words survive.
+    text = unicodedata.normalize("NFC", text).lower()
+    text = re.sub(r"\b(?:mưa|máu|mù|vậy|gia đình|quốc gia|đóng vai)\b", "unrelated", text)
+    return fold_text(text)
+
+
+@lru_cache(maxsize=1)
+def _abuse_patterns():
+    from ..safety_gate.resources import load_all_curated_patterns
+
+    return load_all_curated_patterns()
+
+
+def question_kind(question: str | None, facts: list[str]) -> str:
+    """Positive evidence only; reducer topics and model output are never evidence."""
+    from ..platform_events.comment_intent import is_non_question
+    from ..safety_gate.resources import match_curated
+
+    text = question or ""
+    if match_curated(text, _abuse_patterns()):
+        return "safety_filtered"
+    if is_non_question(text):
+        return "non_question"
+    # Evaluate every representative, not just the first text in a cluster.
+    parts = [part.strip() for part in text.split("|") if part.strip()]
+    if not parts:
+        return "not_answerable_non_commerce"
+    kinds = []
+    known = fold_text(" ".join(facts))
+    known_nouns = set(_PRODUCT_NOUNS.findall(known))
+    known_phrases = [" ".join(re.findall(r"\w+", _commerce_view(fact))) for fact in facts]
+    for part in parts:
+        normalized = _commerce_view(part)
+        asking = bool(_FOLDED_ASKING.search(normalized))
+        commerce = bool(_SHOP_CONTEXT.search(normalized)) and (
+            asking or bool(_SHOP_REQUEST.search(normalized))
+        )
+        # Incidental shared words (water/France in a geography question) are
+        # not product intent. Require an intact approved phrase when the
+        # explicit commerce vocabulary above does not establish relevance.
+        words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
+        commerce = commerce or (
+            asking
+            and any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases)
+        )
+        if commerce:
+            nouns = set(_PRODUCT_NOUNS.findall(normalized))
+            if known_nouns and nouns - known_nouns:
+                kinds.append("other_product")
+            elif nouns and nouns <= known_nouns:
+                kinds.append("current_product")
+            else:
+                kinds.append("commerce")
+        elif asking and is_off_topic(part, facts):
+            kinds.append("off_topic")
+        else:
+            return "not_answerable_non_commerce"
+    if "other_product" in kinds:
+        return "other_product"
+    if len(set(kinds)) == 1:
+        return kinds[0]
+    return "commerce" if "off_topic" not in kinds else "not_answerable_non_commerce"
+
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
-    """A question put to the host as a person, with no shopping word and no content word of the facts.
-
-    Real viewers rarely type a '?', so a question is any interrogative word. A wrong guess only changes
-    the wording: both fallbacks send a shop question to the shop and repeat nothing the viewer wrote."""
+    """An explicit personal question to the host with no commerce/fact connection."""
     lowered = question.split("|")[0].strip().lower()
-    if _COMMERCE.search(lowered) or not _HOST.search(lowered):
+    folded = _commerce_view(lowered)
+    if _SHOP_CONTEXT.search(folded) or not _HOST.search(lowered):
         return False
-    if not (_PERSONAL.search(lowered) or _ASKING.search(lowered)):
+    if not (_PERSONAL.search(lowered) and _FOLDED_ASKING.search(folded)):
         return False
     words = {w for w in re.findall(r"\w+", lowered) if len(w) > 2 and w not in _STOP}
     known = set(re.findall(r"\w+", " ".join(facts).lower()))
@@ -224,29 +308,43 @@ _OFF_TOPIC_DEFLECTION = (
     "Giờ mình quay lại giới thiệu tiếp cho mọi người nhé."
 )
 _UNKNOWN_DEFLECTION = (
-    "Mình thấy có bạn hỏi một câu rất cụ thể về sản phẩm. Câu này mình chưa có thông tin chính xác "
-    "trong phần giới thiệu để trả lời, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
-    "Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục giới thiệu cho mọi người nhé."
+    "Câu hỏi này mình chưa có thông tin chính xác, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
+    "Cảm ơn bạn đã quan tâm. Giờ mình tiếp tục giới thiệu cho mọi người nhé."
+)
+_CURRENT_PRODUCT_DEFLECTION = (
+    "Với sản phẩm đang giới thiệu, câu hỏi này mình chưa có thông tin chính xác để trả lời. "
+    "Bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. Giờ mình tiếp tục giới thiệu cho mọi người nhé."
+)
+_OTHER_PRODUCT_DEFLECTION = (
+    "Mình chưa có thông tin về mặt hàng này trong phần giới thiệu hôm nay. "
+    "Bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. Giờ mình tiếp tục giới thiệu cho mọi người nhé."
 )
 
 
 def deflection_for(question: str | None, facts: list[str]) -> str:
-    """Said when the approved facts cannot answer. It says what kind of question this is (a chat question
-    outside the shop talk, or a shop question the introduction does not cover) and goes back to the
-    product. It repeats nothing the viewer wrote."""
-    from ..platform_events.comment_intent import is_non_question
+    """Fixed, non-echoing fallback for positively identified shop/host questions only."""
     from .approved_speech import SpeechRejected
 
-    if question and is_non_question(question):
-        raise SpeechRejected("non_question")
-    if (question or "").strip() and is_off_topic(question or "", facts):
-        # Even a wrongly classified shop question is still sent to the shop by this text.
-        return _OFF_TOPIC_DEFLECTION
-    return _UNKNOWN_DEFLECTION
+    kind = question_kind(question, facts)
+    choices = {
+        "off_topic": _OFF_TOPIC_DEFLECTION,
+        "commerce": _UNKNOWN_DEFLECTION,
+        "current_product": _CURRENT_PRODUCT_DEFLECTION,
+        "other_product": _OTHER_PRODUCT_DEFLECTION,
+    }
+    if kind not in choices:
+        raise SpeechRejected(kind)
+    return choices[kind]
 
 
 def is_deflection(text: str | None) -> bool:
     """Whether a spoken answer is one of the fixed "cannot answer" texts (not an answer)."""
     from .approved_speech import DEFLECTION
 
-    return text in (DEFLECTION, _OFF_TOPIC_DEFLECTION, _UNKNOWN_DEFLECTION)
+    return text in (
+        DEFLECTION,
+        _OFF_TOPIC_DEFLECTION,
+        _UNKNOWN_DEFLECTION,
+        _CURRENT_PRODUCT_DEFLECTION,
+        _OTHER_PRODUCT_DEFLECTION,
+    )

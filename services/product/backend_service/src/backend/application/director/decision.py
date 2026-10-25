@@ -326,6 +326,7 @@ class Director:
         """
         s, c = self.state, self.cfg
         reducer_mode = ranked is not None
+        handled_comments = s.answered_comments | s.skipped_comments
         high_value = is_high_value or (lambda _cid: False)
         by_cluster = by_cluster or {}
         by_members: dict[tuple[str, ...], str] = {}
@@ -350,9 +351,7 @@ class Director:
                 item
                 for item in rank_clusters(clusters, s, c, now)
                 if not item.cluster.member_ids
-                or not all(
-                    member_id in s.answered_comments for member_id in item.cluster.member_ids
-                )
+                or not all(member_id in handled_comments for member_id in item.cluster.member_ids)
             ]
         else:
             window = []
@@ -397,7 +396,7 @@ class Director:
                     item
                     for item in ranked
                     if not any(
-                        member_id in s.answered_comments for member_id in item.cluster.member_ids
+                        member_id in handled_comments for member_id in item.cluster.member_ids
                     )
                 ]
             else:
@@ -405,7 +404,7 @@ class Director:
                     item
                     for item in rank_clusters(clusters, s, c, now)
                     if not any(
-                        member_id in s.answered_comments for member_id in item.cluster.member_ids
+                        member_id in handled_comments for member_id in item.cluster.member_ids
                     )
                 ]
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import os
 import time
@@ -44,7 +45,7 @@ from .clustering import Comment, cluster_comments
 from .decision import Decision, Director
 from .embeddings import embedder_status
 from .hooks import HookPool
-from .config import StreamConfig
+from .config import DEFLECTION_INTERVAL_SEC, StreamConfig
 from .scoring import rank_clusters
 from .session_context import DirectorRuntime
 from .routing import route_comment
@@ -204,6 +205,7 @@ class DirectorCoordinator:
         self._backoff: dict[tuple[str, str], tuple[int, float]] = {}
         self._backoff_members: dict[tuple[str, str], tuple[str, ...]] = {}
         self._monotonic = time.monotonic
+        self._last_deflection_started: dict[str, float] = {}
         self._opening_media: dict[str, dict] = {}
         # Optional Postgres runtime store (durable rows). None/disabled -> no
         # persistence. Fire-and-forget: a failure must never break the speak loop.
@@ -499,6 +501,7 @@ class DirectorCoordinator:
             del self._backoff[key]
             self._backoff_members.pop(key, None)
         self._opening_media.pop(session_id, None)
+        self._last_deflection_started.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
         # Drop the reducer's per-session state too (P0-FB-014): clusters,
@@ -561,6 +564,13 @@ class DirectorCoordinator:
         self._backoff[(session_id, key)] = (count, self._monotonic() + delay)
         if decision.cluster_member_ids and decision.source_cluster_id is None:
             self._backoff_members[(session_id, key)] = decision.cluster_member_ids
+
+    def _skip_response(self, session_id: str, decision: Decision, reason: str) -> None:
+        self.live_follow.skip_response(session_id, decision, reason)
+        self._record_cancelled(session_id, decision, reason)
+        ds = self._runtime._sessions.get(session_id)
+        if ds is not None:
+            ds.director.state.skipped_comments.update(decision.cluster_member_ids)
 
     def _record_cancelled(self, session_id: str, decision: Decision, reason: str) -> None:
         if decision.is_cancelled:
@@ -882,6 +892,16 @@ class DirectorCoordinator:
         }
         return result
 
+    def question_facts(self, session_id: str) -> list[str]:
+        """Approved product context for the cheap intake eligibility check."""
+        ds = self._runtime._sessions.get(session_id)
+        if ds is None or ds.approved_envelope is None:
+            return []
+        return [
+            str(json.loads(product.facts_json).get("product_name") or "")
+            for product in ds.approved_envelope.products
+        ]
+
     def cluster_snapshot(self, session_id: str) -> dict:
         """Return the exact active cluster set used by the session Director."""
         queue = self._queues.get(session_id)
@@ -907,7 +927,8 @@ class DirectorCoordinator:
             item.cluster
             for item in ranked
             if not any(
-                member_id in state.answered_comments for member_id in item.cluster.member_ids
+                member_id in (state.answered_comments | state.skipped_comments)
+                for member_id in item.cluster.member_ids
             )
         ]
         status = embedder_status(ds.embedder)
@@ -1333,8 +1354,11 @@ class DirectorCoordinator:
                 decision.action,
                 exc.code,
             )
-            self._note_rejected(session_id, decision)
-            self._record_cancelled(session_id, decision, exc.code)
+            if exc.code in {"non_question", "not_answerable_non_commerce", "safety_filtered"}:
+                self._skip_response(session_id, decision, exc.code)
+            else:
+                self._note_rejected(session_id, decision)
+                self._record_cancelled(session_id, decision, exc.code)
             if decision.unit_index is not None:
                 # Never let a later unit play ahead of the rejected one.
                 self._invalidate_queued(session_id, reason="unit_rejected")
@@ -1589,8 +1613,11 @@ class DirectorCoordinator:
                     exc.code,
                 )
                 st.skips += 1
-                self._note_rejected(session_id, decision)
-                self._record_cancelled(session_id, decision, exc.code)
+                if exc.code in {"non_question", "not_answerable_non_commerce", "safety_filtered"}:
+                    self._skip_response(session_id, decision, exc.code)
+                else:
+                    self._note_rejected(session_id, decision)
+                    self._record_cancelled(session_id, decision, exc.code)
                 if decision.unit_index is not None:
                     self._invalidate_queued(session_id, reason="unit_rejected")
                 await self._emit(
@@ -1621,10 +1648,33 @@ class DirectorCoordinator:
         if self._lock_registry.is_locked(session_id):
             return False
 
+        # Prepared fallbacks can wait in the queue together: enforce the session
+        # limit here at dispatch, never while preparing or via a topic cooldown.
+        from ..script_authoring.answer_context import is_deflection
+
+        ds = self._runtime._sessions.get(session_id)
+        fallback = decision.action in {"answer_cluster", "answer_fact"} and is_deflection(
+            speech.text if speech is not None else decision.prepared_script or decision.text
+        )
+        if fallback:
+            interval = (
+                ds.director.cfg.deflection_interval_sec
+                if ds is not None
+                else DEFLECTION_INTERVAL_SEC
+            )
+            last = self._last_deflection_started.get(session_id)
+            if last is not None and self._monotonic() - last < interval:
+                st.skips += 1
+                self._skip_response(session_id, decision, "deflection_rate_limited")
+                return True
+
         # 8. Try to acquire the lock.
         ok = self._lock_registry.try_acquire(session_id)
         if not ok:
             return False
+
+        if fallback:
+            self._last_deflection_started[session_id] = self._monotonic()
 
         # Stash the decision score for interrupt comparison.
         decision_score = float(decision.score)

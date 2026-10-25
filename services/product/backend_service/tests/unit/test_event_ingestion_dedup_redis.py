@@ -171,7 +171,7 @@ async def test_cross_process_distinct_events_no_lost_updates() -> None:
     service_a, service_b, store_a = _two_services(fake)
     await store_a.set("s1", {"status": "active"})
     now = time.time()
-    comment = PlatformEvent(**{**_event("conc-a", text="hello a"), "occurred_at": now})
+    comment = PlatformEvent(**{**_event("conc-a", text="size L? a"), "occurred_at": now})
     follow = PlatformEvent(
         **{**_event("conc-b", etype="viewer.follow", payload={"count": 1}), "occurred_at": now}
     )

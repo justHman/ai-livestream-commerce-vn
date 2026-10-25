@@ -69,7 +69,9 @@ async def test_multi_platform_batch_all_accepted() -> None:
 @pytest.mark.asyncio
 async def test_burst_100_events_all_accepted() -> None:
     service, _ = await _fresh_service()
-    events = [PlatformEvent(**_event(f"burst-{i}", text=f"comment {i}")) for i in range(100)]
+    events = [
+        PlatformEvent(**_event(f"burst-{i}", text=f"size L? comment {i}")) for i in range(100)
+    ]
     result = await service.ingest("s1", events)
 
     assert result["accepted"] == 100
@@ -131,13 +133,13 @@ async def test_reordered_delivery_all_accepted_order_independent() -> None:
     events = [
         PlatformEvent(
             **{
-                **_event("late", text="late comment", viewer_id="u2"),
+                **_event("late", text="size L? late comment", viewer_id="u2"),
                 "occurred_at": now - 60.0,
             }
         ),
         PlatformEvent(
             **{
-                **_event("early", text="early comment", viewer_id="u1"),
+                **_event("early", text="size L? early comment", viewer_id="u1"),
                 "occurred_at": now - 300.0,
             }
         ),
@@ -231,9 +233,9 @@ async def test_unique_viewer_key_normalization_across_events() -> None:
     await service.ingest(
         "s1",
         [
-            PlatformEvent(**{**_event("k1", text="a", viewer_id="v1")}),
-            PlatformEvent(**{**_event("k2", text="b", viewer_id="v1")}),
-            PlatformEvent(**{**_event("k3", text="c", viewer_id="v2")}),
+            PlatformEvent(**{**_event("k1", text="size L? a", viewer_id="v1")}),
+            PlatformEvent(**{**_event("k2", text="size L? b", viewer_id="v1")}),
+            PlatformEvent(**{**_event("k3", text="size L? c", viewer_id="v2")}),
         ],
     )
     meta = await store.get("s1")
@@ -471,8 +473,8 @@ async def test_coordinator_attach_race_yields_routed_not_accepted_without_coordi
     result = await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("race-1", text="first")),
-            PlatformEvent(**_event("race-2", text="second")),
+            PlatformEvent(**_event("race-1", text="size L? first")),
+            PlatformEvent(**_event("race-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -509,7 +511,7 @@ async def test_full_queue_is_not_reported_as_success() -> None:
     store = InMemorySessionStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=coordinator)
-    event = PlatformEvent(**_event("qf-1", text="overflow"))
+    event = PlatformEvent(**_event("qf-1", text="size L? overflow"))
     result = await service.ingest("s1", [event], delivery_outcomes_v1=True)
     item = result["events"][0]
 
@@ -747,12 +749,12 @@ async def test_second_session_routed_work_is_reconciled_on_its_own_teardown() ->
 
         assert (
             await service.ingest(
-                "s1", [PlatformEvent(**_event("ms-1", text="a"))], delivery_outcomes_v1=True
+                "s1", [PlatformEvent(**_event("ms-1", text="size L? a"))], delivery_outcomes_v1=True
             )
         )["events"][0]["status"] == "routed"
         assert (
             await service.ingest(
-                "s2", [PlatformEvent(**_event("ms-2", text="b"))], delivery_outcomes_v1=True
+                "s2", [PlatformEvent(**_event("ms-2", text="size L? b"))], delivery_outcomes_v1=True
             )
         )["events"][0]["status"] == "routed"
 
@@ -809,7 +811,7 @@ async def test_bulk_teardown_reconciles_every_session_its_own_fence() -> None:
             assert (
                 await service.ingest(
                     sid,
-                    [PlatformEvent(**_event(f"bulk-ms-{index}", text="x"))],
+                    [PlatformEvent(**_event(f"bulk-ms-{index}", text="size L? x"))],
                     delivery_outcomes_v1=True,
                 )
             )["events"][0]["status"] == "routed"
@@ -1100,7 +1102,7 @@ async def test_routed_delivery_path_never_mutates_occurred_at() -> None:
     second_at = time.time() - 90.0
     await service.ingest(
         "s1",
-        [PlatformEvent(**_event("ts-2", text="hi2", occurred_at=second_at))],
+        [PlatformEvent(**_event("ts-2", text="size L? hi2", occurred_at=second_at))],
         delivery_outcomes_v1=True,
     )
     await service.reconcile_session("s1", attach_seq=coordinator.next_delivery_tick())
@@ -1279,8 +1281,8 @@ async def test_teardown_mid_batch_keeps_earlier_outcomes_and_reports_not_ready()
     result = await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("b-1", text="first")),
-            PlatformEvent(**_event("b-2", text="second")),
+            PlatformEvent(**_event("b-1", text="size L? first")),
+            PlatformEvent(**_event("b-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -1309,8 +1311,8 @@ async def test_teardown_mid_batch_does_not_lose_earlier_delivery_on_retry() -> N
     await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("b-1", text="first")),
-            PlatformEvent(**_event("b-2", text="second")),
+            PlatformEvent(**_event("b-1", text="size L? first")),
+            PlatformEvent(**_event("b-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -1318,8 +1320,8 @@ async def test_teardown_mid_batch_does_not_lose_earlier_delivery_on_retry() -> N
     retry = await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("b-1", text="first")),
-            PlatformEvent(**_event("b-2", text="second")),
+            PlatformEvent(**_event("b-1", text="size L? first")),
+            PlatformEvent(**_event("b-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -1346,8 +1348,8 @@ async def test_legacy_contract_still_fails_the_batch_on_error() -> None:
         await service.ingest(
             "s1",
             [
-                PlatformEvent(**_event("b-1", text="first")),
-                PlatformEvent(**_event("b-2", text="second")),
+                PlatformEvent(**_event("b-1", text="size L? first")),
+                PlatformEvent(**_event("b-2", text="size L? second")),
             ],
         )
 
@@ -1378,7 +1380,7 @@ async def test_real_chat_queue_overflow_is_retryable_never_evicting() -> None:
         def batch(prefix, n):
             return [
                 p0_event(
-                    f"{prefix}-{i}",
+                    f"size L? {prefix}-{i}",
                     event_id=f"{prefix}-{i}",
                     source_message_id=f"msg-{prefix}-{i}",
                 )
@@ -1397,7 +1399,7 @@ async def test_real_chat_queue_overflow_is_retryable_never_evicting() -> None:
             assert "comment_id" not in item
         # Nothing evicted, reordered, or reported delivered that was not queued.
         assert [c.id for c in queue.snapshot()] == queued_ids
-        assert [c.text for c in queue.snapshot()][0] == "fill-0"
+        assert [c.text for c in queue.snapshot()][0] == "size L? fill-0"
         assert len(queue) == size
         assert {i["comment_id"] for i in fill["events"]} == set(queued_ids)
         assert queue.stats()["received_total"] == size

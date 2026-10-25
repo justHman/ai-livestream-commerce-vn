@@ -316,7 +316,6 @@ def test_fixed_remarks_are_category_neutral_so_any_product_can_use_them():
 
 
 FACTS = ["Vải denim dày dặn, bền", "Giao hàng toàn quốc từ 2 đến 3 ngày", "Kích cỡ: M, L, XL"]
-SHOP_FALLBACK = "Mình thấy có bạn hỏi một câu rất cụ thể về sản phẩm."
 CHAT_FALLBACK = "Mình thấy có bạn hỏi một chuyện hơi ngoài lề"
 
 
@@ -344,24 +343,26 @@ def test_a_personal_question_to_the_host_is_set_aside_politely(comment):
     "comment",
     [
         "áo này có túi trong không ạ",
-        "có tốt không",
         "có chống nước không",
         "có sẵn không",
         "còn không shop",
         "shop ở đâu vậy",
-        "shop bảo đảm không lừa khách chứ",
         "shop lấy một trăm nghìn chứ",
         "shop không lấy đồng nào chứ",
         "shop miễn phí ship toàn bộ đơn không ạ",
-        "",
     ],
 )
-def test_every_other_question_goes_to_the_shop_and_is_never_called_off_topic(comment):
-    from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
+def test_explicit_shop_question_uses_a_neutral_fallback(comment):
+    from backend.application.script_authoring.answer_context import (
+        deflection_for,
+        is_deflection,
+        is_off_topic,
+    )
 
     assert not is_off_topic(comment, FACTS)
     said = deflection_for(comment, FACTS)
-    assert said.startswith(SHOP_FALLBACK)
+    assert is_deflection(said)
+    assert "rất cụ thể" not in said and "rất chi tiết" not in said
     assert "chưa có thông tin chính xác" in said and "nhắn tin cho shop" in said
 
 
@@ -371,6 +372,7 @@ def test_every_other_question_goes_to_the_shop_and_is_never_called_off_topic(com
         "có tốt không? Shop miễn phí toàn bộ đơn hàng.",
         "shop không thu phí ship toàn bộ đơn hàng",
         "shop lừa đảo phải không",
+        "shop bảo đảm không lừa khách chứ",
         "đồ ngu có phải không",
         "chị Lan sống ở đường Hoa Phượng hả",
         "gọi 0912345678 nha",
@@ -381,8 +383,13 @@ def test_every_other_question_goes_to_the_shop_and_is_never_called_off_topic(com
 )
 def test_nothing_the_viewer_wrote_is_ever_spoken_back(comment):
     from backend.application.script_authoring.answer_context import deflection_for
+    from backend.application.script_authoring.approved_speech import SpeechRejected
 
-    said = deflection_for(comment, FACTS).lower()
+    try:
+        said = deflection_for(comment, FACTS).lower()
+    except SpeechRejected as exc:
+        assert exc.code in {"non_question", "not_answerable_non_commerce", "safety_filtered"}
+        return
     words = re.findall(r"\w+", comment.lower())
     for i in range(
         len(words) - 1
@@ -402,6 +409,15 @@ def test_nothing_the_viewer_wrote_is_ever_spoken_back(comment):
         "someone",
     ):
         assert word not in said
+
+
+@pytest.mark.parametrize("comment", ["", "có tốt không"])
+def test_ambiguous_comment_has_no_shop_fallback(comment):
+    from backend.application.script_authoring.answer_context import deflection_for
+    from backend.application.script_authoring.approved_speech import SpeechRejected
+
+    with pytest.raises(SpeechRejected):
+        deflection_for(comment, FACTS)
 
 
 def test_the_fixed_remarks_never_flatter_the_viewer():

@@ -116,8 +116,8 @@ async def test_concurrent_distinct_event_ids_both_persisted() -> None:
     store = _BarrierStore({"status": "active"})
     service = PlatformEventIngestionService(store=store)
     now = time.time()
-    event_a = PlatformEvent(**{**_event("conc-a", text="hello a"), "occurred_at": now})
-    event_b = PlatformEvent(**{**_event("conc-b", text="hello b"), "occurred_at": now})
+    event_a = PlatformEvent(**{**_event("conc-a", text="size L? a"), "occurred_at": now})
+    event_b = PlatformEvent(**{**_event("conc-b", text="size L? b"), "occurred_at": now})
 
     async def ingest_one(event: PlatformEvent) -> dict:
         return await service.ingest("s1", [event])

@@ -258,9 +258,9 @@ async def test_generated_speech_buffered_before_any_audio(case_factory, cloud):
 
 def _is_deflection(said: str) -> bool:
     """The viewer-question fallback: it names the question and returns to the product, with no claim."""
-    return said.startswith("Mình thấy có bạn") and (
-        "chưa có thông tin chính xác" in said or "ngoài lề" in said
-    )
+    from backend.application.script_authoring.answer_context import is_deflection
+
+    return is_deflection(said)
 
 
 def _only_deflection(case) -> bool:
