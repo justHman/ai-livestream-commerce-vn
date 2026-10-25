@@ -46,6 +46,7 @@ REASON_CODES = frozenset(
         "unclassified",
         "expired",
         "non_actionable",
+        "non_question",
         "duplicate_content",
         "safety_filtered",
         "session_closing",

@@ -808,6 +808,7 @@ async def test_reducer_membership_events_and_snapshot_endpoint(case_factory, mon
         ("occurred_at_out_of_range", "expired"),
         ("replay_flood", "duplicate_content"),
         ("profanity", "safety_filtered"),
+        ("non_question", "non_question"),
     ],
 )
 async def test_intake_rejections_map_to_normalized_reasons(reason, code):

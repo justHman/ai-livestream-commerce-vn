@@ -300,9 +300,9 @@ async def test_failed_routing_does_not_spend_retry_safety_budget(case_factory, m
     monkeypatch.setattr(case.d.coordinator, "ingest", failing)
     for _ in range(6):
         with pytest.raises(RuntimeError, match="temporarily unavailable"):
-            await case.d.event_ingestion.ingest(case.sid, [event()])
+            await case.d.event_ingestion.ingest(case.sid, [event("size L?")])
     monkeypatch.setattr(case.d.coordinator, "ingest", ingest)
-    assert (await case.d.event_ingestion.ingest(case.sid, [event()]))["accepted"] == 1
+    assert (await case.d.event_ingestion.ingest(case.sid, [event("size L?")]))["accepted"] == 1
 
 
 @pytest.mark.asyncio

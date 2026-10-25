@@ -598,6 +598,10 @@ class ApprovedSpeech:
             question = (
                 question_text or text
             )  # the viewer's words, before the answer replaces `text`
+            from ..platform_events.comment_intent import is_non_question
+
+            if is_non_question(question):
+                raise SpeechRejected("non_question")
             direct = (
                 factual_reply(candidates[0], question_text, completed_text)
                 if len(candidates) == 1 and question_text

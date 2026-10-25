@@ -101,7 +101,7 @@ One terminal per `turn_id` (first terminal wins; a late failure never overwrites
 ```
 `comment_ids` (Runtime ids, <= 200 per event) or `event_ids` (comments refused at intake,
 which never got a Runtime id). `reason_code` allowlist: `topic_recently_answered,
-unclassified, expired, non_actionable, duplicate_content, safety_filtered,
+unclassified, expired, non_actionable, non_question, duplicate_content, safety_filtered,
 session_closing, session_closed, capacity_exceeded, delivery_failed, turn_cancelled,
 turn_failed`; anything else is sent as `unknown` with `final=false` (never upstream text).
 
@@ -117,6 +117,7 @@ Emitted today (others in the allowlist are reserved for the API/future work):
 | Left the store earlier (cluster/member bound), unanswered | skipped | `capacity_exceeded` | true |
 | Left the store after a cooldown deferral | skipped | `topic_recently_answered` | true |
 | Cluster intent spam/off_topic/social (never selectable) | skipped | `non_actionable` | true |
+| Social chat at intake | skipped (`event_ids`) | `non_question` | true |
 | Runtime SafetyGate refusal at intake | skipped (`event_ids`) | `safety_filtered` | true |
 | Stale / replay-flood refusal at intake | skipped (`event_ids`) | `expired` / `duplicate_content` | true |
 | Execution fence `closing` / `ending` | skipped | `session_closing` / `session_closed` | true |
@@ -211,3 +212,5 @@ pending -> "Dang cho AI"; selected -> "AI dang chuan bi tra loi chung"; answered
 `member_count`; N=1 -> "AI da phan hoi"); answered + `deflection` -> "AI da phan hoi,
 chua du thong tin"; skipped final -> "Khong tra loi" + short reason (`safety_filtered`
 -> "Da loc"); deferred -> "Dang cho"; anything unknown or missing -> "Chua xac nhan".
+
+Social chat refused before reducer uses final `non_question` (Studio: skipped label).

@@ -151,7 +151,7 @@ async def test_cross_process_same_event_id_accepted_exactly_once() -> None:
     service_a._reducer = reducer_a
     service_b._reducer = reducer_b
     now = time.time()
-    event = PlatformEvent(**{**_event("dup-cross", text="hello"), "occurred_at": now})
+    event = PlatformEvent(**{**_event("dup-cross", text="size L?"), "occurred_at": now})
 
     async def ingest_on(service: PlatformEventIngestionService) -> dict:
         return await service.ingest("s1", [event])
@@ -201,7 +201,7 @@ async def test_cross_process_lock_timeout_raises_typed_error() -> None:
     assert await store.acquire_session_lock("s1", "holder-token", ttl_seconds=10)
 
     now = time.time()
-    event = PlatformEvent(**{**_event("timeout-event", text="hi"), "occurred_at": now})
+    event = PlatformEvent(**{**_event("timeout-event", text="size L?"), "occurred_at": now})
     with pytest.raises(SessionLockTimeout):
         await service.ingest("s1", [event])
 
@@ -308,7 +308,7 @@ async def test_non_fenced_memory_path_unchanged() -> None:
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store)
     now = time.time()
-    event = PlatformEvent(**{**_event("mem-1", text="hi"), "occurred_at": now})
+    event = PlatformEvent(**{**_event("mem-1", text="size L?"), "occurred_at": now})
     result = await service.ingest("s1", [event])
     assert result["accepted"] == 1
     assert _seen_ids(await store.get("s1")) == ["mem-1"]
@@ -341,6 +341,8 @@ def test_sessions_events_lock_timeout_returns_503() -> None:
     from backend.main import create_app
 
     with TestClient(create_app(config=config, deps=deps)) as client:
-        r = client.post("/api/v1/sessions/s1/events", json={"events": [_event("e1", text="hello")]})
+        r = client.post(
+            "/api/v1/sessions/s1/events", json={"events": [_event("e1", text="size L?")]}
+        )
 
     assert r.status_code == 503

@@ -149,7 +149,7 @@ async def test_p0_missing_binding_and_legacy_cannot_enter_p0_session():
     store = InMemorySessionStore()
     await store.set("runtime-1", {"platform_event_binding": BINDING})
     service = PlatformEventIngestionService(store=store)
-    legacy = event().model_dump(
+    legacy = event("size L?").model_dump(
         exclude={
             "contract_version",
             "tenant_id",

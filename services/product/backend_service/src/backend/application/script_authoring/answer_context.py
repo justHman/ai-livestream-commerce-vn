@@ -234,6 +234,11 @@ def deflection_for(question: str | None, facts: list[str]) -> str:
     """Said when the approved facts cannot answer. It says what kind of question this is (a chat question
     outside the shop talk, or a shop question the introduction does not cover) and goes back to the
     product. It repeats nothing the viewer wrote."""
+    from ..platform_events.comment_intent import is_non_question
+    from .approved_speech import SpeechRejected
+
+    if question and is_non_question(question):
+        raise SpeechRejected("non_question")
     if (question or "").strip() and is_off_topic(question or "", facts):
         # Even a wrongly classified shop question is still sent to the shop by this text.
         return _OFF_TOPIC_DEFLECTION
