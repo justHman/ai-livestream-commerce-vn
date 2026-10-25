@@ -184,10 +184,18 @@ Runtime restart loses it (the API's own persisted projection is the durable reco
 
 ## Behaviour notes
 
-* A retired session (stop / re-attach) stops its drain: facts already queued (closing
-  outcomes) may still go out for 3 s, and never once a new generation of the same session
-  id exists. Per-session state is bounded (2000 comments, 40 turns, revisions only for live
-  clusters).
+* Retire (stop / re-attach) drops queued facts, including unsent closing outcomes,
+  and cancels the drain and its in-flight hub send. A replacement shares the session's
+  send lock and waits for that send to unwind before emitting its own facts. This
+  prevents an old application send from completing after a new-generation send.
+  Bytes already handed to the transport/kernel cannot be recalled: consumers must
+  scope by the authoritative `stream_epoch`, reject retired epochs and apply increasing
+  `follow_sequence` within that epoch (reconcile on epoch changes; do not switch back
+  to an epoch already retired).
+* Live comment metadata (platform timestamp, key and state) is pinned to reducer
+  membership, bounded by its configured `max_active_clusters * max_members_per_cluster`
+  (defaults: 40 * 200). Separate history keeps at most 2000 departed/other comments;
+  turns are bounded at 40, and cluster revisions only cover live clusters.
 * Closing/ending is re-applied every tick and on every membership sync, so a comment that
   arrives under the fence is also finalized.
 * Expiry vs capacity uses the platform timestamp the recorder keeps from the first time it

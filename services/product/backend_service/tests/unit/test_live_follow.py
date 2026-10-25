@@ -448,15 +448,12 @@ async def test_reattach_never_emits_events_of_the_old_generation():
     await recorder.flush("s")
     await asyncio.sleep(0.01)
     old = [e for e in sent if e["stream_epoch"] == old_epoch]
-    assert len(old) <= 1  # only the event already inside emit when the session was replaced
+    assert old == []
     assert [e["event_ids"] for e in sent if e["stream_epoch"] != old_epoch] == [["new0"]]
 
 
 @pytest.mark.asyncio
-async def test_retired_backlog_is_dropped_after_the_grace_period(monkeypatch):
-    from backend.application.live_follow import recorder as module
-
-    monkeypatch.setattr(module, "RETIRE_GRACE_SEC", 0.0)
+async def test_retired_backlog_and_inflight_send_are_cancelled():
     sent: list[dict] = []
     gate = asyncio.Event()
 
@@ -472,7 +469,7 @@ async def test_retired_backlog_is_dropped_after_the_grace_period(monkeypatch):
     recorder.retire("s")
     gate.set()
     await asyncio.sleep(0.01)
-    assert len(sent) <= 1
+    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -593,6 +590,7 @@ async def test_long_session_state_stays_bounded():
     assert len(state.cluster_revision) <= 60
     assert len(state.tick_deferred) <= COMMENT_HISTORY
     assert len(state.comments) <= COMMENT_HISTORY
+    assert len(state.live_comments) == len(live)
     assert len(state.queue) <= QUEUE_MAX and len(state.membership) <= 30
 
 
@@ -834,3 +832,189 @@ def test_only_the_fixed_texts_count_as_deflection():
     assert is_deflection(deflection_for("bảo hành mấy năm", []))
     assert is_deflection(deflection_for("bitcoin giá bao nhiêu", []))
     assert not is_deflection(CLAIM)
+
+
+@pytest.mark.asyncio
+async def test_restart_cancels_inflight_control_hub_send_before_new_epoch():
+    from backend.api.v1.hub import ControlHub
+    from backend.application.director.coordinator import DirectorCoordinator
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    sent = []
+
+    class Socket:
+        async def accept(self):
+            pass
+
+        async def send_json(self, event):
+            if event["event_ids"] == ["old"]:
+                entered.set()
+                await release.wait()
+            sent.append(event)
+
+    hub = ControlHub()
+    await hub.connect("s", Socket())
+    coordinator = object.__new__(DirectorCoordinator)
+    coordinator._hub = hub
+    recorder = LiveFollowRecorder(emit=coordinator._emit, enabled=True)
+    recorder.begin("s")
+    recorder.rejected_before_runtime("s", "old", "expired")
+    old_task = recorder._sessions["s"].task
+    await asyncio.wait_for(entered.wait(), 1)
+    recorder.retire("s")
+    recorder.begin("s")
+    recorder.rejected_before_runtime("s", "new", "expired")
+    await recorder.flush("s")
+    release.set()
+    await asyncio.gather(old_task, return_exceptions=True)
+    assert [event["event_ids"] for event in sent] == [["new"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expire_all", [False, True])
+async def test_real_reducer_keeps_metadata_for_2100_live_members(expire_all, caplog):
+    from backend.application.reducer import FastReducer, FastReducerConfig
+    from backend.application.live_follow.recorder import COMMENT_HISTORY
+
+    class Embedder:
+        def encode(self, texts):
+            # 21 distinct clusters of 100, within the real store's configured bounds.
+            return [[float(i == int(text.split()[-1])) for i in range(21)] for text in texts]
+
+    recorder, sent = _recorder()
+    clock = [1002.0]
+    reducer = FastReducer(
+        embedder=Embedder(),
+        now_fn=lambda: clock[0],
+        config=FastReducerConfig(max_pending=2100, max_members_per_cluster=100),
+    )
+    reducer.membership_observer = lambda sid, store, now: recorder.sync_membership(
+        sid,
+        store.membership(),
+        lambda cid: reducer.comment_provenance(sid, cid),
+        now=now,
+        horizon_sec=store.config.rolling_horizon_sec,
+        force=True,
+    )
+    for index in range(2100):
+        reducer.notify_new_events(
+            "s",
+            comment=AcceptedComment(
+                event_id=f"e{index}",
+                comment_id=f"c{index}",
+                text=f"question {index // 100}",
+                ts=1000.0 if index == 0 else 1002.0,
+                provenance=_prov(f"c{index}")[1],
+            ),
+        )
+    await reducer.run_once("s", clock[0])
+    assert len(reducer.session_store("s").membership()) == 2100
+    await _drain(recorder, sent)
+    sent.clear()
+    clock[0] = 1078.0 if expire_all else 1076.0
+    # Real reducer read-path expiry also removes its provenance before observing.
+    reducer.session_store("s").expire(clock[0])
+    reducer._prune(reducer._sessions["s"], "s")
+    reducer._observe_membership("s", reducer.session_store("s"), clock[0])
+    events = await _drain(recorder, sent)
+    skipped = [event for event in events if event["type"].endswith("comment.skipped")]
+    assert {event["reason_code"] for event in skipped} == {"expired"}
+    expected = {f"c{i}" for i in range(2100)} if expire_all else {"c0"}
+    actual = [cid for event in skipped for cid in event["comment_ids"]]
+    assert set(actual) == expected and len(actual) == len(expected)
+    removed = [change for event in events for change in event.get("changes", [])]
+    assert next(change for change in removed if change["comment_id"] == "c0")["comment_key"]
+    assert "KeyError" not in caplog.text
+    state = recorder._sessions["s"]
+    assert len(state.comments) <= COMMENT_HISTORY
+    assert len(state.live_comments) == (0 if expire_all else 2099)
+
+
+def test_skip_missing_metadata_is_safe_and_logged(caplog):
+    recorder, _ = _recorder()
+    state = recorder._sessions["s"]
+    recorder._skip("s", state, ["missing"], "expired", True)
+    assert "skip missing comment metadata" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_repeated_restart_waits_for_slow_send_cancellation():
+    from backend.api.v1.hub import ControlHub
+    from backend.application.director.coordinator import DirectorCoordinator
+
+    entered, cancelling, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    sent = []
+
+    class Socket:
+        async def accept(self):
+            pass
+
+        async def send_json(self, event):
+            if event["event_ids"] == ["old"]:
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelling.set()
+                    await release.wait()  # a transport with slow cancellation cleanup
+            sent.append(event)
+
+    hub = ControlHub()
+    await hub.connect("s", Socket())
+    coordinator = object.__new__(DirectorCoordinator)
+    coordinator._hub = hub
+    recorder = LiveFollowRecorder(emit=coordinator._emit, enabled=True)
+    recorder.begin("s")
+    recorder.rejected_before_runtime("s", "old", "expired")
+    await asyncio.wait_for(entered.wait(), 1)
+    recorder.retire("s")
+    await asyncio.wait_for(cancelling.wait(), 1)
+    # Replace twice while the oldest send is still unwinding.
+    recorder.begin("s")
+    recorder.rejected_before_runtime("s", "middle", "expired")
+    middle = recorder._sessions["s"].task
+    recorder.retire("s")
+    await asyncio.gather(middle, return_exceptions=True)
+    recorder.begin("s")
+    recorder.rejected_before_runtime("s", "new", "expired")
+    latest = recorder._sessions["s"].task
+    await asyncio.sleep(0)
+    assert sent == [] and not latest.done()
+    release.set()
+    await recorder.flush("s")
+    assert [event["event_ids"] for event in sent] == [["old"], ["new"]]
+    await asyncio.sleep(0)
+    assert recorder._retiring == {}
+
+
+@pytest.mark.asyncio
+async def test_snapshot_orders_live_members_and_history_by_latest_fact():
+    recorder, sent = _recorder()
+    recorder.sync_membership(
+        "s",
+        {"old": ("cl-1", "price")},
+        _prov,
+        now=time.time(),
+        horizon_sec=75,
+        force=True,
+    )
+    recorder.sync_membership(
+        "s",
+        {},
+        _prov,
+        now=time.time(),
+        horizon_sec=75,
+        force=True,
+    )
+    recorder.sync_membership(
+        "s",
+        {"new": ("cl-2", "price")},
+        _prov,
+        now=time.time(),
+        horizon_sec=75,
+        force=True,
+    )
+    events = await _drain(recorder, sent)
+    comments = recorder.snapshot("s")["comments"]
+    assert [comment["comment_id"] for comment in comments] == ["old", "new"]
+    assert comments[-1]["updated_sequence"] == events[-1]["follow_sequence"]

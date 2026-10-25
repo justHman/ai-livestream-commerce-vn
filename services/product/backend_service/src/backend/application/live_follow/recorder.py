@@ -82,9 +82,6 @@ COMMENT_HISTORY = 2000
 SNAPSHOT_COMMENTS = 200
 TURN_HISTORY = 10
 MEMBERSHIP_SYNC_MIN_INTERVAL_SEC = 1.0
-# After a session is retired its already queued facts (e.g. the closing outcomes) may still
-# drain for this long; anything later, or anything once a new generation exists, is dropped.
-RETIRE_GRACE_SEC = 3.0
 
 EmitFn = Callable[[str, dict], Awaitable[None]]
 
@@ -212,7 +209,9 @@ class _Session:
         self.dropped = 0
         self.queue: deque[dict] = deque()
         self.task: Optional[asyncio.Task] = None
-        self.comments: "OrderedDict[str, _Comment]" = OrderedDict()
+        self.send_lock = asyncio.Lock()  # shared across replacements of this session id
+        self.comments: "OrderedDict[str, _Comment]" = OrderedDict()  # bounded history
+        self.live_comments: dict[str, _Comment] = {}  # pinned by reducer membership
         self.membership: dict[str, str] = {}  # comment_id -> cluster_id (live)
         self.membership_revision = 0
         self.cluster_revision: dict[str, int] = {}
@@ -223,7 +222,6 @@ class _Session:
         self.closing_reason: Optional[str] = None
         self.last_sync = 0.0
         self.tick_deferred: set[str] = set()
-        self.retired_at: Optional[float] = None
 
 
 class LiveFollowRecorder:
@@ -233,6 +231,7 @@ class LiveFollowRecorder:
         self.enabled = enabled_from_env() if enabled is None else bool(enabled)
         self._emit = emit
         self._sessions: dict[str, _Session] = {}
+        self._retiring: dict[str, set[_Session]] = {}
 
     # ------------------------------------------------------------------ plumbing
 
@@ -245,13 +244,33 @@ class LiveFollowRecorder:
     def begin(self, session_id: str) -> None:
         """Start recording for an attached session (a late event of a stopped one is dropped)."""
         if self.enabled and session_id not in self._sessions:
-            self._sessions[session_id] = _Session()
+            state = _Session()
+            previous = self._retiring.get(session_id)
+            if previous:
+                state.send_lock = next(iter(previous)).send_lock
+            self._sessions[session_id] = state
 
     def retire(self, session_id: str) -> None:
-        """Stop recording; queued facts drain for RETIRE_GRACE_SEC unless a new generation starts."""
+        """Drop queued facts and cancel the drain, including any in-flight hub send."""
         state = self._sessions.pop(session_id, None)
-        if state is not None:
-            state.retired_at = time.monotonic()
+        if state is None:
+            return
+        state.queue.clear()
+        if state.task is not None and not state.task.done():
+            self._retiring.setdefault(session_id, set()).add(state)
+            state.task.cancel()
+
+            def finished(task: asyncio.Task) -> None:
+                # Retrieve completion without propagating cancellation to another generation.
+                if not task.cancelled():
+                    task.exception()
+                retiring = self._retiring.get(session_id)
+                if retiring is not None:
+                    retiring.discard(state)
+                    if not retiring:
+                        self._retiring.pop(session_id, None)
+
+            state.task.add_done_callback(finished)
 
     def bind(self, session_id: str, identity: Optional[dict]) -> None:
         """Remember tenant/business session/generation for the envelope (IDs only)."""
@@ -321,26 +340,23 @@ class LiveFollowRecorder:
 
     async def _drain(self, session_id: str, state: _Session) -> None:
         try:
-            while state.queue and self._deliverable(session_id, state):
-                event = state.queue.popleft()
-                await self._emit(session_id, event)  # the coordinator's emit is time-boxed
-            if not self._deliverable(session_id, state):
-                state.queue.clear()
+            # A replacement waits for cancellation of the old emit (wait_for also
+            # awaits its hub child). Holding this lock until emit unwinds prevents
+            # even a slow cancellation handler from delivering OLD after NEW.
+            async with state.send_lock:
+                while state.queue and self._deliverable(session_id, state):
+                    event = state.queue.popleft()
+                    await self._emit(session_id, event)
+                if not self._deliverable(session_id, state):
+                    state.queue.clear()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("live_follow drain failed error=%s", type(exc).__name__)
 
     def _deliverable(self, session_id: str, state: _Session) -> bool:
-        """Generation fence: a replaced or long-retired session's facts are never sent."""
-        current = self._sessions.get(session_id)
-        if current is state:
-            return True
-        if current is not None:
-            return False  # a newer generation owns this session id
-        return (
-            state.retired_at is not None and time.monotonic() - state.retired_at < RETIRE_GRACE_SEC
-        )
+        """Generation fence: a replaced or retired session's facts are never sent."""
+        return self._sessions.get(session_id) is state
 
     async def flush(self, session_id: str) -> None:
         state = self._sessions.get(session_id)
@@ -350,14 +366,24 @@ class LiveFollowRecorder:
     # ------------------------------------------------------------------ comments
 
     def _comment(self, state: _Session, comment_id: str) -> _Comment:
+        comment = state.live_comments.get(comment_id)
+        if comment is not None:
+            return comment
         comment = state.comments.get(comment_id)
         if comment is None:
-            comment = state.comments[comment_id] = _Comment(comment_id, None, None)
-            while len(state.comments) > COMMENT_HISTORY:
-                evicted, _ = state.comments.popitem(last=False)
-                state.tick_deferred.discard(evicted)
-        state.comments.move_to_end(comment_id)
+            comment = _Comment(comment_id, None, None)
+        self._remember(state, comment)
         return comment
+
+    def _remember(self, state: _Session, comment: _Comment) -> None:
+        state.comments[comment.comment_id] = comment
+        state.comments.move_to_end(comment.comment_id)
+        while len(state.comments) > COMMENT_HISTORY:
+            evicted, _ = state.comments.popitem(last=False)
+            state.tick_deferred.discard(evicted)
+
+    def _known(self, state: _Session, cid: str) -> Optional[_Comment]:
+        return state.live_comments.get(cid) or state.comments.get(cid)
 
     def _set(
         self,
@@ -408,6 +434,8 @@ class LiveFollowRecorder:
             if before == cluster_id:
                 continue
             comment = self._comment(state, comment_id)
+            state.live_comments[comment_id] = comment
+            state.comments.pop(comment_id, None)
             record = provenance(comment_id)
             if record is not None:
                 comment.event_id = record[0]
@@ -471,17 +499,27 @@ class LiveFollowRecorder:
                 for change in chunk:
                     cluster_id = change["cluster_id"] or change["previous_cluster_id"]
                     change["cluster_revision"] = state.cluster_revision.get(cluster_id)
-                self._publish(
+                sequence = self._publish(
                     session_id,
                     state,
                     "comment.cluster_assigned",
                     f"assign:{state.membership_revision}:{index // CHANGES_PER_EVENT}",
                     {"membership_revision": state.membership_revision, "changes": chunk},
                 )
+                for change in chunk:
+                    comment = self._known(state, change["comment_id"])
+                    if comment is not None:
+                        comment.seq = sequence
         self._skip(session_id, state, non_actionable, "non_actionable", True)
         self._skip(session_id, state, expired, "expired", True)
         self._skip(session_id, state, capacity, "capacity_exceeded", True)
         self._skip(session_id, state, recently, "topic_recently_answered", True)
+        # Keep every live member, bounded by the reducer's configured cluster/member
+        # limits, independently of the bounded history of members that left.
+        for cid in gone:
+            comment = state.live_comments.pop(cid, None)
+            if comment is not None:
+                self._remember(state, comment)
         # Retention: revisions only for clusters that still exist.
         state.cluster_revision = {
             cid: rev
@@ -506,16 +544,20 @@ class LiveFollowRecorder:
             if reason == "topic_cooldown"
             for cid in ids
             if cid not in state.tick_deferred
-            and (state.comments.get(cid) is None or state.comments[cid].state == "pending")
+            and (self._known(state, cid) is None or self._known(state, cid).state == "pending")
         ]
         if waiting:
             state.tick_deferred.update(waiting)
             self._defer(session_id, state, waiting, "topic_recently_answered")
 
     def _defer(self, session_id: str, state: _Session, ids: list[str], reason: str, turn_id=None):
-        ids = [cid for cid in ids if not self._comment(state, cid).final]
+        fresh = []
         for cid in ids:
-            self._set(state, state.comments[cid], "deferred", reason, False, turn_id)
+            comment = self._comment(state, cid)
+            if not comment.final:
+                self._set(state, comment, "deferred", reason, False, turn_id)
+                fresh.append(cid)
+        ids = fresh
         self._chunked(session_id, state, "comment.deferred", ids, reason, False, turn_id)
 
     def _skip(
@@ -529,9 +571,15 @@ class LiveFollowRecorder:
         event_ids: Iterable[str] = (),
     ) -> None:
         reason, final = normalize_reason(reason, final)
-        fresh = [cid for cid in ids if not self._comment(state, cid).final]
-        for cid in fresh:
-            self._set(state, state.comments[cid], "skipped", reason, final, turn_id)
+        fresh = []
+        for cid in ids:
+            comment = self._known(state, cid)
+            if comment is None:
+                logger.warning("live_follow skip missing comment metadata")
+                continue
+            if not comment.final:
+                self._set(state, comment, "skipped", reason, final, turn_id)
+                fresh.append(cid)
         self._chunked(
             session_id, state, "comment.skipped", fresh, reason, final, turn_id, event_ids
         )
@@ -585,7 +633,9 @@ class LiveFollowRecorder:
 
     def _close_open(self, session_id: str, state: _Session) -> None:
         waiting = [
-            c.comment_id for c in state.comments.values() if not c.final and c.state != "answered"
+            c.comment_id
+            for c in (*state.comments.values(), *state.live_comments.values())
+            if not c.final and c.state != "answered"
         ]
         self._skip(session_id, state, waiting, state.closing_reason or "session_closed", True)
 
@@ -869,7 +919,9 @@ class LiveFollowRecorder:
         if not self.enabled:
             return {"schema_version": SCHEMA_VERSION, "enabled": False}
         state = self._session(session_id)
-        comments = list(state.comments.values())[-SNAPSHOT_COMMENTS:]
+        comments = sorted(
+            (*state.comments.values(), *state.live_comments.values()), key=lambda c: c.seq
+        )[-SNAPSHOT_COMMENTS:]
         turns = list(state.turns.values())[-TURN_HISTORY:]
         position = state.position
         if position is None and ds is not None:
