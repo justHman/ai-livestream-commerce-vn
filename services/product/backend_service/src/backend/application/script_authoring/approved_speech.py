@@ -593,7 +593,7 @@ class ApprovedSpeech:
                 raise SpeechRejected("unit_required")
             text = whole.spoken_text
         elif generate:
-            from .answer_context import deflection_for, factual_reply, question_kind
+            from .answer_context import deflection_for, factual_reply
 
             question = (
                 question_text or text
@@ -601,15 +601,9 @@ class ApprovedSpeech:
             answers = [answer for p in candidates for answer in p.answers()]
             facts = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
             facts.extend(answers)
-            kind = question_kind(question, facts)
-            if kind == "unclassified":
-                raise SpeechRejected("not_answerable_non_commerce")
-            if kind not in {"commerce", "current_product", "other_product"}:
-                raise SpeechRejected(kind)
-            fallback_only = kind == "other_product"
             direct = (
                 factual_reply(candidates[0], question_text, completed_text)
-                if len(candidates) == 1 and question_text and not fallback_only
+                if len(candidates) == 1 and question_text
                 else None
             )
             if direct is not None:
@@ -620,19 +614,14 @@ class ApprovedSpeech:
                 if route != "director":
                     self.check_start(session_id)
                 return speech
-            if (
-                fallback_only
-                or not answers
-                or llm is None
-                or getattr(llm, "name", "none") == "none"
-            ):
+            if not answers or llm is None or getattr(llm, "name", "none") == "none":
                 # nothing approved to say: never improvise
                 text, trusted = deflection_for(question, facts), True
             else:
                 natural = None
                 if len(candidates) == 1:
                     natural = await self._compose(
-                        llm, session_id, epoch, live, candidates[0], text, answers
+                        llm, session_id, epoch, live, candidates[0], question, answers
                     )
                 if natural is not None:
                     from .answer_context import wrap_natural
@@ -641,7 +630,7 @@ class ApprovedSpeech:
                 else:
                     self._fence(session_id, epoch, live)  # a cancelled turn starts no fallback call
                     try:
-                        text = await self._select(llm, session_id, epoch, live, text, answers)
+                        text = await self._select(llm, session_id, epoch, live, question, answers)
                     except SpeechRejected:
                         raise
                     except Exception as exc:

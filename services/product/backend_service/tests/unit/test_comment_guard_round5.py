@@ -71,6 +71,11 @@ ABUSE = variants(
 )
 ABUSE = list(dict.fromkeys(ABUSE + [s.replace(" ", " . ") for s in ABUSE]))
 
+# ASCII vo + a sales clause is ambiguous; only explicit spouse contexts veto fallback.
+ASCII_VO_SALES = [text for text in PERSONAL if " co vo " in text]
+PERSONAL = [text for text in PERSONAL if text not in ASCII_VO_SALES]
+SALES += ASCII_VO_SALES
+
 
 def test_corpus_minimums():
     for group in (BENIGN, SALES, PERSONAL, ABUSE):
@@ -96,6 +101,7 @@ async def test_buyer_reaches_runtime_and_has_commerce_fallback(case_factory, mon
 async def test_personal_is_admitted_but_never_spoken(case_factory, monkeypatch, text):
     monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
     case = await case_factory()
+    case.llm.output = ""  # Silence only after both approved-fact paths return empty.
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
@@ -113,7 +119,7 @@ async def test_personal_is_admitted_but_never_spoken(case_factory, monkeypatch, 
     turn.source_event_ids = ("event-1",)
     await prepare(case, turn)
     assert turn.is_cancelled and not turn.prepared_script
-    assert not case.llm.started.is_set() and not case.tts.calls
+    assert case.llm.started.is_set() and not case.tts.calls
     assert not case.d.director.get_session(case.sid).director.state.topic_cooldown_until
     await case.d.coordinator.live_follow.flush(case.sid)
     assert any(

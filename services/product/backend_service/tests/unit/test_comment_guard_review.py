@@ -185,6 +185,7 @@ async def test_personal_questions_are_admitted_then_silent_at_speech(
 ):
     monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
     case = await case_factory()
+    case.llm.output = ""  # Silence only after both approved-fact paths return empty.
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
@@ -204,7 +205,7 @@ async def test_personal_questions_are_admitted_then_silent_at_speech(
     await case.d.coordinator.live_follow.flush(case.sid)
     skipped = [e for e in case.events if e["type"] == "live_follow.comment.skipped"]
     assert any(e["final"] and e["reason_code"] == "not_answerable_non_commerce" for e in skipped)
-    assert not case.tts.calls and not case.llm.started.is_set()
+    assert not case.tts.calls and case.llm.started.is_set()
     assert not case.d.director.get_session(case.sid).director.state.topic_cooldown_until
 
 

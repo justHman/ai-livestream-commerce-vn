@@ -172,7 +172,7 @@ def wrap_natural(question: str, answer: str) -> str:
     return f"{_NATURAL_LEAD_IN[pick]} {answer.strip()} {_NATURAL_REMARK[(pick + 1) % 3]} {_INVITE[pick]}"
 
 
-# These rules authorize speech only. Intake never consults this classifier.
+# These rules authorize missing-information fallback only, never fact answering.
 _PRODUCT_NOUNS = re.compile(r"\b(?:ao|quan|giay|tui|vay|mu|dong ho|my pham|serum|son)\b")
 _HARD_COMMERCE = re.compile(
     r"\b(?:gia|size|kich co|kich thuoc|mau|chat lieu|nguyen lieu|co gian|vai|"
@@ -186,15 +186,32 @@ _HARD_COMMERCE = re.compile(
     r"\b[a-z]+\d+[a-z0-9]*\b|\b(?:co\s+)?ban\s+(?:do|dao|hang)\b|"
     r"\b\d+\s+(?:cai|chiec|bo|hop|chai|goi|lo|doi)\b"
 )
+_HOST = r"(?:chi chu|chu shop|admin|chi|em|anh|co|ban)"
+_SOFT_GOODS = (
+    r"(?:vay|ao|quan|giay|dao|vo goi|vo chan|bo do ngu|do ngu|do an|con bup be|con gau bong)"
+)
+_SOFT_COMMERCE = re.compile(
+    rf"\bban\s+{_SOFT_GOODS}\b|\b(?:cho (?:em |minh )?xem|xem hang)\b|"
+    rf"\bco\s+(?:con\s+)?{_SOFT_GOODS}\b"
+)
 _HOST_PRIVATE = re.compile(
-    r"\b(?:chi|em|anh|co|ban)\s+co\s+(?:bao nhieu\s+)?"
-    r"(?:chong|vo|nguoi yeu|ban trai|ban gai|con|tuoi|sinh nam|que|thich|tung|dinh|"
+    rf"\b{_HOST}\s+co\s+(?:bao nhieu\s+)?"
+    r"(?:chong|spouse|nguoi yeu|ban trai|ban gai|con cai|tuoi|sinh nam|que|thich|tung|dinh|"
     r"doc than|o dau|lam nghe|hay)\b"
+)
+_CHILD_PRIVATE = re.compile(
+    rf"\b{_HOST}\s+co\s+(?:(?:may|bao nhieu)\s+)?con"
+    r"(?:\s+(?:khong|chua|roi|a|ha|nhi|vay|nhe))*$|"
+    rf"\b{_HOST}\s+co\s+con\s+(?:cai|ban|dat hang)\b"
+)
+_ASCII_SPOUSE = re.compile(
+    rf"\b{_HOST}\s+co\s+(?:bao nhieu\s+)?vo"
+    r"(?:\s+chong\b|(?:\s+(?:khong|chua|roi|a|ha|nhi|vay))*$)"
 )
 # Existing direct questions without 'co'; anchored to the host, never a free
 # keyword scan through a buyer's food/product/family context.
 _DIRECT_PRIVATE = re.compile(
-    r"\b(?:chi|em|anh|co|ban)\s+(?:co\s+)?"
+    rf"\b{_HOST}\s+(?:co\s+)?"
     r"(?:(?:con|remaining) doc than|gia dinh|song o|nha o dau|yeu ai|uong gi|ngu chua|"
     r"biet nhay|biet hat|hay ngu|di dau choi|khoe|bao nhieu tuoi|sinh nam|que|thich)\b"
 )
@@ -218,11 +235,7 @@ def _abuse_patterns():
 
 
 def question_kind(question: str | None, facts: list[str]) -> str:
-    """Separate certain silence, positive fallback evidence and open admission.
-
-    ``unclassified`` must reach the Director, but cannot authorize a shop referral.
-    Personal representatives veto speech for the cluster before model/TTS work.
-    """
+    """Classify fallback eligibility only; every admitted question may answer from facts."""
     from ..platform_events.comment_intent import is_non_question
     from ..safety_gate.resources import match_curated
 
@@ -242,9 +255,9 @@ def question_kind(question: str | None, facts: list[str]) -> str:
             continue
         normalized = _commerce_view(part)
         words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
-        commerce = bool(_HARD_COMMERCE.search(normalized)) or any(
-            len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases
-        )
+        commerce = bool(
+            _HARD_COMMERCE.search(normalized) or _SOFT_COMMERCE.search(normalized)
+        ) or any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases)
         if not commerce:
             return "unclassified"
         nouns = set(_PRODUCT_NOUNS.findall(normalized))
@@ -260,21 +273,24 @@ def question_kind(question: str | None, facts: list[str]) -> str:
 
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
-    """Narrow host-private-life shapes veto speech, even beside sales words.
-
-    Keep accented 'còn' (remaining) distinct from a child before folding.
-    ASCII stock/sales contexts remain commerce; facts cannot override privacy.
-    """
+    """Narrow private-life fallback veto, preserving accented product homographs."""
     original = unicodedata.normalize("NFC", question).lower()
     original = re.sub(r"\bcòn\b", "remaining", original)
     original = re.sub(r"\bchống\b", "protective", original)
+    original = re.sub(r"\bvợ\b", "spouse", original)
+    original = re.sub(r"\bvỏ\b", "productcover", original)
     normalized = " ".join(re.findall(r"\w+", fold_text(original)))
     normalized = re.sub(r"\bchong\s+(?:nuoc|nang)\b", "protective", normalized)
-    stock = r"\bcon(?=\s+(?:hang|size|mau|san|khong|chua)\b)"
+    stock = r"\bcon(?=\s+(?:hang|size|mau|san)\b)"
     normalized = re.sub(stock, "remaining", normalized)
     if original == fold_text(original):
         normalized = re.sub(r"\bcon(?=\s+ban\b)", "remaining", normalized)
-    return bool(_HOST_PRIVATE.search(normalized) or _DIRECT_PRIVATE.search(normalized))
+    return bool(
+        _HOST_PRIVATE.search(normalized)
+        or _DIRECT_PRIVATE.search(normalized)
+        or _CHILD_PRIVATE.search(normalized)
+        or _ASCII_SPOUSE.search(normalized)
+    )
 
 
 _OFF_TOPIC_DEFLECTION = (

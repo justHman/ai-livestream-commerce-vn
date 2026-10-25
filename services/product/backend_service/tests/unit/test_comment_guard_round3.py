@@ -57,6 +57,11 @@ PERSONAL = variants(
     ]
 )
 
+# ASCII vo plus a sales clause is ambiguous and cannot veto commerce fallback.
+ASCII_VO_SALES = [text for text in PERSONAL if " co vo " in text]
+PERSONAL = [text for text in PERSONAL if text not in ASCII_VO_SALES]
+SALES += ASCII_VO_SALES
+
 # Only four literal misses were supplied with the review; these fourteen cover
 # those four and the corresponding curated phrase/homograph failure shapes.
 REVIEW_MISSES = [
@@ -149,6 +154,7 @@ async def test_purchase_wins_over_buyer_context(case_factory, monkeypatch, text)
 @pytest.mark.parametrize("text", PERSONAL)
 async def test_personal_with_vague_sales_words_stays_silent(case_factory, monkeypatch, text):
     case = await case_factory()
+    case.llm.output = ""  # Attempt approved facts before refusing a personal fallback.
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
@@ -159,7 +165,7 @@ async def test_personal_with_vague_sales_words_stays_silent(case_factory, monkey
     turn.cluster_members = (text,)
     await prepare(case, turn)
     assert turn.is_cancelled
-    assert not case.llm.started.is_set() and not case.tts.calls
+    assert case.llm.started.is_set() and not case.tts.calls
     assert not case.d.director.get_session(case.sid).director.state.topic_cooldown_until
 
 

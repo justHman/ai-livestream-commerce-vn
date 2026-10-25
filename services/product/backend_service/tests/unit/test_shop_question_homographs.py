@@ -36,19 +36,18 @@ def test_weather_words_do_not_hide_a_real_product_question():
 
 
 @pytest.mark.asyncio
-async def test_non_commerce_cannot_receive_even_a_valid_natural_answer(case_factory):
+async def test_classification_cannot_suppress_a_valid_natural_answer(case_factory):
     case = await case_factory()
     case.llm.output = CLAIM
     turn = decision(case, generated=True)
     turn.cluster_members = ("asdfgh",)
     turn.cluster_member_ids = ("nonsense",)
     await prepare(case, turn)
-    assert turn.is_cancelled
-    assert not case.llm.started.is_set()
-    assert not case.tts.calls
-    state = case.d.director.get_session(case.sid).director.state
-    assert not state.topic_cooldown_until
-    assert "nonsense" in state.skipped_comments
+    assert not turn.is_cancelled
+    assert case.llm.started.is_set()
+    assert CLAIM in turn.prepared_script
+    assert await case.d.coordinator._maybe_speak(case.sid, turn)
+    assert case.tts.calls
 
 
 @pytest.mark.asyncio

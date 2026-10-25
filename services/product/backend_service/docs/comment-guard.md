@@ -17,31 +17,36 @@ accepted too. A later speech refusal does not undo intake acceptance.
 
 ## Speech and fallback authorization
 
-`question_kind` belongs to the speech boundary. Its order is safety/social,
-private-life veto, then positive commerce evidence. A narrow host-addressed shape
-(pronoun + optional co + optional bao nhieu + spouse/partner/child/age/birth year/
-hometown/preference/past intention/single status/location/occupation) vetoes
-speech even when price, quantity or shipping words occur later. Existing direct
-host questions about eating preferences, sleeping, drinking, dancing, health,
-etc. remain bounded host-predicate shapes; there is no free scan for `an` through
-food/product requests. A buyer's name or family recipient is not such a shape.
-The veto precedes LLM and TTS work, including mixed clusters.
+`question_kind` authorizes missing-information fallback only. It must never
+cancel preparation, skip a facts lookup, or force an other-product question
+straight to fallback. Every admitted answer turn first tries the existing
+answer-from-facts / natural-answer and approved-answer selection paths. Natural
+answers still pass the existing grounding checks and LLM judge; selected answers
+must equal a complete approved fact. A valid answer may be spoken regardless of
+classification. The original viewer question is supplied to both model paths.
 
-Original accented `c\u00f2n` is kept distinct from a child (`con`) before folding.
-ASCII `con hang`, `con size`, `con mau` and inventory `con ban` favour commerce.
-Thus `chi co con ban ao khong?` passes, as does its accented stock equivalent.
-Food plus COD/payment also passes. Spouse + giao hang and bao nhieu + nguoi yeu
-remain private-life questions and cannot authorize a fallback.
+Only after those paths return empty/invalid (or approved facts/model are
+unavailable) does `deflection_for` classify the question. Clear commerce permits
+the existing fixed fallback; personal, social, safety-filtered or unclassified
+questions remain silent, without TTS. This final refusal does not undo intake or
+an already attempted model call. A personal member vetoes fallback for a mixed
+cluster, while a valid approved-fact answer remains eligible.
 
-A fixed missing-information fallback needs explicit commerce evidence: price,
-size/colour/material, shipping/stock, purchase/order/quantity/product code,
-discount, payment/COD, returns/warranty, concrete goods or shop contact requests.
-Bare `bao nhieu` without product/price evidence, a city, a question mark or an
-incidental word in approved facts cannot authorize a fallback. A personal member
-vetoes a whole cluster before this test. `unclassified` input still reaches the Director, but speech preparation refuses
-it as `not_answerable_non_commerce` before LLM/TTS work. Positive commerce evidence
-is required to authorize speech. An intact approved product phrase also counts
-as positive evidence; incidental overlaps with facts never count.
+The narrow private-life fallback veto recognizes host addresses including
+`chi chu`, `chu shop` and `admin`, followed by bounded private predicates.
+Accented wife and product-cover words are distinguished before folding. Bare
+ASCII `vo` is a spouse only in `vo chong` or a terminal `co vo khong` shape;
+`vo goi` does not veto fallback. Child questions such as terminal `co con khong`
+and `co may con` differ from `co con dao` and `co con bup be`. Known child-action
+shapes and existing direct host-private questions remain bounded rules.
+Accented inventory and protective meanings remain distinct. Ambiguity favours
+commerce fallback rather than a privacy veto.
+
+Existing hard commerce evidence remains unchanged. Soft evidence adds selling
+common goods, requests to show/view goods, and availability questions with common
+product nouns (skirts, kitchen knives, pillow covers, sleepwear, food and toys).
+Bare quantities, city names, punctuation or incidental words in facts do not
+become commerce evidence. An intact approved product phrase still counts.
 
 The existing fixed commerce/current-product/other-product fallback texts never
 echo viewer text or borrow facts from other goods. `is_deflection` recognizes all
@@ -94,35 +99,37 @@ one shared response.
 
 ## Regression coverage and changed expectations
 
-`tests/unit/test_comment_guard_round5.py` adds four authored groups: 120 benign
-goods/recipient comments, 100 stock/food/payment commerce comments, 202 private-life
-questions (including commerce decoys), and 145 strong-phrase abuse variants.
-Every group has at least 80 new comments, with accented/ASCII and symbol cases.
-All groups use authenticated HTTP through the real ASGI app and safety gate,
-with real Coordinator/reducer calls observed. Privacy tests also run reducer
-membership, speech preparation and final Studio-event assertions, and assert no
-LLM/TTS or topic cooldown. Separate tests check missing-answer commerce fallback
-preparation, ASCII cho symbol joins, and toxicity resource version 5 in evidence.
-The reviewer supplied literal reproductions, not the full private corpus; these
-results do not claim to rerun its undisclosed 768/160/244 inputs.
+`tests/unit/test_comment_guard_round6.py` adds three deterministic corpora, each
+with at least 100 new unique cases plus the reviewer's exact reproductions:
+selling/viewing goods, child/cover product homographs, and host-private questions
+with sales/shipping decoys. Accented and ASCII variants are explicit. Ambiguous
+ASCII spouse-plus-sales clauses are deliberately in the commerce group.
 
-Policy-driven updates to older tests:
+Every corpus entry is tested through authenticated ASGI ingestion, actual reducer
+membership and answer preparation, with both valid and empty controlled-model
+outputs. Valid answers and commerce fallback are dispatched through real guarded
+TTS. Silence asserts no TTS, no topic cooldown and a final Studio skipped event
+with `not_answerable_non_commerce`. Extra cases verify invalid generated answers,
+terminal child/spouse grammar and product-boundary counterexamples. The prior
+abuse corpora and intake safety implementation are unchanged.
 
-- `test_comment_guard_review.py`: personal HTTP assertions now require acceptance
-  and routing, then final speech refusal with real reducer membership.
-- `test_comment_guard_round2.py`: social comments still skip intake; personal
-  comments must be admitted and refused only at speech preparation. Unclassified
-  speech now also requires positive commerce evidence before any LLM/TTS work.
-- `test_comment_guard_round3.py`: personal comments now pass intake. Ambiguous
-  ASCII cho/con khon entries leave the abuse-only corpus; accented counterparts
-  remain, and round five explicitly verifies ASCII cho admission.
-- `test_comment_guard_round4.py`: personal comments now pass intake. Five former
-  price/shipping-overrides-privacy examples move from SALES to PERSONAL. ASCII
-  `co con ban` entries move to SALES because stock/child ambiguity favours buyers;
-  accented child predicates stay personal.
-- `test_live_answer_regressions.py`: a deictic-only request formerly authorized
-  fallback via `cai nay`; it now stays unclassified and refuses fallback because
-  it contains no hard commerce evidence. Intake remains open.
+Policy-driven updates to older tests in this round:
+
+- `test_comment_guard_review.py`, `test_comment_guard_round2.py`, `test_comment_guard_round3.py`,
+  `test_comment_guard_round4.py`, `test_comment_guard_round5.py`: silence tests now
+  supply empty model output and require the approved-fact path to have run. They
+  no longer require classification to cancel before LLM work. Intake and abuse
+  assertions remain intact.
+- Rounds three/four/five move ambiguous ASCII `vo` plus sales clauses from PERSONAL to
+  SALES; explicit accented wife questions remain personal.
+- `test_shop_question_homographs.py`: a valid checked answer must survive even
+  non-commerce classification; the test now verifies preparation and actual TTS.
+- `test_shop_fallback.py`: other-product fallback requires attempting approved
+  facts first; the controlled model returns empty before the distinct fallback.
+
+The independent review corpus (682 ordinary / 144 personal / 240 abuse) is not
+available locally. These authored regressions cover its supplied literals and do
+not claim to reproduce the entire undisclosed corpus.
 
 Verification commands run in `services/product/backend_service`, with
 `UV_CACHE_DIR=D:/LiventoWorkspace/.uvcache`:
@@ -142,8 +149,8 @@ Ambiguous ASCII intentionally favours buyers, even when it might be abuse:
 `do cho`, `con cho`, `oc cho`, `con khon`, `do ngu`, machine/code/workwear
 homophones, and tricks that erase the distinguishing abusive accent can pass.
 The narrow private-life grammar is not a semantic classifier: unseen wording,
-dialect, code switching and mixed clauses may miss the veto or suppress a real
+dialect, code switching and mixed clauses may miss the fallback veto or suppress a real
 commerce fallback. ASCII `con ban` can also refer to a child; it intentionally
 favours stock/sales. These uncertainties never reject safe comments at intake.
-Safe unclassified comments reach the Director but cannot emit speech without
-positive commerce evidence. No corpus establishes universal coverage.
+Safe unclassified comments reach the Director and attempt approved-fact answering;
+only their missing-information fallback is forbidden. No corpus establishes universal coverage.

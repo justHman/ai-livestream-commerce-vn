@@ -74,16 +74,17 @@ async def test_unclassified_comments_reach_runtime_without_fallback(
 
 
 @pytest.mark.asyncio
-async def test_other_goods_never_receives_a_current_product_fact(case_factory):
+async def test_other_goods_attempts_facts_before_distinct_fallback(case_factory):
     source = Source()
     source.set.brief.product_facts["product-1"]["product_name"] = "Áo khoác denim"
     case = await case_factory(source=source)
+    case.llm.output = ""  # Other-product classification cannot skip approved-fact answering.
     turn = decision(case, generated=True)
     turn.cluster_members = ("giày size 40",)
     await prepare(case, turn)
     assert is_deflection(turn.prepared_script)
     assert "mặt hàng này" in turn.prepared_script
-    assert not case.llm.started.is_set()
+    assert case.llm.started.is_set()
 
 
 @pytest.mark.asyncio

@@ -105,6 +105,11 @@ ASCII_STOCK = [s for s in PERSONAL if "co con ban" in s]
 PERSONAL = [s for s in PERSONAL if s not in ASCII_STOCK]
 SALES += ASCII_STOCK
 
+# ASCII vo + a sales clause is ambiguous; only explicit spouse contexts veto fallback.
+ASCII_VO_SALES = [text for text in PERSONAL if " co vo " in text]
+PERSONAL = [text for text in PERSONAL if text not in ASCII_VO_SALES]
+SALES += ASCII_VO_SALES
+
 
 def test_corpus_minimums():
     assert len(BENIGN) >= 80
@@ -128,6 +133,7 @@ def test_existing_abuse_with_accents_or_targeting(text):
 )
 async def test_http_intent(case_factory, monkeypatch, text, personal):
     case = await case_factory()
+    case.llm.output = ""  # Silence only after both approved-fact paths return empty.
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
@@ -139,7 +145,7 @@ async def test_http_intent(case_factory, monkeypatch, text, personal):
         turn.cluster_members = (text,)
         await prepare(case, turn)
         assert turn.is_cancelled
-        assert not case.llm.started.is_set() and not case.tts.calls
+        assert case.llm.started.is_set() and not case.tts.calls
         assert not case.d.director.get_session(case.sid).director.state.topic_cooldown_until
     else:
         assert result["accepted"] == 1, result

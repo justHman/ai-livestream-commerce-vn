@@ -209,6 +209,7 @@ async def test_social_only_skips_intake_personal_silence_is_at_speech(
     case_factory, monkeypatch, text, reason
 ):
     case = await case_factory()
+    case.llm.output = ""  # Silence only after both approved-fact paths return empty.
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
@@ -226,7 +227,7 @@ async def test_social_only_skips_intake_personal_silence_is_at_speech(
     turn.cluster_members = (text,)
     await prepare(case, turn)
     assert turn.is_cancelled
-    assert not case.llm.started.is_set() and not case.tts.calls
+    assert case.llm.started.is_set() and not case.tts.calls
     assert not case.d.director.get_session(case.sid).director.state.topic_cooldown_until
 
 
@@ -288,15 +289,15 @@ def test_clear_commerce_retains_fallback(text):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", variants(["admin ơi", "acc", "đẹp điên", "gửi Nguyễn Thị Lan"]))
-async def test_unclassified_speech_requires_positive_commerce_evidence(case_factory, text):
+async def test_unclassified_attempts_facts_before_silence(case_factory, text):
     case = await case_factory()
-    case.llm.output = ""  # Normal answer path has nothing approved to say.
+    case.llm.output = ""  # Silence only after both approved-fact paths return empty.
     turn = decision(case, generated=True)
     turn.cluster_members = (text,)
     await prepare(case, turn)
     assert turn.is_cancelled
     assert not turn.prepared_script
-    assert not case.llm.started.is_set() and not case.tts.calls
+    assert case.llm.started.is_set() and not case.tts.calls
 
 
 @pytest.mark.asyncio
@@ -309,10 +310,11 @@ async def test_unclassified_speech_requires_positive_commerce_evidence(case_fact
         ]
     ),
 )
-async def test_personal_cluster_member_cannot_leak_to_model(case_factory, text):
+async def test_personal_cluster_member_vetoes_only_fallback(case_factory, text):
     case = await case_factory()
+    case.llm.output = ""  # Silence only after both approved-fact paths return empty.
     turn = decision(case, generated=True)
     turn.cluster_members = tuple(text.split(" | "))
     await prepare(case, turn)
     assert turn.is_cancelled
-    assert not case.llm.started.is_set() and not case.tts.calls
+    assert case.llm.started.is_set() and not case.tts.calls
