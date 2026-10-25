@@ -172,35 +172,18 @@ def wrap_natural(question: str, answer: str) -> str:
     return f"{_NATURAL_LEAD_IN[pick]} {answer.strip()} {_NATURAL_REMARK[(pick + 1) % 3]} {_INVITE[pick]}"
 
 
-# Words that never tie a question to the product: "không" or "biết" appear in any fact and in any chit-chat.
-_STOP = frozenset(
-    "không có biết được là và của thì mà nào gì sao đâu cho với này kia đó vậy nhé nha ạ à hả thế "
-    "anh chị em bạn mình shop ad admin ơi cái những các một hai ba bao nhiêu".split()
-)
-# A viewer's words are NEVER spoken back in the shop's voice: no list of words can prove that arbitrary text
-# holds no price, fee, promise, insult or personal detail. The fallback only says WHAT KIND of question it is.
-#
-# Personal host questions need positive evidence too; unrelated text is silent.
-_SHOP_WORDS = (
-    "giá|bao nhiêu|size|kích cỡ|màu|chất liệu|vải|giao|ship|vận chuyển|nhận hàng|đổi|trả|bảo hành"
-    "|hoàn tiền|cod|thanh toán|khuyến mãi|giảm giá|giảm|ưu đãi|còn hàng|hết hàng|còn size|còn màu"
-    "|còn không|còn áo|còn mẫu|còn bao nhiêu|có sẵn|sẵn hàng|trong kho|kho hàng|mua|đặt|sản phẩm|mẫu"
-    "|giặt|cân nặng|chiều cao|chính hãng|áo|quần|giày|túi|hóa đơn|hàng|freeship|miễn phí|phí|tiền"
-    "|trả góp|order|inbox|tư vấn|liên hệ|địa chỉ|ở đâu|cửa hàng|showroom|bao lâu|mấy ngày|tặng|quà"
-    "|voucher|mã giảm|chiết khấu|cam kết|đảm bảo|bảo đảm|hứa|khuyến|lừa|uy tín|thật|giả"
-    "|cái này|cái đó|cái kia|món này|món đó|mẫu này|đồ này|loại này|chiếc này|bộ này|hàng này"
-)
-_COMMERCE = re.compile(rf"(?<!\w)(?:{_SHOP_WORDS})(?!\w)", re.IGNORECASE)
-_HOST = re.compile(r"(?<!\w)(?:anh|chị|em|bạn|mc|kol|ad|admin)(?!\w)", re.IGNORECASE)
+# Admission is open by default. These signals authorize a *fallback*, never admission.
+_HOST = re.compile(r"\b(?:anh|chi|em|co|ban|mc|kol|ad|admin)\b")
 _PERSONAL = re.compile(
-    r"(?<!\w)(?:biết|thích|ăn|uống|ngủ|hát|nhảy|múa|đàn|tuổi|độc thân|người yêu|bạn trai|bạn gái|vợ"
-    r"|chồng|gia đình|quê|sống|học|làm nghề|nghề|khoẻ|khỏe|vui|buồn|mệt|đẹp trai|xinh|tên|chơi|đi đâu"
-    r"|rảnh|bận|làm gì|ở nhà|cười|yêu|ghét|đói|phim|nhạc|bài hát|game|bóng đá|du lịch|ngày mai|cuối tuần)"
-    r"(?!\w)",
-    re.IGNORECASE,
+    r"\b(?:lay chong|lay vo|ket hon|tuoi|doc than|nguoi yeu|ban trai|ban gai|vo|chong|"
+    r"gia dinh|que|song|lam nghe|nha o dau|thich an|an|uong|ngu|yeu|"
+    r"biet nhay|biet hat|hat|nhay|khoe|vui|buon|met|dep trai|xinh|ten|"
+    r"choi|di dau|ranh|lam gi|o nha|cuoi|ghet|phim|nhac|bai hat|game|"
+    r"bong da|du lich)\b"
 )
-_ASKING = re.compile(
-    r"\?|(?<!\w)(?:không|chưa|hả|à|nhỉ|sao|gì|nào|đâu|chứ|ko|k)(?!\w)", re.IGNORECASE
+_FOLDED_ASKING = re.compile(
+    r"[?？]|\b(?:khong|chua|ha|a|nhi|sao|gi|nao|dau|chu|ko|k|ai|may|"
+    r"bao nhieu|bao lau|khi nao|bao gio|vay)\b"
 )
 
 _SHOP_CONTEXT = re.compile(
@@ -212,25 +195,25 @@ _SHOP_CONTEXT = re.compile(
     r"voucher|ma giam|chiet khau|chong nuoc|chong nang|cai nay|cai do|cai kia|"
     r"mon nay|mon do|mau nay|do nay|loai nay|chiec nay|bo nay|hang nay|shop)\b"
 )
-_SHOP_REQUEST = re.compile(
-    r"\b(?:gia|bao nhieu|size|kich co|mau|ship|mua|dat hang|chot|tu van|xin link|"
-    r"con hang|chat lieu|chinh sach|doi tra|bao hanh|khuyen mai|giam gia|uu dai)\b"
-)
 _PRODUCT_NOUNS = re.compile(r"\b(?:ao|quan|giay|tui|vay|mu|dong ho|my pham|serum|son)\b")
-_FOLDED_ASKING = re.compile(
-    fold_text(_ASKING.pattern) + r"|\b(?:ai|may|bao nhieu|bao lau|khi nao|bao gio)\b", re.IGNORECASE
+# A bare "lay" or a city is not purchase evidence. Require an object/quantity
+# or a shipping verb; this prevents spouse/hometown questions becoming shop fallbacks.
+_PURCHASE = re.compile(
+    r"\b(?:chot|dat hang|order|ib|inbox|xin ma|giam|ma|so dien thoai|sdt|dia chi|"
+    r"kich thuoc|nguyen lieu|co gian|nuoc hoa|chong nuoc|chong nang|"
+    r"con khong|con chua|co san|bao gio co|bao lau|mien phi|phi|tien|"
+    r"giao|ship|van chuyen|doi tra|lien he|co ban)\b|"
+    r"\b(?:lay|dat|giu|de|cho em|cho minh)\s+(?:(?:\d+|mot|hai|ba|bon|nam)\s+)?"
+    r"(?:cai|chiec|bo|hop|chai|tui|kg|ky|goi|lo|doi|met|lit|ao|quan|ma)\b|"
+    r"\b(?:\d+|mot|hai|ba|bon|nam)\s+(?:cai|chiec|bo|hop|chai|goi|lo|doi)\b"
 )
-_EXTRA_COMMERCE = re.compile(
-    r"\b(?:chot|lay|dat|order|ib|inbox|giu|de|cho em|cho minh|kich thuoc|nguyen lieu|"
-    r"co gian|mac|dung|loai|nuoc hoa|co ban|giao|doi|tra)\b"
+# Only concrete product evidence can disambiguate a personal-looking sentence.
+_PERSONAL_PRODUCT = re.compile(
+    r"\b(?:san pham|ao|quan|giay|tui|size|kich co|chat lieu|vai|nuoc hoa|"
+    r"my pham|serum|son|dong ho|dao|gia ban|mua|ban hang|ban dao|ship|giao|"
+    r"chong nuoc|chong nang)\b"
 )
-_QUANTITY_LOCATION = re.compile(
-    rf"\b(?:{fold_text(_CITY_NAMES)}|(?:\d+|mot|hai|ba|bon|nam)\s+"
-    r"(?:cai|chiec|bo|hop|chai|tui|kg|ky|goi|lo|doi|met|lit))\b"
-)
-_UNRELATED_TOPIC = re.compile(
-    r"\b(?:thoi tiet|troi unrelated|nhom unrelated|quoc gia|thu do|bong da|bau cu)\b"
-)
+_DESTINATION = re.compile(rf"\b(?:gui|ve)\s+(?:{fold_text(_CITY_NAMES)})\b")
 
 
 def _commerce_view(text: str) -> str:
@@ -251,86 +234,67 @@ def _abuse_patterns():
 
 
 def question_kind(question: str | None, facts: list[str]) -> str:
-    """Positive evidence only; reducer topics and model output are never evidence."""
+    """Separate certain silence, positive fallback evidence and open admission.
+
+    ``unclassified`` must reach the Director, but cannot authorize a shop referral.
+    Personal representatives dominate a cluster so none can leak into model/TTS work.
+    """
     from ..platform_events.comment_intent import is_non_question
     from ..safety_gate.resources import match_curated
 
     text = question or ""
     if match_curated(text, _abuse_patterns()):
         return "safety_filtered"
-    if is_non_question(text):
-        return "non_question"
-    # Evaluate every representative, not just the first text in a cluster.
     parts = [part.strip() for part in text.split("|") if part.strip()]
-    if not parts:
+    if not parts or all(is_non_question(part) for part in parts):
+        return "non_question"
+    if any(is_off_topic(part, facts) for part in parts):
         return "not_answerable_non_commerce"
     kinds = []
     known = fold_text(" ".join(facts))
     known_nouns = set(_PRODUCT_NOUNS.findall(known))
     known_phrases = [" ".join(re.findall(r"\w+", _commerce_view(fact))) for fact in facts]
     for part in parts:
+        if is_non_question(part):
+            continue
         normalized = _commerce_view(part)
-        asking = bool(_FOLDED_ASKING.search(normalized))
+        words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
         commerce = bool(
             _SHOP_CONTEXT.search(normalized)
-            or _EXTRA_COMMERCE.search(normalized)
-            or _QUANTITY_LOCATION.search(normalized)
+            or _PURCHASE.search(normalized)
+            or _DESTINATION.search(normalized)
         )
-        # Personal host questions are silent even with a question mark or
-        # generic interrogatives. Product evidence takes precedence.
-        if not commerce and is_off_topic(part, facts):
-            return "not_answerable_non_commerce"
-        # Incidental shared words (water/France in a geography question) are
-        # not product intent. Require an intact approved phrase when the
-        # explicit commerce vocabulary above does not establish relevance.
-        words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
         commerce = commerce or (
-            asking
+            bool(_FOLDED_ASKING.search(normalized))
             and any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases)
         )
-        # Doubt favours the buyer: a generic question can refer to an item
-        # shown on screen without repeating its name. Only explicit unrelated
-        # topics override this evidence.
-        commerce = commerce or (
-            asking
-            and not _UNRELATED_TOPIC.search(normalized)
-            and not _UNRELATED_TOPIC.search(fold_text(part))
-        )
-        if commerce:
-            nouns = set(_PRODUCT_NOUNS.findall(normalized))
-            if known_nouns and nouns - known_nouns:
-                kinds.append("other_product")
-            elif nouns and nouns <= known_nouns:
-                kinds.append("current_product")
-            else:
-                kinds.append("commerce")
+        if not commerce:
+            return "unclassified"
+        nouns = set(_PRODUCT_NOUNS.findall(normalized))
+        if known_nouns and nouns - known_nouns:
+            kinds.append("other_product")
+        elif nouns and nouns <= known_nouns:
+            kinds.append("current_product")
         else:
-            return "not_answerable_non_commerce"
+            kinds.append("commerce")
     if "other_product" in kinds:
         return "other_product"
-    if len(set(kinds)) == 1:
-        return kinds[0]
-    return "commerce"
+    return kinds[0] if len(set(kinds)) == 1 else "commerce"
 
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
-    """An explicit personal question to the host with no commerce/fact connection."""
-    lowered = question.split("|")[0].strip().lower()
-    folded = _commerce_view(lowered)
-    if (
-        _SHOP_CONTEXT.search(folded)
-        or _EXTRA_COMMERCE.search(folded)
-        or not re.search(fold_text(_HOST.pattern), folded, re.I)
-    ):
+    """Positive host + personal predicate + question evidence, before vague commerce."""
+    addressed = re.sub(r"\bcó\b", "has", unicodedata.normalize("NFC", question).lower())
+    folded = fold_text(addressed)
+    host = _HOST.search(folded)
+    if not host or not _FOLDED_ASKING.search(folded):
         return False
-    if not (
-        re.search(fold_text(_PERSONAL.pattern), fold_text(lowered), re.I)
-        and _FOLDED_ASKING.search(folded)
-    ):
+    # Search after the address: a viewer's own hometown is not a question about the host.
+    predicate = _PERSONAL.search(folded, host.end())
+    if not predicate:
         return False
-    words = " " + " ".join(re.findall(r"\w+", folded)) + " "
-    phrases = [" ".join(re.findall(r"\w+", _commerce_view(fact))) for fact in facts]
-    return not any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in phrases)
+    # Accent-aware view avoids interpreting discourse/weather words as products/purchases.
+    return not _PERSONAL_PRODUCT.search(_commerce_view(question))
 
 
 _OFF_TOPIC_DEFLECTION = (
@@ -364,7 +328,8 @@ def deflection_for(question: str | None, facts: list[str]) -> str:
         "other_product": _OTHER_PRODUCT_DEFLECTION,
     }
     if kind not in choices:
-        raise SpeechRejected(kind)
+        # This refusal concerns speech only; unclassified input is still admitted.
+        raise SpeechRejected("not_answerable_non_commerce" if kind == "unclassified" else kind)
     return choices[kind]
 
 

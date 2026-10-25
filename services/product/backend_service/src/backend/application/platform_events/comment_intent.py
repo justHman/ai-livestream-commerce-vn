@@ -15,6 +15,9 @@ _SOCIAL = frozenset(
         "oke",
         "okay",
         "okie",
+        "u",
+        "uh",
+        "xinh",
         "hay",
         "hay qua",
         "tuyet",
@@ -36,6 +39,7 @@ _SOCIAL = frozenset(
     )
 )
 _LAUGHTER = re.compile(r"(?:(?:ha|hi|he|ho)+|k{2,}|5{2,}|lol|lmao|huhu)")
+_KEYBOARD = re.compile(r"(?:asdf(?:gh(?:jkl)?)?|qwerty(?:uiop)?|zxcv(?:bnm)?)")
 
 
 def has_question_intent(text: str) -> bool:
@@ -44,12 +48,17 @@ def has_question_intent(text: str) -> bool:
 
 
 def is_non_question(text: str) -> bool:
-    words = re.findall(r"[a-z0-9]+", fold_text(text))
+    words = re.findall(r"[^\W_]+", fold_text(text))
     if not words:
+        return True
+    if all(w.isdigit() for w in words):
         return True
     normalized = " ".join(words)
     if normalized in _SOCIAL:
         return True
     if has_question_intent(text):
         return False
-    return all(_LAUGHTER.fullmatch(w) or re.fullmatch(r"([a-z])\1{2,}", w) for w in words)
+    return all(
+        _LAUGHTER.fullmatch(w) or _KEYBOARD.fullmatch(w) or re.fullmatch(r"([a-z])\1{2,}", w)
+        for w in words
+    )

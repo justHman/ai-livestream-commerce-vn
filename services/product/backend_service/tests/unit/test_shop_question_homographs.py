@@ -14,8 +14,13 @@ case_factory = active.case_factory
     "text",
     ["trời mưa ngày mai không?", "nhóm máu gì?", "quốc gia nào đông dân nhất?"],
 )
-def test_unrelated_homographs_stay_silent(text):
-    assert question_kind(text, ["Áo khoác denim"]) == "not_answerable_non_commerce"
+def test_unrelated_homographs_do_not_authorize_a_shop_fallback(text):
+    from backend.application.script_authoring.answer_context import deflection_for
+    from backend.application.script_authoring.approved_speech import SpeechRejected
+
+    assert question_kind(text, ["Áo khoác denim"]) == "unclassified"
+    with pytest.raises(SpeechRejected):
+        deflection_for(text, ["Áo khoác denim"])
 
 
 def test_family_question_to_host_is_silent():

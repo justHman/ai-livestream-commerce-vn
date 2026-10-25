@@ -28,7 +28,7 @@ def test_short_shop_queries_remain_eligible(question):
 
 @pytest.mark.parametrize("facts", [["Áo khoác chống nước"], ["Máy lọc nước nhập từ Pháp"]])
 def test_incidental_fact_word_does_not_make_an_unrelated_question_commercial(facts):
-    assert question_kind("thủ đô nước Pháp là gì?", facts) == ("not_answerable_non_commerce")
+    assert question_kind("thủ đô nước Pháp là gì?", facts) == "unclassified"
 
 
 def test_explicit_approved_product_phrase_is_a_commerce_signal():
@@ -39,7 +39,7 @@ def test_explicit_approved_product_phrase_is_a_commerce_signal():
     ("question", "expected"),
     [
         ("chị thích ăn gì vậy ạ?", "not_answerable_non_commerce"),
-        ("ngày mai thời tiết thế nào vậy?", "not_answerable_non_commerce"),
+        ("ngày mai thời tiết thế nào vậy?", "unclassified"),
     ],
 )
 def test_discourse_particle_does_not_become_a_skirt_question(question, expected):

@@ -46,35 +46,42 @@ final=true; Studio maps these to its existing skipped label. Events contain no t
 
 ## Fallback eligibility and repetition
 
-`answer_context.question_kind` favours the buyer when uncertain. Any question mark
-(including fullwidth), interrogative (`không`, `chưa`, `nào`, `gì`, `sao`, `bao nhiêu`,
-`mấy`, `đâu`, `ai`, `khi nào`, `bao giờ`), purchase request (`chốt`, `lấy`, `mua`, `đặt`,
-`order`, `ib`, `inbox`, `giữ`, `để`, `cho em/mình`), product vocabulary (including
-`nguyên liệu`, `kích thước`, `co giãn`, `mặc`, `dùng`, `loại`, `nước hoa`), known
-destination or quantity plus unit keeps the comment eligible. Both accented and
-ASCII forms work. An intact approved product phrase is also evidence; incidental
-overlap with a fact and an unknown reducer topic are never evidence on their own.
-`chốt đơn` and `em lấy 2 cái` reach the normal reducer/Director flow. `chot`/`lay`
-are routed as purchase intents too; new purchase event IDs bypass topic cooldown
-even when the representative text repeats. Existing handled-ID suppression remains.
+Admission and fallback authorization are separate decisions. Admission defaults to
+allow after safety. `question_kind` returns `unclassified` when it cannot establish
+commerce; ingestion still calls Coordinator/reducer with the original comment.
+There is no rejection merely because a commerce keyword is absent. This includes
+`admin ơi`, `acc`, `xin mã`, `giảm chút nhé`, `địa chỉ số điện thoại`,
+`gửi Nguyễn Thị Lan`, `đẹp điên`, and their unaccented forms.
 
-Explicit personal questions to the host without product evidence are silent, even
-with `?` or generic `gì`/`sao`: pronoun/host address plus eating, drinking, sleeping,
-love, age, hometown, spouse/family, etc. uses final `not_answerable_non_commerce`
-before reducer/Director. This appears in Studio as “Không trả lời” with the reason;
-no model request, shop referral, TTS, interruption or topic cooldown is produced.
-The approved-speech boundary refuses personal fallbacks again. Personal pronouns
-with real product evidence (`chị mặc áo này size nào`, `em dùng nước hoa gì`) stay
-eligible. Explicit unrelated topics (weather, geography, etc.) and meaningless text
-without shopping/question evidence also remain silent. Accent folding protects
-mưa/mua, máu/màu, gia đình/giá, and the discourse particle vậy/vay.
+Only certain social shapes are skipped as `non_question`: complete laughter,
+emoji/symbol/number-only text, acknowledgments, bare greetings, complete generic
+compliments without an object, repeated characters and known keyboard runs.
+Matching is against the whole comment; mixed product questions or requests pass.
+Unknown Unicode letters are not treated as emoji or meaningless text.
 
-Missing approved answers use fixed text for the current product, a recognized different
-product category, or a neutral question when uncertain. These texts never echo the
-viewer or claim their question was detailed. Different goods never use current-product
-facts; personal questions receive no speech. Product-category recognition is curated and finite;
-review the noun rules and add contrasting tests when extending supported merchandise.
+Explicit personal questions to the host are checked before ambiguous commerce:
+a host pronoun/address plus a personal predicate (spouse, hometown, age, eating,
+drinking, sleeping, love, family, occupation, etc.) and interrogative evidence.
+`chị có định lấy chồng không?` and `chị quê Cần Thơ à?` are silent, as are their
+ASCII forms. Bare `lấy` and a city never establish commerce. A purchase use of
+`lấy` requires a quantity/unit/product/code; a city requires a shipping/destination
+verb. Concrete product evidence still preserves `chị mặc áo này size nào` and
+`em dùng nước hoa gì`. Personal members dominate mixed clusters so no such member
+reaches an LLM, fallback or TTS. Final `not_answerable_non_commerce` is recorded
+without interruption or topic cooldown. Speech preparation checks this again.
+
+A fixed missing-information fallback requires positive commerce evidence: product,
+price, size, colour, stock, material, shipping, codes, discounts, payment, returns,
+warranty or shop contact requests, or an intact approved product phrase. A generic
+question mark/interrogative alone is insufficient. Known current/different goods
+retain their distinct fixed texts and never borrow facts from a different product.
+`unclassified` comments can use the normal validated answer path; when that path
+has no approved answer, fallback authorization refuses speech. This later refusal
+does not undo intake acceptance. The fallback never echoes viewer text.
 `is_deflection` must recognize every fixed wording.
+
+`chốt đơn` and `em lấy 2 cái` retain normal reducer/Director routing. New purchase
+event IDs bypass topic cooldown; existing handled-ID suppression remains.
 
 The Director checks the per-session `deflection_interval_sec` at dispatch, including
 prefetched turns. Default is 90 seconds; `DIRECTOR_DEFLECTION_INTERVAL_SEC` overrides
@@ -83,11 +90,15 @@ members use final `deflection_rate_limited`, remain skipped rather than answered
 and add no topic cooldown. A spoken cluster receives one shared response. Actual
 approved answers remain eligible while the deflection interval is active.
 
-Regression coverage in `tests/unit/test_comment_guard_review.py` includes over 80
-benign sales comments and over 40 real purchase/question examples, both with and
-without accents; authenticated ASGI intake, reducer reachability, repeated-letter
-abuse, purchase cooldown and silence at both intake and speech boundaries are checked.
-Ambiguous unaccented abuse may deliberately pass safety: reducing buyer false
-positives takes precedence. Comments with no commerce/question evidence remain silent
-at the subsequent eligibility gate. This finite vocabulary cannot resolve every
-Vietnamese name, dialect, product category or personal/product ambiguity.
+Round-two regression coverage in `tests/unit/test_comment_guard_round2.py` uses
+more than 300 distinct comments, including at least 200 real sales/viewer comments,
+30 social comments, 40 personal questions and 60 abusive comments. Accented and
+unaccented examples run through authenticated ASGI/HTTP ingestion with the real
+safety gate, Coordinator and reducer spies. Personal/social silence is also checked
+at speech preparation, including mixed clusters; unclassified comments with no
+approved answer cannot produce a missing-information fallback.
+
+Ambiguous ASCII abuse homographs without insult evidence deliberately favour the
+buyer (for example `cac`, `lon`, `do ngu`). This is curated coverage, not a universal
+Vietnamese moderation or intent classifier. Personal/product ambiguity and dialects
+remain finite-rule limitations; uncertainty in admission must keep passing onward.

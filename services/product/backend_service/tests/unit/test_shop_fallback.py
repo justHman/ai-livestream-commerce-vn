@@ -41,7 +41,7 @@ def test_current_and_uncertain_product_fallbacks_are_neutral():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["asdfgh", "zzz", "thủ đô nước Pháp là gì?", "what is blorpt"])
+@pytest.mark.parametrize("text", ["asdfgh", "zzz"])
 async def test_non_commerce_skips_before_reducer(case_factory, monkeypatch, text):
     monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
     case = await case_factory()
@@ -56,6 +56,21 @@ async def test_non_commerce_skips_before_reducer(case_factory, monkeypatch, text
     skipped = [e for e in case.events if e["type"] == "live_follow.comment.skipped"]
     assert skipped and skipped[-1]["final"]
     assert not case.tts.calls and not case.llm.started.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["thủ đô nước Pháp là gì?", "what is blorpt"])
+async def test_unclassified_comments_reach_runtime_without_fallback(
+    case_factory, monkeypatch, text
+):
+    case = await case_factory()
+    await canonical(case)
+    coordinator, reducer = probes(case, monkeypatch)
+    assert (await post(case, text))["accepted"] == 1
+    coordinator.assert_called_once()
+    reducer.assert_called_once()
+    with pytest.raises(SpeechRejected):
+        deflection_for(text, FACTS)
 
 
 @pytest.mark.asyncio
