@@ -124,9 +124,21 @@ def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool)
     )
 
 
+_SLEEP_BEFORE = frozenset("đi di đang dang sắp sap chưa chua".split())
+_SLEEP_AFTER = frozenset(
+    "ngon som sớm trưa trua muộn muon nướng nuong thôi thoi đi di chưa chua nhé nhe".split()
+)
+_INSULT_COMPARISON = frozenset("bò bo chó cho lợn lon heo trâu trau gà ga".split())
+
+
+def _has_vietnamese_marks(text: str) -> bool:
+    return any(c != fold_text(c) for c in text if c.isalpha())
+
+
 def _protect_homographs(text: str) -> str:
     words = list(re.finditer(r"\w+", text))
     positions = {word.start(): index for index, word in enumerate(words)}
+    marked_text = _has_vietnamese_marks(text)
 
     def replace(match: re.Match) -> str:
         token = match[0]
@@ -146,6 +158,12 @@ def _protect_homographs(text: str) -> str:
         after = words[index + 1][0] if index + 1 < len(words) else ""
         insulting = before in {"đồ", "thằng", "thang", "mày", "may", "tao", "đm", "dm"}
         insulting |= after in {"mày", "may", "quá", "qua"} and reduced == "ngu"
+        # "ngu như bò" is an insult; in text that carries Vietnamese marks elsewhere an unmarked
+        # "ngu" is the word itself, not a missing-tone "ngủ".
+        after2 = words[index + 2][0] if index + 2 < len(words) else ""
+        insulting |= reduced == "ngu" and after in {"như", "nhu"} and after2 in _INSULT_COMPARISON
+        sleepy = before in _SLEEP_BEFORE or after in _SLEEP_AFTER
+        insulting |= reduced == "ngu" and marked_text and not sleepy
         elongated = reduced == "ngu" and (
             folded != reduced or (after and set(after) == {"u"}) or len(words) == 1
         )

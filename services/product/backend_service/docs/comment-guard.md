@@ -154,3 +154,8 @@ commerce fallback. ASCII `con ban` can also refer to a child; it intentionally
 favours stock/sales. These uncertainties never reject safe comments at intake.
 Safe unclassified comments reach the Director and attempt approved-fact answering;
 only their missing-information fallback is forbidden. No corpus establishes universal coverage.
+
+## Round 7 additions
+
+- "shop/chi co <item> khong?" is a goods-availability question (commerce fallback allowed) unless it matches the narrow private-life patterns or a greeting about the host state (khoe/vui/buon...).
+- In text that carries Vietnamese marks elsewhere, an unmarked "ngu" is the word itself (not a missing-tone "ngu"), except next to sleep context (di/som/ngon...); "ngu nhu bo/cho/lon/heo" is abuse.

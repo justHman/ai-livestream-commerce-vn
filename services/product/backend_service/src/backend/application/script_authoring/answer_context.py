@@ -194,6 +194,14 @@ _SOFT_COMMERCE = re.compile(
     rf"\bban\s+{_SOFT_GOODS}\b|\b(?:cho (?:em |minh )?xem|xem hang)\b|"
     rf"\bco\s+(?:con\s+)?{_SOFT_GOODS}\b"
 )
+# "chi co may xay khong?", "shop co vo dien thoai khong?": asking whether the shop has an item. Private-life
+# questions are vetoed earlier by is_off_topic; greetings about the host's state are not goods.
+_AVAILABILITY = re.compile(
+    r"\b(?:co|ban|con)\s+(?:\w+\s+){1,6}?(?:khong|chua|hong|ko)(?:\s+(?:a|ak|ah|nhe|nha|ha|vay|the|di|nhi|vay a))*\s*$"
+)
+_NOT_GOODS = re.compile(
+    r"\b(?:khoe|vui|on|ngon|met|buon|doi|khat|biet|nho|hieu|thay|quen|ranh|ban gi|buc|gio)\b"
+)
 _HOST_PRIVATE = re.compile(
     rf"\b{_HOST}\s+co\s+(?:bao nhieu\s+)?"
     r"(?:chong|spouse|nguoi yeu|ban trai|ban gai|con cai|tuoi|sinh nam|que|thich|tung|dinh|"
@@ -255,8 +263,9 @@ def question_kind(question: str | None, facts: list[str]) -> str:
             continue
         normalized = _commerce_view(part)
         words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
+        asks_goods = bool(_AVAILABILITY.search(words.strip()) and not _NOT_GOODS.search(words))
         commerce = bool(
-            _HARD_COMMERCE.search(normalized) or _SOFT_COMMERCE.search(normalized)
+            _HARD_COMMERCE.search(normalized) or _SOFT_COMMERCE.search(normalized) or asks_goods
         ) or any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases)
         if not commerce:
             return "unclassified"
