@@ -15,7 +15,7 @@ FACTS = ["Áo khoác denim", "Có size M, L."]
 
 
 @pytest.mark.parametrize(
-    "text", ["asdfgh", "zzz", "hahaha", "đm", "thủ đô nước Pháp là gì?", "what is blorpt?", "ok?"]
+    "text", ["asdfgh", "zzz", "hahaha", "đm", "thủ đô nước Pháp là gì?", "what is blorpt", "ok?"]
 )
 def test_non_commerce_has_no_fallback(text):
     with pytest.raises(SpeechRejected):
@@ -41,7 +41,7 @@ def test_current_and_uncertain_product_fallbacks_are_neutral():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["asdfgh", "zzz", "thủ đô nước Pháp là gì?", "what is blorpt?"])
+@pytest.mark.parametrize("text", ["asdfgh", "zzz", "thủ đô nước Pháp là gì?", "what is blorpt"])
 async def test_non_commerce_skips_before_reducer(case_factory, monkeypatch, text):
     monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
     case = await case_factory()

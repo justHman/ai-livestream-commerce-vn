@@ -18,8 +18,10 @@ def test_unrelated_homographs_stay_silent(text):
     assert question_kind(text, ["Áo khoác denim"]) == "not_answerable_non_commerce"
 
 
-def test_family_question_to_host_retains_personal_deflection():
-    assert question_kind("anh có gia đình chưa?", ["Áo khoác denim"]) == "off_topic"
+def test_family_question_to_host_is_silent():
+    assert (
+        question_kind("anh có gia đình chưa?", ["Áo khoác denim"]) == "not_answerable_non_commerce"
+    )
 
 
 def test_weather_words_do_not_hide_a_real_product_question():

@@ -51,7 +51,9 @@ class CuratedPatternSet:
         self.source = source
         self.license = license
         self.curated_by = curated_by
-        self.match_patterns = frozenset(matching_view(p, join_symbols=True) for p in patterns)
+        self.match_patterns = frozenset(
+            matching_view(p, join_symbols=True, protect_homographs=False) for p in patterns
+        )
 
     @classmethod
     def from_resource(cls, resource: dict[str, Any]) -> CuratedPatternSet:
@@ -100,7 +102,11 @@ def match_curated(text: str, sets: dict[str, CuratedPatternSet]) -> list[str]:
     Compare complete tokens/phrases in bounded, accent-folded matching views.
     Keep both punctuation boundaries and obfuscation joins; never mutate input.
     """
-    views = [f" {matching_view(text, join_symbols=join)} " for join in (False, True)]
+    views = [
+        f" {matching_view(text, join_symbols=join, reduce_repeats=reduce)} "
+        for join in (False, True)
+        for reduce in (False, True)
+    ]
     return [
         kind
         for kind, pattern_set in sets.items()

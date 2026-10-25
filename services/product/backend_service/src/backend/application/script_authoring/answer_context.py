@@ -218,7 +218,18 @@ _SHOP_REQUEST = re.compile(
 )
 _PRODUCT_NOUNS = re.compile(r"\b(?:ao|quan|giay|tui|vay|mu|dong ho|my pham|serum|son)\b")
 _FOLDED_ASKING = re.compile(
-    fold_text(_ASKING.pattern) + r"|\b(?:may|bao nhieu|bao lau|khi nao|bao gio)\b", re.IGNORECASE
+    fold_text(_ASKING.pattern) + r"|\b(?:ai|may|bao nhieu|bao lau|khi nao|bao gio)\b", re.IGNORECASE
+)
+_EXTRA_COMMERCE = re.compile(
+    r"\b(?:chot|lay|dat|order|ib|inbox|giu|de|cho em|cho minh|kich thuoc|nguyen lieu|"
+    r"co gian|mac|dung|loai|nuoc hoa|co ban|giao|doi|tra)\b"
+)
+_QUANTITY_LOCATION = re.compile(
+    rf"\b(?:{fold_text(_CITY_NAMES)}|(?:\d+|mot|hai|ba|bon|nam)\s+"
+    r"(?:cai|chiec|bo|hop|chai|tui|kg|ky|goi|lo|doi|met|lit))\b"
+)
+_UNRELATED_TOPIC = re.compile(
+    r"\b(?:thoi tiet|troi unrelated|nhom unrelated|quoc gia|thu do|bong da|bau cu)\b"
 )
 
 
@@ -227,7 +238,9 @@ def _commerce_view(text: str) -> str:
     # máu != màu, gia đình/quốc gia != giá). Other shopping words survive.
     text = unicodedata.normalize("NFC", text).lower()
     text = re.sub(r"\b(?:mưa|máu|mù|vậy|gia đình|quốc gia|đóng vai)\b", "unrelated", text)
-    return fold_text(text)
+    folded = fold_text(text)
+    folded = re.sub(r"\b(?:gia dinh|quoc gia)\b", "unrelated", folded)
+    return re.sub(r"\b(gi|sao|nao) vay\b", r"\1 unrelated", folded)
 
 
 @lru_cache(maxsize=1)
@@ -258,9 +271,15 @@ def question_kind(question: str | None, facts: list[str]) -> str:
     for part in parts:
         normalized = _commerce_view(part)
         asking = bool(_FOLDED_ASKING.search(normalized))
-        commerce = bool(_SHOP_CONTEXT.search(normalized)) and (
-            asking or bool(_SHOP_REQUEST.search(normalized))
+        commerce = bool(
+            _SHOP_CONTEXT.search(normalized)
+            or _EXTRA_COMMERCE.search(normalized)
+            or _QUANTITY_LOCATION.search(normalized)
         )
+        # Personal host questions are silent even with a question mark or
+        # generic interrogatives. Product evidence takes precedence.
+        if not commerce and is_off_topic(part, facts):
+            return "not_answerable_non_commerce"
         # Incidental shared words (water/France in a geography question) are
         # not product intent. Require an intact approved phrase when the
         # explicit commerce vocabulary above does not establish relevance.
@@ -268,6 +287,14 @@ def question_kind(question: str | None, facts: list[str]) -> str:
         commerce = commerce or (
             asking
             and any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases)
+        )
+        # Doubt favours the buyer: a generic question can refer to an item
+        # shown on screen without repeating its name. Only explicit unrelated
+        # topics override this evidence.
+        commerce = commerce or (
+            asking
+            and not _UNRELATED_TOPIC.search(normalized)
+            and not _UNRELATED_TOPIC.search(fold_text(part))
         )
         if commerce:
             nouns = set(_PRODUCT_NOUNS.findall(normalized))
@@ -277,28 +304,33 @@ def question_kind(question: str | None, facts: list[str]) -> str:
                 kinds.append("current_product")
             else:
                 kinds.append("commerce")
-        elif asking and is_off_topic(part, facts):
-            kinds.append("off_topic")
         else:
             return "not_answerable_non_commerce"
     if "other_product" in kinds:
         return "other_product"
     if len(set(kinds)) == 1:
         return kinds[0]
-    return "commerce" if "off_topic" not in kinds else "not_answerable_non_commerce"
+    return "commerce"
 
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
     """An explicit personal question to the host with no commerce/fact connection."""
     lowered = question.split("|")[0].strip().lower()
     folded = _commerce_view(lowered)
-    if _SHOP_CONTEXT.search(folded) or not _HOST.search(lowered):
+    if (
+        _SHOP_CONTEXT.search(folded)
+        or _EXTRA_COMMERCE.search(folded)
+        or not re.search(fold_text(_HOST.pattern), folded, re.I)
+    ):
         return False
-    if not (_PERSONAL.search(lowered) and _FOLDED_ASKING.search(folded)):
+    if not (
+        re.search(fold_text(_PERSONAL.pattern), fold_text(lowered), re.I)
+        and _FOLDED_ASKING.search(folded)
+    ):
         return False
-    words = {w for w in re.findall(r"\w+", lowered) if len(w) > 2 and w not in _STOP}
-    known = set(re.findall(r"\w+", " ".join(facts).lower()))
-    return not (words & known)
+    words = " " + " ".join(re.findall(r"\w+", folded)) + " "
+    phrases = [" ".join(re.findall(r"\w+", _commerce_view(fact))) for fact in facts]
+    return not any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in phrases)
 
 
 _OFF_TOPIC_DEFLECTION = (
@@ -322,12 +354,11 @@ _OTHER_PRODUCT_DEFLECTION = (
 
 
 def deflection_for(question: str | None, facts: list[str]) -> str:
-    """Fixed, non-echoing fallback for positively identified shop/host questions only."""
+    """Fixed, non-echoing fallback for eligible commerce questions only."""
     from .approved_speech import SpeechRejected
 
     kind = question_kind(question, facts)
     choices = {
-        "off_topic": _OFF_TOPIC_DEFLECTION,
         "commerce": _UNKNOWN_DEFLECTION,
         "current_product": _CURRENT_PRODUCT_DEFLECTION,
         "other_product": _OTHER_PRODUCT_DEFLECTION,

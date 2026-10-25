@@ -448,7 +448,10 @@ class Director:
                     1 if item.cluster.intent == "unknown" else 2
                 )
                 until = s.topic_cooldown_until.get(topic_key, 0.0)
-                if now < until and not has_new_content:
+                # A new purchase event needs its own handling even when another
+                # buyer used the same words. Already handled IDs are filtered
+                # before this point; topic similarity is not purchase dedup.
+                if now < until and not has_new_content and item.cluster.intent != "buy_intent":
                     logger.info(
                         "comment skipped reason=topic_cooldown topic=%s remaining_s=%.1f",
                         topic_key,

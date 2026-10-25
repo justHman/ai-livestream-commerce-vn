@@ -316,7 +316,6 @@ def test_fixed_remarks_are_category_neutral_so_any_product_can_use_them():
 
 
 FACTS = ["Vải denim dày dặn, bền", "Giao hàng toàn quốc từ 2 đến 3 ngày", "Kích cỡ: M, L, XL"]
-CHAT_FALLBACK = "Mình thấy có bạn hỏi một chuyện hơi ngoài lề"
 
 
 @pytest.mark.parametrize(
@@ -330,13 +329,13 @@ CHAT_FALLBACK = "Mình thấy có bạn hỏi một chuyện hơi ngoài lề"
         "chị thích ăn gì vậy ạ?",
     ],
 )
-def test_a_personal_question_to_the_host_is_set_aside_politely(comment):
+def test_a_personal_question_to_the_host_stays_silent(comment):
     from backend.application.script_authoring.answer_context import deflection_for, is_off_topic
+    from backend.application.script_authoring.approved_speech import SpeechRejected
 
     assert is_off_topic(comment, FACTS)
-    said = deflection_for(comment, FACTS)
-    assert said.startswith(CHAT_FALLBACK) and "quay lại giới thiệu" in said
-    assert "nhắn tin cho shop" in said  # a wrongly classified shop question still reaches the shop
+    with pytest.raises(SpeechRejected, match="not_answerable_non_commerce"):
+        deflection_for(comment, FACTS)
 
 
 @pytest.mark.parametrize(
@@ -411,7 +410,7 @@ def test_nothing_the_viewer_wrote_is_ever_spoken_back(comment):
         assert word not in said
 
 
-@pytest.mark.parametrize("comment", ["", "có tốt không"])
+@pytest.mark.parametrize("comment", [""])
 def test_ambiguous_comment_has_no_shop_fallback(comment):
     from backend.application.script_authoring.answer_context import deflection_for
     from backend.application.script_authoring.approved_speech import SpeechRejected

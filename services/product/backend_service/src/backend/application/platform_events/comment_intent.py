@@ -44,12 +44,12 @@ def has_question_intent(text: str) -> bool:
 
 
 def is_non_question(text: str) -> bool:
-    if has_question_intent(text):
-        return False
     words = re.findall(r"[a-z0-9]+", fold_text(text))
     if not words:
         return True
     normalized = " ".join(words)
     if normalized in _SOCIAL:
         return True
+    if has_question_intent(text):
+        return False
     return all(_LAUGHTER.fullmatch(w) or re.fullmatch(r"([a-z])\1{2,}", w) for w in words)

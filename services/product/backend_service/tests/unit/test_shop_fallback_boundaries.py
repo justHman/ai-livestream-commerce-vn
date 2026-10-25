@@ -38,7 +38,7 @@ def test_explicit_approved_product_phrase_is_a_commerce_signal():
 @pytest.mark.parametrize(
     ("question", "expected"),
     [
-        ("chị thích ăn gì vậy ạ?", "off_topic"),
+        ("chị thích ăn gì vậy ạ?", "not_answerable_non_commerce"),
         ("ngày mai thời tiết thế nào vậy?", "not_answerable_non_commerce"),
     ],
 )
