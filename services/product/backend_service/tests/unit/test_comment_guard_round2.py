@@ -175,6 +175,7 @@ ABUSE = [
         "cacc",
     }
 ]
+ABUSE = ["may la oc cho" if s == "oc cho" else s for s in ABUSE]
 
 
 def test_corpus_minimums():

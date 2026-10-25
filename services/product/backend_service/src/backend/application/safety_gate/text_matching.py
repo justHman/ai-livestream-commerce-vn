@@ -15,6 +15,7 @@ _BENIGN_HOMOGRAPHS = frozenset(
     "ngủ ngữ lớn đủ các buổi dẻo đeo khung bảo dù dư đi bùi đào dạo".split()
 )
 _BENIGN_HOMOGRAPHS |= frozenset("\u0111\u1ec1u \u0111i\u1ec7n h\u00e0m".split())
+_BENIGN_HOMOGRAPHS |= frozenset("bộ mã máy".split())
 _LEET = str.maketrans({"1": "i", "0": "o", "3": "e", "@": "a", "$": "s"})
 _AMBIGUOUS = frozenset("ngu lon cac du buoi deo bui dien cut ham deu khung lao hon".split())
 _EXPLICIT_ABUSE = frozenset("lồn lờn cặc kặc đụ đù buồi đéo điên cứt hâm đểu khùng láo hỗn".split())
@@ -44,6 +45,39 @@ AMBIGUOUS_PHRASES = frozenset(
 )
 
 
+def _protect_commerce_homophones(text: str) -> str:
+    """Require the abusive accent or a targeted insult for cho/khi/khon.
+
+    These occur inside longer curated phrases too (do cho ma, nao cho), so
+    protecting only whole ambiguous phrases would still ban ordinary requests.
+    """
+    words = re.findall(r"\w+", text)
+    context = " ".join(words)
+    targeted = any(w in {"mày", "tao", "thằng"} for w in words)
+    targeted |= bool(
+        re.search(
+            r"\b(?:may\s+(?:la|dung|an|ngu|dien)|(?:cho|khon|khi)\s+may|"
+            r"thang\s+(?:cho|khon|khi)(?!\s+(?:be|em|me|con|chong|vo)\b))\b",
+            context,
+        )
+    )
+    targeted |= bool(re.search(r"\b(?:đúng là|dung la|cái thứ|cai thu|cái đồ|cai do)\b", context))
+    if not targeted:
+        # A machine set/code and workwear must not become bố/má mày or bố láo.
+        text = re.sub(r"\b(?:bo may|ma may|bo lao)\b", "benignword", text)
+
+    def replace(match: re.Match) -> str:
+        token = match[0]
+        if fold_text(token) not in {"cho", "khi", "khon"}:
+            return token
+        if token in {"chó", "khỉ", "khốn"}:
+            return token
+        # Explicit benign accents are meaningful even in a hostile sentence.
+        return token if targeted and token == fold_text(token) else "benignword"
+
+    return re.sub(r"\w+", replace, text)
+
+
 def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool) -> str:
     """Keep curated phrase context before protecting ambiguous ASCII singletons.
 
@@ -51,6 +85,7 @@ def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool)
     a valid part of curated dismissal phrases such as 'cút mẹ đi'.
     """
     text = unicodedata.normalize("NFC", text).lower()
+    text = _protect_commerce_homophones(text)
     text = re.sub(
         r"\w+",
         lambda m: "benignword" if m[0] in _BENIGN_HOMOGRAPHS - {"đi"} else m[0],
@@ -100,6 +135,7 @@ def matching_view(
 ) -> str:
     text = unicodedata.normalize("NFC", text).lower()
     if protect_homographs:
+        text = _protect_commerce_homophones(text)
         text = _protect_homographs(text)
     text = fold_text(text).translate(_LEET)
     text = re.sub(r"\bd[*!]t\b", "dit", text)

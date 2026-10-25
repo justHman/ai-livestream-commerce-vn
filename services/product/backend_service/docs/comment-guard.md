@@ -59,13 +59,14 @@ compliments without an object, repeated characters and known keyboard runs.
 Matching is against the whole comment; mixed product questions or requests pass.
 Unknown Unicode letters are not treated as emoji or meaningless text.
 
-Explicit purchases take precedence over personal-looking buyer context: `mua`,
+Explicit purchases take precedence over personal-looking buyer introductions: `mua`,
 `chốt`, quantity-bearing `lấy`/`đặt`, product codes, and shop inventory questions
 such as `chị bán đồ ăn không?`. `em lấy 2 bộ cho chồng được không?` and
 `em tên Lan chốt 2 cái được không?` (including ASCII) reach Coordinator/reducer
 and retain commerce fallback eligibility. A buyer's family or name is context.
 
-After clear purchases, explicit personal questions to the host precede vague commerce:
+Hard transaction evidence takes precedence over host-private-life questions;
+otherwise explicit personal questions to the host precede vague commerce:
 a host pronoun/address plus a personal predicate (spouse, hometown, age, eating,
 drinking, sleeping, love, family, occupation, etc.) and interrogative evidence.
 `chị có định lấy chồng không?` and `chị quê Cần Thơ à?` are silent, as are their
@@ -113,7 +114,7 @@ remain finite-rule limitations; uncertainty in admission must keep passing onwar
 
 Round-three phrase matching checks curated multiword phrases before applying ASCII
 singleton homograph protection. This covers `óc lợn`, `cút mẹ đi`, `may an cut`,
-`con cac may`, `cút mẹ` and `đồ chó`, including punctuation and symbol joins.
+`con cac may`, `cút mẹ` and accented `đồ chó`, including punctuation and symbol joins.
 Toxicity v4 adds 70 reviewed accented/ASCII multiword entries, including `mày ăn cứt`
 and `con cặc mày`. Original benign accents remain protected in phrase views.
 Phrases whose complete ASCII form is itself ambiguous merchandise (`do ngu`,
@@ -129,3 +130,68 @@ corpus (over 250 comments) is rechecked for safety false positives. The review
 message supplied four literal abuse misses out of fourteen; the regression lists
 those four plus ten related curated phrase cases, without claiming access to the
 reviewer's undisclosed ten strings.
+
+## Round-four common-comment policy
+
+The audit covered every entry in the three `resources/safety/curated_*.json`
+resources and both `resources/profanity/curated_lexicon_*.json` resources. The
+profanity lexicons govern generated speech, not viewer-intake admission. Existing
+protection already covers merchandise homophones involving ngủ/ngữ, lớn, các,
+đủ, buổi, đeo, điện and ambiguous ASCII forms. No curated resource is removed.
+
+Before either curated phrase matching or singleton matching, `cho`, `khi` and
+`khon` now require the abusive original accent (`chó`, `khỉ`, `khốn`) or targeted
+insult context. This consistently covers nested curated phrases: `đồ chó`,
+`con chó`, `chó má`, `đồ chó má`, `óc chó`, `não chó`, `thằng chó`, `đồ khỉ`,
+`thằng khốn` and `con khốn`. Thus đồ cho bé, mua đồ cho chồng, đồ cho má,
+nào cho mẹ, tháng cho bé, ốc cho em, đồ khi nào giao and con khôn pass, including
+ASCII. `bộ máy`, `mã máy` and `bộ lao động` also retain their benign meanings;
+ASCII `bo may`, `ma may` and `bo lao` require targeting. Explicit benign accents
+remain meaningful even with hostile context.
+Targeting includes mày/thằng/tao, contextual ASCII equivalents and phrases such
+as đúng là/cái thứ/cái đồ. ASCII `may` meaning mấy and `thang` meaning tháng
+before a recipient do not by themselves establish targeting. The historical
+156-case abuse corpus retains accented cases; six ambiguous ASCII cases in
+round three and `oc cho` in round two now include explicit `may la` targeting.
+
+Price/quantity, size, đặt/chốt/order, lấy hàng, ship về, giao hàng, stock,
+codes/discounts, returns and warranty evidence override buyer introductions
+and host-private-life predicates. `chị có đồ ăn giá bao nhiêu?`, `cho em xin giá
+bộ đồ ngủ không?` and `em tên Lan muốn lấy hàng được không?` reach the original
+Coordinator/reducer path and retain commerce fallback eligibility.
+
+Without hard transaction evidence, host + có + chồng/vợ/người yêu/con/bạn
+trai/bạn gái/thích/hay/từng/định is personal even when followed by mua sắm,
+bán áo or chạy ship. These questions are silent at HTTP intake and speech
+preparation: no Coordinator/reducer call, LLM, TTS or topic cooldown. `chị có
+bán áo không?` remains an inventory question. Age/year-of-birth amounts and
+`làm nghề giao hàng` are personal predicates rather than price/delivery requests;
+a separate hard transaction signal still wins (for example spouse occupation
+followed by an áo price question). A personal member still dominates a cluster.
+
+`tests/unit/test_comment_guard_round4.py` contains 114 distinct benign comments,
+104 commerce questions and 100 personal questions, including accented/ASCII
+forms and every literal reviewer reproduction. All three groups use authenticated
+ASGI/HTTP ingestion with real safety; commerce checks original-text routing and
+fallback eligibility, and personal checks speech silence. The 156-case historical
+abuse corpus is also checked directly, with HTTP coverage retained in round three.
+The initial round-four test run reproduced 284 failures before the production fix.
+Final verification: `uv run --frozen --group dev python -m pytest tests/unit -q`
+passed 5,563 tests with 2 skips. `uv run --frozen --group dev ruff check src tests`
+and `uv run --frozen --group dev ruff format --check src tests` both passed
+(540 Python files). Commands ran inside `services/product/backend_service` with
+`UV_CACHE_DIR=D:/LiventoWorkspace/.uvcache`. Windows `TEMP`/`TMP` pointed to a
+writable workspace directory because the default pytest temp root denied access;
+no `--basetemp` was used.
+
+## Known limits
+
+Ambiguous ASCII without targeting deliberately favours admission: bare `do cho`,
+`con cho`, `do cho ma`, `oc cho`, `con khon`, `bo may`, `ma may`, `bo lao`
+and previously protected `do ngu`
+can be benign. The review's five ambiguous ASCII abuse cases are not individually
+special-cased. Accent/symbol tricks that erase the distinguishing accent may
+therefore pass without targeting. Unseen personal phrasing, dialect, and clauses
+mixing private life with commerce remain finite-rule limits; hard transaction
+signals intentionally favour commerce. This corpus does not establish coverage
+of the reviewer's undisclosed full probe set.

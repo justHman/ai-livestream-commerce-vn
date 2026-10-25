@@ -224,6 +224,17 @@ _EXPLICIT_PURCHASE = re.compile(
 )
 _SELLS = re.compile(r"(?:^|\b(?:chi|anh|em|co|shop)\s+)(?P<verb>ban)\s+(?!co\b|chua\b|la\b)(?=\w)")
 
+# Hard transaction evidence overrides buyer introductions and host predicates.
+# Bare mua/ship/product nouns can instead describe the host's private life.
+_HARD_COMMERCE = re.compile(
+    r"\b(?:gia|bao nhieu|size|kich co|xin gia|lay hang|dat|chot|ship ve|giao hang|"
+    r"con hang|ma|giam|doi tra|bao hanh|order)\b|\blay\s+(?:\d+|mot|hai|ba|bon|nam)\b"
+)
+_HOST_PRIVATE = re.compile(
+    r"\b(?:chi|em|anh|co|ban)\s+co\s+"
+    r"(?:chong|vo|nguoi yeu|con|ban trai|ban gai|thich|hay|tung|dinh)\b"
+)
+
 
 def _clear_purchase(question: str) -> bool:
     normalized = _commerce_view(question)
@@ -289,6 +300,7 @@ def question_kind(question: str | None, facts: list[str]) -> str:
         words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
         commerce = bool(
             _clear_purchase(part)
+            or _HARD_COMMERCE.search(normalized)
             or _SHOP_CONTEXT.search(normalized)
             or _PURCHASE.search(normalized)
             or _DESTINATION.search(normalized)
@@ -313,6 +325,19 @@ def question_kind(question: str | None, facts: list[str]) -> str:
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
     """Clear purchases win; otherwise host + personal predicate proves silence."""
+    normalized = _commerce_view(question)
+    private = _HOST_PRIVATE.search(fold_text(question))
+    # Shipping as a spouse's occupation and a host's age are personal questions,
+    # not a delivery request or a price inquiry.
+    hard_view = re.sub(
+        r"\b(?:sinh nam(?: bao nhieu)?|bao nhieu tuoi|tuoi bao nhieu|lam nghe giao hang)\b",
+        "",
+        normalized,
+    )
+    if _HARD_COMMERCE.search(hard_view):
+        return False
+    if private and _FOLDED_ASKING.search(normalized):
+        return True
     if _clear_purchase(question):
         return False
     addressed = re.sub(r"\bcó\b", "has", unicodedata.normalize("NFC", question).lower())

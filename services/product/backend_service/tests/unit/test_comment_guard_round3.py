@@ -118,6 +118,14 @@ ABUSE += variants(
     ]
 )
 ABUSE = list(dict.fromkeys(ABUSE + ["ó.c l.ợ.n", "c.ú.t mẹ đi", "con c.a.c may", "may an c.u.t"]))
+# These ASCII forms also mean ordinary goods/requests. Preserve the abuse
+# regressions with explicit targeting; their accented originals stay unchanged.
+ABUSE = [
+    f"may la {s}"
+    if s in {"do cho", "do . cho", "do cho ma", "do . cho . ma", "con khon", "con . khon"}
+    else s
+    for s in ABUSE
+]
 
 
 def test_corpus_minimums():
