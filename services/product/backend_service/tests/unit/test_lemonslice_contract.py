@@ -247,7 +247,12 @@ def _rolling(rollover_after_s=60.0, max_session_s=100.0):
     room = FakeRoom()
     rest = FakeLemonSlice(room)
     backend = LemonSliceRenderBackend(
-        settings(max_session_s=max_session_s, rollover_after_s=rollover_after_s, keepalive_s=0),
+        settings(
+            max_session_s=max_session_s,
+            rollover_after_s=rollover_after_s,
+            keepalive_s=0,
+            speak_ready_wait_s=0.05,  # absent-avatar waits are real-time: keep the rollover cases fast
+        ),
         room_factory=lambda: room,
         session_client_factory=rest.client_factory,
         http_post=rest,
@@ -301,11 +306,14 @@ def test_failed_rollover_keeps_the_session_retries_later_and_the_cap_still_appli
     sid = backend.start(StartOptions()).session_id
     now[0] += 61
     rest.start_raise = ConnectionError("provider down")
-    backend.stream_audio(sid, win("u1", 0, final=True))  # the old avatar was ended first
+    # The ready gate refuses to send audio into a room with no avatar (the unit is retried later).
+    with pytest.raises(LemonSliceError, match="avatar_not_ready"):
+        backend.stream_audio(sid, win("u1", 0, final=True))  # the old avatar was ended first
     assert len(rest.starts) == 2
     assert rest.controls == [(f"{BASE}/sessions/ls-1/control", "terminate")]
     now[0] += 10
-    backend.stream_audio(sid, win("u2", 0, final=True))
+    with pytest.raises(LemonSliceError, match="avatar_not_ready"):
+        backend.stream_audio(sid, win("u2", 0, final=True))
     assert len(rest.starts) == 2  # not retried inside the pause
     now[0] += 30  # now 101 s old: past the retry pause and past the cap
     with pytest.raises(SessionNearCap):
@@ -373,6 +381,7 @@ def test_a_replacement_that_lands_late_is_adopted():
             keepalive_s=0,
             request_timeout_s=0.2,
             ready_timeout_s=0.3,
+            speak_ready_wait_s=1.0,
         ),
         room_factory=lambda: room,
         session_client_factory=rest.client_factory,
@@ -383,7 +392,8 @@ def test_a_replacement_that_lands_late_is_adopted():
     now[0] += 61
     rest.session_id = "ls-2"
     release = rest.hold()  # creation is slower than the rollover waits
-    backend.stream_audio(sid, win("u1", 0, final=True))  # the wait runs out: old one is ended
+    with pytest.raises(LemonSliceError, match="avatar_not_ready"):  # the ready gate gives up
+        backend.stream_audio(sid, win("u1", 0, final=True))  # the wait runs out: old one is ended
     assert (f"{BASE}/sessions/ls-1/control", "terminate") in rest.controls
     release.set()  # the replacement lands late and joins the room
     assert until(lambda: backend._sessions[sid].provider_session_id == "ls-2")

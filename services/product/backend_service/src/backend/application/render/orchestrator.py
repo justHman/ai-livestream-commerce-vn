@@ -134,6 +134,10 @@ class StreamingControllerConfig:
 VERBATIM_MAX_CHARS = 200
 
 
+class AvatarDeliveryUnconfirmed(RuntimeError):
+    code = "playback_unconfirmed"
+
+
 class StreamOrchestrator:
     """Wires LLM -> TextChunker -> TTS -> streaming backend into one run.
 
@@ -142,7 +146,7 @@ class StreamOrchestrator:
     /lite/interrupt or DirectorCoordinator interrupt arbitration.
     """
 
-    playback_unconfirmed_total = 0  # process-wide metric, no control-flow effect
+    playback_unconfirmed_total = 0  # process-wide delivery metric
 
     def __init__(
         self,
@@ -156,7 +160,10 @@ class StreamOrchestrator:
         audio_window_callback: AudioWindowCallback | None = None,
         telemetry: TelemetryCollector | None = None,
         chunk_policy: ChunkPolicy | str = ChunkPolicy.ADAPTIVE_VI,
+        avatar_status_callback: Any = None,
     ) -> None:
+        self._avatar_status_callback = avatar_status_callback
+        self._ready_utterance: str | None = None
         self._llm = llm
         self._tts = tts
         self._backend = backend
@@ -819,6 +826,23 @@ class StreamOrchestrator:
             )
         if self._cancel_event.is_set():
             return
+        if self._ready_utterance != audio_window.utterance_id:
+            prepare = getattr(self._backend, "wait_speak_ready", None)
+            if prepare is not None:
+                ready = getattr(self._backend, "avatar_ready", lambda _: True)
+                waiting = not ready(session_id)
+                if waiting and self._avatar_status_callback is not None:
+                    asyncio.run_coroutine_threadsafe(
+                        self._avatar_status_callback(True), self._loop
+                    ).result()
+                prepare(session_id)
+                if self._cancel_event.is_set():
+                    return
+                if self._avatar_status_callback is not None:
+                    asyncio.run_coroutine_threadsafe(
+                        self._avatar_status_callback(False), self._loop
+                    ).result()
+            self._ready_utterance = audio_window.utterance_id
         if self._audio_window_callback is not None:
             loop = self._loop
             if loop is None:
@@ -831,7 +855,7 @@ class StreamOrchestrator:
                 return
             bridge.put(video_window)
         if audio_window.is_final and not self._cancel_event.is_set():
-            # Observability only: the script keeps going (never freezes the live).
+            # Completion must reach the coordinator before it advances the script cursor.
             playback_info = getattr(self._backend, "playback_info", None)
             info = playback_info(session_id, audio_window.utterance_id) if playback_info else None
             if info and info.get("playback_unconfirmed"):
@@ -842,6 +866,8 @@ class StreamOrchestrator:
                     audio_window.utterance_id,
                     StreamOrchestrator.playback_unconfirmed_total,
                 )
+                if getattr(self._backend, "speak_ready_gate_enabled", False) is True:
+                    raise AvatarDeliveryUnconfirmed("playback_unconfirmed")
 
     def _remaining_deadline(self, chunker: TextChunker) -> float | None:
         """Seconds until the buffer latency deadline, or None when no deadline.

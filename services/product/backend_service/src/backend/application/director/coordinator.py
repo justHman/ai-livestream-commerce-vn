@@ -56,7 +56,12 @@ from backend.application.render.locks import SessionLockRegistry
 from backend.application.render.queue import BoundedVideoQueue, CoordinatorMetrics
 
 from backend.application.clients.tts.self_hosted import TTSClientError
-from ..render.orchestrator import StreamOrchestrator, StreamingControllerConfig
+from ..render.orchestrator import (
+    AvatarDeliveryUnconfirmed,
+    StreamOrchestrator,
+    StreamingControllerConfig,
+)
+from ..clients.avatar.lemonslice import LemonSliceError
 from ..text_chunker import FixedChunkPolicyConfig
 from ..script_authoring.approved_speech import SpeechRejected
 
@@ -79,6 +84,7 @@ CLOSE_REJECT_BACKOFF_MAX_SEC = 60.0
 # A slow or stuck /ws/control subscriber must never stall a Director turn: one hub emit may take
 # at most this long.
 HUB_EMIT_TIMEOUT_SEC = 2.0
+AVATAR_UNIT_RETRIES = 2
 
 
 def _decision_to_event(decision: Decision) -> dict:
@@ -1730,6 +1736,12 @@ class DirectorCoordinator:
             if self._audio_window_callback is not None:
                 await self._audio_window_callback(window)
 
+        async def avatar_status(waiting: bool):
+            if waiting:
+                self.live_follow.avatar_reconnecting(session_id, decision, ds)
+            else:
+                self.live_follow.speak_started(session_id, decision, ds)
+
         try:
             session_tts = await self._session_tts(session_id)
             orchestrator = StreamOrchestrator(
@@ -1740,6 +1752,7 @@ class DirectorCoordinator:
                 if speech is not None
                 else session_tts,
                 backend=self._backend,
+                avatar_status_callback=avatar_status,
                 queue=queue,
                 metrics=metrics,
                 fixed_config=self._fixed_config,
@@ -1769,10 +1782,21 @@ class DirectorCoordinator:
             if decision.action == "autonomous_opening":
                 # A timed-out provider may already have emitted media.
                 max_attempts = 1
+            avatar_gate = getattr(self._backend, "speak_ready_gate_enabled", False) is True
+            if avatar_gate:
+                max_attempts = (
+                    1
+                    if decision.action in {"answer_cluster", "answer_fact"}
+                    else 1 + AVATAR_UNIT_RETRIES
+                )
             spoken_script = None
             for attempt in range(max_attempts):
                 decision.attempt = attempt
                 try:
+                    if avatar_gate and decision.action in {"answer_cluster", "answer_fact"}:
+                        ready = getattr(self._backend, "avatar_ready", None)
+                        if ready is not None and not ready(session_id):
+                            raise LemonSliceError("avatar_not_ready")
                     generate = decision.prompt is not None and decision.prepared_script is None
                     if speech is not None:
                         await self.approved_speech.revalidate(speech, live=live)
@@ -1811,6 +1835,63 @@ class DirectorCoordinator:
                     break
                 except asyncio.CancelledError:
                     raise
+                except (AvatarDeliveryUnconfirmed, LemonSliceError) as exc:
+                    if not avatar_gate or exc.code not in {
+                        "playback_unconfirmed",
+                        "avatar_not_ready",
+                    }:
+                        raise
+                    if exc.code == "playback_unconfirmed":
+                        await asyncio.to_thread(self._backend.require_avatar_recovery, session_id)
+                    if decision.is_cancelled or not live():
+                        self._record_cancelled(session_id, decision, "turn_cancelled")
+                        return True
+                    if attempt + 1 >= max_attempts:
+                        # Explicit bounded skip, never record a successful speech receipt.
+                        if decision.action in {"answer_cluster", "answer_fact"}:
+                            self._skip_response(session_id, decision, "avatar_not_ready")
+                        elif ds is not None:
+                            # Retire the failed script position so a permanently absent avatar
+                            # cannot trap the director on this unit on every future tick.
+                            ds.director.mark_skipped(decision)
+                            self._after_speak(session_id, decision, "")
+                        self.live_follow.turn_ended(
+                            session_id, decision, ds, status="failed", reason=exc.code
+                        )
+                        skipped = {**self._speech_item(decision, "skipped"), "reason": exc.code}
+                        self._completed_speech[session_id] = skipped
+                        self._completed_history.setdefault(
+                            session_id, deque(maxlen=self._completed_history_size)
+                        ).append(skipped)
+                        st.skips += 1
+                        logger.error(
+                            "avatar delivery skipped session=%s unit=%s attempts=%s reason=%s",
+                            session_id,
+                            decision.unit_index,
+                            attempt + 1,
+                            exc.code,
+                        )
+                        await self._emit(
+                            session_id,
+                            {
+                                "type": "coordinator.avatar_delivery_skipped",
+                                "turn_id": decision.turn_id,
+                                "unit_index": decision.unit_index,
+                                "attempts": attempt + 1,
+                                "reason": exc.code,
+                            },
+                        )
+                        return True
+                    self.live_follow.avatar_reconnecting(session_id, decision, ds)
+                    await self._emit(
+                        session_id,
+                        {
+                            "type": "coordinator.retry_scheduled",
+                            "turn_id": decision.turn_id,
+                            "retry_count": attempt + 1,
+                            "error": exc.code,
+                        },
+                    )
                 except (TimeoutError, ConnectionError) as exc:
                     if attempt + 1 >= max_attempts:
                         raise
