@@ -189,12 +189,13 @@ def select_scored(
     """
     cfg = director.cfg
     state = director.state
+    handled_comments = state.answered_comments | state.skipped_comments
     clusters = [_as_cluster(s) for s in selections]
     max_size = max((c.size for c in clusters), default=1)
     scored: list[ScoredCluster] = []
     for cluster in clusters:
         if cluster.member_ids and all(
-            member_id in state.answered_comments for member_id in cluster.member_ids
+            member_id in handled_comments for member_id in cluster.member_ids
         ):
             continue
         if (

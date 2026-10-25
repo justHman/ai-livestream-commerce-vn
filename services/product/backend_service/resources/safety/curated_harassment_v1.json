@@ -1,12 +1,12 @@
 {
   "provenance": {
-    "version": "1",
-    "source": "Curated by project team from public Vietnamese harassment/abuse lexicons and moderation guides (đe dọa, xúc phạm cá nhân, quấy rối, doxxing indicators); each entry manually reviewed against false positives in the VN livestream-commerce register.",
+    "version": "3",
+    "source": "Curated by project team từ danh sách mở công khai, đã rà false-positive; project-maintained Vietnamese abuse variants; no external dataset downloaded.",
     "license": "CC0-1.0 (curated subset; no external dataset-derived runtime dependency)",
-    "curated_by": "ai-livestream-commerce-vn team (human review 2026-08-14)",
-    "retrieval_version": "curated_harassment_v1",
+    "curated_by": "ai-livestream-commerce-vn team (project review 2026-10-25)",
+    "retrieval_version": "curated_harassment_v3",
     "activation_status": "active",
-    "false_positive_review": "see tests/unit/test_safety_gate_resources.py (benign commerce-word coverage)"
+    "false_positive_review": "tests/unit/test_comment_guard.py and test_safety_gate_resources.py; token boundaries and accented commerce homographs"
   },
   "patterns": [
     "đe dọa",
@@ -20,7 +20,6 @@
     "chém",
     "chém chết",
     "chém bay",
-    "dao kéo",
     "mang dao",
     "cầm dao",
     "tìm nhà",
@@ -62,6 +61,16 @@
     "chửi bới",
     "chửi xéo",
     "chửi thẳng mặt",
-    "khủng bố"
+    "khủng bố",
+    "tao giết mày",
+    "tao giet may",
+    "giết cả nhà mày",
+    "giet ca nha may",
+    "đập chết mày",
+    "dap chet may",
+    "hiếp mày",
+    "hiep may",
+    "tung ảnh nóng của mày",
+    "tung anh nong cua may"
   ]
 }

@@ -88,7 +88,10 @@ One terminal per `turn_id` (first terminal wins; a late failure never overwrites
   of those texts must update `answer_context.is_deflection`); script turns:
   `script`. `coverage_scope` is always `cluster`: never per-member coverage.
 * `cancelled` reason_code: `interrupt | hard_expired | superseded | content_rejected |
-  session_stopped | cancelled`. `failed`: `failed | playback_timeout | preparation_failed`.
+  session_stopped | cancelled | non_question | not_answerable_non_commerce |
+  safety_filtered | deflection_rate_limited`. The four response-suppression reasons
+  also emit a final `comment.skipped`; these members are never marked answered.
+  `failed`: `failed | playback_timeout | preparation_failed`.
 * `attempt` is the speech attempt that ended the turn (internal transient retry).
 * Join `member_ids` of the matching `turn_selected` (or the snapshot turn). If a
   terminal arrives before its `turn_selected`, wait/reconcile; compare
@@ -101,7 +104,8 @@ One terminal per `turn_id` (first terminal wins; a late failure never overwrites
 ```
 `comment_ids` (Runtime ids, <= 200 per event) or `event_ids` (comments refused at intake,
 which never got a Runtime id). `reason_code` allowlist: `topic_recently_answered,
-unclassified, expired, non_actionable, duplicate_content, safety_filtered,
+unclassified, expired, non_actionable, non_question, not_answerable_non_commerce,
+deflection_rate_limited, duplicate_content, safety_filtered,
 session_closing, session_closed, capacity_exceeded, delivery_failed, turn_cancelled,
 turn_failed`; anything else is sent as `unknown` with `final=false` (never upstream text).
 
@@ -117,6 +121,9 @@ Emitted today (others in the allowlist are reserved for the API/future work):
 | Left the store earlier (cluster/member bound), unanswered | skipped | `capacity_exceeded` | true |
 | Left the store after a cooldown deferral | skipped | `topic_recently_answered` | true |
 | Cluster intent spam/off_topic/social (never selectable) | skipped | `non_actionable` | true |
+| Social chat at intake | skipped (`event_ids`) | `non_question` | true |
+| No positive shop/personal question intent | skipped (`event_ids`) | `not_answerable_non_commerce` | true |
+| Deflection suppressed at dispatch (per-session interval) | skipped | `deflection_rate_limited` | true |
 | Runtime SafetyGate refusal at intake | skipped (`event_ids`) | `safety_filtered` | true |
 | Stale / replay-flood refusal at intake | skipped (`event_ids`) | `expired` / `duplicate_content` | true |
 | Execution fence `closing` / `ending` | skipped | `session_closing` / `session_closed` | true |
@@ -211,3 +218,5 @@ pending -> "Dang cho AI"; selected -> "AI dang chuan bi tra loi chung"; answered
 `member_count`; N=1 -> "AI da phan hoi"); answered + `deflection` -> "AI da phan hoi,
 chua du thong tin"; skipped final -> "Khong tra loi" + short reason (`safety_filtered`
 -> "Da loc"); deferred -> "Dang cho"; anything unknown or missing -> "Chua xac nhan".
+
+Social chat refused before reducer uses final `non_question` (Studio: skipped label).

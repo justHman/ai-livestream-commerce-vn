@@ -131,6 +131,7 @@ class StreamState:
     rolling_comments: list[Any] = field(default_factory=list)  # list[Comment]
     embeddings_cache: dict[str, list[float]] = field(default_factory=dict)  # comment_id -> vec
     answered_comments: set[str] = field(default_factory=set)
+    skipped_comments: set[str] = field(default_factory=set)
     closing_spoken: bool = False
     closing_qa_answered: int = (
         0  # answers given after the last product's budget/cap ran out (bounded)

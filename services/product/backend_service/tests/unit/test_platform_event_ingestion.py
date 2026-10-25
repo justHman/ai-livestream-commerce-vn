@@ -69,7 +69,9 @@ async def test_multi_platform_batch_all_accepted() -> None:
 @pytest.mark.asyncio
 async def test_burst_100_events_all_accepted() -> None:
     service, _ = await _fresh_service()
-    events = [PlatformEvent(**_event(f"burst-{i}", text=f"comment {i}")) for i in range(100)]
+    events = [
+        PlatformEvent(**_event(f"burst-{i}", text=f"size L? comment {i}")) for i in range(100)
+    ]
     result = await service.ingest("s1", events)
 
     assert result["accepted"] == 100
@@ -86,7 +88,7 @@ async def test_duplicate_event_id_is_idempotent_no_double_persist() -> None:
             _FakePg.inserts += 1
 
     service, _ = await _fresh_service(pg_store=_FakePg())
-    event = PlatformEvent(**_event("dup-1", text="hello"))
+    event = PlatformEvent(**_event("dup-1", text="size L?"))
     first = await service.ingest("s1", [event])
     second = await service.ingest("s1", [event])
 
@@ -100,7 +102,7 @@ async def test_duplicate_event_id_is_idempotent_no_double_persist() -> None:
 async def test_retry_within_window_is_duplicate() -> None:
     now = time.time()
     service, _ = await _fresh_service(dedup_window_sec=3600.0, now_fn=lambda: now)
-    event = PlatformEvent(**{**_event("retry-1", text="hi"), "occurred_at": now})
+    event = PlatformEvent(**{**_event("retry-1", text="size L?"), "occurred_at": now})
     await service.ingest("s1", [event])
 
     service._now = lambda: now + 30.0
@@ -113,7 +115,7 @@ async def test_retry_within_window_is_duplicate() -> None:
 async def test_event_id_forgotten_after_dedup_window_is_accepted_again() -> None:
     now = time.time()
     service, _ = await _fresh_service(dedup_window_sec=60.0, now_fn=lambda: now)
-    event = PlatformEvent(**{**_event("retry-2", text="hi"), "occurred_at": now})
+    event = PlatformEvent(**{**_event("retry-2", text="size L?"), "occurred_at": now})
     await service.ingest("s1", [event])
 
     service._now = lambda: now + 120.0
@@ -131,13 +133,13 @@ async def test_reordered_delivery_all_accepted_order_independent() -> None:
     events = [
         PlatformEvent(
             **{
-                **_event("late", text="late comment", viewer_id="u2"),
+                **_event("late", text="size L? late comment", viewer_id="u2"),
                 "occurred_at": now - 60.0,
             }
         ),
         PlatformEvent(
             **{
-                **_event("early", text="early comment", viewer_id="u1"),
+                **_event("early", text="size L? early comment", viewer_id="u1"),
                 "occurred_at": now - 300.0,
             }
         ),
@@ -213,7 +215,7 @@ async def test_comment_without_viewer_is_accepted_without_unique_key() -> None:
         [
             PlatformEvent(
                 **{
-                    **_event("noviewer-1", text="hello"),
+                    **_event("noviewer-1", text="size L?"),
                     "viewer": None,
                 }
             )
@@ -231,9 +233,9 @@ async def test_unique_viewer_key_normalization_across_events() -> None:
     await service.ingest(
         "s1",
         [
-            PlatformEvent(**{**_event("k1", text="a", viewer_id="v1")}),
-            PlatformEvent(**{**_event("k2", text="b", viewer_id="v1")}),
-            PlatformEvent(**{**_event("k3", text="c", viewer_id="v2")}),
+            PlatformEvent(**{**_event("k1", text="size L? a", viewer_id="v1")}),
+            PlatformEvent(**{**_event("k2", text="size L? b", viewer_id="v1")}),
+            PlatformEvent(**{**_event("k3", text="size L? c", viewer_id="v2")}),
         ],
     )
     meta = await store.get("s1")
@@ -248,7 +250,7 @@ async def test_unique_viewer_key_normalization_across_events() -> None:
 async def test_unknown_session_raises_keyerror() -> None:
     service, _ = await _fresh_service()
     with pytest.raises(KeyError):
-        await service.ingest("missing", [PlatformEvent(**{**_event("x", text="hi")})])
+        await service.ingest("missing", [PlatformEvent(**{**_event("x", text="size L?")})])
 
 
 @pytest.mark.asyncio
@@ -307,14 +309,14 @@ async def test_comment_parked_on_meta_when_no_coordinator() -> None:
     store = InMemorySessionStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store)
-    result = await service.ingest("s1", [PlatformEvent(**{**_event("p1", text="hi")})])
+    result = await service.ingest("s1", [PlatformEvent(**{**_event("p1", text="size L?")})])
     meta = await store.get("s1")
     assert result["events"][0]["status"] == "accepted"
     assert "comment_id" not in result["events"][0]
     pending = meta["pending_platform_chat"]
 
     assert pending[0]["event_id"] == "p1"
-    assert pending[0]["text"] == "hi"
+    assert pending[0]["text"] == "size L?"
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +374,7 @@ async def test_duplicate_and_rejected_events_do_not_wake_reducer() -> None:
     reducer = _RecordingReducer()
     service = _make_reducer_wired_service(store, reducer)
     now = time.time()
-    event = PlatformEvent(**{**_event("d1", text="hi"), "occurred_at": now})
+    event = PlatformEvent(**{**_event("d1", text="size L?"), "occurred_at": now})
     stale = PlatformEvent(**{**_event("r1", text="old"), "occurred_at": now - 3600 * 24 * 2})
 
     await service.ingest("s1", [event, event, stale])
@@ -392,12 +394,12 @@ async def test_reducer_wake_notifications_and_pending_after_accepted_comment() -
         now_fn=lambda: time.time(),
     )
     service = _make_reducer_wired_service(store, reducer)
-    await service.ingest("s1", [PlatformEvent(**{**_event("f1", text="hello")})])
+    await service.ingest("s1", [PlatformEvent(**{**_event("f1", text="size L?")})])
 
     assert reducer.stats("s1")["wake_notifications"] == 1
     pending = reducer.drain_batch("s1", time.time())
     assert pending[0].event_id == "f1"
-    assert pending[0].text == "hello"
+    assert pending[0].text == "size L?"
 
 
 class _FakeReducerEmbedder:
@@ -418,7 +420,7 @@ class _FakeReducerEmbedder:
 async def test_comment_without_coordinator_is_not_ready_never_accepted() -> None:
     service, store = await _fresh_service()
     result = await service.ingest(
-        "s1", [PlatformEvent(**_event("nr-1", text="hi"))], delivery_outcomes_v1=True
+        "s1", [PlatformEvent(**_event("nr-1", text="size L?"))], delivery_outcomes_v1=True
     )
     item = result["events"][0]
 
@@ -471,8 +473,8 @@ async def test_coordinator_attach_race_yields_routed_not_accepted_without_coordi
     result = await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("race-1", text="first")),
-            PlatformEvent(**_event("race-2", text="second")),
+            PlatformEvent(**_event("race-1", text="size L? first")),
+            PlatformEvent(**_event("race-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -509,7 +511,7 @@ async def test_full_queue_is_not_reported_as_success() -> None:
     store = InMemorySessionStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=coordinator)
-    event = PlatformEvent(**_event("qf-1", text="overflow"))
+    event = PlatformEvent(**_event("qf-1", text="size L? overflow"))
     result = await service.ingest("s1", [event], delivery_outcomes_v1=True)
     item = result["events"][0]
 
@@ -551,7 +553,7 @@ async def test_not_ready_retry_after_coordinator_attaches_is_accepted() -> None:
     store = InMemorySessionStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=coordinator)
-    event = PlatformEvent(**_event("retry-nr", text="hi"))
+    event = PlatformEvent(**_event("retry-nr", text="size L?"))
 
     first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
     assert first["events"][0]["status"] == "not_ready"
@@ -563,7 +565,7 @@ async def test_not_ready_retry_after_coordinator_attaches_is_accepted() -> None:
     # retry would come back a silent 'duplicate' and the comment is lost.
     assert second["events"][0]["status"] == "routed"
     assert second["events"][0]["comment_id"] == "comment-retry"
-    assert coordinator.ingested == ["hi"]
+    assert coordinator.ingested == ["size L?"]
     # ...and the delivery that finally worked is now deduped.
     assert (await service.ingest("s1", [event], delivery_outcomes_v1=True))["events"][0][
         "status"
@@ -575,7 +577,7 @@ async def test_default_opt_in_off_keeps_existing_accepted_parking_behaviour() ->
     store = InMemorySessionStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store)
-    event = PlatformEvent(**_event("legacy-1", text="hi"))
+    event = PlatformEvent(**_event("legacy-1", text="size L?"))
 
     result = await service.ingest("s1", [event])
     item = result["events"][0]
@@ -652,7 +654,7 @@ async def test_teardown_after_routing_before_consumption_is_non_deliverable() ->
     store = InMemorySessionStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=coordinator, pg_store=audit)
-    event = PlatformEvent(**_event("td-1", text="hi"))
+    event = PlatformEvent(**_event("td-1", text="size L?"))
     await service.ingest("s1", [event], delivery_outcomes_v1=True)
 
     # The session dies with the comment still sitting unconsumed in the queue.
@@ -677,7 +679,7 @@ async def test_stale_teardown_cannot_overwrite_a_newer_outcome() -> None:
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=coordinator, pg_store=audit)
     await service.ingest(
-        "s1", [PlatformEvent(**_event("td-2", text="hi"))], delivery_outcomes_v1=True
+        "s1", [PlatformEvent(**_event("td-2", text="size L?"))], delivery_outcomes_v1=True
     )
 
     # A teardown report that predates the delivery must not clobber it.
@@ -695,7 +697,7 @@ async def test_consumed_comment_is_never_reconciled_as_non_deliverable() -> None
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=coordinator, pg_store=audit)
     await service.ingest(
-        "s1", [PlatformEvent(**_event("td-3", text="hi"))], delivery_outcomes_v1=True
+        "s1", [PlatformEvent(**_event("td-3", text="size L?"))], delivery_outcomes_v1=True
     )
     # The coordinator drained the queue before the teardown. The tick reports
     # the ChatQueue comment ids it read, which is what the ledger indexed.
@@ -747,12 +749,12 @@ async def test_second_session_routed_work_is_reconciled_on_its_own_teardown() ->
 
         assert (
             await service.ingest(
-                "s1", [PlatformEvent(**_event("ms-1", text="a"))], delivery_outcomes_v1=True
+                "s1", [PlatformEvent(**_event("ms-1", text="size L? a"))], delivery_outcomes_v1=True
             )
         )["events"][0]["status"] == "routed"
         assert (
             await service.ingest(
-                "s2", [PlatformEvent(**_event("ms-2", text="b"))], delivery_outcomes_v1=True
+                "s2", [PlatformEvent(**_event("ms-2", text="size L? b"))], delivery_outcomes_v1=True
             )
         )["events"][0]["status"] == "routed"
 
@@ -809,7 +811,7 @@ async def test_bulk_teardown_reconciles_every_session_its_own_fence() -> None:
             assert (
                 await service.ingest(
                     sid,
-                    [PlatformEvent(**_event(f"bulk-ms-{index}", text="x"))],
+                    [PlatformEvent(**_event(f"bulk-ms-{index}", text="size L? x"))],
                     delivery_outcomes_v1=True,
                 )
             )["events"][0]["status"] == "routed"
@@ -855,7 +857,9 @@ async def _assert_stop_reconciles(case, binding, p0_event) -> None:
     posted = await case.client.post(
         f"/api/v1/sessions/{case.sid}/events",
         json={
-            "events": [p0_event("hi", event_id="e2e-1", source_message_id="msg-e2e").model_dump()],
+            "events": [
+                p0_event("size L?", event_id="e2e-1", source_message_id="msg-e2e").model_dump()
+            ],
             "delivery_outcomes_v1": True,
         },
     )
@@ -893,7 +897,9 @@ async def test_comment_the_coordinator_actually_consumed_is_not_non_deliverable(
             f"/api/v1/sessions/{case.sid}/events",
             json={
                 "events": [
-                    p0_event("hi", event_id="e2e-2", source_message_id="msg-e2e-2").model_dump()
+                    p0_event(
+                        "size L?", event_id="e2e-2", source_message_id="msg-e2e-2"
+                    ).model_dump()
                 ],
                 "delivery_outcomes_v1": True,
             },
@@ -936,7 +942,9 @@ async def test_stop_all_returns_the_fence_each_session_needed() -> None:
             f"/api/v1/sessions/{case.sid}/events",
             json={
                 "events": [
-                    p0_event("hi", event_id="fence-1", source_message_id="msg-fence").model_dump()
+                    p0_event(
+                        "size L?", event_id="fence-1", source_message_id="msg-fence"
+                    ).model_dump()
                 ],
                 "delivery_outcomes_v1": True,
             },
@@ -976,7 +984,9 @@ async def test_process_shutdown_reconciles_routed_work_instead_of_dropping_it() 
             f"/api/v1/sessions/{case.sid}/events",
             json={
                 "events": [
-                    p0_event("hi", event_id="bulk-1", source_message_id="msg-bulk").model_dump()
+                    p0_event(
+                        "size L?", event_id="bulk-1", source_message_id="msg-bulk"
+                    ).model_dump()
                 ],
                 "delivery_outcomes_v1": True,
             },
@@ -1071,7 +1081,7 @@ async def test_routed_delivery_path_never_mutates_occurred_at() -> None:
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=coordinator)
     occurred_at = time.time() - 120.0
-    event = PlatformEvent(**_event("ts-1", text="hi", occurred_at=occurred_at))
+    event = PlatformEvent(**_event("ts-1", text="size L?", occurred_at=occurred_at))
 
     await service.ingest("s1", [event], delivery_outcomes_v1=True)
     in_flight = service._in_flight["s1"]["ts-1"]
@@ -1092,7 +1102,7 @@ async def test_routed_delivery_path_never_mutates_occurred_at() -> None:
     second_at = time.time() - 90.0
     await service.ingest(
         "s1",
-        [PlatformEvent(**_event("ts-2", text="hi2", occurred_at=second_at))],
+        [PlatformEvent(**_event("ts-2", text="size L? hi2", occurred_at=second_at))],
         delivery_outcomes_v1=True,
     )
     await service.reconcile_session("s1", attach_seq=coordinator.next_delivery_tick())
@@ -1118,7 +1128,7 @@ async def test_not_ready_retry_succeeding_later_keeps_the_original_occurred_at()
     service = PlatformEventIngestionService(store=store, coordinator=coordinator)
     now = time.time()
     occurred_at = now - 60 * 60 * 12  # still inside the 24h bound
-    event = PlatformEvent(**{**_event("ts-3", text="hi"), "occurred_at": occurred_at})
+    event = PlatformEvent(**{**_event("ts-3", text="size L?"), "occurred_at": occurred_at})
 
     first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
     assert first["events"][0]["status"] == "not_ready"
@@ -1160,7 +1170,10 @@ async def test_p0_v1_binding_path_preserves_the_original_occurred_at() -> None:
             json={
                 "events": [
                     p0_event(
-                        "hi", event_id="ts-p0", source_message_id="msg-ts", occurred_at=occurred_at
+                        "size L?",
+                        event_id="ts-p0",
+                        source_message_id="msg-ts",
+                        occurred_at=occurred_at,
                     ).model_dump()
                 ],
                 "delivery_outcomes_v1": True,
@@ -1205,7 +1218,7 @@ async def test_p0_v1_hard_expired_comment_stays_rejected_over_http() -> None:
                 json={
                     "events": [
                         p0_event(
-                            "hi",
+                            "size L?",
                             event_id=event_id,
                             source_message_id=f"msg-{event_id}",
                             occurred_at=occurred_at,
@@ -1268,8 +1281,8 @@ async def test_teardown_mid_batch_keeps_earlier_outcomes_and_reports_not_ready()
     result = await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("b-1", text="first")),
-            PlatformEvent(**_event("b-2", text="second")),
+            PlatformEvent(**_event("b-1", text="size L? first")),
+            PlatformEvent(**_event("b-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -1298,8 +1311,8 @@ async def test_teardown_mid_batch_does_not_lose_earlier_delivery_on_retry() -> N
     await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("b-1", text="first")),
-            PlatformEvent(**_event("b-2", text="second")),
+            PlatformEvent(**_event("b-1", text="size L? first")),
+            PlatformEvent(**_event("b-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -1307,8 +1320,8 @@ async def test_teardown_mid_batch_does_not_lose_earlier_delivery_on_retry() -> N
     retry = await service.ingest(
         "s1",
         [
-            PlatformEvent(**_event("b-1", text="first")),
-            PlatformEvent(**_event("b-2", text="second")),
+            PlatformEvent(**_event("b-1", text="size L? first")),
+            PlatformEvent(**_event("b-2", text="size L? second")),
         ],
         delivery_outcomes_v1=True,
     )
@@ -1335,8 +1348,8 @@ async def test_legacy_contract_still_fails_the_batch_on_error() -> None:
         await service.ingest(
             "s1",
             [
-                PlatformEvent(**_event("b-1", text="first")),
-                PlatformEvent(**_event("b-2", text="second")),
+                PlatformEvent(**_event("b-1", text="size L? first")),
+                PlatformEvent(**_event("b-2", text="size L? second")),
             ],
         )
 
@@ -1367,7 +1380,7 @@ async def test_real_chat_queue_overflow_is_retryable_never_evicting() -> None:
         def batch(prefix, n):
             return [
                 p0_event(
-                    f"{prefix}-{i}",
+                    f"size L? {prefix}-{i}",
                     event_id=f"{prefix}-{i}",
                     source_message_id=f"msg-{prefix}-{i}",
                 )
@@ -1386,7 +1399,7 @@ async def test_real_chat_queue_overflow_is_retryable_never_evicting() -> None:
             assert "comment_id" not in item
         # Nothing evicted, reordered, or reported delivered that was not queued.
         assert [c.id for c in queue.snapshot()] == queued_ids
-        assert [c.text for c in queue.snapshot()][0] == "fill-0"
+        assert [c.text for c in queue.snapshot()][0] == "size L? fill-0"
         assert len(queue) == size
         assert {i["comment_id"] for i in fill["events"]} == set(queued_ids)
         assert queue.stats()["received_total"] == size
@@ -1474,7 +1487,7 @@ async def test_lost_lock_ownership_is_not_isolated_into_a_fabricated_duplicate()
     store = _FencedRejectingStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=_OkCoordinator())
-    event = PlatformEvent(**_event("lost-1", text="hi"))
+    event = PlatformEvent(**_event("lost-1", text="size L?"))
 
     # The same event twice: swallowing the stale-owner error would let the
     # second copy hit uncommitted in-memory dedup state and report 'duplicate'.
@@ -1499,7 +1512,7 @@ async def test_per_event_failure_log_does_not_leak_exception_text(caplog) -> Non
     service, _ = await _fresh_service(coordinator=_SecretCoordinator())
     with caplog.at_level("DEBUG"):
         result = await service.ingest(
-            "s1", [PlatformEvent(**_event("leak-1", text="hi"))], delivery_outcomes_v1=True
+            "s1", [PlatformEvent(**_event("leak-1", text="size L?"))], delivery_outcomes_v1=True
         )
     assert result["events"][0]["status"] == "not_ready"
     assert "ingest_event_failed" in caplog.text
@@ -1525,7 +1538,7 @@ class _FlakyOnceCoordinator:
 @pytest.mark.asyncio
 async def test_isolated_failure_recovers_on_retry_of_the_same_event() -> None:
     service, _ = await _fresh_service(coordinator=_FlakyOnceCoordinator())
-    event = PlatformEvent(**_event("rec-1", text="hi"))
+    event = PlatformEvent(**_event("rec-1", text="size L?"))
     first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
     assert first["events"][0]["status"] == "not_ready"
     second = await service.ingest("s1", [event], delivery_outcomes_v1=True)
@@ -1560,7 +1573,7 @@ async def test_injected_keyerror_during_dedup_commit_escapes_the_guard(monkeypat
         raise KeyError("dedup-commit")
 
     monkeypatch.setattr(service, "_record_seen", boom)
-    event = PlatformEvent(**_event("kd-1", text="hi"))
+    event = PlatformEvent(**_event("kd-1", text="size L?"))
     # Legacy behaviour: the batch fails; no not_ready followed by a duplicate.
     with pytest.raises(KeyError):
         await service.ingest("s1", [event, event], delivery_outcomes_v1=True)
@@ -1573,7 +1586,7 @@ async def test_malformed_dedup_entry_is_not_reported_as_coordinator_teardown() -
     await store.set("s1", {"status": "active", "platform_event_ids": [{"ts": time.time()}]})
     with pytest.raises(KeyError) as caught:
         await service.ingest(
-            "s1", [PlatformEvent(**_event("mal-1", text="hi"))], delivery_outcomes_v1=True
+            "s1", [PlatformEvent(**_event("mal-1", text="size L?"))], delivery_outcomes_v1=True
         )
     assert not isinstance(caught.value, CoordinatorUnavailable)
 
@@ -1646,7 +1659,7 @@ async def test_failed_dedup_write_is_not_reported_as_delivered_or_later_duplicat
     store = _FailingDedupWriteStore()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=_OkCoordinator())
-    event = PlatformEvent(**_event("dw-1", text="hi"))
+    event = PlatformEvent(**_event("dw-1", text="size L?"))
 
     # Routed to the coordinator but its dedup record cannot be persisted: the
     # batch must surface a failure so the API redelivers, never a success.
@@ -1669,7 +1682,7 @@ async def test_lost_ownership_on_dedup_write_is_not_reported_as_delivered() -> N
     store = Fenced()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=_OkCoordinator())
-    event = PlatformEvent(**_event("dw-2", text="hi"))
+    event = PlatformEvent(**_event("dw-2", text="size L?"))
     for _ in range(2):
         with pytest.raises(SessionLockTimeout):
             await service.ingest("s1", [event], delivery_outcomes_v1=True)
@@ -1679,7 +1692,7 @@ async def test_lost_ownership_on_dedup_write_is_not_reported_as_delivered() -> N
 @pytest.mark.asyncio
 async def test_successful_dedup_write_is_recorded_and_second_submission_is_duplicate() -> None:
     service, store = await _fresh_service(coordinator=_OkCoordinator())
-    event = PlatformEvent(**_event("dw-3", text="hi"))
+    event = PlatformEvent(**_event("dw-3", text="size L?"))
     first = await service.ingest("s1", [event], delivery_outcomes_v1=True)
     assert first["events"][0]["status"] == "routed"
     assert [e["event_id"] for e in (await store.get("s1"))["platform_event_ids"]] == ["dw-3"]
@@ -1712,7 +1725,7 @@ async def test_consumed_outcome_stays_final_across_dedup_failure_redelivery() ->
     store = Store()
     await store.set("s1", {"status": "active"})
     service = PlatformEventIngestionService(store=store, coordinator=_SeqCoordinator())
-    event = PlatformEvent(**_event("fin-1", text="hi"))
+    event = PlatformEvent(**_event("fin-1", text="size L?"))
 
     with pytest.raises(ConnectionError):  # routed (c1), dedup write failed
         await service.ingest("s1", [event], delivery_outcomes_v1=True)
@@ -1730,7 +1743,7 @@ async def test_consumed_outcome_stays_final_across_dedup_failure_redelivery() ->
 @pytest.mark.asyncio
 async def test_routed_and_never_consumed_still_ends_non_deliverable_at_stop() -> None:
     service, _ = await _fresh_service(coordinator=_SeqCoordinator())
-    event = PlatformEvent(**_event("lost-9", text="hi"))
+    event = PlatformEvent(**_event("lost-9", text="size L?"))
     await service.ingest("s1", [event], delivery_outcomes_v1=True)
     await service.reconcile_session("s1", attach_seq=10**9)
     assert service.terminal_outcomes("s1")["lost-9"].outcome.value == "non_deliverable"

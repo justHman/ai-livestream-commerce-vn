@@ -46,6 +46,9 @@ REASON_CODES = frozenset(
         "unclassified",
         "expired",
         "non_actionable",
+        "non_question",
+        "not_answerable_non_commerce",
+        "deflection_rate_limited",
         "duplicate_content",
         "safety_filtered",
         "session_closing",
@@ -623,6 +626,18 @@ class LiveFollowRecorder:
         """A comment the Runtime refused at intake (no runtime comment id exists yet)."""
         state = self._session(session_id)
         self._chunked(session_id, state, "comment.skipped", [], reason, True, None, [event_id])
+
+    @_safe
+    def skip_response(self, session_id: str, decision: Any, reason: str) -> None:
+        """Final silence at the speech boundary; never report these members as answered."""
+        self._skip(
+            session_id,
+            self._session(session_id),
+            list(decision.cluster_member_ids),
+            reason,
+            True,
+            decision.turn_id,
+        )
 
     @_safe
     def close_pending(self, session_id: str, reason: str) -> None:

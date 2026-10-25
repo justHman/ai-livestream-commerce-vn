@@ -326,6 +326,7 @@ class Director:
         """
         s, c = self.state, self.cfg
         reducer_mode = ranked is not None
+        handled_comments = s.answered_comments | s.skipped_comments
         high_value = is_high_value or (lambda _cid: False)
         by_cluster = by_cluster or {}
         by_members: dict[tuple[str, ...], str] = {}
@@ -350,9 +351,7 @@ class Director:
                 item
                 for item in rank_clusters(clusters, s, c, now)
                 if not item.cluster.member_ids
-                or not all(
-                    member_id in s.answered_comments for member_id in item.cluster.member_ids
-                )
+                or not all(member_id in handled_comments for member_id in item.cluster.member_ids)
             ]
         else:
             window = []
@@ -397,7 +396,7 @@ class Director:
                     item
                     for item in ranked
                     if not any(
-                        member_id in s.answered_comments for member_id in item.cluster.member_ids
+                        member_id in handled_comments for member_id in item.cluster.member_ids
                     )
                 ]
             else:
@@ -405,7 +404,7 @@ class Director:
                     item
                     for item in rank_clusters(clusters, s, c, now)
                     if not any(
-                        member_id in s.answered_comments for member_id in item.cluster.member_ids
+                        member_id in handled_comments for member_id in item.cluster.member_ids
                     )
                 ]
 
@@ -449,7 +448,10 @@ class Director:
                     1 if item.cluster.intent == "unknown" else 2
                 )
                 until = s.topic_cooldown_until.get(topic_key, 0.0)
-                if now < until and not has_new_content:
+                # A new purchase event needs its own handling even when another
+                # buyer used the same words. Already handled IDs are filtered
+                # before this point; topic similarity is not purchase dedup.
+                if now < until and not has_new_content and item.cluster.intent != "buy_intent":
                     logger.info(
                         "comment skipped reason=topic_cooldown topic=%s remaining_s=%.1f",
                         topic_key,

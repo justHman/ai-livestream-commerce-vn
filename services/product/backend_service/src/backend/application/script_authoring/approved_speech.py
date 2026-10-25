@@ -128,8 +128,8 @@ def _is_script_text(text: str, product: "ApprovedProduct") -> bool:
 
 # Said when the approved facts cannot answer a viewer: fixed bytes, no facts of its own.
 DEFLECTION = (
-    "Câu này mình chưa có thông tin chính xác để trả lời bạn, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
-    "Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục giới thiệu cho mọi người nhé."
+    "Câu hỏi này mình chưa có thông tin chính xác, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
+    "Cảm ơn bạn đã quan tâm. Giờ mình tiếp tục giới thiệu cho mọi người nhé."
 )
 _NATURAL_MAX_CHARS = 360
 _NATURAL_SYSTEM = (
@@ -598,6 +598,9 @@ class ApprovedSpeech:
             question = (
                 question_text or text
             )  # the viewer's words, before the answer replaces `text`
+            answers = [answer for p in candidates for answer in p.answers()]
+            facts = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
+            facts.extend(answers)
             direct = (
                 factual_reply(candidates[0], question_text, completed_text)
                 if len(candidates) == 1 and question_text
@@ -611,15 +614,14 @@ class ApprovedSpeech:
                 if route != "director":
                     self.check_start(session_id)
                 return speech
-            answers = [answer for p in candidates for answer in p.answers()]
             if not answers or llm is None or getattr(llm, "name", "none") == "none":
                 # nothing approved to say: never improvise
-                text, trusted = deflection_for(question, []), True
+                text, trusted = deflection_for(question, facts), True
             else:
                 natural = None
                 if len(candidates) == 1:
                     natural = await self._compose(
-                        llm, session_id, epoch, live, candidates[0], text, answers
+                        llm, session_id, epoch, live, candidates[0], question, answers
                     )
                 if natural is not None:
                     from .answer_context import wrap_natural
@@ -628,7 +630,7 @@ class ApprovedSpeech:
                 else:
                     self._fence(session_id, epoch, live)  # a cancelled turn starts no fallback call
                     try:
-                        text = await self._select(llm, session_id, epoch, live, text, answers)
+                        text = await self._select(llm, session_id, epoch, live, question, answers)
                     except SpeechRejected:
                         raise
                     except Exception as exc:
@@ -640,11 +642,11 @@ class ApprovedSpeech:
                         self._fence(session_id, epoch, live)
                         text = DEFLECTION
                     if text == DEFLECTION:
-                        trusted = True
+                        text, trusted = deflection_for(question, facts), True
                     elif text in answers:
                         generated = True  # only a whole approved fact is valid
                     else:
-                        text, trusted = deflection_for(question, answers), True
+                        text, trusted = deflection_for(question, facts), True
         replay = None
         if not (select_locked or generate):
             replay = next(

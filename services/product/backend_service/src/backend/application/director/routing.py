@@ -34,7 +34,7 @@ _INTENT_PHRASES: list[tuple[str, tuple[str, ...]]] = [
             "thời gian nhận",
         ),
     ),
-    ("buy_intent", ("chốt", "đặt hàng", "đặt ", "mua ngay", "lấy ", "thanh toán")),
+    ("buy_intent", ("chốt", "chot", "đặt hàng", "đặt ", "mua ngay", "lấy ", "lay ", "thanh toán")),
     ("promotion", ("khuyến mãi", "giảm", "sale", "voucher", "deal", "ưu đãi")),
     ("stock", ("còn hàng", "còn không", "hết chưa", "về hàng")),
     ("size_color", ("size", "cỡ", "kích cỡ", "màu", "vừa không")),

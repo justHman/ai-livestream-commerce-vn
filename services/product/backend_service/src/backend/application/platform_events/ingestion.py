@@ -64,6 +64,7 @@ from .models import (
     CommentPayload,
     PlatformEvent,
 )
+from .comment_intent import is_non_question
 
 logger = logging.getLogger(__name__)
 
@@ -573,7 +574,9 @@ class PlatformEventIngestionService:
         ):
             return
         code = (
-            "expired"
+            reason
+            if reason in {"non_question", "not_answerable_non_commerce"}
+            else "expired"
             if reason == _REASON_STALE
             else "duplicate_content"
             if reason == "replay_flood"
@@ -638,6 +641,16 @@ class PlatformEventIngestionService:
             return result
 
         reason = self._reject_reason(event, now)
+        # Symbol/emoji-only social chat is structurally malformed to SafetyGate,
+        # but has a more precise, non-safety skip outcome for live-follow.
+        if (
+            event.type == "viewer.comment"
+            and isinstance(event.payload, CommentPayload)
+            and (reason is None or reason == "malformed")
+            and 0 < len(event.payload.text.strip()) <= 2000
+            and is_non_question(event.payload.text)
+        ):
+            reason = "non_question"
         if reason is None and event.type == "viewer.comment":
             evidence = await self._screen(
                 session_id,
