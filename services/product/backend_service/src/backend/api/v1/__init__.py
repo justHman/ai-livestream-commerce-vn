@@ -11,7 +11,18 @@ routes. Health lives outside the versioned contract (``backend.api.health``).
 
 from __future__ import annotations
 
-from . import admin, avatars, entities, execution, live_follow, scripts, sessions, tts_voices, voices, websockets  # noqa: F401  (register routes on the shared router)
+from . import (  # noqa: F401  (register routes on the shared router)
+    admin,
+    avatars,
+    entities,
+    execution,
+    live_follow,
+    scripts,
+    sessions,
+    tts_voices,
+    voices,
+    websockets,
+)
 
 from .router import (  # noqa: F401
     AvatarCreateReq,
