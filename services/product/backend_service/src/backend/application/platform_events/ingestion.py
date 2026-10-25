@@ -665,13 +665,6 @@ class PlatformEventIngestionService:
             result["safety"] = evidence
             if not evidence["accepted"]:
                 reason = evidence["reason_codes"][0]
-            else:
-                from ..script_authoring.answer_context import question_kind
-
-                context = getattr(self._coordinator, "question_facts", None)
-                facts = context(session_id) if callable(context) else []
-                if question_kind(event.payload.text, facts) == "not_answerable_non_commerce":
-                    reason = "not_answerable_non_commerce"
         if reason is not None:
             result["status"] = EventStatus.REJECTED.value
             result["reason"] = reason

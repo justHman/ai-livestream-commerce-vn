@@ -1,12 +1,12 @@
 {
   "provenance": {
-    "version": "4",
+    "version": "5",
     "source": "Curated by project team từ danh sách mở công khai, đã rà false-positive; project-maintained Vietnamese abuse variants; no external dataset downloaded.",
     "license": "CC0-1.0 (curated subset; no external dataset-derived runtime dependency)",
     "curated_by": "ai-livestream-commerce-vn team (project review 2026-10-25)",
-    "retrieval_version": "curated_toxicity_v4",
+    "retrieval_version": "curated_toxicity_v5",
     "activation_status": "active",
-    "false_positive_review": "Round-three phrase precedence and HTTP corpus: tests/unit/test_comment_guard_round3.py; existing benign corpus in test_comment_guard_round2.py; ambiguous product phrases retain single-token protection."
+    "false_positive_review": "Round-five asymmetric admission and strong phrase HTTP corpus: tests/unit/test_comment_guard_round5.py; previous corpus: tests/unit/test_comment_guard_round3.py; existing benign corpus in test_comment_guard_round2.py; ambiguous product phrases retain single-token protection."
   },
   "patterns": [
     "ngu",
@@ -83,6 +83,8 @@
     "dit ma",
     "đụ má",
     "du ma",
+    "đụ má mày",
+    "du ma may",
     "địt con mẹ",
     "dit con me",
     "địt mẹ mày",

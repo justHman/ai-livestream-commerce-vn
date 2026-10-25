@@ -66,13 +66,6 @@ SALES = variants(
             "order được",
         )
     ]
-    + [
-        "chị có chồng bán áo giá bao nhiêu?",
-        "chị có thích áo size M không?",
-        "chị có người yêu chạy ship về Hà Nội không?",
-        "chị có chồng làm nghề giao hàng, áo giá bao nhiêu?",
-        "chị sinh năm bao nhiêu, áo size M còn không?",
-    ]
 )
 PERSONAL = variants(
     [
@@ -97,6 +90,20 @@ PERSONAL = variants(
         )
     ]
 )
+# Round five: privacy vetoes price/shipping too; ASCII con ban is uncertain
+# stock context and keeps commerce eligibility. Accented con still means child.
+PERSONAL += variants(
+    [
+        "ch\u1ecb c\u00f3 ch\u1ed3ng b\u00e1n \u00e1o gi\u00e1 bao nhi\u00eau?",
+        "ch\u1ecb c\u00f3 th\u00edch \u00e1o size M kh\u00f4ng?",
+        "ch\u1ecb c\u00f3 ng\u01b0\u1eddi y\u00eau ch\u1ea1y ship v\u1ec1 H\u00e0 N\u1ed9i kh\u00f4ng?",
+        "ch\u1ecb c\u00f3 ch\u1ed3ng l\u00e0m ngh\u1ec1 giao h\u00e0ng, \u00e1o gi\u00e1 bao nhi\u00eau?",
+        "ch\u1ecb sinh n\u0103m bao nhi\u00eau, \u00e1o size M c\u00f2n kh\u00f4ng?",
+    ]
+)
+ASCII_STOCK = [s for s in PERSONAL if "co con ban" in s]
+PERSONAL = [s for s in PERSONAL if s not in ASCII_STOCK]
+SALES += ASCII_STOCK
 
 
 def test_corpus_minimums():
@@ -125,9 +132,9 @@ async def test_http_intent(case_factory, monkeypatch, text, personal):
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
     if personal:
-        assert result["events"][0]["reason"] == "not_answerable_non_commerce", result
-        coordinator.assert_not_called()
-        reducer.assert_not_called()
+        assert result["accepted"] == 1, result
+        coordinator.assert_called_once()
+        reducer.assert_called_once()
         turn = decision(case, generated=True)
         turn.cluster_members = (text,)
         await prepare(case, turn)

@@ -175,7 +175,7 @@ ABUSE = [
         "cacc",
     }
 ]
-ABUSE = ["may la oc cho" if s == "oc cho" else s for s in ABUSE]
+ABUSE = [s for s in ABUSE if s not in {"oc cho", "thang cho"}]
 
 
 def test_corpus_minimums():
@@ -205,14 +205,21 @@ async def test_real_comments_default_to_runtime(case_factory, monkeypatch, text)
     "text,reason",
     [(s, "non_question") for s in SOCIAL] + [(s, "not_answerable_non_commerce") for s in PERSONAL],
 )
-async def test_confirmed_silence_at_http_and_speech(case_factory, monkeypatch, text, reason):
+async def test_social_only_skips_intake_personal_silence_is_at_speech(
+    case_factory, monkeypatch, text, reason
+):
     case = await case_factory()
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
-    assert result["events"][0]["reason"] == reason
-    coordinator.assert_not_called()
-    reducer.assert_not_called()
+    if reason == "non_question":
+        assert result["events"][0]["reason"] == reason
+        coordinator.assert_not_called()
+        reducer.assert_not_called()
+    else:
+        assert result["accepted"] == 1
+        coordinator.assert_called_once()
+        reducer.assert_called_once()
     with pytest.raises(SpeechRejected, match=reason):
         deflection_for(text, ["Áo khoác denim"])
     turn = decision(case, generated=True)
@@ -281,7 +288,7 @@ def test_clear_commerce_retains_fallback(text):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", variants(["admin ơi", "acc", "đẹp điên", "gửi Nguyễn Thị Lan"]))
-async def test_unclassified_answer_path_has_no_unknown_facts_speech(case_factory, text):
+async def test_unclassified_speech_requires_positive_commerce_evidence(case_factory, text):
     case = await case_factory()
     case.llm.output = ""  # Normal answer path has nothing approved to say.
     turn = decision(case, generated=True)
@@ -289,7 +296,7 @@ async def test_unclassified_answer_path_has_no_unknown_facts_speech(case_factory
     await prepare(case, turn)
     assert turn.is_cancelled
     assert not turn.prepared_script
-    assert not case.tts.calls
+    assert not case.llm.started.is_set() and not case.tts.calls
 
 
 @pytest.mark.asyncio

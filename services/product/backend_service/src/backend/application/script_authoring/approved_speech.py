@@ -602,7 +602,9 @@ class ApprovedSpeech:
             facts = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
             facts.extend(answers)
             kind = question_kind(question, facts)
-            if kind not in {"commerce", "current_product", "other_product", "unclassified"}:
+            if kind == "unclassified":
+                raise SpeechRejected("not_answerable_non_commerce")
+            if kind not in {"commerce", "current_product", "other_product"}:
                 raise SpeechRejected(kind)
             fallback_only = kind == "other_product"
             direct = (

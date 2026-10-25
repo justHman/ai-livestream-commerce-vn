@@ -41,12 +41,17 @@ AMBIGUOUS_PHRASES = frozenset(
         "cho de",
         "bo may",
         "ma may",
+        "bo lao",
+        "do khon",
+        "con khon",
+        "thang khon",
+        "do khi",
     }
 )
 
 
 def _protect_commerce_homophones(text: str) -> str:
-    """Require the abusive accent or a targeted insult for cho/khi/khon.
+    """Require chó's accent; khi/khon singletons need accents or targeting.
 
     These occur inside longer curated phrases too (do cho ma, nao cho), so
     protecting only whole ambiguous phrases would still ban ordinary requests.
@@ -70,12 +75,21 @@ def _protect_commerce_homophones(text: str) -> str:
         token = match[0]
         if fold_text(token) not in {"cho", "khi", "khon"}:
             return token
-        if token in {"chó", "khỉ", "khốn"}:
+        if fold_text(token) == "cho":
+            # An address never turns merchandise 'cho' into the insult 'chó'.
+            return token if token == "chó" else "benignword"
+        if token in {"khỉ", "khốn"}:
             return token
         # Explicit benign accents are meaningful even in a hostile sentence.
         return token if targeted and token == fold_text(token) else "benignword"
 
     return re.sub(r"\w+", replace, text)
+
+
+def _restore_accented_cho(view: str) -> str:
+    # Symbol joins must not recreate an ASCII cho after homophone protection.
+    view = re.sub(r"\bcho\b", "benignword", view)
+    return view.replace("markedchotoken", "cho")
 
 
 def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool) -> str:
@@ -85,14 +99,28 @@ def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool)
     a valid part of curated dismissal phrases such as 'cút mẹ đi'.
     """
     text = unicodedata.normalize("NFC", text).lower()
-    text = _protect_commerce_homophones(text)
+    text = re.sub(r"\bchó\b", "markedchotoken", text)
+    # Multiword evidence is checked before ambiguous singleton protection.
+    # Preserve meaningful benign accents, and require the actual abusive accent
+    # for cho/khi phrases: ASCII 'do cho' must never become 'đồ chó'.
+    text = re.sub(
+        r"\w+",
+        lambda m: (
+            "benignword"
+            if (fold_text(m[0]) in {"cho", "khi"} and m[0] not in {"chó", "khỉ"}) or m[0] == "khôn"
+            else m[0]
+        ),
+        text,
+    )
     text = re.sub(
         r"\w+",
         lambda m: "benignword" if m[0] in _BENIGN_HOMOGRAPHS - {"đi"} else m[0],
         text,
     )
-    return matching_view(
-        text, join_symbols=join_symbols, protect_homographs=False, reduce_repeats=reduce_repeats
+    return _restore_accented_cho(
+        matching_view(
+            text, join_symbols=join_symbols, protect_homographs=False, reduce_repeats=reduce_repeats
+        )
     )
 
 
@@ -135,6 +163,7 @@ def matching_view(
 ) -> str:
     text = unicodedata.normalize("NFC", text).lower()
     if protect_homographs:
+        text = re.sub(r"\bchó\b", "markedchotoken", text)
         text = _protect_commerce_homophones(text)
         text = _protect_homographs(text)
     text = fold_text(text).translate(_LEET)
@@ -155,9 +184,11 @@ def matching_view(
         result.append(token)
     if join_symbols:
         # Only runs of single letters, never arbitrary neighbouring words.
-        return re.sub(
+        view = re.sub(
             r"(?<!\S)(?:[a-z] ){1,3}[a-z](?!\S)",
             lambda m: m[0].replace(" ", ""),
             " ".join(result),
         )
-    return " ".join(result)
+    else:
+        view = " ".join(result)
+    return _restore_accented_cho(view) if protect_homographs else view

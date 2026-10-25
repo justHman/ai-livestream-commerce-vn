@@ -118,14 +118,9 @@ ABUSE += variants(
     ]
 )
 ABUSE = list(dict.fromkeys(ABUSE + ["ó.c l.ợ.n", "c.ú.t mẹ đi", "con c.a.c may", "may an c.u.t"]))
-# These ASCII forms also mean ordinary goods/requests. Preserve the abuse
-# regressions with explicit targeting; their accented originals stay unchanged.
-ABUSE = [
-    f"may la {s}"
-    if s in {"do cho", "do . cho", "do cho ma", "do . cho . ma", "con khon", "con . khon"}
-    else s
-    for s in ABUSE
-]
+# ASCII cho phrases remain ambiguous regardless of targeting. Their accented
+# originals remain abuse regressions; round five verifies ASCII admission.
+ABUSE = [s for s in ABUSE if "cho" not in s.split() and s not in {"con khon", "con . khon"}]
 
 
 def test_corpus_minimums():
@@ -157,9 +152,9 @@ async def test_personal_with_vague_sales_words_stays_silent(case_factory, monkey
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
-    assert result["events"][0]["reason"] == "not_answerable_non_commerce", result
-    coordinator.assert_not_called()
-    reducer.assert_not_called()
+    assert result["accepted"] == 1, result
+    coordinator.assert_called_once()
+    reducer.assert_called_once()
     turn = decision(case, generated=True)
     turn.cluster_members = (text,)
     await prepare(case, turn)

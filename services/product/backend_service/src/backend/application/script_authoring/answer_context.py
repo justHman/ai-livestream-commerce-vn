@@ -172,87 +172,32 @@ def wrap_natural(question: str, answer: str) -> str:
     return f"{_NATURAL_LEAD_IN[pick]} {answer.strip()} {_NATURAL_REMARK[(pick + 1) % 3]} {_INVITE[pick]}"
 
 
-# Admission is open by default. These signals authorize a *fallback*, never admission.
-_HOST = re.compile(r"\b(?:anh|chi|em|co|ban|mc|kol|ad|admin)\b")
-_PERSONAL = re.compile(
-    r"\b(?:lay chong|lay vo|ket hon|tuoi|doc than|nguoi yeu|ban trai|ban gai|vo|chong|"
-    r"gia dinh|que|song|lam nghe|sinh nam|nha o dau|thich an|an|uong|ngu|yeu|"
-    r"biet nhay|biet hat|hat|nhay|khoe|vui|buon|met|dep trai|xinh|ten|"
-    r"choi|di dau|ranh|lam gi|o nha|cuoi|ghet|phim|nhac|bai hat|game|"
-    r"bong da|du lich)\b"
-)
-_FOLDED_ASKING = re.compile(
-    r"[?？]|\b(?:khong|chua|ha|a|nhi|sao|gi|nao|dau|chu|ko|k|ai|may|"
-    r"bao nhieu|bao lau|khi nao|bao gio|vay)\b"
-)
-
-_SHOP_CONTEXT = re.compile(
-    r"\b(?:gia|bao nhieu tien|size|kich co|mau|chat lieu|vai|ship|giao hang|van chuyen|nhan hang|doi tra|"
-    r"bao hanh|chinh sach|hoan tien|cod|thanh toan|khuyen mai|"
-    r"giam gia|uu dai|con hang|het hang|con size|con mau|co san|san hang|kho hang|"
-    r"mua|dat hang|san pham|giat|can nang|chieu cao|chinh hang|ao|quan|giay|tui|"
-    r"vay|mu|dong ho|my pham|serum|son|hoa don|hang|freeship|tra gop|order|tu van|cua hang|showroom|"
-    r"voucher|ma giam|chiet khau|chong nuoc|chong nang|cai nay|cai do|cai kia|"
-    r"mon nay|mon do|mau nay|do nay|loai nay|chiec nay|bo nay|hang nay|shop)\b"
-)
+# These rules authorize speech only. Intake never consults this classifier.
 _PRODUCT_NOUNS = re.compile(r"\b(?:ao|quan|giay|tui|vay|mu|dong ho|my pham|serum|son)\b")
-# A bare "lay" or a city is not purchase evidence. Require an object/quantity
-# or a shipping verb; this prevents spouse/hometown questions becoming shop fallbacks.
-_PURCHASE = re.compile(
-    r"\b(?:chot|dat hang|order|ib|inbox|xin ma|giam|ma|so dien thoai|sdt|dia chi|"
-    r"kich thuoc|nguyen lieu|co gian|nuoc hoa|chong nuoc|chong nang|"
-    r"con khong|con chua|co san|bao gio co|bao lau|mien phi|phi|tien|"
-    r"giao|ship|van chuyen|doi tra|lien he|co ban)\b|"
-    r"\b(?:lay|dat|giu|de|cho em|cho minh)\s+(?:(?:\d+|mot|hai|ba|bon|nam)\s+)?"
-    r"(?:cai|chiec|bo|hop|chai|tui|kg|ky|goi|lo|doi|met|lit|ao|quan|ma)\b|"
-    r"\b(?:\d+|mot|hai|ba|bon|nam)\s+(?:cai|chiec|bo|hop|chai|goi|lo|doi)\b"
-)
-# Only concrete product evidence can disambiguate a personal-looking sentence.
-_PERSONAL_PRODUCT = re.compile(
-    r"\b(?:san pham|ao|quan|giay|tui|size|kich co|chat lieu|vai|nuoc hoa|"
-    r"my pham|serum|son|dong ho|dao|gia ban|mua|ban dao|ship|"
-    r"chong nuoc|chong nang)\b"
-)
-# Purchase evidence takes precedence over buyer names and family context. A bare
-# lay/giao/ban hang is deliberately absent: it can describe the host's private life.
-_EXPLICIT_PURCHASE = re.compile(
-    r"\b(?:mua|chot|dat hang|dat don|order)\b|"
-    r"\b(?:lay|dat|giu|de|cho em|cho minh)\s+(?:\d+|mot|hai|ba|bon|nam)\b|"
-    r"\b(?:lay|dat|giu)\s+(?:cai|chiec|bo|hop|chai|goi|lo|doi|ma)\b|"
-    r"\b(?:\d+|mot|hai|ba|bon|nam)\s+(?:cai|chiec|bo|hop|chai|tui|kg|ky|goi|lo|doi|met|lit)\b|"
-    r"\b(?:ma\s+)?[a-z]+\d+[a-z0-9]*\b"
-)
-_SELLS = re.compile(r"(?:^|\b(?:chi|anh|em|co|shop)\s+)(?P<verb>ban)\s+(?!co\b|chua\b|la\b)(?=\w)")
-
-# Hard transaction evidence overrides buyer introductions and host predicates.
-# Bare mua/ship/product nouns can instead describe the host's private life.
 _HARD_COMMERCE = re.compile(
-    r"\b(?:gia|bao nhieu|size|kich co|xin gia|lay hang|dat|chot|ship ve|giao hang|"
-    r"con hang|ma|giam|doi tra|bao hanh|order)\b|\blay\s+(?:\d+|mot|hai|ba|bon|nam)\b"
+    r"\b(?:gia|size|kich co|kich thuoc|mau|chat lieu|nguyen lieu|co gian|vai|"
+    r"ship|giao|giao hang|van chuyen|nhan hang|lay hang|con hang|het hang|"
+    r"con size|con mau|con khong|con chua|co san|kho hang|ma|giam|doi tra|bao hanh|"
+    r"mua|dat|chot|order|cod|thanh toan|tien|phi|mien phi|khuyen mai|uu dai|"
+    r"voucher|hoa don|tra gop|chinh hang|chinh sach|giat|chong nuoc|chong nang|"
+    r"so dien thoai|sdt|dia chi|lien he|inbox|ib|shop|cua hang|showroom|"
+    r"san pham|ao|quan|giay|tui|dong ho|my pham|serum|son|nuoc hoa)\b|"
+    r"\b(?:lay|giu)\s+(?:\d+|mot|hai|ba|bon|nam|cai|chiec|bo|hop|chai|ma)\b|"
+    r"\b[a-z]+\d+[a-z0-9]*\b|\b(?:co\s+)?ban\s+(?:do|dao|hang)\b|"
+    r"\b\d+\s+(?:cai|chiec|bo|hop|chai|goi|lo|doi)\b"
 )
 _HOST_PRIVATE = re.compile(
-    r"\b(?:chi|em|anh|co|ban)\s+co\s+"
-    r"(?:chong|vo|nguoi yeu|con|ban trai|ban gai|thich|hay|tung|dinh)\b"
+    r"\b(?:chi|em|anh|co|ban)\s+co\s+(?:bao nhieu\s+)?"
+    r"(?:chong|vo|nguoi yeu|ban trai|ban gai|con|tuoi|sinh nam|que|thich|tung|dinh|"
+    r"doc than|o dau|lam nghe|hay)\b"
 )
-
-
-def _clear_purchase(question: str) -> bool:
-    normalized = _commerce_view(question)
-    if _EXPLICIT_PURCHASE.search(normalized):
-        return True
-    sale = _SELLS.search(normalized)
-    if not sale:
-        return False
-    # ASCII 'ban' can be the addressee 'bạn' or part of 'bạn trai/gái'.
-    if _PERSONAL.match(normalized, sale.start("verb")) or _PERSONAL.match(normalized, sale.end()):
-        return False
-    # 'chi ban do an' asks about inventory; 'chi co chong ban do an'
-    # asks about a spouse's occupation. Do not promote that third-party verb.
-    personal = _PERSONAL.search(normalized)
-    return personal is None or personal.start() >= sale.start("verb")
-
-
-_DESTINATION = re.compile(rf"\b(?:gui|ve)\s+(?:{fold_text(_CITY_NAMES)})\b")
+# Existing direct questions without 'co'; anchored to the host, never a free
+# keyword scan through a buyer's food/product/family context.
+_DIRECT_PRIVATE = re.compile(
+    r"\b(?:chi|em|anh|co|ban)\s+(?:co\s+)?"
+    r"(?:(?:con|remaining) doc than|gia dinh|song o|nha o dau|yeu ai|uong gi|ngu chua|"
+    r"biet nhay|biet hat|hay ngu|di dau choi|khoe|bao nhieu tuoi|sinh nam|que|thich)\b"
+)
 
 
 def _commerce_view(text: str) -> str:
@@ -276,7 +221,7 @@ def question_kind(question: str | None, facts: list[str]) -> str:
     """Separate certain silence, positive fallback evidence and open admission.
 
     ``unclassified`` must reach the Director, but cannot authorize a shop referral.
-    Personal representatives dominate a cluster so none can leak into model/TTS work.
+    Personal representatives veto speech for the cluster before model/TTS work.
     """
     from ..platform_events.comment_intent import is_non_question
     from ..safety_gate.resources import match_curated
@@ -290,24 +235,15 @@ def question_kind(question: str | None, facts: list[str]) -> str:
     if any(is_off_topic(part, facts) for part in parts):
         return "not_answerable_non_commerce"
     kinds = []
-    known = fold_text(" ".join(facts))
-    known_nouns = set(_PRODUCT_NOUNS.findall(known))
+    known_nouns = set(_PRODUCT_NOUNS.findall(fold_text(" ".join(facts))))
     known_phrases = [" ".join(re.findall(r"\w+", _commerce_view(fact))) for fact in facts]
     for part in parts:
         if is_non_question(part):
             continue
         normalized = _commerce_view(part)
         words = " " + " ".join(re.findall(r"\w+", normalized)) + " "
-        commerce = bool(
-            _clear_purchase(part)
-            or _HARD_COMMERCE.search(normalized)
-            or _SHOP_CONTEXT.search(normalized)
-            or _PURCHASE.search(normalized)
-            or _DESTINATION.search(normalized)
-        )
-        commerce = commerce or (
-            bool(_FOLDED_ASKING.search(normalized))
-            and any(len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases)
+        commerce = bool(_HARD_COMMERCE.search(normalized)) or any(
+            len(phrase.split()) >= 2 and f" {phrase} " in words for phrase in known_phrases
         )
         if not commerce:
             return "unclassified"
@@ -324,33 +260,21 @@ def question_kind(question: str | None, facts: list[str]) -> str:
 
 
 def is_off_topic(question: str, facts: list[str]) -> bool:
-    """Clear purchases win; otherwise host + personal predicate proves silence."""
-    normalized = _commerce_view(question)
-    private = _HOST_PRIVATE.search(fold_text(question))
-    # Shipping as a spouse's occupation and a host's age are personal questions,
-    # not a delivery request or a price inquiry.
-    hard_view = re.sub(
-        r"\b(?:sinh nam(?: bao nhieu)?|bao nhieu tuoi|tuoi bao nhieu|lam nghe giao hang)\b",
-        "",
-        normalized,
-    )
-    if _HARD_COMMERCE.search(hard_view):
-        return False
-    if private and _FOLDED_ASKING.search(normalized):
-        return True
-    if _clear_purchase(question):
-        return False
-    addressed = re.sub(r"\bcó\b", "has", unicodedata.normalize("NFC", question).lower())
-    folded = fold_text(addressed)
-    host = _HOST.search(folded)
-    if not host or not _FOLDED_ASKING.search(folded):
-        return False
-    # Search after the address: a viewer's own hometown is not a question about the host.
-    predicate = _PERSONAL.search(folded, host.end())
-    if not predicate:
-        return False
-    # Accent-aware view avoids interpreting discourse/weather words as products/purchases.
-    return not _PERSONAL_PRODUCT.search(_commerce_view(question))
+    """Narrow host-private-life shapes veto speech, even beside sales words.
+
+    Keep accented 'còn' (remaining) distinct from a child before folding.
+    ASCII stock/sales contexts remain commerce; facts cannot override privacy.
+    """
+    original = unicodedata.normalize("NFC", question).lower()
+    original = re.sub(r"\bcòn\b", "remaining", original)
+    original = re.sub(r"\bchống\b", "protective", original)
+    normalized = " ".join(re.findall(r"\w+", fold_text(original)))
+    normalized = re.sub(r"\bchong\s+(?:nuoc|nang)\b", "protective", normalized)
+    stock = r"\bcon(?=\s+(?:hang|size|mau|san|khong|chua)\b)"
+    normalized = re.sub(stock, "remaining", normalized)
+    if original == fold_text(original):
+        normalized = re.sub(r"\bcon(?=\s+ban\b)", "remaining", normalized)
+    return bool(_HOST_PRIVATE.search(normalized) or _DIRECT_PRIVATE.search(normalized))
 
 
 _OFF_TOPIC_DEFLECTION = (

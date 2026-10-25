@@ -1,197 +1,149 @@
 # Comment guard
 
-Curated resources retain their filenames. Toxicity publishes version 4 and harassment
-version 3 through provenance/resource_versions. Unsafe-content remains at its existing version.
-No external dataset or dependency is loaded.
+## Asymmetric costs: admission and speech are separate
 
-Add a pattern only after project review of its category, public-source provenance and
-false positives. Add abuse and benign commerce regressions to test_comment_guard.py.
-Run safety, ingestion and live-follow tests before activation. Never log rejected text;
-use the existing fingerprint and reason codes.
-
-Matching uses token/phrase boundaries, Unicode normalization, accent folding (d-bar to d),
-basic leet, elongation reduction and bounded separated-letter joins. Original text is
-unchanged. Matching keeps the original abbreviation view (so `cc` and `đmm` survive)
-and adds a view reducing double or longer repeated letters to one. Symbol joining
-precedes this reduction: `v.v.c.l` becomes `vvcl`, then `vcl`. `địtt`, `nguu`,
-`cặcc`, `địtttt`, `ngu uuu` and repeated profanity remain covered. Resource patterns
-are not reduced from `cc` into a one-letter ban.
-
-Original accents take precedence over folded views. Benign words such as ngủ/ngữ,
-lớn, các, đủ/dư, buổi, đeo/dẻo, Bùi, đào/dạo, điện and hàm are protected. Ambiguous
-ASCII tokens (`ngu`, `lon`, `cac`, `du`, `buoi`, `deo`, `bui`, `dien`, etc.) require
-additional evidence such as an adjacent insult address (`đồ`, `thằng`/`thang`,
-`mày`/`may`), `ngu quá`, an elongated insult or a bare `ngu`. ASCII `do ngu` alone
-does not prove abuse: it can mean đồ ngủ. Neither `con`/còn nor a product question
-alone is insult evidence. Thus `do ngu co size nao`, `size lon con khong`,
-`cac mau nao`, `du size khong`, `buoi toi ship nhe`, `vai deo khong` and accented
-equivalents pass safety. Names such as Bùi Thị Xuân and Bùi Viện also pass.
-
-`điên` alone and `bùi` are removed from automatic bans; `đẹp điên`/`rẻ điên` pass,
-while targeted `đồ điên`, `thằng điên`, `mày điên` still match. `dao kéo` is ordinary
-merchandise; threat phrases `cầm dao`, `mang dao`, `chém chết` remain banned.
-Unambiguous profanity and abbreviations (`đm`, `đmm`, standalone `dm`, `địt`,
-`lồn`, `cặc`, `vcl`, `vkl`, standalone `cc`, `đéo`, `đ.m`, `v c l`) remain covered.
-Short abbreviations match only complete tokens, preserving admin/account/acc.
-This is curated coverage, not a universal Vietnamese moderation classifier.
-
-Social chat is skipped before reducer/director with final reason `non_question`, so it
-cannot open a response turn, update topic cooldown or interrupt the script. Exact
-social responses such as `ok` remain social even with punctuation. Greetings mixed
-with shop questions remain eligible. Fallback for recognized social chat is refused
-at the speech boundary. Real shop questions retain the approved safe fallback.
-
-Live-follow: `non_question` and `safety_filtered` use comment.skipped with event_ids,
-final=true; Studio maps these to its existing skipped label. Events contain no text.
-
-## Fallback eligibility and repetition
-
-Admission and fallback authorization are separate decisions. Admission defaults to
-allow after safety. `question_kind` returns `unclassified` when it cannot establish
-commerce; ingestion still calls Coordinator/reducer with the original comment.
-There is no rejection merely because a commerce keyword is absent. This includes
-`admin ơi`, `acc`, `xin mã`, `giảm chút nhé`, `địa chỉ số điện thoại`,
-`gửi Nguyễn Thị Lan`, `đẹp điên`, and their unaccented forms.
-
-Only certain social shapes are skipped as `non_question`: complete laughter,
-emoji/symbol/number-only text, acknowledgments, bare greetings, complete generic
-compliments without an object, repeated characters and known keyboard runs.
-Matching is against the whole comment; mixed product questions or requests pass.
+Losing a real buyer question costs more than passing an uncertain comment to the
+Runtime. After the existing safety/authentication/delivery checks, intake skips
+only certain social shapes, with final reason `non_question`: complete laughter,
+emoji/symbol/number-only text, acknowledgments such as `ok`, bare greetings,
+complete generic compliments without an object, repeated characters and known
+keyboard runs. Whole-comment matching preserves mixed greetings/product requests.
 Unknown Unicode letters are not treated as emoji or meaningless text.
 
-Explicit purchases take precedence over personal-looking buyer introductions: `mua`,
-`chốt`, quantity-bearing `lấy`/`đặt`, product codes, and shop inventory questions
-such as `chị bán đồ ăn không?`. `em lấy 2 bộ cho chồng được không?` and
-`em tên Lan chốt 2 cái được không?` (including ASCII) reach Coordinator/reducer
-and retain commerce fallback eligibility. A buyer's family or name is context.
+Intake never consults `question_kind` or personal/non-commerce rules. Every other
+safe comment enters the normal counting, Studio observation, Coordinator, reducer
+and Director path, with its original text. Personal and non-commerce comments are
+accepted too. A later speech refusal does not undo intake acceptance.
 
-Hard transaction evidence takes precedence over host-private-life questions;
-otherwise explicit personal questions to the host precede vague commerce:
-a host pronoun/address plus a personal predicate (spouse, hometown, age, eating,
-drinking, sleeping, love, family, occupation, etc.) and interrogative evidence.
-`chị có định lấy chồng không?` and `chị quê Cần Thơ à?` are silent, as are their
-ASCII forms. Bare `lấy` and a city never establish commerce. A purchase use of
-`lấy` requires a quantity/unit/product/code; a city requires a shipping/destination
-verb. `giao` and `bán hàng` alone cannot override a private-life predicate:
-`chị có chồng làm nghề giao hàng không?`, `chị có người yêu làm nghề bán hàng không?`
-and `chị sinh năm bao nhiêu?` remain silent, including ASCII. Concrete product evidence preserves `chị mặc áo này size nào` and
-`em dùng nước hoa gì`. Personal members dominate mixed clusters so no such member
-reaches an LLM, fallback or TTS. Final `not_answerable_non_commerce` is recorded
-without interruption or topic cooldown. Speech preparation checks this again.
+## Speech and fallback authorization
 
-A fixed missing-information fallback requires positive commerce evidence: product,
-price, size, colour, stock, material, shipping, codes, discounts, payment, returns,
-warranty or shop contact requests, or an intact approved product phrase. A generic
-question mark/interrogative alone is insufficient. Known current/different goods
-retain their distinct fixed texts and never borrow facts from a different product.
-`unclassified` comments can use the normal validated answer path; when that path
-has no approved answer, fallback authorization refuses speech. This later refusal
-does not undo intake acceptance. The fallback never echoes viewer text.
-`is_deflection` must recognize every fixed wording.
+`question_kind` belongs to the speech boundary. Its order is safety/social,
+private-life veto, then positive commerce evidence. A narrow host-addressed shape
+(pronoun + optional co + optional bao nhieu + spouse/partner/child/age/birth year/
+hometown/preference/past intention/single status/location/occupation) vetoes
+speech even when price, quantity or shipping words occur later. Existing direct
+host questions about eating preferences, sleeping, drinking, dancing, health,
+etc. remain bounded host-predicate shapes; there is no free scan for `an` through
+food/product requests. A buyer's name or family recipient is not such a shape.
+The veto precedes LLM and TTS work, including mixed clusters.
 
-`chốt đơn` and `em lấy 2 cái` retain normal reducer/Director routing. New purchase
-event IDs bypass topic cooldown; existing handled-ID suppression remains.
+Original accented `c\u00f2n` is kept distinct from a child (`con`) before folding.
+ASCII `con hang`, `con size`, `con mau` and inventory `con ban` favour commerce.
+Thus `chi co con ban ao khong?` passes, as does its accented stock equivalent.
+Food plus COD/payment also passes. Spouse + giao hang and bao nhieu + nguoi yeu
+remain private-life questions and cannot authorize a fallback.
 
-The Director checks the per-session `deflection_interval_sec` at dispatch, including
-prefetched turns. Default is 90 seconds; `DIRECTOR_DEFLECTION_INTERVAL_SEC` overrides
-it with a finite positive number. Personal deflections are no longer generated. Suppressed
-members use final `deflection_rate_limited`, remain skipped rather than answered,
-and add no topic cooldown. A spoken cluster receives one shared response. Actual
-approved answers remain eligible while the deflection interval is active.
+A fixed missing-information fallback needs explicit commerce evidence: price,
+size/colour/material, shipping/stock, purchase/order/quantity/product code,
+discount, payment/COD, returns/warranty, concrete goods or shop contact requests.
+Bare `bao nhieu` without product/price evidence, a city, a question mark or an
+incidental word in approved facts cannot authorize a fallback. A personal member
+vetoes a whole cluster before this test. `unclassified` input still reaches the Director, but speech preparation refuses
+it as `not_answerable_non_commerce` before LLM/TTS work. Positive commerce evidence
+is required to authorize speech. An intact approved product phrase also counts
+as positive evidence; incidental overlaps with facts never count.
 
-Round-two regression coverage in `tests/unit/test_comment_guard_round2.py` uses
-more than 300 distinct comments, including at least 200 real sales/viewer comments,
-30 social comments, 40 personal questions and 60 abusive comments. Accented and
-unaccented examples run through authenticated ASGI/HTTP ingestion with the real
-safety gate, Coordinator and reducer spies. Personal/social silence is also checked
-at speech preparation, including mixed clusters; unclassified comments with no
-approved answer cannot produce a missing-information fallback.
+The existing fixed commerce/current-product/other-product fallback texts never
+echo viewer text or borrow facts from other goods. `is_deflection` recognizes all
+fixed texts, including historical personal deflections for compatibility; new
+personal deflections are never generated.
 
-Ambiguous ASCII abuse homographs without insult evidence deliberately favour the
-buyer (for example `cac`, `lon`, `do ngu`). This is curated coverage, not a universal
-Vietnamese moderation or intent classifier. Personal/product ambiguity and dialects
-remain finite-rule limitations; uncertainty in admission must keep passing onward.
+Speech refusals use final `live_follow.comment.skipped` with
+`not_answerable_non_commerce` (Studio's existing skipped/Khong tra loi mapping).
+They do not mark a response answered or update topic cooldown. The regression
+uses actual reducer membership before preparation to verify this outcome; a
+synthetic Decision without member IDs cannot represent a Studio comment.
 
-Round-three phrase matching checks curated multiword phrases before applying ASCII
-singleton homograph protection. This covers `óc lợn`, `cút mẹ đi`, `may an cut`,
-`con cac may`, `cút mẹ` and accented `đồ chó`, including punctuation and symbol joins.
-Toxicity v4 adds 70 reviewed accented/ASCII multiword entries, including `mày ăn cứt`
-and `con cặc mày`. Original benign accents remain protected in phrase views.
-Phrases whose complete ASCII form is itself ambiguous merchandise (`do ngu`,
-`cai lon`, `con cac`, etc.) retain the protected matching path; a longer targeted
-phrase such as `con cac may` supplies the missing evidence.
+## Safety matching and resources
 
-`tests/unit/test_comment_guard_round3.py` exercises at least 60 examples per group:
-purchases with buyer names/family, personal questions containing vague sales words,
-and multiword abuse. All three groups use authenticated ASGI/HTTP ingestion with
-real safety and Coordinator/reducer spies. Personal silence also checks speech
-preparation, no LLM/TTS and no topic cooldown. The entire existing real-comment
-corpus (over 250 comments) is rechecked for safety false positives. The review
-message supplied four literal abuse misses out of fourteen; the regression lists
-those four plus ten related curated phrase cases, without claiming access to the
-reviewer's undisclosed ten strings.
+Curated filenames remain stable. Toxicity publishes version **5**, harassment
+version **3** and unsafe-content its existing version via provenance and
+`resource_versions`. Toxicity v5 adds accented and ASCII `du ma may`. No external
+dataset, runtime dependency, or resource is removed. Profanity lexicons for
+*generated speech* are separate from viewer intake safety.
 
-## Round-four common-comment policy
+Matching preserves original viewer text and uses bounded tokens/phrases, NFC,
+accent folding, basic leet, elongation reduction and bounded symbol/letter joins.
+Strong curated multiword phrases are checked before ambiguous singleton
+protection. `khon nan`, `do khon nan`, `do . khon . nan`, `khon kiep` and
+`du ma may` therefore survive singleton protection. `du ma` alone remains
+ambiguous. Explicit benign accents retain their meaning in phrase matching.
 
-The audit covered every entry in the three `resources/safety/curated_*.json`
-resources and both `resources/profanity/curated_lexicon_*.json` resources. The
-profanity lexicons govern generated speech, not viewer-intake admission. Existing
-protection already covers merchandise homophones involving ngủ/ngữ, lớn, các,
-đủ, buổi, đeo, điện and ambiguous ASCII forms. No curated resource is removed.
+Phrases involving `cho` require the actual original `ch\u00f3` accent. ASCII
+`do cho`, `cai do cho` and targeted ASCII equivalents never infer this accent.
+The distinction is preserved through symbol joins too. Neither `cai do` nor a
+hostile address can turn goods *for* a child into an insult. Accented abusive
+phrases still match. ASCII `con khon` can mean a clever child; it uses the
+protected path rather than strong-phrase precedence.
 
-Before either curated phrase matching or singleton matching, `cho`, `khi` and
-`khon` now require the abusive original accent (`chó`, `khỉ`, `khốn`) or targeted
-insult context. This consistently covers nested curated phrases: `đồ chó`,
-`con chó`, `chó má`, `đồ chó má`, `óc chó`, `não chó`, `thằng chó`, `đồ khỉ`,
-`thằng khốn` and `con khốn`. Thus đồ cho bé, mua đồ cho chồng, đồ cho má,
-nào cho mẹ, tháng cho bé, ốc cho em, đồ khi nào giao and con khôn pass, including
-ASCII. `bộ máy`, `mã máy` and `bộ lao động` also retain their benign meanings;
-ASCII `bo may`, `ma may` and `bo lao` require targeting. Explicit benign accents
-remain meaningful even with hostile context.
-Targeting includes mày/thằng/tao, contextual ASCII equivalents and phrases such
-as đúng là/cái thứ/cái đồ. ASCII `may` meaning mấy and `thang` meaning tháng
-before a recipient do not by themselves establish targeting. The historical
-156-case abuse corpus retains accented cases; six ambiguous ASCII cases in
-round three and `oc cho` in round two now include explicit `may la` targeting.
+Original benign accents (ngu/large/enough/evening/flexible/wearing/machine/code,
+etc.) remain protected. Ambiguous ASCII singleton homographs need additional
+insult evidence. Strong profanity/abbreviations and explicit threats retain
+token boundaries, preserving admin/account/acc and ordinary merchandise.
+Never log rejected text: use existing fingerprints and reason codes.
 
-Price/quantity, size, đặt/chốt/order, lấy hàng, ship về, giao hàng, stock,
-codes/discounts, returns and warranty evidence override buyer introductions
-and host-private-life predicates. `chị có đồ ăn giá bao nhiêu?`, `cho em xin giá
-bộ đồ ngủ không?` and `em tên Lan muốn lấy hàng được không?` reach the original
-Coordinator/reducer path and retain commerce fallback eligibility.
+## Repetition and routing
 
-Without hard transaction evidence, host + có + chồng/vợ/người yêu/con/bạn
-trai/bạn gái/thích/hay/từng/định is personal even when followed by mua sắm,
-bán áo or chạy ship. These questions are silent at HTTP intake and speech
-preparation: no Coordinator/reducer call, LLM, TTS or topic cooldown. `chị có
-bán áo không?` remains an inventory question. Age/year-of-birth amounts and
-`làm nghề giao hàng` are personal predicates rather than price/delivery requests;
-a separate hard transaction signal still wins (for example spouse occupation
-followed by an áo price question). A personal member still dominates a cluster.
+New purchase event IDs bypass topic cooldown; existing handled-ID suppression
+remains. The Director checks per-session `deflection_interval_sec` at dispatch,
+including prefetch (default 90 seconds; finite positive
+`DIRECTOR_DEFLECTION_INTERVAL_SEC` override). Suppressed members receive final
+`deflection_rate_limited`, remain skipped and add no topic cooldown. Actual
+approved answers stay eligible during that interval. One spoken cluster receives
+one shared response.
 
-`tests/unit/test_comment_guard_round4.py` contains 114 distinct benign comments,
-104 commerce questions and 100 personal questions, including accented/ASCII
-forms and every literal reviewer reproduction. All three groups use authenticated
-ASGI/HTTP ingestion with real safety; commerce checks original-text routing and
-fallback eligibility, and personal checks speech silence. The 156-case historical
-abuse corpus is also checked directly, with HTTP coverage retained in round three.
-The initial round-four test run reproduced 284 failures before the production fix.
-Final verification: `uv run --frozen --group dev python -m pytest tests/unit -q`
-passed 5,563 tests with 2 skips. `uv run --frozen --group dev ruff check src tests`
-and `uv run --frozen --group dev ruff format --check src tests` both passed
-(540 Python files). Commands ran inside `services/product/backend_service` with
-`UV_CACHE_DIR=D:/LiventoWorkspace/.uvcache`. Windows `TEMP`/`TMP` pointed to a
-writable workspace directory because the default pytest temp root denied access;
-no `--basetemp` was used.
+## Regression coverage and changed expectations
+
+`tests/unit/test_comment_guard_round5.py` adds four authored groups: 120 benign
+goods/recipient comments, 100 stock/food/payment commerce comments, 202 private-life
+questions (including commerce decoys), and 145 strong-phrase abuse variants.
+Every group has at least 80 new comments, with accented/ASCII and symbol cases.
+All groups use authenticated HTTP through the real ASGI app and safety gate,
+with real Coordinator/reducer calls observed. Privacy tests also run reducer
+membership, speech preparation and final Studio-event assertions, and assert no
+LLM/TTS or topic cooldown. Separate tests check missing-answer commerce fallback
+preparation, ASCII cho symbol joins, and toxicity resource version 5 in evidence.
+The reviewer supplied literal reproductions, not the full private corpus; these
+results do not claim to rerun its undisclosed 768/160/244 inputs.
+
+Policy-driven updates to older tests:
+
+- `test_comment_guard_review.py`: personal HTTP assertions now require acceptance
+  and routing, then final speech refusal with real reducer membership.
+- `test_comment_guard_round2.py`: social comments still skip intake; personal
+  comments must be admitted and refused only at speech preparation. Unclassified
+  speech now also requires positive commerce evidence before any LLM/TTS work.
+- `test_comment_guard_round3.py`: personal comments now pass intake. Ambiguous
+  ASCII cho/con khon entries leave the abuse-only corpus; accented counterparts
+  remain, and round five explicitly verifies ASCII cho admission.
+- `test_comment_guard_round4.py`: personal comments now pass intake. Five former
+  price/shipping-overrides-privacy examples move from SALES to PERSONAL. ASCII
+  `co con ban` entries move to SALES because stock/child ambiguity favours buyers;
+  accented child predicates stay personal.
+- `test_live_answer_regressions.py`: a deictic-only request formerly authorized
+  fallback via `cai nay`; it now stays unclassified and refuses fallback because
+  it contains no hard commerce evidence. Intake remains open.
+
+Verification commands run in `services/product/backend_service`, with
+`UV_CACHE_DIR=D:/LiventoWorkspace/.uvcache`:
+
+```
+uv run --frozen --group dev python -m pytest tests/unit -q
+uv run --frozen --group dev ruff check src tests
+uv run --frozen --group dev ruff format --check src tests
+```
+
+Windows TEMP/TMP may point to a writable workspace directory; never use
+`--basetemp`. Format only task files when needed, never the repository root.
 
 ## Known limits
 
-Ambiguous ASCII without targeting deliberately favours admission: bare `do cho`,
-`con cho`, `do cho ma`, `oc cho`, `con khon`, `bo may`, `ma may`, `bo lao`
-and previously protected `do ngu`
-can be benign. The review's five ambiguous ASCII abuse cases are not individually
-special-cased. Accent/symbol tricks that erase the distinguishing accent may
-therefore pass without targeting. Unseen personal phrasing, dialect, and clauses
-mixing private life with commerce remain finite-rule limits; hard transaction
-signals intentionally favour commerce. This corpus does not establish coverage
-of the reviewer's undisclosed full probe set.
+Ambiguous ASCII intentionally favours buyers, even when it might be abuse:
+`do cho`, `con cho`, `oc cho`, `con khon`, `do ngu`, machine/code/workwear
+homophones, and tricks that erase the distinguishing abusive accent can pass.
+The narrow private-life grammar is not a semantic classifier: unseen wording,
+dialect, code switching and mixed clauses may miss the veto or suppress a real
+commerce fallback. ASCII `con ban` can also refer to a child; it intentionally
+favours stock/sales. These uncertainties never reject safe comments at intake.
+Safe unclassified comments reach the Director but cannot emit speech without
+positive commerce evidence. No corpus establishes universal coverage.

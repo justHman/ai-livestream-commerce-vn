@@ -180,20 +180,25 @@ async def test_real_commerce_reaches_reducer_via_asgi(case_factory, monkeypatch,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", PERSONAL)
-async def test_personal_questions_are_silent_at_both_boundaries(case_factory, monkeypatch, text):
+async def test_personal_questions_are_admitted_then_silent_at_speech(
+    case_factory, monkeypatch, text
+):
     monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
     case = await case_factory()
     await canonical(case)
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
-    assert result["events"][0]["reason"] == "not_answerable_non_commerce"
-    coordinator.assert_not_called()
-    reducer.assert_not_called()
+    assert result["accepted"] == 1
+    coordinator.assert_called_once()
+    reducer.assert_called_once()
     assert question_kind(text, ["Áo khoác denim"]) == "not_answerable_non_commerce"
     with pytest.raises(SpeechRejected, match="not_answerable_non_commerce"):
         deflection_for(text, ["Áo khoác denim"])
+    await case.d.reducer.run_once(case.sid, reducer.call_args.kwargs["comment"].ts)
     turn = decision(case, generated=True)
     turn.cluster_members = (text,)
+    turn.cluster_member_ids = (reducer.call_args.kwargs["comment"].comment_id,)
+    turn.source_event_ids = ("event-1",)
     await prepare(case, turn)
     assert turn.is_cancelled
     await case.d.coordinator.live_follow.flush(case.sid)

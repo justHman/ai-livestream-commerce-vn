@@ -494,11 +494,14 @@ def test_wording_the_owner_wrote_is_not_blamed_on_the_model():
     assert offending_phrases("Đặt ngay hôm nay.", "hard_sell", ("Đặt ngay trên giỏ hàng",)) == []
 
 
-def test_a_product_question_phrased_like_chit_chat_goes_to_the_shop():
-    from backend.application.script_authoring.answer_context import deflection_for
+def test_deictic_question_without_hard_commerce_cannot_authorize_fallback():
+    from backend.application.script_authoring.answer_context import deflection_for, question_kind
+    from backend.application.script_authoring.approved_speech import SpeechRejected
 
-    said = deflection_for("anh có biết cái này có gây dị ứng không ạ?", ["Giá 180000 đồng"])
-    assert "nhắn tin cho shop" in said and "dị ứng" not in said
+    question = "anh có biết cái này có gây dị ứng không ạ?"
+    assert question_kind(question, ["Giá 180000 đồng"]) == "unclassified"
+    with pytest.raises(SpeechRejected, match="not_answerable_non_commerce"):
+        deflection_for(question, ["Giá 180000 đồng"])
 
 
 def test_a_product_question_addressed_to_the_host_with_a_deictic_word_is_a_shop_question():
