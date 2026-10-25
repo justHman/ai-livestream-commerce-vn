@@ -217,20 +217,31 @@ def is_off_topic(question: str, facts: list[str]) -> bool:
     return not (words & known)
 
 
+_OFF_TOPIC_DEFLECTION = (
+    "Mình thấy có bạn hỏi một chuyện hơi ngoài lề so với phần giới thiệu hôm nay. "
+    "Nếu bạn cần hỏi về sản phẩm thì nhắn tin cho shop để được hỗ trợ kỹ hơn nha, còn chuyện này "
+    "thì mình xin phép không trả lời sâu, cảm ơn bạn đã ghé tương tác với mình. "
+    "Giờ mình quay lại giới thiệu tiếp cho mọi người nhé."
+)
+_UNKNOWN_DEFLECTION = (
+    "Mình thấy có bạn hỏi một câu rất cụ thể về sản phẩm. Câu này mình chưa có thông tin chính xác "
+    "trong phần giới thiệu để trả lời, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
+    "Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục giới thiệu cho mọi người nhé."
+)
+
+
 def deflection_for(question: str | None, facts: list[str]) -> str:
     """Said when the approved facts cannot answer. It says what kind of question this is (a chat question
     outside the shop talk, or a shop question the introduction does not cover) and goes back to the
     product. It repeats nothing the viewer wrote."""
     if (question or "").strip() and is_off_topic(question or "", facts):
         # Even a wrongly classified shop question is still sent to the shop by this text.
-        return (
-            "Mình thấy có bạn hỏi một chuyện hơi ngoài lề so với phần giới thiệu hôm nay. "
-            "Nếu bạn cần hỏi về sản phẩm thì nhắn tin cho shop để được hỗ trợ kỹ hơn nha, còn chuyện này "
-            "thì mình xin phép không trả lời sâu, cảm ơn bạn đã ghé tương tác với mình. "
-            "Giờ mình quay lại giới thiệu tiếp cho mọi người nhé."
-        )
-    return (
-        "Mình thấy có bạn hỏi một câu rất cụ thể về sản phẩm. Câu này mình chưa có thông tin chính xác "
-        "trong phần giới thiệu để trả lời, bạn nhắn tin cho shop để được hỗ trợ kỹ hơn nha. "
-        "Cảm ơn bạn đã quan tâm, còn bây giờ mình tiếp tục giới thiệu cho mọi người nhé."
-    )
+        return _OFF_TOPIC_DEFLECTION
+    return _UNKNOWN_DEFLECTION
+
+
+def is_deflection(text: str | None) -> bool:
+    """Whether a spoken answer is one of the fixed "cannot answer" texts (not an answer)."""
+    from .approved_speech import DEFLECTION
+
+    return text in (DEFLECTION, _OFF_TOPIC_DEFLECTION, _UNKNOWN_DEFLECTION)

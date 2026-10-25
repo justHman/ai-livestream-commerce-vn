@@ -51,7 +51,8 @@ class StreamConfig:
     cluster_merge_threshold: float = 0.375
 
     # Stage 2 Q&A window and prepared pipeline controls
-    max_qa_clusters_per_window: int = 2
+    # Q&A clusters answered per window; qa_window_hard_timeout_sec is still the ceiling.
+    max_qa_clusters_per_window: int = 3
     qa_window_hard_timeout_sec: float = 45.0
     qa_topic_cooldown_sec: float = 120.0
     # 'unknown' intent lumps unrelated comments together: short cooldown, and any new
@@ -91,7 +92,7 @@ class StreamConfig:
     @classmethod
     def from_env(cls) -> "StreamConfig":
         """Defaults with the deployment's overrides (DIRECTOR_QA_MIN_CLUSTER_SIZE,
-        DIRECTOR_PREPARED_TURN_DEPTH)."""
+        DIRECTOR_PREPARED_TURN_DEPTH, DIRECTOR_MAX_QA_CLUSTERS_PER_WINDOW)."""
         raw = os.environ.get("DIRECTOR_QA_MIN_CLUSTER_SIZE", "").strip()
         try:
             size = int(raw) if raw else cls.qa_min_cluster_size
@@ -104,7 +105,16 @@ class StreamConfig:
             depth = 1
         # Approved units are prepared in milliseconds, so one turn ahead hides no latency; a
         # deeper queue only delays a viewer's answer behind several script units.
-        return cls(qa_min_cluster_size=max(1, size), prepared_turn_depth=max(1, depth))
+        raw_window = os.environ.get("DIRECTOR_MAX_QA_CLUSTERS_PER_WINDOW", "").strip()
+        try:
+            window = int(raw_window) if raw_window else cls.max_qa_clusters_per_window
+        except ValueError:
+            window = cls.max_qa_clusters_per_window
+        return cls(
+            qa_min_cluster_size=max(1, size),
+            prepared_turn_depth=max(1, depth),
+            max_qa_clusters_per_window=min(5, max(1, window)),
+        )
 
     @classmethod
     def from_json(cls, path: str | Path) -> "StreamConfig":

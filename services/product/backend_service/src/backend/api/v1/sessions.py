@@ -795,6 +795,7 @@ def _configure_reducer_mode(d: Any, session_id: str, meta: dict, products) -> No
         return
     if not meta.get("execution_contract"):
         return
+    d.coordinator.live_follow.bind(session_id, meta["execution_contract"])
     current = products[0].id if products else None
     d.reducer.set_session_catalog(session_id, list(products), current)
     d.coordinator.set_reducer_mode(session_id, True)

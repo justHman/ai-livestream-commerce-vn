@@ -27,7 +27,7 @@ from backend.application.director.state import (
 def test_stage2_runtime_config_validates_qna_and_pivot_defaults() -> None:
     cfg = StreamConfig()
     cfg.validate_runtime()
-    assert (cfg.max_qa_clusters_per_window, cfg.qa_window_hard_timeout_sec) == (2, 45.0)
+    assert (cfg.max_qa_clusters_per_window, cfg.qa_window_hard_timeout_sec) == (3, 45.0)
     assert (cfg.demand_pivot_enter_share, cfg.demand_pivot_exit_share) == (0.60, 0.45)
 
 
