@@ -310,6 +310,10 @@ class StreamOrchestrator:
         self._queue.clear()
         self._metrics.update_queue_depth(0)
 
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
     # ------------------------------------------------------------------
     # Sync pipeline (runs in a thread)
     # ------------------------------------------------------------------
@@ -835,7 +839,8 @@ class StreamOrchestrator:
                     asyncio.run_coroutine_threadsafe(
                         self._avatar_status_callback(True), self._loop
                     ).result()
-                prepare(session_id)
+                if prepare(session_id, cancelled=self._cancel_event.is_set) is False:
+                    self._cancel_event.set()
                 if self._cancel_event.is_set():
                     return
                 if self._avatar_status_callback is not None:

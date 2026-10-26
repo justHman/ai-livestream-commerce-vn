@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import threading
 
 import pytest
 
@@ -13,6 +14,160 @@ from . import test_approved_speech_active as speech_tests
 from .test_approved_speech_active import decision
 
 case_factory = speech_tests.case_factory
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["interrupt", "cancel", "backend_interrupt", "stop"])
+async def test_muted_wait_releases_coordinator_lock_promptly(case_factory, action):
+    case = await case_factory()
+    co, sid = case.d.coordinator, case.sid
+    co._orchestrator_registry = {}
+    backend, room, _ = make(speak_ready_wait_s=2, keepalive_s=0)
+    started = threading.Event()
+    pending = None
+    try:
+        real_sid = backend.start(StartOptions()).session_id
+        backend._sessions[sid] = backend._sessions.pop(real_sid)
+        co._backend = backend
+        pub = room.remote_participants[AVATAR].track_publications["v"]
+        pub.muted = True
+        original = backend._prepare_ready
+
+        async def observed(*args, **kwargs):
+            started.set()
+            return await original(*args, **kwargs)
+
+        backend._prepare_ready = observed
+        turn = decision(case)
+        pending = asyncio.create_task(co._maybe_speak(sid, turn))
+        assert await asyncio.to_thread(started.wait, 1)
+        assert co._lock_registry.is_locked(sid)
+        before = time.monotonic()
+        if action == "interrupt":
+            await co.interrupt(sid)
+        elif action == "cancel":
+            await co._orchestrator_registry[sid]["orchestrator"].cancel(sid)
+        elif action == "backend_interrupt":
+            await asyncio.to_thread(backend.interrupt, sid)
+        else:
+            await asyncio.to_thread(backend.stop, sid)
+        await asyncio.wait_for(asyncio.shield(pending), 0.15)
+        assert time.monotonic() - before < 0.15
+        assert not co._lock_registry.is_locked(sid)
+        assert not room.streams
+        assert not any(e.get("reason") == "avatar_not_ready" for e in case.events)
+        assert co._completed_speech[sid]["state"] == "cancelled_stale"
+        if action != "stop":
+            # Keep video muted until the cancelled worker has actually released the lock.
+            assert pub.muted
+            pub.muted = False
+            await co._maybe_speak(sid, decision(case))
+            assert room.streams
+    finally:
+        # Also let the unfixed implementation finish after the timing assertion fails.
+        if pending is not None:
+            pub.muted = False
+            await asyncio.gather(pending, return_exceptions=True)
+        backend.stop_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [ConnectionError, TimeoutError])
+async def test_opening_partial_tts_failure_is_not_replayed(case_factory, failure):
+    case = await case_factory()
+    co, sid = case.d.coordinator, case.sid
+    case.backend.speak_ready_gate_enabled = True
+    turn = decision(case)
+    turn.action = "autonomous_opening"
+    original = case.tts.stream_audio
+    calls, sent = [], []
+    stream = case.backend.stream_audio
+
+    def capture(sid, window):
+        sent.append(window)
+        return stream(sid, window)
+
+    def partial(chunk, **kwargs):
+        calls.append(chunk.text)
+        yield from original(chunk, **kwargs)
+        if len(calls) == 1:
+            raise failure("after partial opening audio")
+
+    case.backend.stream_audio = capture
+    case.tts.stream_audio = partial
+    await co._maybe_speak(sid, turn)
+    assert sent, "reproduction must send partial audio before the transport failure"
+    assert len(calls) == 1
+    assert not any(e["type"] == "coordinator.speak_finished" for e in case.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport_failure", [False, True])
+async def test_opening_unconfirmed_retries_only_after_recovery(case_factory, transport_failure):
+    case = await case_factory()
+    co, sid = case.d.coordinator, case.sid
+    case.backend.speak_ready_gate_enabled = True
+    turn = decision(case)
+    turn.action = "autonomous_opening"
+    events = []
+
+    def info(*args):
+        events.append("unconfirmed" if not events else "confirmed")
+        return {"playback_unconfirmed": len(events) == 1}
+
+    case.backend.playback_info = info
+    case.backend.require_avatar_recovery = lambda _: events.append("recovered")
+    original = case.tts.stream_audio
+    retried_chunks = []
+
+    def synthesize(chunk, **kwargs):
+        if "recovered" in events:
+            retried_chunks.append(chunk.text)
+            if transport_failure:
+                yield from original(chunk, **kwargs)
+                raise ConnectionError("partial replay failed")
+        yield from original(chunk, **kwargs)
+
+    case.tts.stream_audio = synthesize
+    await co._maybe_speak(sid, turn)
+    if transport_failure:
+        assert events == ["unconfirmed", "recovered"]
+        assert len(retried_chunks) == 1
+        assert not any(e["type"] == "coordinator.speak_finished" for e in case.events)
+    else:
+        assert events == ["unconfirmed", "recovered", "confirmed"]
+        assert co._completed_speech[sid]["state"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_pending_rollover_detaches_waiter_not_provider():
+    backend, room, rest = make(speak_ready_wait_s=2, keepalive_s=0)
+    release = None
+    pending = None
+    try:
+        sid = backend.start(StartOptions()).session_id
+        backend.require_avatar_recovery(sid)
+        release = rest.hold()
+        cancelled = threading.Event()
+        pending = asyncio.create_task(
+            asyncio.to_thread(backend.wait_speak_ready, sid, cancelled=cancelled.is_set)
+        )
+        async with asyncio.timeout(1):
+            while len(rest.starts) < 2:
+                await asyncio.sleep(0.005)
+        cancelled.set()
+        assert await asyncio.wait_for(asyncio.shield(pending), 0.15) is False
+        assert not backend._sessions[sid].roll_task.done()
+        assert not room.streams
+        release.set()
+        assert await asyncio.to_thread(backend.wait_speak_ready, sid)
+        assert len(rest.starts) == 2
+    finally:
+        if release is not None:
+            release.set()
+        if pending is not None:
+            await asyncio.gather(pending, return_exceptions=True)
+        backend.stop_all()
 
 
 def test_first_utterance_waits_for_unmuted_video():
@@ -196,7 +351,7 @@ async def test_never_ready_skips_without_terminal_failure(case_factory, qa, atte
     case.backend.speak_ready_gate_enabled = True
     case.backend.avatar_ready = lambda _: False
 
-    def wait(_):
+    def wait(_, **kwargs):
         calls.append(1)
         raise LemonSliceError("avatar_not_ready")
 
@@ -214,13 +369,15 @@ def test_interrupt_while_waiting_does_not_send_late_pcm():
         pub = room.remote_participants[AVATAR].track_publications["v"]
         pub.muted = True
 
-        async def interrupt_then_restore():
+        async def interrupt_while_muted():
             await asyncio.sleep(0.05)
             await backend._interrupt(backend._sessions[sid])
-            pub.muted = False
 
-        backend._loop.call_soon_threadsafe(lambda: asyncio.create_task(interrupt_then_restore()))
+        backend._loop.call_soon_threadsafe(lambda: asyncio.create_task(interrupt_while_muted()))
+        started = time.monotonic()
         backend.stream_audio(sid, win("cancelled", 0, final=True))
+        assert time.monotonic() - started < 0.15
+        assert pub.muted
         assert not room.streams
     finally:
         backend.stop_all()

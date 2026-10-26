@@ -1783,14 +1783,17 @@ class DirectorCoordinator:
                 # A timed-out provider may already have emitted media.
                 max_attempts = 1
             avatar_gate = getattr(self._backend, "speak_ready_gate_enabled", False) is True
-            if avatar_gate:
-                max_attempts = (
-                    1
-                    if decision.action in {"answer_cluster", "answer_fact"}
-                    else 1 + AVATAR_UNIT_RETRIES
-                )
+            # Avatar recovery must never expand the transport budget: an opening's
+            # failed TTS call may already have delivered part of its audio.
+            avatar_max_attempts = (
+                1
+                if decision.action in {"answer_cluster", "answer_fact"}
+                else 1 + AVATAR_UNIT_RETRIES
+            )
+            transport_failures = 0
+            avatar_failures = 0
             spoken_script = None
-            for attempt in range(max_attempts):
+            for attempt in range(max_attempts + (avatar_max_attempts - 1 if avatar_gate else 0)):
                 decision.attempt = attempt
                 try:
                     if avatar_gate and decision.action in {"answer_cluster", "answer_fact"}:
@@ -1846,7 +1849,8 @@ class DirectorCoordinator:
                     if decision.is_cancelled or not live():
                         self._record_cancelled(session_id, decision, "turn_cancelled")
                         return True
-                    if attempt + 1 >= max_attempts:
+                    avatar_failures += 1
+                    if avatar_failures >= avatar_max_attempts:
                         # Explicit bounded skip, never record a successful speech receipt.
                         if decision.action in {"answer_cluster", "answer_fact"}:
                             self._skip_response(session_id, decision, "avatar_not_ready")
@@ -1893,7 +1897,8 @@ class DirectorCoordinator:
                         },
                     )
                 except (TimeoutError, ConnectionError) as exc:
-                    if attempt + 1 >= max_attempts:
+                    transport_failures += 1
+                    if transport_failures >= max_attempts:
                         raise
                     await self._emit(
                         session_id,
@@ -1904,7 +1909,10 @@ class DirectorCoordinator:
                             "error": type(exc).__name__,
                         },
                     )
-                    await asyncio.sleep(min(0.1 * (2**attempt), 0.5))
+                    await asyncio.sleep(min(0.1 * (2 ** (transport_failures - 1)), 0.5))
+            if orchestrator.is_cancelled:
+                self._record_cancelled(session_id, decision, "turn_cancelled")
+                return True
             if decision.is_cancelled or (
                 decision.revision_token and not self._runtime.has(session_id)
             ):

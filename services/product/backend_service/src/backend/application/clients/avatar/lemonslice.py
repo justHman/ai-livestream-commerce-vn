@@ -1106,15 +1106,17 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             )
         )
 
-    def wait_speak_ready(self, session_id: str) -> None:
+    def wait_speak_ready(
+        self, session_id: str, *, cancelled: Callable[[], bool] | None = None
+    ) -> bool:
         if not self._s.speak_ready_gate_enabled:
-            return
+            return True
 
-        async def prepare() -> None:
-            sess = self._sessions[session_id]
-            await self._prepare_ready(sess)
+        async def prepare() -> bool:
+            sess = self._sessions.get(session_id)
+            return sess is not None and await self._prepare_ready(sess, cancelled=cancelled)
 
-        self._run(prepare())
+        return self._run(prepare())
 
     def require_avatar_recovery(self, session_id: str) -> None:
         async def require() -> None:
@@ -1182,21 +1184,44 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             for pub in p.track_publications.values()
         )
 
-    async def _prepare_ready(self, sess: _Sess) -> None:
+    async def _prepare_ready(
+        self, sess: _Sess, *, cancelled: Callable[[], bool] | None = None
+    ) -> bool:
         started = time.monotonic()
+        interrupt_seq = sess.interrupt_seq
+
+        def aborted() -> bool:
+            return (
+                sess.closing
+                or sess.interrupt_seq != interrupt_seq
+                or (cancelled is not None and cancelled())
+            )
+
+        async def prepare() -> None:
+            await self._maybe_rollover(sess)
+            while sess.recovery_required or not self._video_ready(sess.room):
+                await self._maybe_rollover(sess)
+                await asyncio.sleep(0.05)
+            self._observe_video(sess)
+
+        # Cancel only this waiter. Rollover's shielded, owned task retains responsibility
+        # for a late provider creation/cleanup and serializes the next readiness attempt.
+        waiter = asyncio.create_task(prepare())
         result = "ready"
         try:
             async with asyncio.timeout(self._s.speak_ready_wait_s):
-                await self._maybe_rollover(sess)
                 while True:
-                    if sess.closing:
-                        raise LemonSliceError("session_closing")
-                    if not sess.recovery_required and self._video_ready(sess.room):
-                        self._observe_video(sess)
-                        return
-                    await self._maybe_rollover(sess)
-                    await asyncio.sleep(0.05)
+                    if aborted():
+                        result = "cancelled"
+                        return False
+                    if waiter.done():
+                        await waiter
+                        return True
+                    await asyncio.wait({waiter}, timeout=0.05)
         except TimeoutError:
+            if aborted():
+                result = "cancelled"
+                return False
             result = "timeout"
             if self._age_state(sess) == "near_cap":
                 # The provider session is past its age cap and could not be replaced: the cap guard
@@ -1207,6 +1232,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             result = "aborted"
             raise
         finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
             log.info(
                 "avatar speak_ready_wait room=%s waited_s=%.3f result=%s",
                 sess.room_name,
@@ -1297,7 +1324,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         interrupt_seq = sess.interrupt_seq
         if sess.channel.open_utterance != w.utterance_id:  # a new utterance starts here
             if self._s.speak_ready_gate_enabled:
-                await self._prepare_ready(sess)
+                if not await self._prepare_ready(sess):
+                    return
             else:
                 await self._maybe_rollover(sess)
         if interrupt_seq != sess.interrupt_seq or sess.closing:
