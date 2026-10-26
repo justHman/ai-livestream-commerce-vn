@@ -167,6 +167,7 @@ def _reason_code(raw: str) -> str:
         "mashup",
         "position",
         "name_repeat",
+        "opener",
     ):
         return "wording_unsuitable"
     if _RULE_ID_RE.match(raw):

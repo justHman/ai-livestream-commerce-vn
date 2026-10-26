@@ -98,7 +98,9 @@ _GUIDE = {
     "assurance": (
         "Nói các ý bên dưới một cách trung thực và trấn an như người bán hàng tử tế: giải thích "
         "vì sao điều đó có lợi cho khách, nếu là điều kiện hay hạn chế thì nói rõ ràng, nhẹ "
-        "nhàng, không bán gắt. 2 đến 4 câu, ưu tiên đủ điều kiện, bỏ câu đệm."
+        "nhàng, không bán gắt. 2 đến 4 câu, ưu tiên đủ điều kiện, bỏ câu đệm. Không mở đầu "
+        "bằng 'Mình cam kết' hay 'Cam kết'; mỗi ý vào bằng một cách khác nhau (từ lợi ích của "
+        "khách, từ câu khách hay hỏi, hay từ điều cần lưu ý), không lặp một mẫu câu."
     ),
     "offer": (
         "Nói giá (đã đọc thành chữ bên dưới, chép đúng, không viết lại thành số) và ưu đãi nếu "
@@ -108,9 +110,13 @@ _GUIDE = {
     ),
     "closing": (
         "Cảm ơn khán giả chân thành, nhắc lại tinh thần buổi live, mời theo dõi và hẹn gặp lại. "
-        "2 đến 4 câu. Không giới thiệu thêm sản phẩm."
+        "2 đến 4 câu. Không giới thiệu thêm sản phẩm, không nhắc tên sản phẩm hay ưu đãi, "
+        "không dùng 'không bỏ lỡ' hay 'đừng bỏ lỡ'."
     ),
 }
+# The role title is also sent to the model. "Cam kết và lưu ý" made it open every assurance part with
+# "Mình cam kết", so the prompt uses a neutral title; the owner-visible title stays in _TITLES.
+_PROMPT_TITLES = {**_TITLES, "assurance": "Chính sách mua hàng và lưu ý"}
 _CTA_LINE = (
     "Cuối phần này thêm MỘT lời mời nhẹ nhàng (ví dụ bạn nào quan tâm thì nhắn mình hoặc xem "
     "giỏ hàng). Không dùng: chốt đơn ngay, đặt ngay, mua ngay, nhanh tay, không bỏ lỡ, số "
@@ -216,6 +222,7 @@ _CONDITION_CLAIM_RE = re.compile(
 )
 # The owner chose these types explicitly: never capped or dropped.
 _MUST_TYPES = ("warranty", "shipping", "promotion", "compliance", "limitation")
+_COMMIT_OPEN_RE = re.compile(r"^\W*(?:mình\s+|shop\s+)?(?:xin\s+)?cam kết\b", re.IGNORECASE)
 _POSITION_RE = re.compile(
     r"cuối cùng của buổi|(?:sản phẩm|món) (?:đầu tiên|cuối cùng)", re.IGNORECASE
 )
@@ -799,7 +806,7 @@ def check_unit_text(
     """(text, None) when usable, else (None, machine reason code).
 
     Reasons: empty, too_long, truncated, missing_info, hard_sell, bridge, address, cta,
-    mashup, name_repeat. Approved prices written as digits become words.
+    mashup, opener, name_repeat. Approved prices written as digits become words.
     """
     if not raw:
         return None, "empty"
@@ -849,6 +856,15 @@ def check_unit_text(
             a, b = _topics(left), _topics(right)
             if a and b and not (a & b):
                 return None, "mashup"  # unrelated facts joined with "và"
+    owner_facts = (*spec.claims, *spec.promos) if spec is not None else approved
+    if role in ("assurance", "highlight", "offer") and not any(
+        a.lower().startswith("cam kết") for a in owner_facts
+    ):
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        # A part opening "Mình cam kết..." is a model tic the owner never wrote.
+        commits = sum(bool(_COMMIT_OPEN_RE.search(s)) for s in sentences)
+        if _COMMIT_OPEN_RE.search(text) or commits > 1:
+            return None, "opener"
     if not aware and role not in ("opening", "closing", "") and _POSITION_RE.search(text):
         return None, "position"  # legacy unlocked order: no first/last wording
     if must and uncovered_claims(text, must, (*spec.claims, *spec.promos) if spec else ()):
@@ -928,6 +944,11 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
             + ", ".join(_EXPERIENCE_RE.findall(raw or ""))[:100]
             + ". Bỏ trải nghiệm đó, chỉ nêu thông tin được phép."
         )
+    if why == "opener":
+        return (
+            "\nBản trước mở đầu bằng 'Mình cam kết' hoặc 'Cam kết'. Viết lại, mở bằng cách khác "
+            "(từ lợi ích của khách hoặc câu khách hay hỏi), không dùng từ 'cam kết' để mở câu."
+        )
     if why == "name_repeat":
         return "\nBản trước lặp tên sản phẩm đầy đủ. Gọi là 'mẫu này' hoặc loại sản phẩm; không lặp tên thương hiệu."
     template = _RETRY_HINTS.get(why or "")
@@ -943,6 +964,12 @@ def clean_unit_text(raw: str | None, **kwargs) -> str | None:
 
 def _facts_block(product: ProductBrief, spec: UnitSpec, used: list[str]) -> str:
     lines = [f"Tên sản phẩm: {product.name or product.product_id}"]
+    if spec.role not in ("intro", "offer"):
+        # The name is context only: a part that repeats it is rejected (name_repeat) and falls back
+        # to the verbatim owner text.
+        lines.append(
+            "Không nhắc tên sản phẩm này trong phần này; gọi là 'mẫu này' hoặc loại sản phẩm."
+        )
     if spec.role == "intro":
         lines += [f"{k}: {v}" for k, v in product.info if v]
     if spec.claims:
@@ -1016,7 +1043,7 @@ def build_unit_prompt(
     if session.notes:
         parts.append(f"Ghi chú của chủ shop: {session.notes}")
     parts.append(
-        f"Vai trò của phần này ({index + 1}/{len(specs)}): {role_title(spec.role)}. "
+        f"Vai trò của phần này ({index + 1}/{len(specs)}): {_PROMPT_TITLES[spec.role]}. "
         f"{_GUIDE[spec.role]}"
     )
     if spec.target_seconds:

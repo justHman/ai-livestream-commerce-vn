@@ -168,6 +168,16 @@ logger = logging.getLogger(__name__)
 # Vietnamese tokenizes long: a 1-3 sentence unit (plus a reasoning preamble on some free
 # models) needs far more than the 512 default shared with live answers.
 _UNIT_MAX_TOKENS = 900
+
+
+def _used_openings(continuity: ContinuityState) -> tuple[str, ...]:
+    """How the earlier parts of this product opened (first five words), so a new part opens differently.
+
+    Sorted for a stable prompt; the regenerate path already sends the same hint from the other parts.
+    """
+    return tuple(sorted(continuity.opening_fingerprints))[:24]
+
+
 _COVERAGE_RETRY = "\n\nLần trước thiếu ý BẮT BUỘC. Phải nói đủ, gần nguyên văn: "
 _SHORTER_RETRY = (
     "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 4 câu, kết thúc trọn câu."
@@ -1542,6 +1552,7 @@ class ScriptAuthoringServiceImpl:
                 index,
                 tail=continuity.previous_segment_tail,
                 used_ctas=continuity.used_ctas,
+                used_openings=_used_openings(continuity),
             )
             return write(index, prompt, continuity)
 
@@ -1558,6 +1569,7 @@ class ScriptAuthoringServiceImpl:
                     for rule, message in zip(hint.failed_rule_ids, hint.repair_instructions)
                 ],
                 tail=continuity.previous_segment_tail,
+                used_openings=_used_openings(continuity),
             )
             return write(index, prompt, continuity)
 
