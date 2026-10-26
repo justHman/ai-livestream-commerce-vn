@@ -59,6 +59,11 @@ REASON_CODES = frozenset(
         "turn_failed",
         "avatar_not_ready",
         "playback_unconfirmed",
+        "social_cooldown",
+        "social_capacity",
+        "social_expired",
+        "social_disabled",
+        "social_unrecognized",
     }
 )
 UNKNOWN_REASON = "unknown"
@@ -135,6 +140,8 @@ def _rfc3339(epoch: Optional[float] = None) -> str:
 
 
 def _turn_kind(action: str) -> str:
+    if action == "social_reply":
+        return "chitchat"
     if action in ("answer_cluster", "answer_fact"):
         return "qa"
     if action == "autonomous_opening":
@@ -624,6 +631,38 @@ class LiveFollowRecorder:
             )
 
     @_safe
+    def social_received(self, session_id, cid, event_id, provenance, ts, cluster_id, reason):
+        state = self._session(session_id)
+        comment = self._comment(state, cid)
+        comment.event_id, comment.key, comment.ts = event_id, comment_key(provenance), ts
+        comment.cluster_id = cluster_id
+        state.membership_revision += 1
+        revision = state.membership_revision
+        state.cluster_revision[cluster_id] = revision
+        comment.seq = self._publish(
+            session_id,
+            state,
+            "comment.cluster_assigned",
+            f"social:{cid}",
+            {
+                "membership_revision": revision,
+                "changes": [
+                    {
+                        "comment_id": cid,
+                        "event_id": event_id,
+                        "comment_key": comment.key,
+                        "cluster_id": cluster_id,
+                        "previous_cluster_id": None,
+                        "cluster_revision": revision,
+                        "change": "assigned",
+                    }
+                ],
+            },
+        )
+        if reason:
+            self._skip(session_id, state, [cid], reason, True)
+
+    @_safe
     def rejected_before_runtime(self, session_id: str, event_id: str, reason: str) -> None:
         """A comment the Runtime refused at intake (no runtime comment id exists yet)."""
         state = self._session(session_id)
@@ -674,7 +713,7 @@ class LiveFollowRecorder:
             "attempt": 0,
             "outcome_revision": 0,
         }
-        if kind == "qa":
+        if kind in {"qa", "chitchat"}:
             members = list(dict.fromkeys(decision.cluster_member_ids or ()))
             cluster_id = decision.source_cluster_id
             entry.update(
@@ -730,7 +769,7 @@ class LiveFollowRecorder:
             "reason_code": reason,
             "product_id": decision.product_id,
         }
-        if turn["turn_kind"] == "qa":
+        if turn["turn_kind"] in {"qa", "chitchat"}:
             body.update(
                 {
                     "cluster_id": turn.get("cluster_id"),
@@ -766,7 +805,7 @@ class LiveFollowRecorder:
             completed_at=_rfc3339(completed_at),
             response_kind=response_kind,
         )
-        if turn is not None and turn["turn_kind"] == "qa":
+        if turn is not None and turn["turn_kind"] in {"qa", "chitchat"}:
             # Exactly the members frozen at selection: later arrivals never inherit this.
             for cid in turn["member_ids"]:
                 self._set(
@@ -783,7 +822,7 @@ class LiveFollowRecorder:
         turn = self._terminal(session_id, state, decision, status, reason)
         if turn is None:
             return
-        if turn["turn_kind"] == "qa":
+        if turn["turn_kind"] in {"qa", "chitchat"}:
             code = "turn_cancelled" if status == "cancelled" else "turn_failed"
             if reason == "hard_expired":
                 code = "expired"
@@ -812,7 +851,9 @@ class LiveFollowRecorder:
     @_safe
     def speak_started(self, session_id: str, decision: Any, ds: Any) -> None:
         state = self._session(session_id)
-        phase = "answering_comment" if _turn_kind(decision.action) == "qa" else "speaking"
+        phase = (
+            "answering_comment" if _turn_kind(decision.action) in {"qa", "chitchat"} else "speaking"
+        )
         self._position(session_id, state, ds, phase, decision)
 
     @_safe

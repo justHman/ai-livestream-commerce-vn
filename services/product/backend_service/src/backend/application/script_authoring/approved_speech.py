@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 import re
 from typing import Any, Callable
 
@@ -292,6 +293,7 @@ class ExecutionEnvelope:
     script_set_id: str
     brief_json: str
     products: tuple[ApprovedProduct, ...]
+    host_name: str = ""
 
     @property
     def fingerprint(self) -> str:
@@ -339,6 +341,7 @@ class ValidatedSpeech:
     text: str
     epoch: int
     route: str
+    response_kind: str = "answer"
 
     def evidence(self) -> dict:
         return {
@@ -350,6 +353,7 @@ class ValidatedSpeech:
             "approval_hash": self.product.approval_hash,
             "text_sha256": _hash(self.text),
             "route": self.route,
+            "response_kind": self.response_kind,
         }
 
 
@@ -550,6 +554,7 @@ class ApprovedSpeech:
                 script_set.id,
                 brief.model_dump_json(),
                 tuple(products),
+                meta.get("host_name") or "",
             )
             envelope.check_time()
             self._fence(session_id, epoch, lambda: True)
@@ -561,6 +566,55 @@ class ApprovedSpeech:
             if isinstance(exc, SpeechRejected):
                 raise
             raise SpeechRejected("invalid_binding") from exc
+
+    async def prepare_chitchat(
+        self, session_id, intent, *, variant=0, product_id=None, llm=None, live=lambda: True
+    ):
+        from backend.application.platform_events.social_reply import (
+            enabled,
+            replies,
+            validated_host_name,
+        )
+
+        if not enabled():
+            raise SpeechRejected("social_disabled")
+        epoch = self._epoch(session_id)
+        envelope = await self.resolve(session_id)
+        name = validated_host_name(envelope.host_name) if envelope.host_name else ""
+        options = replies(intent, name)
+        if not options:
+            raise SpeechRejected("social_unrecognized")
+        text = options[variant % len(options)]
+        # Model may only choose among complete approved social templates. Its free
+        # text never becomes speech, and it sees no viewer words or product facts.
+        if (
+            len(options) > 1
+            and llm is not None
+            and getattr(llm, "name", "none") != "none"
+            and os.environ.get("SOCIAL_MODEL_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+        ):
+            from llm.engines.base import LLMRequest
+
+            request = LLMRequest.from_prompt(
+                _json({"intent": intent, "options": options}),
+                system_prompt="Choose a friendly reply. Return only its zero-based integer index.",
+                max_tokens=32,
+            )
+            try:
+                raw = await asyncio.wait_for(
+                    self._run_llm(llm, request, session_id, epoch, live), 2.0
+                )
+                if raw.strip() in {str(i) for i in range(len(options))}:
+                    text = options[int(raw.strip())]
+            except SpeechRejected:
+                raise
+            except Exception:
+                pass  # a timeout/invalid selection keeps the rotating template
+        self._fence(session_id, epoch, live)
+        product = envelope.product(product_id) if product_id else envelope.products[0]
+        speech = ValidatedSpeech(envelope, product, text, epoch, "director", "chitchat")
+        await self.revalidate(speech, live=live)
+        return speech
 
     async def prepare(
         self,
@@ -802,6 +856,11 @@ class ApprovedSpeech:
         return answer if accepted else None
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
+        if speech.response_kind == "chitchat":
+            from backend.application.platform_events.social_reply import enabled
+
+            if not enabled():
+                raise SpeechRejected("social_disabled")
         if speech.envelope.session_id in self._runtime_failed:
             raise SpeechRejected("runtime_failed")
         if speech.epoch != self._epochs.get(speech.envelope.session_id, 0) or not live():
