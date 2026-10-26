@@ -599,16 +599,20 @@ class ApprovedSpeech:
                 question_text or text
             )  # the viewer's words, before the answer replaces `text`
             answers = [answer for p in candidates for answer in p.answers()]
-            facts = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
-            facts.extend(answers)
+            names = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
+            facts = [*names, *answers]
             # Scope first: abuse and questions about another item never reach the fixed price/size
             # answers, the natural answer or the fact selector (each of them answers from THIS product).
-            scope, question = answer_scope(question, facts)
+            scope, question = answer_scope(question, facts, names)
             if scope == "skip":
                 raise SpeechRejected("safety_filtered")
+            if scope == "other_product":
+                # A session has several items: a question about another item than the one being presented
+                # is off-topic for this turn (skipped like other chit-chat, no model call, no spoken reply).
+                raise SpeechRejected("not_answerable_non_commerce")
             direct = (
                 factual_reply(candidates[0], question, completed_text)
-                if scope == "answer" and len(candidates) == 1 and question_text
+                if len(candidates) == 1 and question_text
                 else None
             )
             if direct is not None:
@@ -619,12 +623,7 @@ class ApprovedSpeech:
                 if route != "director":
                     self.check_start(session_id)
                 return speech
-            if (
-                scope == "other_product"
-                or not answers
-                or llm is None
-                or getattr(llm, "name", "none") == "none"
-            ):
+            if not answers or llm is None or getattr(llm, "name", "none") == "none":
                 # nothing approved to say: never improvise
                 text, trusted = deflection_for(question, facts), True
             else:
