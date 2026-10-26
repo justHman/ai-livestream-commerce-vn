@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .text_matching import AMBIGUOUS_PHRASES, matching_view, phrase_matching_view
+from .text_matching import AMBIGUOUS_PHRASES, benign_goods, matching_view, phrase_matching_view
 
 __all__ = [
     "CuratedPatternSet",
@@ -132,6 +132,6 @@ def match_curated(text: str, sets: dict[str, CuratedPatternSet]) -> list[str]:
                 )
             )
             if kind in {"toxicity", "harassment"}
-            else any(pattern in text.lower() for pattern in pattern_set.patterns)
+            else any(pattern in benign_goods(text.lower()) for pattern in pattern_set.patterns)
         )
     ]

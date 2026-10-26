@@ -159,3 +159,62 @@ only their missing-information fallback is forbidden. No corpus establishes univ
 
 - "shop/chi co <item> khong?" is a goods-availability question (commerce fallback allowed) unless it matches the narrow private-life patterns or a greeting about the host state (khoe/vui/buon...).
 - In text that carries Vietnamese marks elsewhere, an unmarked "ngu" is the word itself (not a missing-tone "ngu"), except next to sleep context (di/som/ngon...); "ngu nhu bo/cho/lon/heo" is abuse.
+
+## Round 8: availability, explicit comparisons and commerce homophones
+
+Availability grammar recognizes `có/bán/còn <1–6 words> không/chưa/hông/ko`
+inside a sentence. Addresses, particles and punctuation after the question no
+longer erase fallback eligibility: `chị có máy xay không chị?` and `chị có nồi
+cơm điện không vậy ạ?` retain the commerce fallback when approved facts cannot
+answer. Host-private questions still veto that fallback first, including hosts
+`shop`, `chủ shop`, `admin` and `cửa hàng`. Host-state questions such as `shop có
+vui không?` stay silent without facts; `shop có áo khoác không?` remains commerce.
+This classification does not preempt an answer grounded in approved facts.
+
+The non-goods check matches a state predicate (`có ngon không`), rather than a
+word anywhere in a product name. `sách ngôn ngữ`, including ASCII `sach ngon ngu`,
+therefore keeps its fallback. Accented `ngủ` keeps its sleep meaning, while
+`ngu như/nhu [con] chó/cho/bò/bo/lợn/lon/heo/trâu/trau/gà/ga/vịt/vit` is explicit
+abuse, even wholly ASCII. `đần/dan` and `dốt/dot` comparisons and `ngu vãi/vai/vl`
+are curated too. Symbol joins happen before homophone protection while accents
+are still available. ASCII `cho` is interpreted as an animal only in an explicit
+insult comparison; ordinary `do cho` remains admitted.
+
+Indirect predicates (`có biết/nhớ/hiểu/thấy/quen ...`) do not establish goods
+availability by themselves. For example, `anh có biết cái này có gây dị ứng
+không ạ?` remains unclassified without an explicit commerce cue; approved facts
+may still answer it. The existing deictic-question regression enforces this.
+
+The curated toxicity resource is version **6** (`curated_toxicity_v6`); HTTP
+`safety.resource_versions.toxicity` reports `"6"`. Its filename remains
+`curated_toxicity_v1.json` to preserve the resource loader contract. The review
+of folded resource phrases retains the existing protections for sleepwear,
+electric goods, quantities, fabric, machine/code/workwear, giving goods to a
+buyer and family-shopping requests. Unmarked `lao` now always retains its labour
+meaning, including after `đồ`; actual `láo` still matches abuse. Narrow compound
+protections also cover `hâm/ham nóng/nong` and plush `khỉ/khi bông/bong`.
+ASCII `di` is protected in ambiguous short phrases such as `con di hoc`, while
+explicit `đĩ` and strong dismissal phrases retain their abuse meaning.
+
+`tests/unit/test_comment_guard_round8.py` generates and checks:
+
+- 186 distinct goods × 6 hosts × 8 tails × accented/ASCII: **17,856** commerce
+  questions (all checked, grouped into 96 test items to bound collection).
+- **2,496** host-private/state questions from 26 predicates, 6 hosts and 8 tails,
+  in accented and ASCII forms; all must refuse missing-information fallback,
+  including child/spouse questions with trailing addresses or particles.
+- **318** distinct abusive strings from comparisons and targeted insults,
+  including ASCII and interspersed punctuation; all must match toxicity.
+- **630** benign homophone strings, including more than 150 distinct accented
+  and ASCII commerce requests; none may match any safety resource. `ngủ như heo`
+  is deliberately tested only with its meaningful accent: its folded form is
+  an explicit insult and belongs to the abuse corpus.
+- **18** representative authenticated ASGI/HTTP probes through intake, actual
+  reducer membership, prepare and guarded TTS dispatch. Abuse stops before the
+  coordinator/reducer/LLM/TTS; admitted questions attempt answering first;
+  missing commerce facts produce a spoken fallback; private/unclassified
+  comments produce no script or TTS.
+
+These deterministic corpora cover the supplied round-eight reproductions, not
+the reviewer's unavailable independent 1,106 ordinary / 282 abuse / 246 boundary
+corpus. They cannot establish universal dialect, obfuscation or semantic coverage.
