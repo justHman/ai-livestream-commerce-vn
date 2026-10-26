@@ -593,16 +593,25 @@ class ApprovedSpeech:
                 raise SpeechRejected("unit_required")
             text = whole.spoken_text
         elif generate:
-            from .answer_context import deflection_for, factual_reply
+            from .answer_context import answer_scope, deflection_for, factual_reply
 
             question = (
                 question_text or text
             )  # the viewer's words, before the answer replaces `text`
             answers = [answer for p in candidates for answer in p.answers()]
-            facts = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
-            facts.extend(answers)
+            names = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
+            facts = [*names, *answers]
+            # Scope first: abuse and questions about another item never reach the fixed price/size
+            # answers, the natural answer or the fact selector (each of them answers from THIS product).
+            scope, question = answer_scope(question, facts, names)
+            if scope == "skip":
+                raise SpeechRejected("safety_filtered")
+            if scope == "other_product":
+                # A session has several items: a question about another item than the one being presented
+                # is off-topic for this turn (skipped like other chit-chat, no model call, no spoken reply).
+                raise SpeechRejected("not_answerable_non_commerce")
             direct = (
-                factual_reply(candidates[0], question_text, completed_text)
+                factual_reply(candidates[0], question, completed_text)
                 if len(candidates) == 1 and question_text
                 else None
             )

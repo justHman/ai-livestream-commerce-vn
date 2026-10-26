@@ -74,17 +74,17 @@ async def test_unclassified_comments_reach_runtime_without_fallback(
 
 
 @pytest.mark.asyncio
-async def test_other_goods_attempts_facts_before_distinct_fallback(case_factory):
+async def test_other_goods_are_off_topic_while_another_item_is_presented(case_factory):
+    # Owner decision (2026-10-26): a session holds several items; a comment about an item other than the one
+    # being presented is off-topic for this turn: skipped, no model call, nothing spoken.
     source = Source()
     source.set.brief.product_facts["product-1"]["product_name"] = "Áo khoác denim"
     case = await case_factory(source=source)
-    case.llm.output = ""  # Other-product classification cannot skip approved-fact answering.
     turn = decision(case, generated=True)
     turn.cluster_members = ("giày size 40",)
     await prepare(case, turn)
-    assert is_deflection(turn.prepared_script)
-    assert "mặt hàng này" in turn.prepared_script
-    assert case.llm.started.is_set()
+    assert not turn.prepared_script
+    assert not case.llm.started.is_set() and not case.tts.calls
 
 
 @pytest.mark.asyncio
