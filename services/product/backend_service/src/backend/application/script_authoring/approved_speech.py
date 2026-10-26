@@ -865,6 +865,12 @@ class ApprovedSpeech:
         return answer if accepted else None
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
+        # Fatal-session and cancellation fences take precedence over any
+        # per-response policy (including a social permit or kill switch).
+        if speech.envelope.session_id in self._runtime_failed:
+            raise SpeechRejected("runtime_failed")
+        if speech.epoch != self._epochs.get(speech.envelope.session_id, 0) or not live():
+            raise SpeechRejected("cancelled_speech")
         if speech.social_permit is not None:
             speech.social_permit.check()
         if speech.response_kind == "chitchat":
@@ -872,10 +878,6 @@ class ApprovedSpeech:
 
             if not enabled():
                 raise SpeechRejected("social_disabled")
-        if speech.envelope.session_id in self._runtime_failed:
-            raise SpeechRejected("runtime_failed")
-        if speech.epoch != self._epochs.get(speech.envelope.session_id, 0) or not live():
-            raise SpeechRejected("cancelled_speech")
         speech.envelope.check_time()
 
     async def revalidate(self, speech: ValidatedSpeech, *, live=lambda: True) -> None:
