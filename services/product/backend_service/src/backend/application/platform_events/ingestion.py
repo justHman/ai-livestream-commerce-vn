@@ -595,6 +595,23 @@ class PlatformEventIngestionService:
         this path. Imported lazily to avoid a circular import (the reducer
         package never imports platform_events).
         """
+        from .social_reply import enabled, social_intent
+
+        text = event.payload.text if isinstance(event.payload, CommentPayload) else ""
+        intent = social_intent(text)
+        offer = getattr(self._coordinator, "offer_social", None)
+        admitted = getattr(self._coordinator, "social_was_admitted", lambda *_: False)
+        if (enabled() or admitted(session_id, event.event_id)) and intent and callable(offer):
+            offer(
+                session_id,
+                intent,
+                comment_id or event.event_id,
+                event.event_id,
+                self._unique_viewer_key_fn(event),
+                _provenance(event),
+                event.occurred_at,
+            )
+            return
         if self._reducer is None:
             return
         from backend.application.reducer import AcceptedComment
@@ -641,6 +658,14 @@ class PlatformEventIngestionService:
             return result
 
         reason = self._reject_reason(event, now)
+        from .social_reply import enabled, social_intent
+
+        social = (
+            enabled()
+            and event.type == "viewer.comment"
+            and isinstance(event.payload, CommentPayload)
+            and social_intent(event.payload.text)
+        )
         # Symbol/emoji-only social chat is structurally malformed to SafetyGate,
         # but has a more precise, non-safety skip outcome for live-follow.
         if (
@@ -649,6 +674,7 @@ class PlatformEventIngestionService:
             and (reason is None or reason == "malformed")
             and 0 < len(event.payload.text.strip()) <= 2000
             and is_non_question(event.payload.text)
+            and not social
         ):
             reason = "non_question"
         if reason is None and event.type == "viewer.comment":
@@ -680,6 +706,10 @@ class PlatformEventIngestionService:
             return result
 
         if event.type == "viewer.comment":
+            if social:
+                mark = getattr(self._coordinator, "mark_social_admitted", None)
+                if callable(mark):
+                    mark(session_id, event.event_id)
             # Routing decides the outcome; it is never assumed up front.
             delivery = self._route_comment(
                 meta,

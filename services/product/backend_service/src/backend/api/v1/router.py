@@ -121,6 +121,14 @@ class StartReq(BaseModel):
     business_session_id: Optional[str] = None
     generation: Optional[str] = None
     rescue_commands: bool = False
+    host_name: Optional[str] = None
+
+    @field_validator("host_name")
+    @classmethod
+    def validate_host_name(cls, value: Optional[str]) -> Optional[str]:
+        from backend.application.platform_events.social_reply import validated_host_name
+
+        return validated_host_name(value) if value is not None else None
 
     @field_validator("avatar_agent_id")
     @classmethod

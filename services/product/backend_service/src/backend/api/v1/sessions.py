@@ -97,6 +97,10 @@ async def sessions_start(
 
     if req.has_avatar_or_voice_override() and not _authenticated_internal_caller(request, d.config):
         raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
+    if req.host_name is not None and (
+        not req.execution_contract or not _authenticated_internal_caller(request, d.config)
+    ):
+        raise HTTPException(status_code=403, detail={"code": "host_identity_not_authorized"})
     override_mode = getattr(d.backend, "avatar_override_mode", None)
     if req.has_avatar_or_voice_override() and override_mode not in (
         "avatar_and_voice",
@@ -144,6 +148,8 @@ async def sessions_start(
         cost_meter.expect_reset(expect)
 
     meta: dict[str, Any] = {"status": "active", "mode": result.mode}
+    if req.host_name is not None:
+        meta["host_name"] = req.host_name
     if req.voice_id is not None:
         meta["voice_id"] = req.voice_id
     if req.execution_contract:

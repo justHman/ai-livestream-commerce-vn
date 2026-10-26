@@ -212,6 +212,9 @@ class DirectorCoordinator:
         self._backoff_members: dict[tuple[str, str], tuple[str, ...]] = {}
         self._monotonic = time.monotonic
         self._last_deflection_started: dict[str, float] = {}
+        self._social: dict = {}
+        self._social_ids: dict[str, dict[str, float]] = {}
+        self._social_admitted: dict[str, dict[str, float]] = {}
         self._opening_media: dict[str, dict] = {}
         # Optional Postgres runtime store (durable rows). None/disabled -> no
         # persistence. Fire-and-forget: a failure must never break the speak loop.
@@ -508,6 +511,9 @@ class DirectorCoordinator:
             self._backoff_members.pop(key, None)
         self._opening_media.pop(session_id, None)
         self._last_deflection_started.pop(session_id, None)
+        self._social.pop(session_id, None)
+        self._social_ids.pop(session_id, None)
+        self._social_admitted.pop(session_id, None)
         self._runtime.detach(session_id)
         self._lock_registry.drop(session_id)
         # Drop the reducer's per-session state too (P0-FB-014): clusters,
@@ -1049,6 +1055,12 @@ class DirectorCoordinator:
         director: Director = ds.director
         state: StreamState = director.state
         self._live_follow_tick(session_id, ds)
+        social = self._social.get(session_id)
+        if social is not None and social.pending is not None:
+            from backend.application.platform_events.social_reply import enabled
+
+            if not enabled() or self._monotonic() - social.pending.created >= 15:
+                self._social_decision(session_id, ds)  # settle expired/disabled, never speak
         fresh = queue.drain_window(self._cfg.window_sec)
         if session_id in self._reducer_mode:
             # Reducer mode (P0-FB-014): the bounded reducer is the only
@@ -1083,7 +1095,14 @@ class DirectorCoordinator:
             return
         embedder = self._get_embedder()
         new_only = [comment for comment in fresh if comment.id not in state.embeddings_cache]
-        new_comments = new_only
+        new_comments = [
+            comment
+            for comment in new_only
+            if comment.id not in self._social_ids.get(session_id, {})
+        ]
+        for comment in new_only:
+            if comment.id in self._social_ids.get(session_id, {}):
+                state.embeddings_cache[comment.id] = []  # consumption marker, never demand
         if new_comments:
             vecs = await asyncio.to_thread(
                 embedder.encode, [comment.text for comment in new_comments]
@@ -1221,6 +1240,76 @@ class DirectorCoordinator:
             ]
         return projection
 
+    def mark_social_admitted(self, session_id, event_id):
+        if session_id not in self._tasks:
+            return
+        seen = self._social_admitted.setdefault(session_id, {})
+        now = self._monotonic()
+        for eid in [eid for eid, added in seen.items() if now - added > 120]:
+            del seen[eid]
+        if len(seen) >= 2000:
+            seen.pop(next(iter(seen)))
+        seen[event_id] = now
+
+    def social_was_admitted(self, session_id, event_id):
+        return event_id in self._social_admitted.get(session_id, {})
+
+    def offer_social(self, session_id, intent, comment_id, event_id, viewer, provenance, ts):
+        from backend.application.platform_events.social_reply import SocialQueue
+
+        if session_id not in self._tasks or self.approved_speech is None:
+            return
+        now = self._monotonic()
+        seen = self._social_ids.setdefault(session_id, {})
+        if comment_id in seen:
+            return
+        for cid in [cid for cid, added in seen.items() if now - added > 120]:
+            del seen[cid]
+        if len(seen) >= 2000:
+            seen.pop(next(iter(seen)))
+        seen[comment_id] = now
+        queue = self._social.setdefault(session_id, SocialQueue())
+        from backend.application.platform_events.social_reply import enabled
+
+        reason = (
+            queue.add(intent, comment_id, event_id, viewer, now) if enabled() else "social_disabled"
+        )
+        cluster = f"social:{session_id}:{queue.serial + 1}"
+        self.live_follow.social_received(
+            session_id, comment_id, event_id, provenance, ts, cluster, reason
+        )
+
+    def _social_decision(self, session_id, ds):
+        from backend.application.platform_events.social_reply import enabled
+
+        queue = self._social.get(session_id)
+        if queue is None or queue.pending is None:
+            return None
+        pending = queue.pending
+        # Three seconds to coalesce a burst; expiry/kill-switch still settles
+        # a pending group even while commerce fills every scheduling slot.
+        age = self._monotonic() - pending.created
+        if age < 3 and enabled():
+            return None
+        item, reason = queue.reserve(self._monotonic())
+        decision = Decision(
+            action="social_reply",
+            topic=item.intent,
+            product_id=ds.director.state.current_product().product_id
+            if ds.director.state.current_product()
+            else None,
+            cluster_member_ids=tuple(item.members),
+            source_event_ids=tuple(item.events),
+            source_cluster_id=f"social:{session_id}:{queue.serial}",
+            occurred_at_bounds=(time.time() - age, time.time() - age),
+        )
+        if reason:
+            self.live_follow.skip_response(session_id, decision, reason)
+            return None
+        decision.social_variant = queue.serial - 1
+        decision.social_deadline = item.created + 15
+        return decision
+
     async def _fill_prepared(self, session_id: str) -> None:
         ds = self._runtime._sessions.get(session_id)
         if ds is None or self._frozen(session_id):
@@ -1256,6 +1345,15 @@ class DirectorCoordinator:
                     decision = projection.decide(projection.state.rolling_comments, now=now)
                 self._stats[session_id].director_cycles += 1
                 self.live_follow.note_tick_skips(session_id, getattr(projection, "tick_skips", ()))
+                # It can wait between script parts, never replace commerce QA,
+                # the protected opening/introduction or closing, and cannot interrupt.
+                if decision.action in ("idle", "skip", "sell_product"):
+                    if not self._decision_queue[session_id] and not any(
+                        d is not None
+                        and d.action in {"answer_fact", "answer_cluster", "social_reply"}
+                        for d in (*prepared, self._current_speech.get(session_id))
+                    ):
+                        decision = self._social_decision(session_id, ds) or decision
                 if decision.action in ("idle", "skip"):
                     self._stats[session_id].skips += 1
                     break
@@ -1360,7 +1458,11 @@ class DirectorCoordinator:
                 decision.action,
                 exc.code,
             )
-            if exc.code in {"non_question", "not_answerable_non_commerce", "safety_filtered"}:
+            if exc.code in {
+                "non_question",
+                "not_answerable_non_commerce",
+                "safety_filtered",
+            } or exc.code.startswith("social_"):
                 self._skip_response(session_id, decision, exc.code)
             else:
                 self._note_rejected(session_id, decision)
@@ -1449,7 +1551,8 @@ class DirectorCoordinator:
                 not queue
                 or ds is None
                 or self._frozen(session_id)
-                or queue[0].action not in ("sell_product", "introduce_product", "close")
+                or queue[0].action
+                not in ("sell_product", "introduce_product", "close", "social_reply")
                 or self._current_speech.get(session_id) is not None
             ):
                 return False
@@ -1505,7 +1608,42 @@ class DirectorCoordinator:
             and decision.revision_token == self._runtime.current_generation_token(session_id)
         )
 
+    def _social_priority_pending(self, session_id: str) -> bool:
+        ds = self._runtime._sessions.get(session_id)
+        if ds is None:
+            return True
+        projection = copy.deepcopy(ds.director)
+        store = self._reducer_store(session_id)
+        candidate = (
+            self._decide_from_reducer(projection, session_id, store, ds.now())
+            if store is not None
+            else projection.decide(projection.state.rolling_comments, now=ds.now())
+        )
+        return candidate.action in {"answer_fact", "answer_cluster"} and not self._backed_off(
+            session_id, candidate
+        )
+
     async def _prepare_approved(self, session_id: str, decision: Decision):
+        if decision.action == "social_reply":
+            from backend.application.platform_events.social_reply import SocialPermit
+
+            if self._monotonic() >= decision.social_deadline:
+                raise SpeechRejected("social_expired")
+            return await self.approved_speech.prepare_chitchat(
+                session_id,
+                decision.topic,
+                variant=getattr(decision, "social_variant", 0),
+                product_id=decision.product_id,
+                llm=self._llm,
+                live=lambda: self._speech_live(session_id, decision),
+                permit=SocialPermit(
+                    self._social[session_id],
+                    self._social[session_id].serial,
+                    decision.social_deadline,
+                    self._monotonic,
+                    lambda: self._social_priority_pending(session_id),
+                ),
+            )
         reactive = decision.action in ("answer_fact", "answer_cluster")
         refresh_answer = reactive and (
             decision.prepared_script is None or decision.cache_variant_index is not None
@@ -1594,6 +1732,10 @@ class DirectorCoordinator:
         if st is None:
             return True
 
+        if decision.action == "social_reply" and self._monotonic() >= decision.social_deadline:
+            self._skip_response(session_id, decision, "social_expired")
+            return True
+
         speech = None
         resumed_at_entry = self._resume_count.get(session_id, 0)
 
@@ -1619,7 +1761,11 @@ class DirectorCoordinator:
                     exc.code,
                 )
                 st.skips += 1
-                if exc.code in {"non_question", "not_answerable_non_commerce", "safety_filtered"}:
+                if exc.code in {
+                    "non_question",
+                    "not_answerable_non_commerce",
+                    "safety_filtered",
+                } or exc.code.startswith("social_"):
                     self._skip_response(session_id, decision, exc.code)
                 else:
                     self._note_rejected(session_id, decision)
@@ -1817,6 +1963,8 @@ class DirectorCoordinator:
                         def cloud_say():
                             if speech is not None:
                                 self.approved_speech.check_live(speech, live)
+                                if speech.social_permit is not None:
+                                    speech.social_permit.dispatch(media=True)
                             return self._backend.say(session_id, text, generate)
 
                         spoken_script = await asyncio.to_thread(
@@ -1962,7 +2110,9 @@ class DirectorCoordinator:
                 ds.director.mark_spoken(decision)
             await self._persist_decision(session_id, decision, text)
             self._after_speak(session_id, decision, text)
-            if decision.action in ("answer_fact", "answer_cluster"):
+            if decision.action == "social_reply":
+                response_kind = "chitchat"
+            elif decision.action in ("answer_fact", "answer_cluster"):
                 from ..script_authoring.answer_context import is_deflection
 
                 checked = speech.text if speech is not None else spoken_script
@@ -1996,6 +2146,18 @@ class DirectorCoordinator:
                 # Late rejection (pre-media check, guarded media boundary) or a failed
                 # delivery: no later unit may play ahead of this one.
                 self._invalidate_queued(session_id, reason="unit_failed")
+            if decision.action == "social_reply" and isinstance(exc, SpeechRejected):
+                st.skips += 1
+                self._skip_response(session_id, decision, exc.code)
+                await self._emit(
+                    session_id,
+                    {
+                        "type": "speech.content_rejected",
+                        "turn_id": decision.turn_id,
+                        "reason": exc.code,
+                    },
+                )
+                return True
             if self.runtime_failures is not None:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):
