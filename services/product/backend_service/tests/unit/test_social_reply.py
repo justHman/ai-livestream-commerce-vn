@@ -1,7 +1,9 @@
 import pytest
+from unittest.mock import AsyncMock
 
 from backend.application.platform_events.social_reply import (
     SocialQueue,
+    SocialPermit,
     replies,
     social_intent,
     validated_host_name,
@@ -11,6 +13,94 @@ from . import test_approved_speech_active as active
 from .test_safety_gate_active import canonical, post
 
 case_factory = active.case_factory
+
+
+def test_dispatch_reanchors_cooldown_and_viewer_limit(monkeypatch):
+    monkeypatch.setenv("SOCIAL_REPLY_ENABLED", "1")
+    q = SocialQueue()
+    q.add("greeting", "c1", "e1", "v1", 0)
+    q.reserve(3)
+    assert q.dispatch(1, 14) is None
+    assert q.add("greeting", "c2", "e2", "v2", 26) == "social_cooldown"
+    assert q.add("greeting", "c2", "e2", "v2", 34) is None
+    q.reserve(37)
+    assert q.dispatch(2, 38) is None
+    assert q.add("thanks", "c3", "e3", "v1", 65) == "social_cooldown"
+
+
+def test_permit_expires_before_first_audio_but_does_not_cut_started_speech(monkeypatch):
+    monkeypatch.setenv("SOCIAL_REPLY_ENABLED", "1")
+    q = SocialQueue()
+    q.add("name", "c", "e", "v", 0)
+    q.reserve(3)
+    now = [14.9]
+    permit = SocialPermit(q, 1, 15, lambda: now[0])
+    permit.dispatch()
+    now[0] = 15.1
+    with pytest.raises(SpeechRejected, match="social_expired"):
+        permit.dispatch(media=True)
+    now[0] = 14.95
+    permit.dispatch(media=True)
+    now[0] = 20
+    permit.check()  # the TTL applies to queued speech, not a started sentence
+    monkeypatch.setenv("SOCIAL_REPLY_ENABLED", "0")
+    with pytest.raises(SpeechRejected, match="social_disabled"):
+        permit.check()
+
+
+async def prepared_social(case, monkeypatch):
+    monkeypatch.setenv("SOCIAL_REPLY_ENABLED", "1")
+    monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
+    co = case.d.coordinator
+    now = [100.0]
+    co._monotonic = lambda: now[0]
+    co.offer_social(case.sid, "name", "c-social", "e-social", "v", None, 0)
+    now[0] = 103
+    turn = co._social_decision(case.sid, case.d.director.get_session(case.sid))
+    turn.revision_token = case.d.director.current_generation_token(case.sid)
+    co.live_follow.turn_selected(case.sid, turn, case.d.director.get_session(case.sid))
+    await active.prepare(case, turn)
+    return co, now, turn
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_question", [False, True])
+async def test_social_rechecks_after_slow_tts_lookup(case_factory, monkeypatch, late_question):
+    monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
+    case = await case_factory()
+    co, now, turn = await prepared_social(case, monkeypatch)
+    now[0] = 114.9
+    original = co._session_tts
+
+    async def delayed(sid):
+        now[0] = 114.95 if late_question else 115.1
+        if late_question:
+            monkeypatch.setattr(co, "_social_priority_pending", lambda _: True)
+        return await original(sid)
+
+    monkeypatch.setattr(co, "_session_tts", delayed)
+    assert await co._maybe_speak(case.sid, turn)
+    assert not case.tts.calls
+    snapshot = co.live_follow.snapshot(case.sid)
+    assert not any(t["status"] == "completed" for t in snapshot["turns"])
+    assert snapshot["comments"][0]["state"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_prefetched_social_yields_to_fresh_commerce_at_boundary(case_factory, monkeypatch):
+    from backend.application.director.decision import Decision
+
+    monkeypatch.setenv("RUNTIME_LIVE_FOLLOW_EVENTS_ENABLED", "1")
+    case = await case_factory()
+    co, _now, turn = await prepared_social(case, monkeypatch)
+    monkeypatch.setattr(co, "_reducer_store", lambda _: object())
+    monkeypatch.setattr(co, "_decide_from_reducer", lambda *args: Decision(action="answer_cluster"))
+    fill = AsyncMock()
+    monkeypatch.setattr(co, "_fill_prepared", fill)
+    assert await co._refresh_at_boundary(case.sid)
+    assert turn.is_cancelled and not co._speech_queue[case.sid]
+    assert not case.tts.calls
+    fill.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

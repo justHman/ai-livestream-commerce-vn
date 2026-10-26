@@ -639,6 +639,8 @@ class LiveFollowRecorder:
         state.membership_revision += 1
         revision = state.membership_revision
         state.cluster_revision[cluster_id] = revision
+        while len(state.cluster_revision) > COMMENT_HISTORY:
+            state.cluster_revision.pop(next(iter(state.cluster_revision)))
         comment.seq = self._publish(
             session_id,
             state,

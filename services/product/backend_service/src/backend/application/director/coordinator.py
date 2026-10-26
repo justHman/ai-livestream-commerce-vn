@@ -1551,7 +1551,8 @@ class DirectorCoordinator:
                 not queue
                 or ds is None
                 or self._frozen(session_id)
-                or queue[0].action not in ("sell_product", "introduce_product", "close")
+                or queue[0].action
+                not in ("sell_product", "introduce_product", "close", "social_reply")
                 or self._current_speech.get(session_id) is not None
             ):
                 return False
@@ -1607,8 +1608,25 @@ class DirectorCoordinator:
             and decision.revision_token == self._runtime.current_generation_token(session_id)
         )
 
+    def _social_priority_pending(self, session_id: str) -> bool:
+        ds = self._runtime._sessions.get(session_id)
+        if ds is None:
+            return True
+        projection = copy.deepcopy(ds.director)
+        store = self._reducer_store(session_id)
+        candidate = (
+            self._decide_from_reducer(projection, session_id, store, ds.now())
+            if store is not None
+            else projection.decide(projection.state.rolling_comments, now=ds.now())
+        )
+        return candidate.action in {"answer_fact", "answer_cluster"} and not self._backed_off(
+            session_id, candidate
+        )
+
     async def _prepare_approved(self, session_id: str, decision: Decision):
         if decision.action == "social_reply":
+            from backend.application.platform_events.social_reply import SocialPermit
+
             if self._monotonic() >= decision.social_deadline:
                 raise SpeechRejected("social_expired")
             return await self.approved_speech.prepare_chitchat(
@@ -1618,6 +1636,13 @@ class DirectorCoordinator:
                 product_id=decision.product_id,
                 llm=self._llm,
                 live=lambda: self._speech_live(session_id, decision),
+                permit=SocialPermit(
+                    self._social[session_id],
+                    self._social[session_id].serial,
+                    decision.social_deadline,
+                    self._monotonic,
+                    lambda: self._social_priority_pending(session_id),
+                ),
             )
         reactive = decision.action in ("answer_fact", "answer_cluster")
         refresh_answer = reactive and (
@@ -1938,6 +1963,8 @@ class DirectorCoordinator:
                         def cloud_say():
                             if speech is not None:
                                 self.approved_speech.check_live(speech, live)
+                                if speech.social_permit is not None:
+                                    speech.social_permit.dispatch(media=True)
                             return self._backend.say(session_id, text, generate)
 
                         spoken_script = await asyncio.to_thread(
@@ -2119,6 +2146,18 @@ class DirectorCoordinator:
                 # Late rejection (pre-media check, guarded media boundary) or a failed
                 # delivery: no later unit may play ahead of this one.
                 self._invalidate_queued(session_id, reason="unit_failed")
+            if decision.action == "social_reply" and isinstance(exc, SpeechRejected):
+                st.skips += 1
+                self._skip_response(session_id, decision, exc.code)
+                await self._emit(
+                    session_id,
+                    {
+                        "type": "speech.content_rejected",
+                        "turn_id": decision.turn_id,
+                        "reason": exc.code,
+                    },
+                )
+                return True
             if self.runtime_failures is not None:
                 current = self._runtime._sessions.get(session_id)
                 if isinstance(exc, SpeechRejected):

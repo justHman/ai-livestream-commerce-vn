@@ -24,6 +24,10 @@ Commerce questions, opening, introduction and closing take precedence. Quota
 is reserved before generation: at least 20 seconds between social replies,
 at most three per rolling minute, and 60 seconds per viewer. Failed or
 cancelled attempts consume their reservation, preventing a failure storm.
+Dispatch reanchors the reservation and viewer limit to actual playback; delayed
+preparation cannot shorten the 20-second interval. A per-speech permit checks
+TTL until the first media window and keeps the kill switch active thereafter.
+Commerce is reconsidered at the playback boundary and again before first media.
 
 Templates rotate without LLM. Optional model work has a two-second deadline
 and can only return an index into approved complete replies; invalid output

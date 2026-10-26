@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+import threading
+from functools import wraps
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Callable
 
 from backend.application.safety_gate.text_matching import fold_text
 
@@ -99,15 +102,29 @@ class PendingSocial:
     viewers: set[str] = field(default_factory=set)
 
 
+def _locked(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return call
+
+
 class SocialQueue:
     """One pending group; dispatch quota is reserved synchronously, before LLM/TTS."""
 
     def __init__(self):
+        self._lock = threading.RLock()
         self.pending: PendingSocial | None = None
         self.started: deque[float] = deque(maxlen=3)
         self.viewers: dict[str, float] = {}
         self.serial = 0
+        self.dispatched_serial = 0
+        self.dispatched_at: float | None = None
+        self.reserved_viewers: set[str] = set()
 
+    @_locked
     def add(self, intent, comment_id, event_id, viewer, now) -> str | None:
         self.viewers = {key: ts for key, ts in self.viewers.items() if now - ts < 60}
         if viewer in self.viewers:
@@ -125,6 +142,7 @@ class SocialQueue:
             item.viewers.add(viewer)
         return None
 
+    @_locked
     def reserve(self, now) -> tuple[PendingSocial | None, str | None]:
         item, self.pending = self.pending, None
         if item is None:
@@ -141,4 +159,49 @@ class SocialQueue:
         for viewer in item.viewers:
             self.viewers[viewer] = now
         self.serial += 1
+        self.reserved_viewers = set(item.viewers)
         return item, None
+
+    @_locked
+    def dispatch(self, serial: int, now: float) -> str | None:
+        if serial != self.serial:
+            return "social_expired"
+        if self.dispatched_serial != serial and self.dispatched_at is not None:
+            if now - self.dispatched_at < 20:
+                return "social_cooldown"
+        self.dispatched_serial, self.dispatched_at = serial, now
+        self.started[-1] = now  # anchor reservations and viewer limits to actual media start
+        for viewer in self.reserved_viewers:
+            self.viewers[viewer] = now
+        return None
+
+
+@dataclass
+class SocialPermit:
+    queue: SocialQueue
+    serial: int
+    deadline: float
+    clock: Callable[[], float]
+    priority_pending: Callable[[], bool] = lambda: False
+    media_started: bool = False
+
+    def check(self):
+        from backend.application.script_authoring.approved_speech import SpeechRejected
+
+        if not enabled():
+            raise SpeechRejected("social_disabled")
+        if not self.media_started and self.clock() >= self.deadline:
+            raise SpeechRejected("social_expired")
+
+    def dispatch(self, *, media=False):
+        from backend.application.script_authoring.approved_speech import SpeechRejected
+
+        self.check()
+        if not self.media_started:
+            if self.priority_pending():
+                raise SpeechRejected("social_capacity")
+            reason = self.queue.dispatch(self.serial, self.clock())
+            if reason:
+                raise SpeechRejected(reason)
+            if media:
+                self.media_started = True

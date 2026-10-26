@@ -342,6 +342,7 @@ class ValidatedSpeech:
     epoch: int
     route: str
     response_kind: str = "answer"
+    social_permit: Any = None
 
     def evidence(self) -> dict:
         return {
@@ -568,7 +569,15 @@ class ApprovedSpeech:
             raise SpeechRejected("invalid_binding") from exc
 
     async def prepare_chitchat(
-        self, session_id, intent, *, variant=0, product_id=None, llm=None, live=lambda: True
+        self,
+        session_id,
+        intent,
+        *,
+        variant=0,
+        product_id=None,
+        llm=None,
+        live=lambda: True,
+        permit=None,
     ):
         from backend.application.platform_events.social_reply import (
             enabled,
@@ -612,7 +621,7 @@ class ApprovedSpeech:
                 pass  # a timeout/invalid selection keeps the rotating template
         self._fence(session_id, epoch, live)
         product = envelope.product(product_id) if product_id else envelope.products[0]
-        speech = ValidatedSpeech(envelope, product, text, epoch, "director", "chitchat")
+        speech = ValidatedSpeech(envelope, product, text, epoch, "director", "chitchat", permit)
         await self.revalidate(speech, live=live)
         return speech
 
@@ -856,6 +865,8 @@ class ApprovedSpeech:
         return answer if accepted else None
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
+        if speech.social_permit is not None:
+            speech.social_permit.check()
         if speech.response_kind == "chitchat":
             from backend.application.platform_events.social_reply import enabled
 
@@ -895,6 +906,8 @@ class ApprovedSpeech:
                         },
                     )
                     service.check_live(speech, live)
+                    if speech.social_permit is not None:
+                        speech.social_permit.dispatch()
 
                 asyncio.run_coroutine_threadsafe(before_tts(), loop).result()
                 service.check_live(speech, live)
@@ -909,6 +922,8 @@ class ApprovedSpeech:
             # Provider work can finish after cancellation/expiry. This also
             # covers a pending window flushed by the chunker's error path.
             await self.revalidate(speech, live=live)
+            if speech.social_permit is not None:
+                speech.social_permit.dispatch(media=True)
             if callback is not None:
                 await callback(window)
 
