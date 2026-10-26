@@ -24,7 +24,11 @@ async def test_full_and_part_operations_have_separate_durable_dispatch_budgets()
     repos.model_budget = DurableBudget()
     set_id = await _new_set(service)
     await _run(service, repos, set_id)
-    assert repos.model_budget.writes and all(v == 1 for v in repos.model_budget.writes.values())
+    # The complete-session style pass may spend one additional write on a
+    # repeated opener, inside the same original budget (never a new operation).
+    assert repos.model_budget.writes and all(
+        1 <= v <= 2 for v in repos.model_budget.writes.values()
+    )
     # A user can repair the same part in two distinct operations. A full
     # generation's reservation must not consume either repair's allowance.
     for nonce in ("repair-one", "repair-two"):

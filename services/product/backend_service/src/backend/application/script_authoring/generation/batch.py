@@ -144,6 +144,7 @@ class BatchState(BaseModel):
     failed: int = Field(default=0, ge=0)
     cancelled: int = Field(default=0, ge=0)
     revision: int = Field(default=0, ge=0)
+    variety: dict = Field(default_factory=dict)
 
     def bump_revision(self) -> None:
         """Increment the monotonic revision after every mutation."""
@@ -274,8 +275,10 @@ class BatchScriptGenerationOrchestrator:
         persist: Optional[Callable[[BatchState], None]] = None,
         idempotency: IdempotencyRegistry | None = None,
         scheduler: BoundedScheduler | None = None,
+        before_complete: Callable[[BatchState], None] | None = None,
     ) -> None:
         self._create_workflow = create_workflow
+        self.before_complete = before_complete
         self._config = config or BatchOrchestratorConfig()
         self._event_sink = event_sink
         self._persist = persist
@@ -499,6 +502,11 @@ class BatchScriptGenerationOrchestrator:
         done = self._state.completed + self._state.failed + self._state.cancelled
         if done < total:
             return  # queued items remain — not final yet
+        if self.before_complete is not None and self._state.completed > 0:
+            self.before_complete(self._state)
+            if self._state.status == "cancelled":
+                self._emit_terminal("batch.cancelled")
+                return
         if self._state.completed == total:
             self._state.status = "completed"
             self._emit_terminal("batch.completed")
