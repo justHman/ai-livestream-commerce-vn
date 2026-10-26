@@ -285,6 +285,28 @@ def question_kind(question: str | None, facts: list[str]) -> str:
     return kinds[0] if len(set(kinds)) == 1 else "commerce"
 
 
+def answer_scope(question: str | None, facts: list[str]) -> tuple[str, str]:
+    """Decide BEFORE any model call whether the viewer's words may be answered from the approved facts.
+
+    Returns (action, question): "skip" when every comment is abusive (nothing is said, no model call);
+    "other_product" when every remaining comment is about an item the approved facts do not describe
+    (the fixed "no information on that item" reply, never a fact of the current product); otherwise
+    "answer" with the abusive comments of a mixed cluster removed so a valid question is still answered.
+    """
+    from ..safety_gate.resources import match_curated
+
+    text = question or ""
+    parts = [part.strip() for part in text.split("|") if part.strip()]
+    if not parts:
+        return "answer", text
+    kept = [part for part in parts if not match_curated(part, _abuse_patterns())]
+    if not kept:
+        return "skip", ""
+    if {question_kind(part, facts) for part in kept} == {"other_product"}:
+        return "other_product", " | ".join(kept)
+    return "answer", " | ".join(kept)
+
+
 def is_off_topic(question: str, facts: list[str]) -> bool:
     """Narrow private-life fallback veto, preserving accented product homographs."""
     original = unicodedata.normalize("NFC", question).lower()

@@ -593,7 +593,7 @@ class ApprovedSpeech:
                 raise SpeechRejected("unit_required")
             text = whole.spoken_text
         elif generate:
-            from .answer_context import deflection_for, factual_reply
+            from .answer_context import answer_scope, deflection_for, factual_reply
 
             question = (
                 question_text or text
@@ -601,9 +601,14 @@ class ApprovedSpeech:
             answers = [answer for p in candidates for answer in p.answers()]
             facts = [str(json.loads(p.facts_json).get("product_name") or "") for p in candidates]
             facts.extend(answers)
+            # Scope first: abuse and questions about another item never reach the fixed price/size
+            # answers, the natural answer or the fact selector (each of them answers from THIS product).
+            scope, question = answer_scope(question, facts)
+            if scope == "skip":
+                raise SpeechRejected("safety_filtered")
             direct = (
-                factual_reply(candidates[0], question_text, completed_text)
-                if len(candidates) == 1 and question_text
+                factual_reply(candidates[0], question, completed_text)
+                if scope == "answer" and len(candidates) == 1 and question_text
                 else None
             )
             if direct is not None:
@@ -614,7 +619,12 @@ class ApprovedSpeech:
                 if route != "director":
                     self.check_start(session_id)
                 return speech
-            if not answers or llm is None or getattr(llm, "name", "none") == "none":
+            if (
+                scope == "other_product"
+                or not answers
+                or llm is None
+                or getattr(llm, "name", "none") == "none"
+            ):
                 # nothing approved to say: never improvise
                 text, trusted = deflection_for(question, facts), True
             else:
