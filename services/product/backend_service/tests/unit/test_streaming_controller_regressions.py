@@ -267,11 +267,13 @@ def _start_session(backend: MockRenderBackend) -> str:
     return next(iter(backend._sessions.keys()))
 
 
-def _capture_into(received: list[AudioWindow]):
+def _capture_into(received: list[AudioWindow], captured: asyncio.Event | None = None):
     """Build an async audio_window_callback that appends into ``received``."""
 
     async def capture(window: AudioWindow) -> None:
         received.append(window)
+        if captured is not None:
+            captured.set()
 
     return capture
 
@@ -603,8 +605,9 @@ async def test_cancellation_does_not_fabricate_normal_final_marker():
     llm = _StubLLM([f"chunk {i}." for i in range(50)])
     tts = _StubTTS()
     received: list[AudioWindow] = []
+    first_audio_captured = asyncio.Event()
     orch, backend, queue, metrics = _build_orchestrator(
-        llm, tts, audio_window_callback=_capture_into(received)
+        llm, tts, audio_window_callback=_capture_into(received, first_audio_captured)
     )
     sid = _start_session(backend)
 
@@ -618,7 +621,9 @@ async def test_cancellation_does_not_fabricate_normal_final_marker():
         # Generous deadlines: the streaming pipeline runs through real sync
         # LLM/TTS stubs and can be slow under loaded CI runners. The point of
         # this test is the cancel/final-marker behavior, not render latency.
-        await asyncio.to_thread(tts.phrase_rendered.wait, 15.0)
+        # The provider signals phrase_rendered before yielding audio. Wait for
+        # the actual callback instead, including when delivery is scheduled late.
+        await asyncio.wait_for(first_audio_captured.wait(), timeout=15.0)
         assert received, "audio must render before the cancel"
         await asyncio.wait_for(first_video_captured.wait(), timeout=15.0)
         await orch.cancel(sid)

@@ -3436,7 +3436,11 @@ class ScriptAuthoringServiceImpl:
             facts = self._product_facts(script_set.brief, item.product_id)
             prior_rows = await self._repos.segments.list_by_plan(plan.id)
             row_version = max(s.version for s in prior_rows if s.segment_index == index)
-            others = [x for x in selected if x is not current]
+            from .generation.variety_finalizer import selected_parts
+            from .generation.script_variety import does_not_worsen
+
+            session_parts, _ = await selected_parts(self, script_set)
+            variety_key = f"{item.product_id}:{current.part_id or current.id}"
             # The same immutable context reaches EVERY prompt of this operation (first write,
             # guard retries and gate repairs alike).
             context = {
@@ -3445,7 +3449,9 @@ class ScriptAuthoringServiceImpl:
                 if position + 1 < len(selected)
                 else "",
                 "used_openings": tuple(
-                    dict.fromkeys(" ".join(x.spoken_text.split()[:5]) for x in others)
+                    dict.fromkeys(
+                        " ".join(x.text.split()[:5]) for x in session_parts if x.key != variety_key
+                    )
                 )[:24],
             }
             prompt = build_unit_prompt(ordered.session, product, roles, spec_index, **context)
@@ -3580,6 +3586,13 @@ class ScriptAuthoringServiceImpl:
                         )
                         + rewrite_instruction
                     )
+                    continue
+                fresh_parts, _ = await selected_parts(self, script_set)
+                if not does_not_worsen(fresh_parts, variety_key, text):
+                    job.input_snapshot["last_rejection"] = (
+                        "Phần này còn lặp cách mở đầu với các phần khác. Giữ bản hiện tại."
+                    )
+                    prompt += "\nĐổi cách mở đầu, tránh các cách mở đầu đã dùng trong cả phiên."
                     continue
                 new_segment = ScriptSegment(
                     **{
@@ -3854,6 +3867,9 @@ class ScriptAuthoringServiceImpl:
         revisions: dict[str, int],
         existing_versions: set[str],
     ) -> None:
+        from .generation.variety_finalizer import VarietyCancelled, finalize
+
+        orch.defer_completion = True
         try:
             while True:
                 lease = self._batch_lease(batch_id)
@@ -3874,6 +3890,18 @@ class ScriptAuthoringServiceImpl:
                     batch_lease=lease if lease else None,
                 )
                 await self._drain_batch_persists(batch_id, persist_queue)
+                if state.variety.get("pending") and not state.variety.get("done"):
+                    # Same tracked owner task: shutdown cancels this await before
+                    # releasing leases. No independently scheduled finalizer survives.
+                    try:
+                        await finalize(
+                            self, state, bridge, revisions, existing_versions, lease=lease
+                        )
+                    except VarietyCancelled:
+                        orch.cancel()
+                        await self._drain_batch_persists(batch_id, persist_queue)
+                        break
+                    continue  # next pure scheduler step publishes the terminal event/state
                 if state.status in ("completed", "partial_completed", "failed", "cancelled"):
                     break
                 # R8.4: honor a durable cross-replica cancel request before

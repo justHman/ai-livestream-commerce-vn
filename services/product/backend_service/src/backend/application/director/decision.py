@@ -95,6 +95,8 @@ class Decision:
     source_cluster_id: Optional[str] = None
     source_event_ids: tuple[str, ...] = ()
     occurred_at_bounds: tuple[float, float] = (0.0, 0.0)
+    social_variant: int = 0
+    social_deadline: float = 0.0
 
     def provenance_payload(self) -> dict:
         """The provenance block carried by events and the persisted decision row."""
