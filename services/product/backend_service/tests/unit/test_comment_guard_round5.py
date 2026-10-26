@@ -138,7 +138,7 @@ async def test_strong_phrases_block_before_runtime(case_factory, monkeypatch, te
     coordinator, reducer = probes(case, monkeypatch)
     result = await post(case, text)
     assert result["events"][0]["safety"]["accepted"] is False, result
-    assert result["events"][0]["safety"]["resource_versions"]["toxicity"] == "5"
+    assert result["events"][0]["safety"]["resource_versions"]["toxicity"] == "6"
     coordinator.assert_not_called()
     reducer.assert_not_called()
     assert not case.llm.started.is_set() and not case.tts.calls

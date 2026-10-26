@@ -17,8 +17,10 @@ _BENIGN_HOMOGRAPHS = frozenset(
 _BENIGN_HOMOGRAPHS |= frozenset("\u0111\u1ec1u \u0111i\u1ec7n h\u00e0m".split())
 _BENIGN_HOMOGRAPHS |= frozenset("bộ mã máy".split())
 _LEET = str.maketrans({"1": "i", "0": "o", "3": "e", "@": "a", "$": "s"})
-_AMBIGUOUS = frozenset("ngu lon cac du buoi deo bui dien cut ham deu khung lao hon".split())
-_EXPLICIT_ABUSE = frozenset("lồn lờn cặc kặc đụ đù buồi đéo điên cứt hâm đểu khùng láo hỗn".split())
+_AMBIGUOUS = frozenset("ngu lon cac du buoi deo bui dien cut ham deu khung lao hon di".split())
+_EXPLICIT_ABUSE = frozenset(
+    "lồn lờn cặc kặc đụ đù buồi đéo điên cứt hâm đểu khùng láo hỗn đĩ".split()
+)
 
 # These folded phrases also name ordinary goods/requests. They still use the
 # original protected view; longer, unambiguous curated phrases match first.
@@ -92,6 +94,36 @@ def _restore_accented_cho(view: str) -> str:
     return view.replace("markedchotoken", "cho")
 
 
+def benign_goods(text: str) -> str:
+    """Walnuts and kids' goods are ordinary shop talk: protect the product phrase, not the words."""
+    text = re.sub(
+        r"\b(?:hạt|hat|nhân|nhan|quả|qua|sữa|sua|bột|bot|dầu|dau|bánh|banh)\s+(?:óc|oc)\s+(?:chó|cho)\b",
+        "benignword",
+        text,
+    )
+    return re.sub(r"(?<!vào )(?<!vao )\b(?:trẻ|tre)\s+em\b", "benignword", text)
+
+
+def _contextual_view(text: str, *, join_symbols: bool) -> str:
+    """Resolve explicit comparison evidence before protecting commerce homophones."""
+    if join_symbols:
+        # Join within words while accents still distinguish ngủ from ngu.
+        text = re.sub(r"(?<=[^\W\d_])[^\w\s]+(?=[^\W\d_])", "", text)
+        text = re.sub(r"(?<=[^\W\d_])_+(?=[^\W\d_])", "", text)
+    # ASCII cho is unambiguously an animal here, unlike 'đồ cho bé'. Never
+    # fold the predicate first: accented ngủ như heo remains ordinary sleep.
+    text = re.sub(
+        r"\b((?:ngu|đần|dan|dốt|dot)\s+(?:như|nhu)\s+(?:con\s+)?)(?:chó|cho)\b",
+        r"\1markedchotoken",
+        text,
+    )
+    text = re.sub(r"\b(?:hâm|ham)\s+(?:nóng|nong)\b", "benignword", text)
+    text = re.sub(r"\b(?:khỉ|khi)\s+(?:bông|bong)\b", "benignword", text)
+    text = benign_goods(text)
+    # Unmarked lao is labour only in "lao động / lao công"; a bare "lao" after hỗn/mày/thằng is láo.
+    return re.sub(r"\blao\b(?=\s+(?:động|dong|công|cong)\b)", "benignword", text)
+
+
 def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool) -> str:
     """Keep curated phrase context before protecting ambiguous ASCII singletons.
 
@@ -99,6 +131,7 @@ def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool)
     a valid part of curated dismissal phrases such as 'cút mẹ đi'.
     """
     text = unicodedata.normalize("NFC", text).lower()
+    text = _contextual_view(text, join_symbols=join_symbols)
     text = re.sub(r"\bchó\b", "markedchotoken", text)
     # Multiword evidence is checked before ambiguous singleton protection.
     # Preserve meaningful benign accents, and require the actual abusive accent
@@ -161,7 +194,18 @@ def _protect_homographs(text: str) -> str:
         # "ngu như bò" is an insult; in text that carries Vietnamese marks elsewhere an unmarked
         # "ngu" is the word itself, not a missing-tone "ngủ".
         after2 = words[index + 2][0] if index + 2 < len(words) else ""
-        insulting |= reduced == "ngu" and after in {"như", "nhu"} and after2 in _INSULT_COMPARISON
+        after3 = words[index + 3][0] if index + 3 < len(words) else ""
+        insulting |= (
+            reduced == "ngu"
+            and after in {"như", "nhu"}
+            and (after2 in _INSULT_COMPARISON or (after2 == "con" and after3 in _INSULT_COMPARISON))
+        )
+        insulting |= reduced == "ngu" and after in {"vai", "vãi", "vl"}
+        insulting |= reduced == "ngu" and bool(
+            re.search(
+                r"\b(?:may|mày|tao)\s+(?:la\s+|là\s+)?(?:do|đồ|con)\s+$", text[: match.start()]
+            )
+        )
         sleepy = before in _SLEEP_BEFORE or after in _SLEEP_AFTER
         insulting |= reduced == "ngu" and marked_text and not sleepy
         elongated = reduced == "ngu" and (
@@ -179,8 +223,9 @@ def matching_view(
     protect_homographs: bool = True,
     reduce_repeats: bool = False,
 ) -> str:
-    text = unicodedata.normalize("NFC", text).lower()
+    text = benign_goods(unicodedata.normalize("NFC", text).lower())
     if protect_homographs:
+        text = _contextual_view(text, join_symbols=join_symbols)
         text = re.sub(r"\bchó\b", "markedchotoken", text)
         text = _protect_commerce_homophones(text)
         text = _protect_homographs(text)
