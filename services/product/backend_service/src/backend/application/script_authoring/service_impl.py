@@ -3867,16 +3867,9 @@ class ScriptAuthoringServiceImpl:
         revisions: dict[str, int],
         existing_versions: set[str],
     ) -> None:
-        from .generation.variety_finalizer import finalize
+        from .generation.variety_finalizer import VarietyCancelled, finalize
 
-        loop = asyncio.get_running_loop()
-
-        def before_complete(state):
-            asyncio.run_coroutine_threadsafe(
-                finalize(self, state, bridge, revisions, existing_versions), loop
-            ).result()
-
-        orch.before_complete = before_complete
+        orch.defer_completion = True
         try:
             while True:
                 lease = self._batch_lease(batch_id)
@@ -3897,6 +3890,18 @@ class ScriptAuthoringServiceImpl:
                     batch_lease=lease if lease else None,
                 )
                 await self._drain_batch_persists(batch_id, persist_queue)
+                if state.variety.get("pending") and not state.variety.get("done"):
+                    # Same tracked owner task: shutdown cancels this await before
+                    # releasing leases. No independently scheduled finalizer survives.
+                    try:
+                        await finalize(
+                            self, state, bridge, revisions, existing_versions, lease=lease
+                        )
+                    except VarietyCancelled:
+                        orch.cancel()
+                        await self._drain_batch_persists(batch_id, persist_queue)
+                        break
+                    continue  # next pure scheduler step publishes the terminal event/state
                 if state.status in ("completed", "partial_completed", "failed", "cancelled"):
                     break
                 # R8.4: honor a durable cross-replica cancel request before

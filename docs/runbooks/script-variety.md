@@ -1,7 +1,9 @@
 # Complete-session script variety
 
 The ordered batch audits the selected parts of every product, in owner order,
-before emitting batch completion. Existing/skipped and human-edited content
+before emitting batch completion. The scheduler defers completion while the
+tracked async owner performs this phase directly; shutdown cancels the same
+task before releasing its lease. Existing/skipped and human-edited content
 participates in the audit but is never automatically rewritten. Only AI parts
 produced by this batch are eligible, preserving their original write budgets.
 
@@ -26,6 +28,8 @@ repair keeps the previous valid version; it never triggers a content fallback.
 The original brief, selection and item revision are rechecked after provider
 work, and artifact commits use the existing batch lease and item-revision
 transaction fences. Cancelled work stops before further model dispatches.
+Every checkpoint requires the originally captured owner/epoch; there is no
+unfenced fallback if the service's lease registry has already been cleared.
 The `BatchState.variety` receipt stores attempted stable keys, call count,
 initial/remaining excess and completion. Remaining style warnings do not fail
 otherwise valid factual content. No migration is needed (existing JSON state).

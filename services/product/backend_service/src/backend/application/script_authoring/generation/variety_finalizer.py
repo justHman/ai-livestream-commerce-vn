@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 
 from ..gate.context import ScriptGateContext
 from ..models import GateRun, ScriptSegment, ScriptSource, ScriptState, ScriptVersion, new_id
+from ..repositories import LeaseLostError
 from .ordered_units import build_unit_repair_prompt, check_unit_text, role_bounds_s, spoken_price
 from .script_variety import (
     VarietyPart,
@@ -77,26 +77,33 @@ async def selected_parts(service, script_set):
     return parts, records
 
 
-async def checkpoint(service, state):
+class VarietyCancelled(Exception):
+    pass
+
+
+async def checkpoint(service, state, lease):
+    if lease is None:
+        raise LeaseLostError("variety finalization requires a captured lease")
     result = await service._repos.batches.get(state.batch_id)
     if result is None:
         raise RuntimeError("missing batch during variety finalization")
+    if result[0].cancel_requested:
+        raise VarietyCancelled()
     current = result[1]
     next_state = state.model_copy(deep=True)
     next_state.revision = current.revision + 1
-    lease = service._batch_lease(state.batch_id)
     await service._repos.batches.update_state(
         state.batch_id,
         state=next_state,
         expected_revision=current.revision,
-        lease_owner=lease[0] if lease else None,
-        lease_epoch=lease[1] if lease else None,
+        lease_owner=lease[0],
+        lease_epoch=lease[1],
         lease_duration_s=service._config.recovery_lease_seconds,
     )
     state.revision = next_state.revision
 
 
-async def finalize(service, state, bridge, revisions, existing_versions):
+async def finalize(service, state, bridge, revisions, existing_versions, *, lease=None):
     """At most one reserved model attempt per stable part, bounded across recovery.
 
     Style failures retain the already valid text. Persistence/lease failures
@@ -106,7 +113,9 @@ async def finalize(service, state, bridge, revisions, existing_versions):
 
     if not state.ordered_units or state.variety.get("done"):
         return
-    lease = service._batch_lease(state.batch_id)
+    lease = lease or service._batch_lease(state.batch_id)
+    if lease is None:
+        raise LeaseLostError("variety finalization requires an owned batch")
     await service._drain_artifacts(
         bridge,
         revisions,
@@ -137,7 +146,7 @@ async def finalize(service, state, bridge, revisions, existing_versions):
     state.variety.setdefault("calls", 0)
     state.variety.setdefault("initial_excess", report.excess)
     state.variety.setdefault("limit", repair_budget(len(parts)))
-    await checkpoint(service, state)
+    await checkpoint(service, state, lease)
     budget = getattr(service._repos, "model_budget", None)
     ordered = service._ordered_batch(
         script_set,
@@ -151,8 +160,7 @@ async def finalize(service, state, bridge, revisions, existing_versions):
         if candidate.key in state.variety["attempted"] or budget is None:
             continue
         if await service._batch_cancel_requested(state.batch_id):
-            state.status = "cancelled"
-            return
+            raise VarietyCancelled()
         # Re-read selected versions before each call, so neither an intervening
         # owner edit nor an earlier repair can be overwritten by a stale copy.
         parts, records = await selected_parts(service, script_set)
@@ -175,14 +183,16 @@ async def finalize(service, state, bridge, revisions, existing_versions):
         )
         spec = roles[index]
         state.variety["attempted"].append(candidate.key)
-        await checkpoint(service, state)  # BEFORE reservation/dispatch, survives ambiguous calls
+        await checkpoint(
+            service, state, lease
+        )  # BEFORE reservation/dispatch, survives ambiguous calls
         if not await budget.reserve(state.batch_id, item.product_id, current.segment_index):
             continue  # keep the original three-write budget for this part
         state.variety["calls"] += 1
         state.actual_semantic_calls = (
             sum(p.semantic_calls for p in state.products.values()) + state.variety["calls"]
         )
-        await checkpoint(service, state)
+        await checkpoint(service, state, lease)
         prompt = build_unit_repair_prompt(
             ordered.session,
             product,
@@ -199,12 +209,15 @@ async def finalize(service, state, bridge, revisions, existing_versions):
             )[:24],
         )
         try:
-            raw = await asyncio.to_thread(lambda: ordered.llm(prompt, repair=True))
+            raw = await service._with_lease_heartbeat(
+                lambda: ordered.llm(prompt, repair=True), batch_id=state.batch_id, batch_lease=lease
+            )
+        except LeaseLostError:
+            raise
         except Exception:
             continue  # style never triggers a fallback or another repair attempt
         if await service._batch_cancel_requested(state.batch_id):
-            state.status = "cancelled"
-            return
+            raise VarietyCancelled()
         # Both snapshot and selection must still be current after the provider wait.
         latest = await service._repos.script_sets.get(script_set.id)
         if latest is None or latest.revision != script_set.revision:
@@ -320,4 +333,4 @@ async def finalize(service, state, bridge, revisions, existing_versions):
     state.variety.update(
         done=True, remaining_excess=report.excess, warning_parts=len(report.sentence_warnings)
     )
-    await checkpoint(service, state)
+    await checkpoint(service, state, lease)

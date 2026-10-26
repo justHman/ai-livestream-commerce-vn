@@ -275,10 +275,10 @@ class BatchScriptGenerationOrchestrator:
         persist: Optional[Callable[[BatchState], None]] = None,
         idempotency: IdempotencyRegistry | None = None,
         scheduler: BoundedScheduler | None = None,
-        before_complete: Callable[[BatchState], None] | None = None,
+        defer_completion: bool = False,
     ) -> None:
         self._create_workflow = create_workflow
-        self.before_complete = before_complete
+        self.defer_completion = defer_completion
         self._config = config or BatchOrchestratorConfig()
         self._event_sink = event_sink
         self._persist = persist
@@ -502,11 +502,15 @@ class BatchScriptGenerationOrchestrator:
         done = self._state.completed + self._state.failed + self._state.cancelled
         if done < total:
             return  # queued items remain — not final yet
-        if self.before_complete is not None and self._state.completed > 0:
-            self.before_complete(self._state)
-            if self._state.status == "cancelled":
-                self._emit_terminal("batch.cancelled")
-                return
+        if (
+            self.defer_completion
+            and self._state.ordered_units
+            and not self._state.variety.get("done")
+            and self._state.completed > 0
+        ):
+            self._state.variety["pending"] = True
+            self._state.status = "running"
+            return  # the tracked async owner finalizes before the next scheduler step
         if self._state.completed == total:
             self._state.status = "completed"
             self._emit_terminal("batch.completed")
