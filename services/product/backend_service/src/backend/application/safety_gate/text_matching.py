@@ -94,6 +94,16 @@ def _restore_accented_cho(view: str) -> str:
     return view.replace("markedchotoken", "cho")
 
 
+def benign_goods(text: str) -> str:
+    """Walnuts and kids' goods are ordinary shop talk: protect the product phrase, not the words."""
+    text = re.sub(
+        r"\b(?:hạt|hat|nhân|nhan|quả|qua|sữa|sua|bột|bot|dầu|dau|bánh|banh)\s+(?:óc|oc)\s+(?:chó|cho)\b",
+        "benignword",
+        text,
+    )
+    return re.sub(r"(?<!vào )(?<!vao )\b(?:trẻ|tre)\s+em\b", "benignword", text)
+
+
 def _contextual_view(text: str, *, join_symbols: bool) -> str:
     """Resolve explicit comparison evidence before protecting commerce homophones."""
     if join_symbols:
@@ -109,8 +119,9 @@ def _contextual_view(text: str, *, join_symbols: bool) -> str:
     )
     text = re.sub(r"\b(?:hâm|ham)\s+(?:nóng|nong)\b", "benignword", text)
     text = re.sub(r"\b(?:khỉ|khi)\s+(?:bông|bong)\b", "benignword", text)
-    # Unmarked lao is labour even after đồ; only actual láo is abusive.
-    return re.sub(r"\blao\b", "benignword", text)
+    text = benign_goods(text)
+    # Unmarked lao is labour only in "lao động / lao công"; a bare "lao" after hỗn/mày/thằng is láo.
+    return re.sub(r"\blao\b(?=\s+(?:động|dong|công|cong)\b)", "benignword", text)
 
 
 def phrase_matching_view(text: str, *, join_symbols: bool, reduce_repeats: bool) -> str:
@@ -212,7 +223,7 @@ def matching_view(
     protect_homographs: bool = True,
     reduce_repeats: bool = False,
 ) -> str:
-    text = unicodedata.normalize("NFC", text).lower()
+    text = benign_goods(unicodedata.normalize("NFC", text).lower())
     if protect_homographs:
         text = _contextual_view(text, join_symbols=join_symbols)
         text = re.sub(r"\bchó\b", "markedchotoken", text)
