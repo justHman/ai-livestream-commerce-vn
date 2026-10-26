@@ -78,6 +78,13 @@ _PREVIEW_TIMEOUT_S = 30.0
 _preview_slot = asyncio.Semaphore(1)
 
 
+def _finish_preview(task: "asyncio.Future[Any]") -> None:
+    """Free the preview slot when the worker ends; a failure nobody awaited is only logged by type."""
+    _preview_slot.release()
+    if not task.cancelled() and task.exception() is not None:
+        logger.info("tts_preview_worker_ended error_type=%s", type(task.exception()).__name__)
+
+
 @router.post("/tts/preview")
 async def tts_preview(
     payload: VoicePreviewReq,
@@ -105,19 +112,22 @@ async def tts_preview(
 
     from tts.engines.base import TTSRequest
 
-    async with _preview_slot:
-        try:
-            audio = await asyncio.wait_for(
-                asyncio.to_thread(
-                    manager.tts.synthesize, TTSRequest(text=payload.text, voice=payload.voice_id)
-                ),
-                timeout=_PREVIEW_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(status_code=504, detail={"code": "preview_timeout"}) from exc
-        except Exception as exc:  # noqa: BLE001 - any engine failure is "preview unavailable"
-            logger.warning("tts_preview_failed error_type=%s", type(exc).__name__)
-            raise HTTPException(status_code=502, detail={"code": "preview_failed"}) from exc
+    # The slot is held until the worker thread really ends, not until the request gives up: a timed-out
+    # synthesis keeps running on the shared TTS server and must still count as the one running preview.
+    await _preview_slot.acquire()
+    task = asyncio.ensure_future(
+        asyncio.to_thread(
+            manager.tts.synthesize, TTSRequest(text=payload.text, voice=payload.voice_id)
+        )
+    )
+    task.add_done_callback(_finish_preview)
+    try:
+        audio = await asyncio.wait_for(asyncio.shield(task), timeout=_PREVIEW_TIMEOUT_S)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail={"code": "preview_timeout"}) from exc
+    except Exception as exc:  # noqa: BLE001 - any engine failure is "preview unavailable"
+        logger.warning("tts_preview_failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail={"code": "preview_failed"}) from exc
 
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:

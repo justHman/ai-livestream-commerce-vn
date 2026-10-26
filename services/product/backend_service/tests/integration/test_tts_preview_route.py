@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import threading
+import time
 import wave
 
 import pytest
@@ -118,6 +120,40 @@ def test_a_second_preview_while_one_runs_is_turned_away(monkeypatch: pytest.Monk
     with _client(engine) as client:
         r = client.post(URL, json=BODY, headers=AUTH)
     assert (r.status_code, r.json()["error"]["code"], engine.requests) == (429, "preview_busy", [])
+
+
+class BlockedEngine(FakeEngine):
+    """Synthesis that only ends when the test lets it, like a slow shared TTS server."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = threading.Event()
+
+    def synthesize(self, request):
+        self.requests.append(request)
+        self.release.wait(timeout=5)
+        return FakeAudio()
+
+
+def test_a_timed_out_preview_keeps_the_slot_until_the_worker_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tts_voices, "_PREVIEW_TIMEOUT_S", 0.05)
+    engine = BlockedEngine()
+    with _client(engine) as client:
+        first = client.post(URL, json=BODY, headers=AUTH)
+        second = client.post(URL, json=BODY, headers=AUTH)
+        engine.release.set()
+        deadline = time.monotonic() + 3
+        while tts_voices._preview_slot.locked() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        third = client.post(URL, json=BODY, headers=AUTH)
+    assert (first.status_code, second.status_code, third.status_code, len(engine.requests)) == (
+        504,
+        429,
+        200,
+        2,
+    )
 
 
 def test_an_engine_failure_is_a_502_without_the_text_in_the_log(
