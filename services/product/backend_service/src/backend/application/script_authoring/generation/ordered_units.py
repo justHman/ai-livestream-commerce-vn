@@ -856,8 +856,9 @@ def check_unit_text(
             a, b = _topics(left), _topics(right)
             if a and b and not (a & b):
                 return None, "mashup"  # unrelated facts joined with "và"
+    owner_facts = (*spec.claims, *spec.promos) if spec is not None else approved
     if role in ("assurance", "highlight", "offer") and not any(
-        a.lower().startswith("cam kết") for a in approved
+        a.lower().startswith("cam kết") for a in owner_facts
     ):
         sentences = re.split(r"(?<=[.!?])\s+", text)
         # A part opening "Mình cam kết..." is a model tic the owner never wrote.

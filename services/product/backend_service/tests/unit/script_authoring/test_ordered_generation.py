@@ -449,7 +449,21 @@ def test_two_sentences_opening_with_cam_ket_are_rejected_but_the_owner_may_write
     text = "Đổi size dễ dàng nhé. Cam kết hàng chính hãng. Mình cam kết giao đúng mẫu."
     assert check_unit_text(text, spec=UnitSpec("assurance")) == (None, "opener")
     owner = ("Cam kết hàng chính hãng.",)
-    assert check_unit_text(text, spec=UnitSpec("assurance"), approved=owner)[0]
+    spec = UnitSpec("assurance", claims=owner)
+    assert check_unit_text(text, spec=spec, approved=owner)[0]
+
+
+def test_a_cam_ket_claim_of_another_part_does_not_exempt_this_part() -> None:
+    owner = ("Cam kết hàng chính hãng.",)
+    text = "Mình cam kết đổi trả miễn phí nhé."
+    assert check_unit_text(text, spec=UnitSpec("assurance"), approved=owner) == (None, "opener")
+
+
+def test_cam_ket_inside_a_sentence_and_other_roles_are_allowed() -> None:
+    assert check_unit_text("Shop luôn có cam kết đổi trả rõ ràng nhé.", spec=UnitSpec("assurance"))[
+        0
+    ]
+    assert check_unit_text("Mình cam kết sẽ kể thật vui nhé.", spec=UnitSpec("intro"))[0]
 
 
 def test_the_prompt_does_not_title_the_assurance_part_cam_ket() -> None:
