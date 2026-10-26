@@ -93,7 +93,7 @@ class FakeLLM:
             return f"{lead}{name}, một sản phẩm rất dễ làm quen với cả nhà."
         if title == "Bảng size":
             return "Có nhiều size từ nhỏ đến lớn, mọi người nhắn chiều cao cân nặng để mình tư vấn size nhé."
-        if title in ("Điểm nổi bật", "Cam kết và lưu ý"):
+        if title in ("Điểm nổi bật", "Chính sách mua hàng và lưu ý"):
             return " ".join(items)
         if title == "Giá và ưu đãi":
             prices = re.search(r"đã đọc thành chữ\): (.+)", prompt).group(1)
@@ -439,6 +439,40 @@ def test_the_full_product_name_is_not_repeated_in_every_unit() -> None:
     ]
 
 
+@pytest.mark.parametrize("role", ["assurance", "highlight", "offer"])
+def test_a_part_opening_with_minh_cam_ket_is_rejected(role) -> None:
+    text = "Mình cam kết đổi trả miễn phí trong mười lăm ngày nếu chưa vừa ý nhé."
+    assert check_unit_text(text, spec=UnitSpec(role)) == (None, "opener")
+
+
+def test_two_sentences_opening_with_cam_ket_are_rejected_but_the_owner_may_write_it() -> None:
+    text = "Đổi size dễ dàng nhé. Cam kết hàng chính hãng. Mình cam kết giao đúng mẫu."
+    assert check_unit_text(text, spec=UnitSpec("assurance")) == (None, "opener")
+    owner = ("Cam kết hàng chính hãng.",)
+    assert check_unit_text(text, spec=UnitSpec("assurance"), approved=owner)[0]
+
+
+def test_the_prompt_does_not_title_the_assurance_part_cam_ket() -> None:
+    brief = ProductBrief(product_id="P1", name="Áo khoác denim", claims=("Đổi trả trong 7 ngày.",))
+    specs = [UnitSpec("assurance", claims=brief.claims)]
+    prompt = build_unit_prompt(SessionBrief(title="Live"), brief, specs, 0)
+    assert "(1/1): Chính sách mua hàng và lưu ý." in prompt
+
+
+@pytest.mark.parametrize("role", ["opening", "highlight", "assurance", "closing"])
+def test_the_product_name_is_context_only_outside_intro_and_offer(role) -> None:
+    brief = ProductBrief(product_id="P1", name="Áo khoác denim", claims=("Chất vải dày.",))
+    prompt = build_unit_prompt(SessionBrief(title="Live"), brief, [UnitSpec(role)], 0)
+    assert "Không nhắc tên sản phẩm này trong phần này" in prompt
+
+
+def test_the_intro_and_offer_may_say_the_product_name() -> None:
+    brief = ProductBrief(product_id="P1", name="Áo khoác denim")
+    for role in ("intro", "offer"):
+        prompt = build_unit_prompt(SessionBrief(title="Live"), brief, [UnitSpec(role)], 0)
+        assert "Không nhắc tên sản phẩm này trong phần này" not in prompt
+
+
 def test_only_the_last_unit_may_carry_a_call_to_action() -> None:
     cta = "Mọi người nhắn mình để đặt hàng nhé."
     assert check_unit_text(cta, spec=UnitSpec("highlight")) == (None, "cta")
@@ -580,7 +614,7 @@ class RestrictionDroppingLLM(FakeLLM):
 
     def __call__(self, prompt):
         text = super().__call__(prompt)
-        if "Cam kết và lưu ý" in prompt:
+        if "Chính sách mua hàng và lưu ý" in prompt:
             self.prompts.append("assurance-call")
             return text.split(". ")[0].rstrip(".") + "."
         return text
