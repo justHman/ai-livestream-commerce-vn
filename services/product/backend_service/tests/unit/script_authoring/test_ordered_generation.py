@@ -188,6 +188,25 @@ async def test_units_adapt_to_the_facts_and_never_repeat_a_fact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_later_part_is_told_how_the_earlier_parts_opened() -> None:
+    llm = FakeLLM()
+    service, repos = _service(llm)
+    await _run(service, repos, await _new_set(service))
+    opening = "Chào cả nhà, chào mừng"  # the first five words FakeLLM writes for the opening part
+    later = [p for p in llm.prompts if "Giới thiệu sản phẩm" in p and opening in p]
+    assert later and all("Cách mở đầu các phần khác đã dùng" in p for p in later)
+
+
+@pytest.mark.asyncio
+async def test_the_first_part_of_a_product_has_no_opening_hint() -> None:
+    llm = FakeLLM()
+    service, repos = _service(llm)
+    await _run(service, repos, await _new_set(service))
+    opening_prompt = next(p for p in llm.prompts if "Mở đầu phiên live" in p)
+    assert "Cách mở đầu các phần khác đã dùng" not in opening_prompt
+
+
+@pytest.mark.asyncio
 async def test_three_claims_make_at_most_four_units_with_intro_and_offer() -> None:
     service, repos = _service(FakeLLM())
     set_id = await _new_set(service)
