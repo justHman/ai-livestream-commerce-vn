@@ -108,6 +108,8 @@ class LemonSliceSettings:
     audio_sample_rate: int = 16000
     idle_timeout_s: int = 60
     ready_timeout_s: float = 30.0
+    speak_ready_gate_enabled: bool = True
+    speak_ready_wait_s: float = 45.0
     request_timeout_s: float = 15.0
     # TOTAL deadline of one control call (keep-alive / terminate); None = request_timeout_s.
     # httpx timeouts are per connect/read chunk, not total, so this is enforced by cancellation.
@@ -144,6 +146,7 @@ class LemonSliceSettings:
         # documented: keepalive_s, max_session_s). Messages name the field, never the value.
         for name in (
             "ready_timeout_s",
+            "speak_ready_wait_s",
             "request_timeout_s",
             "keepalive_s",
             "max_session_s",
@@ -446,6 +449,10 @@ class _Sess:
     last_stream_at: float = (
         0.0  # when the host last pushed audio (an open utterance id outlives it)
     )
+    interrupt_seq: int = 0
+    recovery_required: bool = False
+    avatar_joined_at: float | None = None
+    video_seen: bool = False
     started_at: float = 0.0  # monotonic
     created_at: float = 0.0  # Runtime lifetime, never reset by a provider rollover
     has_streamed: bool = False
@@ -459,6 +466,7 @@ class _Sess:
     room_name: str = ""
     roll_lock: Any = None  # serializes rollovers of this session (created on the loop)
     next_roll_at: float = 0.0  # monotonic: earliest retry after a failed rollover
+    roll_task: Any = None
     rolling: bool = False  # a rollover is in progress: keep-alive results are not judged
     cap_warned: bool = False
     closing: bool = False  # read from the HTTP worker thread: set before any teardown step
@@ -864,6 +872,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 image_url or "",
                 room_name,
             )
+            self._watch_lifecycle(sess)
             sess.cleared = _BoundedSet(s.history)
             sess.unconfirmed = _BoundedSet(s.history)
             # Single-speaker: no agent_prompt / LLM / TTS fields are ever sent.
@@ -891,10 +900,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                     "session_id_invalid", "LemonSlice returned an unusable session id"
                 )
             sess.provider_session_id = sid
+            self._provider_started(sess)
             cost_meter.avatar_open(room_name, sid)
             if s.keepalive_s > 0 and sess.provider_session_id:
                 sess.keepalive = asyncio.ensure_future(self._keepalive(sess))
             await self._wait_avatar_video(room)
+            self._observe_video(sess)
             if s.fallback_publish:
                 # Look BEFORE publishing: an avatar with its own audio plus ours = two speakers.
                 if await self._avatar_has_audio(room, s.audio_probe_s):
@@ -1078,6 +1089,158 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             except ProviderCleanupIncomplete:
                 log.error("lemonslice late session cleanup is pending")
 
+    @property
+    def speak_ready_gate_enabled(self) -> bool:
+        return self._s.speak_ready_gate_enabled
+
+    def avatar_ready(self, session_id: str) -> bool:
+        sess = self._sessions.get(session_id)
+        return (
+            sess is not None
+            and not sess.recovery_required
+            and not sess.rolling
+            and self._video_ready(sess.room)
+            and not (
+                self._s.rollover_after_s > 0
+                and self._mono() - sess.started_at >= self._s.rollover_after_s
+            )
+        )
+
+    def wait_speak_ready(
+        self, session_id: str, *, cancelled: Callable[[], bool] | None = None
+    ) -> bool:
+        if not self._s.speak_ready_gate_enabled:
+            return True
+
+        async def prepare() -> bool:
+            sess = self._sessions.get(session_id)
+            return sess is not None and await self._prepare_ready(sess, cancelled=cancelled)
+
+        return self._run(prepare())
+
+    def require_avatar_recovery(self, session_id: str) -> None:
+        async def require() -> None:
+            sess = self._sessions[session_id]
+            sess.recovery_required = True
+            if sess.fallback is not None:
+                sess.fallback.drain()
+
+        self._run(require())
+
+    def _provider_started(self, sess: _Sess) -> None:
+        sess.started_at = self._mono()
+        sess.avatar_joined_at = None
+        sess.video_seen = False
+        log.info("avatar provider_session_started room=%s at=%.3f", sess.room_name, self._clock())
+        if self._s.avatar_identity in sess.room.remote_participants:
+            sess.avatar_joined_at = self._mono()
+            log.info("avatar joined room=%s at=%.3f", sess.room_name, self._clock())
+
+    def _observe_video(self, sess: _Sess) -> None:
+        if not sess.video_seen and self._video_ready(sess.room):
+            sess.video_seen = True
+            log.info(
+                "avatar video_ready room=%s start_to_video_s=%.3f",
+                sess.room_name,
+                self._mono() - sess.started_at,
+            )
+
+    def _watch_lifecycle(self, sess: _Sess) -> None:
+        def joined(participant: Any) -> None:
+            if getattr(participant, "identity", None) == self._s.avatar_identity:
+                sess.avatar_joined_at = self._mono()
+                sess.video_seen = False
+                log.info(
+                    "avatar joined room=%s at=%.3f age_s=%.3f",
+                    sess.room_name,
+                    self._clock(),
+                    self._mono() - sess.started_at,
+                )
+                self._observe_video(sess)
+
+        def left(participant: Any, *_: Any) -> None:
+            if getattr(participant, "identity", None) == self._s.avatar_identity:
+                log.info(
+                    "avatar left room=%s at=%.3f age_s=%.3f reason=%s",
+                    sess.room_name,
+                    self._clock(),
+                    self._mono() - sess.started_at,
+                    "runtime_stop" if sess.closing else "rollover" if sess.rolling else "unknown",
+                )
+                sess.video_seen = False
+
+        def track_changed(*_: Any) -> None:
+            self._observe_video(sess)
+
+        sess.room.on("participant_connected", joined)
+        sess.room.on("participant_disconnected", left)
+        sess.room.on("track_published", track_changed)
+        sess.room.on("track_unmuted", track_changed)
+
+    def _video_ready(self, room: Any) -> bool:
+        p = room.remote_participants.get(self._s.avatar_identity)
+        return p is not None and any(
+            getattr(pub, "kind", None) == _KIND_VIDEO and not getattr(pub, "muted", False)
+            for pub in p.track_publications.values()
+        )
+
+    async def _prepare_ready(
+        self, sess: _Sess, *, cancelled: Callable[[], bool] | None = None
+    ) -> bool:
+        started = time.monotonic()
+        interrupt_seq = sess.interrupt_seq
+
+        def aborted() -> bool:
+            return (
+                sess.closing
+                or sess.interrupt_seq != interrupt_seq
+                or (cancelled is not None and cancelled())
+            )
+
+        async def prepare() -> None:
+            await self._maybe_rollover(sess)
+            while sess.recovery_required or not self._video_ready(sess.room):
+                await self._maybe_rollover(sess)
+                await asyncio.sleep(0.05)
+            self._observe_video(sess)
+
+        # Cancel only this waiter. Rollover's shielded, owned task retains responsibility
+        # for a late provider creation/cleanup and serializes the next readiness attempt.
+        waiter = asyncio.create_task(prepare())
+        result = "ready"
+        try:
+            async with asyncio.timeout(self._s.speak_ready_wait_s):
+                while True:
+                    if aborted():
+                        result = "cancelled"
+                        return False
+                    if waiter.done():
+                        await waiter
+                        return True
+                    await asyncio.wait({waiter}, timeout=0.05)
+        except TimeoutError:
+            if aborted():
+                result = "cancelled"
+                return False
+            result = "timeout"
+            if self._age_state(sess) == "near_cap":
+                # The provider session is past its age cap and could not be replaced: the cap guard
+                # (end of this avatar session) outranks "retry the unit later".
+                raise SessionNearCap() from None
+            raise LemonSliceError("avatar_not_ready") from None
+        except BaseException:
+            result = "aborted"
+            raise
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+            log.info(
+                "avatar speak_ready_wait room=%s waited_s=%.3f result=%s",
+                sess.room_name,
+                time.monotonic() - started,
+                result,
+            )
+
     async def _wait_avatar_video(self, room: Any, replacing: Any = None) -> None:
         """Wait for the avatar video; with ``replacing`` (the old participant sid) wait for a
         DIFFERENT participant, because the same identity may still show the old avatar."""
@@ -1094,7 +1257,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 p is not None
                 and (replacing is None or getattr(p, "sid", None) != replacing)
                 and any(
-                    getattr(pub, "kind", None) == kind_video
+                    getattr(pub, "kind", None) == kind_video and not getattr(pub, "muted", False)
                     for pub in p.track_publications.values()
                 )
             ):
@@ -1158,8 +1321,15 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         assert w.pcm is not None  # checked in stream_audio
         sess.has_streamed = True
         sess.last_stream_at = self._mono()
+        interrupt_seq = sess.interrupt_seq
         if sess.channel.open_utterance != w.utterance_id:  # a new utterance starts here
-            await self._maybe_rollover(sess)
+            if self._s.speak_ready_gate_enabled:
+                if not await self._prepare_ready(sess):
+                    return
+            else:
+                await self._maybe_rollover(sess)
+        if interrupt_seq != sess.interrupt_seq or sess.closing:
+            return
         if self._age_state(sess) == "near_cap" and sess.channel.open_utterance != w.utterance_id:
             raise SessionNearCap()  # a started utterance may still finish
         sess.last_stream_at = self._mono()
@@ -1189,7 +1359,13 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 return
             if not ok:
                 sess.unconfirmed.add(w.utterance_id)
-                log.warning("avatar playback_unconfirmed utterance=%s", w.utterance_id)
+                log.info(
+                    "avatar playback_unconfirmed utterance=%s room=%s age_s=%.3f since_join_s=%s",
+                    w.utterance_id,
+                    sess.room_name,
+                    self._mono() - sess.started_at,
+                    None if sess.avatar_joined_at is None else self._mono() - sess.avatar_joined_at,
+                )
 
     async def _maybe_rollover(self, sess: _Sess) -> None:
         s = self._s
@@ -1203,9 +1379,14 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             # The session is old enough, or its avatar vanished from the room (a swap that went
             # wrong): bring a fresh one back before the live is declared lost.
             return (
-                s.rollover_after_s > 0 and now - sess.started_at >= s.rollover_after_s
-            ) or s.avatar_identity not in sess.room.remote_participants
+                sess.recovery_required
+                or (s.rollover_after_s > 0 and now - sess.started_at >= s.rollover_after_s)
+                or s.avatar_identity not in sess.room.remote_participants
+            )
 
+        if sess.roll_task is not None and not sess.roll_task.done():
+            await asyncio.shield(sess.roll_task)
+            return
         if not due():
             return
         if sess.roll_lock is None:
@@ -1215,15 +1396,36 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 # Its own tracked task: stop_all waits for it (and it ends a replacement that
                 # lands after a stop), even if this utterance is cancelled meanwhile.
                 task = asyncio.ensure_future(self._rollover(sess))
+                sess.roll_task = task
                 self._tasks_add(task)
                 await asyncio.shield(task)
 
     async def _rollover(self, sess: _Sess) -> None:
         sess.rolling = True
+        reason = (
+            "playback_unconfirmed"
+            if sess.recovery_required
+            else (
+                "absent" if self._s.avatar_identity not in sess.room.remote_participants else "age"
+            )
+        )
+        log.info(
+            "avatar rollover_started room=%s reason=%s at=%.3f",
+            sess.room_name,
+            reason,
+            self._clock(),
+        )
         try:
             await self._rollover_inner(sess)
         finally:
             sess.rolling = False
+            log.info(
+                "avatar rollover_ended room=%s reason=%s ready=%s at=%.3f",
+                sess.room_name,
+                reason,
+                not sess.recovery_required and self._video_ready(sess.room),
+                self._clock(),
+            )
 
     async def _rollover_inner(self, sess: _Sess) -> None:
         """Replace the provider session inside the same room, before the age guard ends the live.
@@ -1240,6 +1442,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             f"{sess.room_name}#roll-{uuid.uuid4().hex[:8]}"  # unique: never shadows a retained id
         )
         old_sid = sess.provider_session_id
+        if self._s.speak_ready_gate_enabled:
+            sess.recovery_required = True
         if old_sid:
             if not await self._end_provider_session(label, old_sid):
                 # Not confirmed ended: a second avatar could coexist with it. Keep the id (a stop
@@ -1286,6 +1490,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
                 new_sid = ""
                 raise LemonSliceError("session_id_invalid", "LemonSlice returned an unusable id")
             sess.provider_session_id = new_sid  # from here on a stop ends it
+            self._provider_started(sess)
             cost_meter.avatar_open(sess.room_name, new_sid)
             await self._wait_avatar_video(sess.room)
         except BaseException as exc:
@@ -1304,6 +1509,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if post_task is not None and post_task.done():
                 post_task.cancelled() or post_task.exception()  # retrieved: it failed outright
             elif post_task is not None:  # still in flight: adopt or end it when it lands
+                # Never create another avatar while this request can still land.
+                sess.next_roll_at = self._mono() + _CREATE_HARD_BOUND_S + _ROLLOVER_RETRY_S
                 self._tasks_add(
                     asyncio.ensure_future(self._finish_late_rollover(sess, post_task, label))
                 )
@@ -1318,6 +1525,21 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             sess.provider_session_id = ""
             await self._end_provider_session(label, new_sid)
             return
+        if sess.recovery_required:
+            # Old provider termination AND room departure were confirmed above. The new
+            # avatar acknowledges a flush before reusing the channel's id-less RPC ledger.
+            try:
+                await sess.channel.clear_buffer()
+            except Exception as exc:
+                sess.next_roll_at = self._mono() + _ROLLOVER_RETRY_S
+                log.info(
+                    "avatar recovery_flush_failed room=%s error_type=%s",
+                    sess.room_name,
+                    type(exc).__name__,
+                )
+                return
+            sess.recovery_required = False
+        self._observe_video(sess)
         self._adopt_rolled_session(sess, new_sid)
         log.info("lemonslice session rolled over")
 
@@ -1354,6 +1576,9 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         if sess.provider_session_id != sid:
             return  # a newer rollover took over meanwhile: this id is already ended
         if not sess.closing:
+            if sess.recovery_required:
+                await sess.channel.clear_buffer()
+                sess.recovery_required = False
             self._adopt_rolled_session(sess, sid)
 
     def _adopt_rolled_session(self, sess: _Sess, new_sid: str) -> None:
@@ -1391,6 +1616,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._run(self._interrupt(sess))
 
     async def _interrupt(self, sess: _Sess) -> None:
+        sess.interrupt_seq += 1
         sess.speech_pending = False
         open_id = sess.channel.open_utterance
         if open_id:

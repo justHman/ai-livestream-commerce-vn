@@ -57,6 +57,8 @@ REASON_CODES = frozenset(
         "delivery_failed",
         "turn_cancelled",
         "turn_failed",
+        "avatar_not_ready",
+        "playback_unconfirmed",
     }
 )
 UNKNOWN_REASON = "unknown"
@@ -802,6 +804,10 @@ class LiveFollowRecorder:
             self._position(session_id, state, ds, "preparing", None)
 
     # ------------------------------------------------------------------ position
+
+    @_safe
+    def avatar_reconnecting(self, session_id: str, decision: Any, ds: Any) -> None:
+        self._position(session_id, self._session(session_id), ds, "avatar_reconnecting", decision)
 
     @_safe
     def speak_started(self, session_id: str, decision: Any, ds: Any) -> None:

@@ -75,22 +75,24 @@ async def test_no_tts_windows_does_not_complete_turn(case_factory):
 
 
 @pytest.mark.asyncio
-async def test_unconfirmed_playback_never_freezes_the_live(case_factory, caplog):
+async def test_unconfirmed_playback_retries_then_skips_without_freezing(case_factory, caplog):
     from backend.application.render.orchestrator import StreamOrchestrator
 
     case = await case_factory()
     co, sid = case.d.coordinator, case.sid
     failed = []
     co.runtime_failures = SimpleNamespace(fail=lambda *a: failed.append(a), tick=lambda *a: None)
+    case.backend.speak_ready_gate_enabled = True
+    case.backend.require_avatar_recovery = lambda *a: None
     case.backend.playback_info = lambda *a: {"playback_unconfirmed": True}
     before = StreamOrchestrator.playback_unconfirmed_total
     for _ in range(2):  # one and two unconfirmed utterances in a row
         turn = decision(case)
         assert await co._maybe_speak(sid, turn)
-        assert co._completed_speech[sid]["state"] == "completed"
+        assert co._completed_speech[sid]["state"] == "skipped"
         assert not co._frozen(sid)
     assert not failed
-    assert StreamOrchestrator.playback_unconfirmed_total == before + 2
+    assert StreamOrchestrator.playback_unconfirmed_total == before + 6
     assert "playback unconfirmed" in caplog.text
 
 

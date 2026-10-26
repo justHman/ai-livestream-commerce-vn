@@ -574,6 +574,8 @@ class AppConfig:
     avatar_internal_token: str = field(default="", repr=False)
     lemonslice_audio_sample_rate: int = 16000
     lemonslice_idle_timeout_s: int = 60
+    lemonslice_speak_ready_gate_enabled: bool = True
+    lemonslice_speak_ready_wait_s: float = 45.0
     lemonslice_ready_timeout_s: float = 30.0
     lemonslice_avatar_identity: str = "lemonslice-avatar-agent"
     lemonslice_terminate_path: str = "sessions/{session_id}/control"
@@ -684,6 +686,13 @@ class AppConfig:
             avatar_internal_token=os.environ.get("AVATAR_INTERNAL_TOKEN", ""),
             lemonslice_audio_sample_rate=_int_env("LEMONSLICE_AUDIO_SAMPLE_RATE", "16000", 1),
             lemonslice_idle_timeout_s=_int_env("LEMONSLICE_IDLE_TIMEOUT_S", "60"),
+            lemonslice_speak_ready_gate_enabled=os.environ.get(
+                "LEMONSLICE_SPEAK_READY_GATE_ENABLED", "true"
+            )
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+            lemonslice_speak_ready_wait_s=_timer_env("LEMONSLICE_SPEAK_READY_WAIT_S", "45"),
             lemonslice_ready_timeout_s=_timer_env("LEMONSLICE_READY_TIMEOUT_S", "30"),
             lemonslice_avatar_identity=os.environ.get("LEMONSLICE_AVATAR_IDENTITY")
             or "lemonslice-avatar-agent",
@@ -915,6 +924,8 @@ class AppConfig:
                 audio_sample_rate=self.lemonslice_audio_sample_rate,
                 idle_timeout_s=self.lemonslice_idle_timeout_s,
                 ready_timeout_s=self.lemonslice_ready_timeout_s,
+                speak_ready_gate_enabled=self.lemonslice_speak_ready_gate_enabled,
+                speak_ready_wait_s=self.lemonslice_speak_ready_wait_s,
                 avatar_identity=self.lemonslice_avatar_identity,
                 fallback_publish=self.avatar_audio_fallback_publish,
                 render_offset_ms=self.avatar_render_offset_ms,

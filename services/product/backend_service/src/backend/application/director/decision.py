@@ -678,6 +678,18 @@ class Director:
 
     def mark_spoken(self, decision: Decision) -> None:
         """Record a completed opening, sales turn, or reactive answer."""
+        self._retire_decision(decision, delivered=True)
+
+    def mark_skipped(self, decision: Decision) -> None:
+        """Retire an exhausted script position without counting delivered speech.
+
+        Stage/opening/closing boundaries still progress, so a permanently absent
+        avatar cannot trap the live. The coordinator records the explicit skip.
+        QA skips use their separate comment lifecycle and never call this method.
+        """
+        self._retire_decision(decision, delivered=False)
+
+    def _retire_decision(self, decision: Decision, *, delivered: bool) -> None:
         for product_id in decision.queued_pivot_products:
             if product_id not in self.state.cursor.pivot_queue:
                 self.state.cursor.pivot_queue.append(product_id)
@@ -731,7 +743,7 @@ class Director:
             for product in self.state.products:
                 if product.product_id != decision.product_id:
                     continue
-                product.spoken_turns += 1
+                product.spoken_turns += int(delivered)
                 product.stage = decision.stage or product.stage
                 if decision.action == "introduce_product":
                     product.is_introduced = True
