@@ -17,6 +17,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
+from backend.application.clients.tts import endpoint_override
 from backend.application.clients.tts.self_hosted import SelfHostedTTSClient, TTSClientError
 
 from .auth import viewer_auth
@@ -55,6 +56,14 @@ def _cached_voices(base_url: str, api_key: str) -> list[dict] | None:
         return _cache[2]
 
 
+def _voices_for(cfg: Any) -> list[dict] | None:
+    # The override lookup may wait on Redis, so it runs in the worker thread with the fetch, never on the event loop.
+    return _cached_voices(
+        endpoint_override.effective_base_url(cfg.tts.base_url),
+        (cfg.tts.extra or {}).get("api_key", ""),
+    )
+
+
 @router.get("/tts/voices")
 async def tts_voices(request: Request, _: None = Depends(viewer_auth)) -> dict[str, Any]:
     cfg = container_from_request(request).config
@@ -62,9 +71,7 @@ async def tts_voices(request: Request, _: None = Depends(viewer_auth)) -> dict[s
         raise HTTPException(status_code=403, detail={"code": "voices_not_authorized"})
     if cfg.tts.engine != "remote_http":
         return {"voices": [], "available": False}
-    voices = await asyncio.to_thread(
-        _cached_voices, cfg.tts.base_url, (cfg.tts.extra or {}).get("api_key", "")
-    )
+    voices = await asyncio.to_thread(_voices_for, cfg)
     return {"voices": voices or [], "available": voices is not None}
 
 
@@ -100,9 +107,7 @@ async def tts_preview(
     manager = d.engine_manager
     if cfg.tts.engine != "remote_http" or manager is None or manager.tts is None:
         raise HTTPException(status_code=503, detail={"code": "tts_unavailable"})
-    voices = await asyncio.to_thread(
-        _cached_voices, cfg.tts.base_url, (cfg.tts.extra or {}).get("api_key", "")
-    )
+    voices = await asyncio.to_thread(_voices_for, cfg)
     if voices is None:
         raise HTTPException(status_code=503, detail={"code": "tts_unavailable"})
     if payload.voice_id not in {voice.get("id") for voice in voices}:
