@@ -16,6 +16,8 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
+import httpx
+
 KEY = "livento:tts:endpoint_override"
 CACHE_TTL_S = 5.0
 MAX_URL_LEN = 200
@@ -66,7 +68,14 @@ def validate_base_url(raw: str) -> str:
     ):
         raise ValueError("loopback, link-local and reserved addresses are not allowed")
     shown = f"[{host}]" if ip is not None and ip.version == 6 else host
-    return f"{parts.scheme}://{shown}" + (f":{port}" if port else "")
+    normalized = f"{parts.scheme}://{shown}" + (f":{port}" if port else "")
+    try:
+        httpx.URL(
+            normalized
+        )  # the transport must accept it too (e.g. it refuses http://0177.0.0.1)
+    except httpx.InvalidURL as exc:
+        raise ValueError("address is not accepted by the HTTP client") from exc
+    return normalized
 
 
 def _redis():

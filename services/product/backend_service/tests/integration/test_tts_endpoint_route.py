@@ -121,6 +121,7 @@ def test_put_refuses_unreachable_address_and_keeps_the_old_one() -> None:
         "http://203.0.113.9/x",
         "http://203.0.113.9?a=1",
         "http://[::1]:9",
+        "http://0177.0.0.1",
     ],
 )
 def test_put_refuses_unsafe_or_malformed_address(bad: str) -> None:
@@ -141,11 +142,9 @@ def test_not_remote_engine_is_conflict() -> None:
         assert client.get(URL, headers=ADMIN).status_code == 409
 
 
-def test_client_follows_override_and_probe_does_not(_env: list[str]) -> None:
+def test_client_follows_override(_env: list[str]) -> None:
     endpoint_override.write_override(NEW_URL, "op")
-    followed = self_hosted.SelfHostedTTSClient(base_url=ENV_URL)
-    probing = self_hosted.SelfHostedTTSClient(base_url=ENV_URL, follow_override=False)
-    assert (followed._base_url, probing._base_url) == (NEW_URL, ENV_URL)
+    assert self_hosted.SelfHostedTTSClient(base_url=ENV_URL)._base_url == NEW_URL
 
 
 def test_client_falls_back_to_env_when_redis_breaks(monkeypatch: pytest.MonkeyPatch) -> None:

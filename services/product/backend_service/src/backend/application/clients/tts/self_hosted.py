@@ -255,14 +255,11 @@ class SelfHostedTTSClient:
         api_key: str = "",
         timeout: float = 60.0,
         http_client: Optional[httpx.Client] = None,
-        follow_override: bool = True,
     ) -> None:
         base = (base_url or os.environ.get("TTS_BASE_URL", "") or "").strip()
         if not base:
             raise TTSClientError("SelfHostedTTSClient needs base_url or env TTS_BASE_URL")
         self._static_base_url = _strip_trailing_slash(base)
-        # False only for probing a candidate address before it becomes the override.
-        self._follow_override = follow_override
         self._api_key = api_key or os.environ.get("TTS_AUTH_TOKEN", "") or ""
         self._timeout = float(timeout)
         self._client = http_client
@@ -276,8 +273,6 @@ class SelfHostedTTSClient:
     @property
     def _base_url(self) -> str:
         # Read on every request: an operator-set address applies to live sessions too (a dead GPU is replaced mid-show).
-        if not self._follow_override:
-            return self._static_base_url
         return endpoint_override.effective_base_url(self._static_base_url)
 
     def _get_client(self) -> httpx.Client:

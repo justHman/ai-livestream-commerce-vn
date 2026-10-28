@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any
+from urllib.parse import urljoin
 
+import httpx
 from fastapi import HTTPException, Request
 
 from backend.api.dependencies import container_from_request
 from backend.api.security.authentication import tokens_match
 from backend.application.clients.tts import endpoint_override
-from backend.application.clients.tts.self_hosted import SelfHostedTTSClient, TTSClientError
 
 from .router import logger, router
 
@@ -43,27 +44,43 @@ def _config(request: Request):
     return cfg
 
 
+# A probe holds a worker thread, so at most one runs at a time; the slot is freed only when the thread really ends.
+_probe_slot = asyncio.Semaphore(1)
+
+
 def _probe(base_url: str, api_key: str) -> bool:
-    client = SelfHostedTTSClient(base_url=base_url, api_key=api_key, follow_override=False)
+    """Headers only: the status line is the proof the server answers, and no body is read, so a slow-dripping server
+    cannot hold the thread past the four 3 s phases (connect, write, read, pool)."""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        client.list_voices()
-        return True
-    except TTSClientError:
+        with httpx.Client(timeout=httpx.Timeout(3.0), follow_redirects=False) as client:
+            with client.stream(
+                "GET", urljoin(base_url + "/", "v1/voices"), headers=headers
+            ) as resp:
+                return resp.status_code == 200
+    except (httpx.HTTPError, httpx.InvalidURL):
         return False
-    finally:
-        client.close()
+
+
+def _release_probe_slot(task: "asyncio.Future[Any]") -> None:
+    _probe_slot.release()
+    if not task.cancelled():
+        task.exception()  # consumed: a probe failure is only "not reachable"
 
 
 async def _reachable(base_url: str, api_key: str) -> bool:
+    if _probe_slot.locked():
+        raise HTTPException(status_code=429, detail={"code": "tts_probe_busy"})
+    await _probe_slot.acquire()
+    task = asyncio.ensure_future(asyncio.to_thread(_probe, base_url, api_key))
+    task.add_done_callback(_release_probe_slot)
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(_probe, base_url, api_key), timeout=_PROBE_TIMEOUT_S
-        )
+        return await asyncio.wait_for(asyncio.shield(task), timeout=_PROBE_TIMEOUT_S)
     except asyncio.TimeoutError:
         return False
 
 
-async def _state(cfg) -> dict[str, Any]:
+async def _state(cfg, probe: bool = True) -> dict[str, Any]:
     record = await asyncio.to_thread(endpoint_override.read_override)
     base_url = record["base_url"] if record else cfg.tts.base_url
     api_key = (cfg.tts.extra or {}).get("api_key", "")
@@ -73,7 +90,7 @@ async def _state(cfg) -> dict[str, Any]:
         "env_base_url": cfg.tts.base_url,
         "updated_by": record["updated_by"] if record else None,
         "updated_at": record["updated_at"] if record else None,
-        "reachable": await _reachable(base_url, api_key),
+        "reachable": await _reachable(base_url, api_key) if probe else True,
     }
 
 
@@ -110,7 +127,7 @@ async def put_tts_endpoint(request: Request, payload: dict[str, Any]) -> dict[st
             status_code=503, detail={"code": "tts_endpoint_store_unavailable"}
         ) from exc
     logger.info("tts_endpoint_changed actor=%s base_url=%s", actor, base_url)
-    return await _state(cfg)
+    return await _state(cfg, probe=False)  # it answered the probe a moment ago
 
 
 @router.delete("/tts/endpoint")
