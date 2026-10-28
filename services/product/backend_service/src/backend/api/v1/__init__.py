@@ -19,6 +19,7 @@ from . import (  # noqa: F401  (register routes on the shared router)
     live_follow,
     scripts,
     sessions,
+    tts_endpoint,
     tts_voices,
     voices,
     websockets,

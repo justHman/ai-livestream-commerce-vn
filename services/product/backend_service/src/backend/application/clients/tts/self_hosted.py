@@ -37,6 +37,8 @@ from urllib.parse import urljoin
 
 import httpx
 
+from . import endpoint_override
+
 #: Env flag selecting the OpenAI-compatible `/v1/audio/speech` contract.
 OPENAI_AUDIO_SPEECH_STYLE = "openai_audio_speech"
 DEFAULT_MODEL_ID = "vieneu-v3-turbo"
@@ -253,11 +255,14 @@ class SelfHostedTTSClient:
         api_key: str = "",
         timeout: float = 60.0,
         http_client: Optional[httpx.Client] = None,
+        follow_override: bool = True,
     ) -> None:
         base = (base_url or os.environ.get("TTS_BASE_URL", "") or "").strip()
         if not base:
             raise TTSClientError("SelfHostedTTSClient needs base_url or env TTS_BASE_URL")
-        self._base_url = _strip_trailing_slash(base)
+        self._static_base_url = _strip_trailing_slash(base)
+        # False only for probing a candidate address before it becomes the override.
+        self._follow_override = follow_override
         self._api_key = api_key or os.environ.get("TTS_AUTH_TOKEN", "") or ""
         self._timeout = float(timeout)
         self._client = http_client
@@ -267,6 +272,13 @@ class SelfHostedTTSClient:
         self._voice_id = _env_str("TTS_VOICE_ID")
         self._sample_rate = _env_int("TTS_SAMPLE_RATE", DEFAULT_OPENAI_SAMPLE_RATE)
         self._tempo = _env_tempo()
+
+    @property
+    def _base_url(self) -> str:
+        # Read on every request: an operator-set address applies to live sessions too (a dead GPU is replaced mid-show).
+        if not self._follow_override:
+            return self._static_base_url
+        return endpoint_override.effective_base_url(self._static_base_url)
 
     def _get_client(self) -> httpx.Client:
         if self._client is None:

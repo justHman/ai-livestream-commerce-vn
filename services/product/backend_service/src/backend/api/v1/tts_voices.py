@@ -17,6 +17,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
+from backend.application.clients.tts import endpoint_override
 from backend.application.clients.tts.self_hosted import SelfHostedTTSClient, TTSClientError
 
 from .auth import viewer_auth
@@ -63,7 +64,7 @@ async def tts_voices(request: Request, _: None = Depends(viewer_auth)) -> dict[s
     if cfg.tts.engine != "remote_http":
         return {"voices": [], "available": False}
     voices = await asyncio.to_thread(
-        _cached_voices, cfg.tts.base_url, (cfg.tts.extra or {}).get("api_key", "")
+        _cached_voices, endpoint_override.effective_base_url(cfg.tts.base_url), (cfg.tts.extra or {}).get("api_key", "")
     )
     return {"voices": voices or [], "available": voices is not None}
 
@@ -101,7 +102,7 @@ async def tts_preview(
     if cfg.tts.engine != "remote_http" or manager is None or manager.tts is None:
         raise HTTPException(status_code=503, detail={"code": "tts_unavailable"})
     voices = await asyncio.to_thread(
-        _cached_voices, cfg.tts.base_url, (cfg.tts.extra or {}).get("api_key", "")
+        _cached_voices, endpoint_override.effective_base_url(cfg.tts.base_url), (cfg.tts.extra or {}).get("api_key", "")
     )
     if voices is None:
         raise HTTPException(status_code=503, detail={"code": "tts_unavailable"})
