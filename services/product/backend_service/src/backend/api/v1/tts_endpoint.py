@@ -8,6 +8,7 @@ A new address is probed (GET /v1/voices) before it is stored, so a typo or a dea
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import Any
 from urllib.parse import urljoin
@@ -44,6 +45,11 @@ def _config(request: Request):
     return cfg
 
 
+def _api_key(cfg) -> str:
+    # Same fallback as SelfHostedTTSClient: production sets the GPU key in the env (TTS_AUTH_TOKEN), not in the config extras.
+    return (cfg.tts.extra or {}).get("api_key", "") or os.environ.get("TTS_AUTH_TOKEN", "") or ""
+
+
 async def _probe(base_url: str, api_key: str) -> bool:
     """Headers only: the status line is the proof the server answers. Async, so the caller's deadline really cancels the
     socket I/O (a server dripping headers cannot hold anything past _PROBE_TIMEOUT_S)."""
@@ -68,7 +74,7 @@ async def _reachable(base_url: str, api_key: str) -> bool:
 async def _state(cfg, probe: bool = True) -> dict[str, Any]:
     record = await asyncio.to_thread(endpoint_override.read_override)
     base_url = record["base_url"] if record else cfg.tts.base_url
-    api_key = (cfg.tts.extra or {}).get("api_key", "")
+    api_key = _api_key(cfg)
     return {
         "base_url": base_url,
         "source": "override" if record else "env",
@@ -102,7 +108,7 @@ async def put_tts_endpoint(request: Request, payload: dict[str, Any]) -> dict[st
         raise HTTPException(
             status_code=422, detail={"code": "invalid_base_url", "reason": str(exc)}
         ) from exc
-    if not await _reachable(base_url, (cfg.tts.extra or {}).get("api_key", "")):
+    if not await _reachable(base_url, _api_key(cfg)):
         raise HTTPException(status_code=422, detail={"code": "tts_unreachable"})
     try:
         await asyncio.to_thread(endpoint_override.write_override, base_url, actor)

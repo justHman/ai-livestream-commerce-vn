@@ -44,12 +44,17 @@ def _env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TTS_ADMIN_TOKEN", TOKEN)
     monkeypatch.setenv("REDIS_URL", "redis://fake:6379/0")
     monkeypatch.setenv("SESSION_STORE", "memory")
+    monkeypatch.setenv(
+        "TTS_AUTH_TOKEN", "gpu-secret-token"
+    )  # production keeps the GPU key in the env only
     monkeypatch.setattr(endpoint_override, "_redis", lambda: FakeRedis())
     monkeypatch.setattr(endpoint_override, "_cache", None)
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
+        if request.headers.get("authorization") != "Bearer gpu-secret-token":
+            return httpx.Response(401, text="unauthorized")
         if request.url.host == "203.0.113.77":
             return _never_answers(request)
         if request.url.host == "203.0.113.66":
