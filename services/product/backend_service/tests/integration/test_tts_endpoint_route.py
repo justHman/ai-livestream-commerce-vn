@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.api.v1 import tts_endpoint
 from backend.application.clients.tts import endpoint_override, self_hosted
 from backend.config import AppConfig, TTSConfig
 from conftest import make_deps as _Deps
@@ -15,6 +18,11 @@ TOKEN = "t" * 40
 ADMIN = {"X-Livento-Tts-Admin": TOKEN, "X-Livento-Actor": "admin@livento.id.vn"}
 ENV_URL = "http://env.tts.test:8000"
 NEW_URL = "http://203.0.113.9:52226"
+
+
+async def _never_answers(request: httpx.Request) -> httpx.Response:
+    await asyncio.sleep(30)
+    return httpx.Response(200)
 
 
 class FakeRedis:
@@ -42,11 +50,17 @@ def _env(monkeypatch: pytest.MonkeyPatch):
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
+        if request.url.host == "203.0.113.77":
+            return _never_answers(request)
         if request.url.host == "203.0.113.66":
             return httpx.Response(503, text="down")
         return httpx.Response(200, json={"data": [{"id": "a", "name": "Anh"}]})
 
     real = httpx.Client
+    real_async = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real_async(transport=httpx.MockTransport(handler), **kw)
+    )
     monkeypatch.setattr(
         self_hosted.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
     )
@@ -159,3 +173,17 @@ def test_client_ignores_override_when_feature_is_off(monkeypatch: pytest.MonkeyP
     endpoint_override.write_override(NEW_URL, "op")
     monkeypatch.delenv("TTS_ADMIN_TOKEN")
     assert self_hosted.SelfHostedTTSClient(base_url=ENV_URL)._base_url == ENV_URL
+
+
+def test_probe_has_a_real_deadline_and_leaves_nothing_stuck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tts_endpoint, "_PROBE_TIMEOUT_S", 0.2)
+    with _client() as client:
+        slow = client.put(URL, headers=ADMIN, json={"base_url": "http://203.0.113.77:1"})
+        again = client.put(URL, headers=ADMIN, json={"base_url": NEW_URL})
+    assert (slow.status_code, slow.json()["error"]["code"], again.status_code) == (
+        422,
+        "tts_unreachable",
+        200,
+    )

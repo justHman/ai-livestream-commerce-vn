@@ -44,17 +44,13 @@ def _config(request: Request):
     return cfg
 
 
-# A probe holds a worker thread, so at most one runs at a time; the slot is freed only when the thread really ends.
-_probe_slot = asyncio.Semaphore(1)
-
-
-def _probe(base_url: str, api_key: str) -> bool:
-    """Headers only: the status line is the proof the server answers, and no body is read, so a slow-dripping server
-    cannot hold the thread past the four 3 s phases (connect, write, read, pool)."""
+async def _probe(base_url: str, api_key: str) -> bool:
+    """Headers only: the status line is the proof the server answers. Async, so the caller's deadline really cancels the
+    socket I/O (a server dripping headers cannot hold anything past _PROBE_TIMEOUT_S)."""
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        with httpx.Client(timeout=httpx.Timeout(3.0), follow_redirects=False) as client:
-            with client.stream(
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0), follow_redirects=False) as client:
+            async with client.stream(
                 "GET", urljoin(base_url + "/", "v1/voices"), headers=headers
             ) as resp:
                 return resp.status_code == 200
@@ -62,20 +58,9 @@ def _probe(base_url: str, api_key: str) -> bool:
         return False
 
 
-def _release_probe_slot(task: "asyncio.Future[Any]") -> None:
-    _probe_slot.release()
-    if not task.cancelled():
-        task.exception()  # consumed: a probe failure is only "not reachable"
-
-
 async def _reachable(base_url: str, api_key: str) -> bool:
-    if _probe_slot.locked():
-        raise HTTPException(status_code=429, detail={"code": "tts_probe_busy"})
-    await _probe_slot.acquire()
-    task = asyncio.ensure_future(asyncio.to_thread(_probe, base_url, api_key))
-    task.add_done_callback(_release_probe_slot)
     try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout=_PROBE_TIMEOUT_S)
+        return await asyncio.wait_for(_probe(base_url, api_key), timeout=_PROBE_TIMEOUT_S)
     except asyncio.TimeoutError:
         return False
 
