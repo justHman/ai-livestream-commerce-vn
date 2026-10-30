@@ -1041,7 +1041,8 @@ def guard_problem(why: str | None, raw: str | None, approved: tuple[str, ...] = 
 
     Covers the reasons retry_hint only names generically (an unrelated pair joined by "và", a "missing data"
     phrase); everything else is retry_hint's own wording."""
-    text = raw or ""
+    # Same cleanup check_unit_text applies before it decides, so the diagnosis sees what the guard saw.
+    text = re.sub(r"\s+", " ", _DASH_RE.sub(", ", _FENCE_RE.sub("", raw or ""))).strip()
     if why == "mashup":
         joined = []
         for sentence in re.split(r"(?<=[.!?])\s+", text):
@@ -1057,7 +1058,15 @@ def guard_problem(why: str | None, raw: str | None, approved: tuple[str, ...] = 
                 + ". Tách thành các câu riêng, mỗi câu một ý."
             )
     if why == "missing_info":
-        phrases = list(dict.fromkeys(m.group().strip() for m in _MISSING_INFO_RE.finditer(text)))
+        statements = [" ".join(a.lower().split()) for a in approved]
+        phrases = list(
+            dict.fromkeys(
+                m.group().strip()
+                for m in _MISSING_INFO_RE.finditer(text)
+                # A phrase the owner's own statement says ("Không có khuyến mãi...") is allowed, never listed.
+                if not any(m.group().lower() in s for s in statements)
+            )
+        )
         if phrases:
             return (
                 "Bản trước nói thiếu hoặc không có thông tin: "

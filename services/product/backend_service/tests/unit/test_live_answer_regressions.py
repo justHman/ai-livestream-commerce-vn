@@ -654,3 +654,20 @@ def test_the_problem_line_names_the_missing_data_phrase_that_was_spoken():
     text, why = check_unit_text(raw)
     assert text is None and why == "missing_info"
     assert "'Hiện chưa có" in guard_problem(why, raw)
+
+
+def test_the_missing_data_diagnosis_skips_phrases_the_owner_wrote_and_normalizes_whitespace():
+    from backend.application.script_authoring.generation.ordered_units import guard_problem
+
+    approved = ("Không có khuyến mãi cho đơn dưới hai trăm nghìn.",)
+    raw = "Không có khuyến mãi cho đơn dưới hai trăm nghìn. Hiện\nchưa có thông tin về chất liệu."
+    problem = guard_problem("missing_info", raw, approved)
+    assert "'Hiện chưa có" in problem
+    assert "Không có khuyến mãi" not in problem
+
+
+def test_the_mashup_diagnosis_sees_the_sentence_across_line_breaks():
+    from backend.application.script_authoring.generation.ordered_units import guard_problem
+
+    raw = "Mẫu này mặc rất mát.\nCó size M L XL và\nkhông phơi ngoài nắng nhé."
+    assert "Có size M L XL và không phơi ngoài nắng nhé." in guard_problem("mashup", raw)
