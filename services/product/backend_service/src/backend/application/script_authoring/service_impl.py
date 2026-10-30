@@ -1504,7 +1504,8 @@ class ScriptAuthoringServiceImpl:
                 if text is None:
                     # Wording-only rejection: cut the offending sentence instead of another paid call.
                     text = salvage_unit_text(raw, why, **check)
-                    if text is None:
+                    # A cut-off unit is not cut back here: the extractive fallback keeps all its claims.
+                    if text is None and why == "coverage":
                         text = rescue_unit_text(raw, why, final=unit_writes[index] >= 3, **check)
                     if text is not None:
                         logger.info(

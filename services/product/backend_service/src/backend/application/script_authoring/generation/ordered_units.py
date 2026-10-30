@@ -951,15 +951,16 @@ def _supported(sentence: str, facts: tuple[str, ...]) -> bool:
 def rescue_unit_text(
     raw: str | None, why: str | None, *, final: bool = False, **kwargs
 ) -> str | None:
-    """Last chance before another paid call or an extractive fallback, never inventing a word.
+    """Last write only (`final`): the last chance before the extractive fallback or a failed part. The earlier
+    writes keep their retry hints; nothing here ever invents a word.
 
     - "truncated": the model's cut-off tail is dropped back to its last complete sentence.
-    - "coverage" (only when `final`): the owner's own must-keep statements the model left out are appended
-      verbatim after the model's number-free sentences. A sentence with a number is dropped first: the
-      owner's claim carries the right figure, and a wrong one ("ba mươi ngày" next to the approved "bảy
-      ngày") would otherwise pass beside it. Every other guard still runs on the result.
+    - "coverage": the owner's own must-keep statements the model left out are appended verbatim after the
+      model's number-free sentences that only rephrase the owner's statements. A sentence with a number
+      is dropped first: the owner's claim carries the right figure, and a wrong one ("ba mươi ngày" next
+      to the approved "bảy ngày") would otherwise pass beside it. Every other guard still runs.
     None when nothing fluent is left or the text still fails any check."""
-    if why not in ("truncated", "coverage") or not raw:
+    if not final or why not in ("truncated", "coverage") or not raw:
         return None
     text = raw
     if why == "truncated":
@@ -971,7 +972,7 @@ def rescue_unit_text(
     if saved is not None:
         return saved
     must = tuple(dict.fromkeys(kwargs.get("must") or ()))
-    if rejected != "coverage" or not final or not must:
+    if rejected != "coverage" or not must:
         return None
     base, _ = check_unit_text(text, **{**kwargs, "must": ()})
     if base is None:

@@ -534,14 +534,15 @@ def test_a_cut_off_tail_is_dropped_back_to_the_last_complete_sentence():
     )
     text, why = check_unit_text(raw, **_offer_check())
     assert text is None and why == "truncated"
-    saved = rescue_unit_text(raw, why, **_offer_check())
+    saved = rescue_unit_text(raw, why, final=True, **_offer_check())
     assert saved == "Mẫu này hiện có giá một trăm tám mươi nghìn đồng thôi mọi người ơi."
 
 
 def test_nothing_is_rescued_when_no_sentence_was_completed():
     from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
 
-    assert rescue_unit_text("Mẫu này hiện có giá một trăm", "truncated", **_offer_check()) is None
+    raw = "Mẫu này hiện có giá một trăm"
+    assert rescue_unit_text(raw, "truncated", final=True, **_offer_check()) is None
 
 
 def test_missing_must_keep_claims_are_appended_verbatim_only_on_the_final_attempt():
@@ -554,7 +555,7 @@ def test_missing_must_keep_claims_are_appended_verbatim_only_on_the_final_attemp
     raw = "Áo chưa giặt, còn tem mác thì mình đổi size miễn phí nha mọi người."
     text, why = check_unit_text(raw, **kwargs)
     assert text is None and why == "coverage"
-    assert rescue_unit_text(raw, why, **kwargs) is None
+    assert rescue_unit_text(raw, why, **kwargs) is None  # earlier writes keep their retry
     saved = rescue_unit_text(raw, why, final=True, **kwargs)
     assert saved == f"{raw} {claim}"
 
@@ -615,4 +616,4 @@ def test_a_decimal_point_is_not_a_sentence_boundary_when_cutting_a_truncated_tai
     raw = "Mẫu này có khối lượng 1.5 kg và"
     text, why = check_unit_text(raw, **kwargs)
     assert text is None and why == "truncated"
-    assert rescue_unit_text(raw, why, **kwargs) is None
+    assert rescue_unit_text(raw, why, final=True, **kwargs) is None
