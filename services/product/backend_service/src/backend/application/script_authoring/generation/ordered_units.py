@@ -920,6 +920,47 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
     return check_unit_text(" ".join(kept), **kwargs)[0]
 
 
+_SENTENCE_STOPS = ".!?…"
+
+
+def rescue_unit_text(
+    raw: str | None, why: str | None, *, final: bool = False, **kwargs
+) -> str | None:
+    """Last chance before another paid call or an extractive fallback, never inventing a word.
+
+    - "truncated": the model's cut-off tail is dropped back to its last complete sentence.
+    - "coverage" (only when `final`): the owner's own must-keep statements the model left out are appended
+      verbatim after its fluent text. Every other guard still runs on the result.
+    None when the text still fails any check."""
+    if why not in ("truncated", "coverage") or not raw:
+        return None
+    text = raw
+    if why == "truncated":
+        cut = max(raw.rfind(stop) for stop in _SENTENCE_STOPS)
+        if cut < 0:
+            return None
+        text = raw[: cut + 1]
+    saved, rejected = check_unit_text(text, **kwargs)
+    if saved is not None:
+        return saved
+    must = tuple(kwargs.get("must") or ())
+    if rejected != "coverage" or not final or not must:
+        return None
+    base, _ = check_unit_text(text, **{**kwargs, "must": ()})
+    if base is None:
+        return None
+    spec = kwargs.get("spec")
+    context = (*spec.claims, *spec.promos) if spec is not None else ()
+    missing = uncovered_claims(base, must, context)
+    if not missing:
+        return None
+    extra = " ".join(
+        claim if claim.rstrip().endswith(tuple(_SENTENCE_STOPS)) else claim.rstrip(" ,;:") + "."
+        for claim in missing
+    )
+    return check_unit_text(f"{base} {extra}", **kwargs)[0]
+
+
 _RETRY_HINTS = {
     "hard_sell": "Bản trước bị loại vì dùng lời thúc giục hoặc khoe quá đà: {phrases}. Viết lại, "
     "KHÔNG dùng các cụm đó hay ý tương tự; giọng nhẹ nhàng, nêu sự thật như chủ shop đã viết.",

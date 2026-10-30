@@ -95,6 +95,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     fallback_unit_text,
     offending_phrases,
     retry_hint,
+    rescue_unit_text,
     salvage_unit_text,
     uncovered_claims,
     plan_units,
@@ -1503,6 +1504,8 @@ class ScriptAuthoringServiceImpl:
                 if text is None:
                     # Wording-only rejection: cut the offending sentence instead of another paid call.
                     text = salvage_unit_text(raw, why, **check)
+                    if text is None:
+                        text = rescue_unit_text(raw, why, final=attempt == 3, **check)
                     if text is not None:
                         logger.info(
                             "script unit salvaged product=%s unit=%s reason=%s", pid, index, why
@@ -3500,6 +3503,8 @@ class ScriptAuthoringServiceImpl:
                 text, why = check_unit_text(raw, **check)
                 if text is None:
                     text = salvage_unit_text(raw, why, **check)
+                if text is None:
+                    text = rescue_unit_text(raw, why, final=attempt == 3, **check)
                 if text is None:
                     detail = (
                         uncovered_claims(raw or "", spec.must)
