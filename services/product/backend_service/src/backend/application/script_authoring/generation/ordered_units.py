@@ -930,6 +930,23 @@ def _has_number(sentence: str) -> bool:
     )
 
 
+# Words that flip or restrict what a policy says. A kept model sentence may use one only if the owner's own
+# statements use it too ("có thu phí" or "chỉ đổi khi..." next to "miễn phí" must never survive a rescue).
+_POLARITY_WORDS = frozenset(
+    _fold(w) for w in "không chưa chỉ trừ ngoại nếu khi miễn phí mất thu đã chẳng".split()
+)
+
+
+def _supported(sentence: str, facts: tuple[str, ...]) -> bool:
+    """The sentence only rephrases the owner's statements: most content words come from them and every
+    polarity/restriction word is one they use."""
+    known = set(re.findall(r"[^\W\d_]{2,}", _fold(" ".join(facts))))
+    words = re.findall(r"[^\W\d_]{2,}", _fold(sentence))
+    if not words or any(w in _POLARITY_WORDS and w not in known for w in words):
+        return False
+    return sum(1 for w in words if w in known) >= _COVERAGE * len(words)
+
+
 def rescue_unit_text(
     raw: str | None, why: str | None, *, final: bool = False, **kwargs
 ) -> str | None:
@@ -958,12 +975,17 @@ def rescue_unit_text(
     base, _ = check_unit_text(text, **{**kwargs, "must": ()})
     if base is None:
         return None
-    kept = [s for s in re.split(r"(?<=[.!?…])\s+", base) if s and not _has_number(s)]
+    spec = kwargs.get("spec")
+    context = (*spec.claims, *spec.promos) if spec is not None else ()
+    facts = (*context, *must)
+    kept = [
+        s
+        for s in re.split(r"(?<=[.!?…])\s+", base)
+        if s and not _has_number(s) and _supported(s, facts)
+    ]
     if not kept:
         return None
     fluent = " ".join(kept)
-    spec = kwargs.get("spec")
-    context = (*spec.claims, *spec.promos) if spec is not None else ()
     missing = uncovered_claims(fluent, must, context)
     if not missing:
         return None

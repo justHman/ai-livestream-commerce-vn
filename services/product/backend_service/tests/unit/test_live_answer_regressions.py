@@ -551,21 +551,12 @@ def test_missing_must_keep_claims_are_appended_verbatim_only_on_the_final_attemp
     )
 
     kwargs, claim = _assurance_check()
-    raw = "Áo này mặc rất mát và thoải mái cả ngày nha mọi người."
+    raw = "Áo chưa giặt, còn tem mác thì mình đổi size miễn phí nha mọi người."
     text, why = check_unit_text(raw, **kwargs)
     assert text is None and why == "coverage"
     assert rescue_unit_text(raw, why, **kwargs) is None
     saved = rescue_unit_text(raw, why, final=True, **kwargs)
     assert saved == f"{raw} {claim}"
-
-
-def test_a_wording_rejection_is_not_rescued_by_appending_claims():
-    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
-
-    kwargs, _claim = _assurance_check()
-    assert (
-        rescue_unit_text("Chốt đơn ngay nha mọi người.", "hard_sell", final=True, **kwargs) is None
-    )
 
 
 def test_a_wrong_number_beside_the_approved_claim_is_never_kept():
@@ -575,11 +566,12 @@ def test_a_wrong_number_beside_the_approved_claim_is_never_kept():
     )
 
     kwargs, claim = _assurance_check()
-    raw = "Mình đổi size miễn phí trong ba mươi ngày nha mọi người. Áo này mặc rất thoải mái."
+    ok = "Áo chưa giặt, còn tem mác thì mình đổi size miễn phí nha mọi người."
+    raw = f"Mình đổi size miễn phí trong ba mươi ngày nha mọi người. {ok}"
     text, why = check_unit_text(raw, **kwargs)
     assert text is None and why == "coverage"
     saved = rescue_unit_text(raw, why, final=True, **kwargs)
-    assert saved == f"Áo này mặc rất thoải mái. {claim}"
+    assert saved == f"{ok} {claim}"
     assert "ba mươi" not in saved
 
 
@@ -589,6 +581,28 @@ def test_nothing_is_rescued_when_every_model_sentence_carried_a_number():
     kwargs, _claim = _assurance_check()
     raw = "Mình đổi size miễn phí trong ba mươi ngày nha mọi người."
     assert rescue_unit_text(raw, "coverage", final=True, **kwargs) is None
+
+
+def test_model_sentences_that_flip_or_add_a_restriction_are_never_kept():
+    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
+
+    kwargs, _claim = _assurance_check()
+    for raw in (
+        "Đổi size có thu phí nha mọi người.",
+        "Chỉ đổi khi shop giao nhầm màu nha mọi người.",
+        "Áo đã giặt vẫn đổi size miễn phí nha mọi người.",
+        "Áo này mặc rất mát và thoải mái cả ngày nha mọi người.",
+    ):
+        assert rescue_unit_text(raw, "coverage", final=True, **kwargs) is None, raw
+
+
+def test_a_wording_rejection_is_not_rescued_by_appending_claims():
+    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
+
+    kwargs, _claim = _assurance_check()
+    assert (
+        rescue_unit_text("Chốt đơn ngay nha mọi người.", "hard_sell", final=True, **kwargs) is None
+    )
 
 
 def test_a_decimal_point_is_not_a_sentence_boundary_when_cutting_a_truncated_tail():
