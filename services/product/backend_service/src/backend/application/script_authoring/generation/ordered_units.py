@@ -920,7 +920,14 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
     return check_unit_text(" ".join(kept), **kwargs)[0]
 
 
-_SENTENCE_STOPS = ".!?…"
+# A stop ends a sentence only before whitespace or the end, so "1.5 kg" is never cut after the "1.".
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
+
+
+def _has_number(sentence: str) -> bool:
+    return bool(re.search(r"\d", sentence)) or any(
+        w in _NUMBER_WORDS for w in _spoken_words(sentence)
+    )
 
 
 def rescue_unit_text(
@@ -930,35 +937,41 @@ def rescue_unit_text(
 
     - "truncated": the model's cut-off tail is dropped back to its last complete sentence.
     - "coverage" (only when `final`): the owner's own must-keep statements the model left out are appended
-      verbatim after its fluent text. Every other guard still runs on the result.
-    None when the text still fails any check."""
+      verbatim after the model's number-free sentences. A sentence with a number is dropped first: the
+      owner's claim carries the right figure, and a wrong one ("ba mươi ngày" next to the approved "bảy
+      ngày") would otherwise pass beside it. Every other guard still runs on the result.
+    None when nothing fluent is left or the text still fails any check."""
     if why not in ("truncated", "coverage") or not raw:
         return None
     text = raw
     if why == "truncated":
-        cut = max(raw.rfind(stop) for stop in _SENTENCE_STOPS)
-        if cut < 0:
+        stops = list(_SENTENCE_BOUNDARY_RE.finditer(raw))
+        if not stops:
             return None
-        text = raw[: cut + 1]
+        text = raw[: stops[-1].end()]
     saved, rejected = check_unit_text(text, **kwargs)
     if saved is not None:
         return saved
-    must = tuple(kwargs.get("must") or ())
+    must = tuple(dict.fromkeys(kwargs.get("must") or ()))
     if rejected != "coverage" or not final or not must:
         return None
     base, _ = check_unit_text(text, **{**kwargs, "must": ()})
     if base is None:
         return None
+    kept = [s for s in re.split(r"(?<=[.!?…])\s+", base) if s and not _has_number(s)]
+    if not kept:
+        return None
+    fluent = " ".join(kept)
     spec = kwargs.get("spec")
     context = (*spec.claims, *spec.promos) if spec is not None else ()
-    missing = uncovered_claims(base, must, context)
+    missing = uncovered_claims(fluent, must, context)
     if not missing:
         return None
     extra = " ".join(
-        claim if claim.rstrip().endswith(tuple(_SENTENCE_STOPS)) else claim.rstrip(" ,;:") + "."
+        claim if _SENTENCE_END_RE.search(claim.rstrip()) else claim.rstrip(" ,;:") + "."
         for claim in missing
     )
-    return check_unit_text(f"{base} {extra}", **kwargs)[0]
+    return check_unit_text(f"{fluent} {extra}", **kwargs)[0]
 
 
 _RETRY_HINTS = {

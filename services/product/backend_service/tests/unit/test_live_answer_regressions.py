@@ -566,3 +566,39 @@ def test_a_wording_rejection_is_not_rescued_by_appending_claims():
     assert (
         rescue_unit_text("Chốt đơn ngay nha mọi người.", "hard_sell", final=True, **kwargs) is None
     )
+
+
+def test_a_wrong_number_beside_the_approved_claim_is_never_kept():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        rescue_unit_text,
+    )
+
+    kwargs, claim = _assurance_check()
+    raw = "Mình đổi size miễn phí trong ba mươi ngày nha mọi người. Áo này mặc rất thoải mái."
+    text, why = check_unit_text(raw, **kwargs)
+    assert text is None and why == "coverage"
+    saved = rescue_unit_text(raw, why, final=True, **kwargs)
+    assert saved == f"Áo này mặc rất thoải mái. {claim}"
+    assert "ba mươi" not in saved
+
+
+def test_nothing_is_rescued_when_every_model_sentence_carried_a_number():
+    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
+
+    kwargs, _claim = _assurance_check()
+    raw = "Mình đổi size miễn phí trong ba mươi ngày nha mọi người."
+    assert rescue_unit_text(raw, "coverage", final=True, **kwargs) is None
+
+
+def test_a_decimal_point_is_not_a_sentence_boundary_when_cutting_a_truncated_tail():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        rescue_unit_text,
+    )
+
+    kwargs = {"approved": ("Mẫu này có khối lượng 1.5 kg.",), "product_name": "Áo"}
+    raw = "Mẫu này có khối lượng 1.5 kg và"
+    text, why = check_unit_text(raw, **kwargs)
+    assert text is None and why == "truncated"
+    assert rescue_unit_text(raw, why, **kwargs) is None

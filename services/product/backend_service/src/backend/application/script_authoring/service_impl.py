@@ -1505,7 +1505,7 @@ class ScriptAuthoringServiceImpl:
                     # Wording-only rejection: cut the offending sentence instead of another paid call.
                     text = salvage_unit_text(raw, why, **check)
                     if text is None:
-                        text = rescue_unit_text(raw, why, final=attempt == 3, **check)
+                        text = rescue_unit_text(raw, why, final=unit_writes[index] >= 3, **check)
                     if text is not None:
                         logger.info(
                             "script unit salvaged product=%s unit=%s reason=%s", pid, index, why
