@@ -920,6 +920,84 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
     return check_unit_text(" ".join(kept), **kwargs)[0]
 
 
+# A stop ends a sentence only before whitespace or the end, so "1.5 kg" is never cut after the "1.".
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?…][\"'”’)\]]*(?=\s|$)")
+
+
+def _has_number(sentence: str) -> bool:
+    return bool(re.search(r"\d", sentence)) or any(
+        w in _NUMBER_WORDS for w in _spoken_words(sentence)
+    )
+
+
+# Words that flip or restrict what a policy says. A kept model sentence may use one only if the owner's own
+# statements use it too ("có thu phí" or "chỉ đổi khi..." next to "miễn phí" must never survive a rescue).
+_POLARITY_WORDS = frozenset(
+    _fold(w) for w in "không chưa chỉ trừ ngoại nếu khi miễn phí mất thu đã chẳng".split()
+)
+
+
+def _supported(sentence: str, facts: tuple[str, ...]) -> bool:
+    """Heuristic, not proof: most content words come from the owner's statements and every
+    polarity/restriction word is one they use. It cannot catch a meaning change made with other words
+    (the normal accepted path has the same limit), so rescue only keeps sentences that pass it."""
+    known = set(re.findall(r"[^\W\d_]{2,}", _fold(" ".join(facts))))
+    words = re.findall(r"[^\W\d_]{2,}", _fold(sentence))
+    if not words or any(w in _POLARITY_WORDS and w not in known for w in words):
+        return False
+    return sum(1 for w in words if w in known) >= _COVERAGE * len(words)
+
+
+def rescue_unit_text(
+    raw: str | None, why: str | None, *, final: bool = False, **kwargs
+) -> str | None:
+    """Last write only (`final`): the last chance before the extractive fallback or a failed part. The earlier
+    writes keep their retry hints; nothing here ever invents a word.
+
+    - "truncated": the model's cut-off tail is dropped back to its last complete sentence.
+    - "coverage": the owner's own must-keep statements the model left out are appended verbatim after the
+      model's number-free sentences that only rephrase the owner's statements. A sentence with a number
+      is dropped first: the owner's claim carries the right figure, and a wrong one ("ba mươi ngày" next
+      to the approved "bảy ngày") would otherwise pass beside it. Every other guard still runs.
+    None when nothing fluent is left or the text still fails any check."""
+    if not final or why not in ("truncated", "coverage") or not raw:
+        return None
+    text = raw
+    if why == "truncated":
+        stops = list(_SENTENCE_BOUNDARY_RE.finditer(raw))
+        if not stops:
+            return None
+        text = raw[: stops[-1].end()]
+    saved, rejected = check_unit_text(text, **kwargs)
+    if saved is not None:
+        return saved
+    must = tuple(dict.fromkeys(kwargs.get("must") or ()))
+    if rejected != "coverage" or not must:
+        return None
+    base, _ = check_unit_text(text, **{**kwargs, "must": ()})
+    if base is None:
+        return None
+    spec = kwargs.get("spec")
+    context = (*spec.claims, *spec.promos) if spec is not None else ()
+    facts = (*context, *must)
+    kept = [
+        s
+        for s in re.split(r"(?<=[.!?…])\s+", base)
+        if s and not _has_number(s) and _supported(s, facts)
+    ]
+    if not kept:
+        return None
+    fluent = " ".join(kept)
+    missing = uncovered_claims(fluent, must, context)
+    if not missing:
+        return None
+    extra = " ".join(
+        claim if _SENTENCE_END_RE.search(claim.rstrip()) else claim.rstrip(" ,;:") + "."
+        for claim in missing
+    )
+    return check_unit_text(f"{fluent} {extra}", **kwargs)[0]
+
+
 _RETRY_HINTS = {
     "hard_sell": "Bản trước bị loại vì dùng lời thúc giục hoặc khoe quá đà: {phrases}. Viết lại, "
     "KHÔNG dùng các cụm đó hay ý tương tự; giọng nhẹ nhàng, nêu sự thật như chủ shop đã viết.",

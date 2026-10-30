@@ -508,3 +508,112 @@ def test_a_product_question_addressed_to_the_host_with_a_deictic_word_is_a_shop_
     from backend.application.script_authoring.answer_context import is_off_topic
 
     assert not is_off_topic("anh có biết cái này có gây dị ứng không ạ?", ["Giá 180000 đồng"])
+
+
+def _assurance_check():
+    from backend.application.script_authoring.generation.ordered_units import UnitSpec
+
+    claim = "Đổi size miễn phí trong bảy ngày nếu áo chưa giặt và còn tem mác."
+    return {
+        "spec": UnitSpec("assurance", claims=(claim,), must=(claim,)),
+        "approved": (claim,),
+        "product_name": "Áo sơ mi Livento",
+        "must": (claim,),
+    }, claim
+
+
+def test_a_cut_off_tail_is_dropped_back_to_the_last_complete_sentence():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        rescue_unit_text,
+    )
+
+    raw = (
+        "Mẫu này hiện có giá một trăm tám mươi nghìn đồng thôi mọi người ơi. "
+        "Mua hai sản phẩm thì được giảm mười phần trăm tổng hóa đơn nữa và"
+    )
+    text, why = check_unit_text(raw, **_offer_check())
+    assert text is None and why == "truncated"
+    saved = rescue_unit_text(raw, why, final=True, **_offer_check())
+    assert saved == "Mẫu này hiện có giá một trăm tám mươi nghìn đồng thôi mọi người ơi."
+
+
+def test_nothing_is_rescued_when_no_sentence_was_completed():
+    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
+
+    raw = "Mẫu này hiện có giá một trăm"
+    assert rescue_unit_text(raw, "truncated", final=True, **_offer_check()) is None
+
+
+def test_missing_must_keep_claims_are_appended_verbatim_only_on_the_final_attempt():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        rescue_unit_text,
+    )
+
+    kwargs, claim = _assurance_check()
+    raw = "Áo chưa giặt, còn tem mác thì mình đổi size miễn phí nha mọi người."
+    text, why = check_unit_text(raw, **kwargs)
+    assert text is None and why == "coverage"
+    assert rescue_unit_text(raw, why, **kwargs) is None  # earlier writes keep their retry
+    saved = rescue_unit_text(raw, why, final=True, **kwargs)
+    assert saved == f"{raw} {claim}"
+
+
+def test_a_wrong_number_beside_the_approved_claim_is_never_kept():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        rescue_unit_text,
+    )
+
+    kwargs, claim = _assurance_check()
+    ok = "Áo chưa giặt, còn tem mác thì mình đổi size miễn phí nha mọi người."
+    raw = f"Mình đổi size miễn phí trong ba mươi ngày nha mọi người. {ok}"
+    text, why = check_unit_text(raw, **kwargs)
+    assert text is None and why == "coverage"
+    saved = rescue_unit_text(raw, why, final=True, **kwargs)
+    assert saved == f"{ok} {claim}"
+    assert "ba mươi" not in saved
+
+
+def test_nothing_is_rescued_when_every_model_sentence_carried_a_number():
+    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
+
+    kwargs, _claim = _assurance_check()
+    raw = "Mình đổi size miễn phí trong ba mươi ngày nha mọi người."
+    assert rescue_unit_text(raw, "coverage", final=True, **kwargs) is None
+
+
+def test_model_sentences_that_flip_or_add_a_restriction_are_never_kept():
+    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
+
+    kwargs, _claim = _assurance_check()
+    for raw in (
+        "Đổi size có thu phí nha mọi người.",
+        "Chỉ đổi khi shop giao nhầm màu nha mọi người.",
+        "Áo đã giặt vẫn đổi size miễn phí nha mọi người.",
+        "Áo này mặc rất mát và thoải mái cả ngày nha mọi người.",
+    ):
+        assert rescue_unit_text(raw, "coverage", final=True, **kwargs) is None, raw
+
+
+def test_a_wording_rejection_is_not_rescued_by_appending_claims():
+    from backend.application.script_authoring.generation.ordered_units import rescue_unit_text
+
+    kwargs, _claim = _assurance_check()
+    assert (
+        rescue_unit_text("Chốt đơn ngay nha mọi người.", "hard_sell", final=True, **kwargs) is None
+    )
+
+
+def test_a_decimal_point_is_not_a_sentence_boundary_when_cutting_a_truncated_tail():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        rescue_unit_text,
+    )
+
+    kwargs = {"approved": ("Mẫu này có khối lượng 1.5 kg.",), "product_name": "Áo"}
+    raw = "Mẫu này có khối lượng 1.5 kg và"
+    text, why = check_unit_text(raw, **kwargs)
+    assert text is None and why == "truncated"
+    assert rescue_unit_text(raw, why, final=True, **kwargs) is None
