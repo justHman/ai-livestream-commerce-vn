@@ -938,8 +938,9 @@ _POLARITY_WORDS = frozenset(
 
 
 def _supported(sentence: str, facts: tuple[str, ...]) -> bool:
-    """The sentence only rephrases the owner's statements: most content words come from them and every
-    polarity/restriction word is one they use."""
+    """Heuristic, not proof: most content words come from the owner's statements and every
+    polarity/restriction word is one they use. It cannot catch a meaning change made with other words
+    (the normal accepted path has the same limit), so rescue only keeps sentences that pass it."""
     known = set(re.findall(r"[^\W\d_]{2,}", _fold(" ".join(facts))))
     words = re.findall(r"[^\W\d_]{2,}", _fold(sentence))
     if not words or any(w in _POLARITY_WORDS and w not in known for w in words):
