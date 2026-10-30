@@ -617,3 +617,40 @@ def test_a_decimal_point_is_not_a_sentence_boundary_when_cutting_a_truncated_tai
     text, why = check_unit_text(raw, **kwargs)
     assert text is None and why == "truncated"
     assert rescue_unit_text(raw, why, final=True, **kwargs) is None
+
+
+def test_the_repair_prompt_shows_only_the_latest_rejected_text_and_its_exact_reason():
+    from backend.application.script_authoring.generation.ordered_units import guard_repair_prompt
+
+    prompt = guard_repair_prompt("BASE", "Bản nháp lỗi.", "Câu bị cụt.")
+    assert prompt.startswith(
+        "BASE\n\nBản trước bị từ chối:\nBản nháp lỗi.\nLý do:\n- Câu bị cụt.\n"
+    )
+    assert "giữ nguyên các câu đã đúng" in prompt
+    assert guard_repair_prompt("BASE", "  ", "AI trả về rỗng.") == "BASE\n\nAI trả về rỗng."
+
+
+def test_the_problem_line_names_the_sentence_that_mixed_two_unrelated_facts():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        guard_problem,
+    )
+
+    raw = "Mẫu này mặc rất mát. Có size M L XL và không phơi ngoài nắng nhé."
+    text, why = check_unit_text(raw)
+    assert text is None and why == "mashup"
+    problem = guard_problem(why, raw)
+    assert "Có size M L XL và không phơi ngoài nắng nhé." in problem
+    assert "Mẫu này mặc rất mát" not in problem
+
+
+def test_the_problem_line_names_the_missing_data_phrase_that_was_spoken():
+    from backend.application.script_authoring.generation.ordered_units import (
+        check_unit_text,
+        guard_problem,
+    )
+
+    raw = "Mẫu này mặc rất thoải mái. Hiện chưa có thông tin về chất liệu."
+    text, why = check_unit_text(raw)
+    assert text is None and why == "missing_info"
+    assert "'Hiện chưa có" in guard_problem(why, raw)

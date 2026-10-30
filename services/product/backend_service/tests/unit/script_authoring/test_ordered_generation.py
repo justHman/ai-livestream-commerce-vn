@@ -289,7 +289,8 @@ async def test_truncated_output_is_detected_and_retried_shorter() -> None:
     _item, version = await _text(repos, set_id, "P2")
     assert P2_CLAIMS[0] in version.spoken_text and P2_CLAIMS[1] in version.spoken_text
     assert len(llm.prompts) == 10  # exactly one retry
-    assert "NGẮN HƠN" in next(p for p in llm.prompts if p.endswith("kết thúc trọn câu."))
+    retry = next(p for p in llm.prompts if "NGẮN HƠN" in p)
+    assert "Bản trước bị từ chối:\n" in retry  # the retry repairs the cut-off text itself
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     assert all("fallback_units" not in p for p in snapshot["products"])
 
