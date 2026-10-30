@@ -1036,6 +1036,59 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
     return f"\nBản trước không đạt kiểm tra: {why}. Sửa đúng lỗi, kết thúc trọn câu."
 
 
+def guard_problem(why: str | None, raw: str | None, approved: tuple[str, ...] = ()) -> str:
+    """One line naming exactly what is wrong with the rejected text, for the next write to fix in place.
+
+    Covers the reasons retry_hint only names generically (an unrelated pair joined by "và", a "missing data"
+    phrase); everything else is retry_hint's own wording."""
+    # Same cleanup check_unit_text applies before it decides, so the diagnosis sees what the guard saw.
+    text = re.sub(r"\s+", " ", _DASH_RE.sub(", ", _FENCE_RE.sub("", raw or ""))).strip()
+    if why == "mashup":
+        joined = []
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            if " và " in sentence:
+                left, _, right = sentence.partition(" và ")
+                a, b = _topics(left), _topics(right)
+                if a and b and not (a & b):
+                    joined.append(sentence.strip())
+        if joined:
+            return (
+                "Bản trước ghép hai ý không liên quan bằng chữ 'và': "
+                + " | ".join(joined)[:300]
+                + ". Tách thành các câu riêng, mỗi câu một ý."
+            )
+    if why == "missing_info":
+        statements = [" ".join(a.lower().split()) for a in approved]
+        phrases = list(
+            dict.fromkeys(
+                m.group().strip()
+                for m in _MISSING_INFO_RE.finditer(text)
+                # A phrase the owner's own statement says ("Không có khuyến mãi...") is allowed, never listed.
+                if not any(m.group().lower() in s for s in statements)
+            )
+        )
+        if phrases:
+            return (
+                "Bản trước nói thiếu hoặc không có thông tin: "
+                + ", ".join(f"'{p}'" for p in phrases[:4])
+                + ". Bỏ ý đó, chỉ nêu thông tin được phép."
+            )
+    return retry_hint(why, raw, approved).strip()
+
+
+def guard_repair_prompt(base: str, raw: str | None, problem: str) -> str:
+    """The original prompt plus the rejected text and the exact reason, so the next write corrects that text
+    instead of starting over. Only the latest rejection is shown, so the prompt never grows per attempt."""
+    failed = (raw or "").strip()
+    if not failed:
+        return f"{base}\n\n{problem}"
+    return (
+        f"{base}\n\nBản trước bị từ chối:\n{failed}\nLý do:\n- {problem}\n"
+        "Sửa đúng bản trước theo lý do trên: giữ nguyên các câu đã đúng, chỉ sửa hoặc thêm chỗ lỗi; "
+        "vẫn tự nhiên, đủ ý, không thêm thông tin sai."
+    )
+
+
 def clean_unit_text(raw: str | None, **kwargs) -> str | None:
     return check_unit_text(raw, **kwargs)[0]
 

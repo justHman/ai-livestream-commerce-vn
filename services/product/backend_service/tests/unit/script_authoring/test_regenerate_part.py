@@ -72,9 +72,13 @@ async def repair_part(service, set_id, before, index):
 async def test_coverage_retry_names_only_the_missing_claim():
     service, repos, llm, set_id, before, index = await shipping_part()
 
+    marker = _COVERAGE_RETRY.strip()
+
     def reply(prompt):
-        if _COVERAGE_RETRY in prompt:
-            assert prompt.split(_COVERAGE_RETRY)[-1] == SHIPPING[1]
+        if marker in prompt:
+            # The repair prompt shows the rejected text and names only what it left out.
+            assert prompt.split(marker)[-1].split("\n")[0].strip() == SHIPPING[1]
+            assert f"Bản trước bị từ chối:\n{SHIPPING[0]}\n" in prompt
             return " ".join(SHIPPING)
         return SHIPPING[0]
 
@@ -119,10 +123,12 @@ async def test_guard_retries_repair_the_specific_problem(reason):
         # Require both repairs before succeeding: exercises the new third attempt.
         if len(llm.prompts) < 3:
             return bad
+        # Each repair shows the latest rejected text once, with only its own reason.
+        assert f"Bản trước bị từ chối:\n{bad.strip()}\n" in prompt
         if reason == "cta":
-            assert prompt.count("('nhắn tin')") == 2
+            assert prompt.count("('nhắn tin')") == 1
         else:
-            assert prompt.count(_SHORTER_RETRY) == 2
+            assert prompt.count(_SHORTER_RETRY.strip()) == 1
         return " ".join(SHIPPING)
 
     llm.repair = reply

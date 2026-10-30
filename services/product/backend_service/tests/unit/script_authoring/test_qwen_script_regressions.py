@@ -152,7 +152,8 @@ async def test_full_generation_shares_three_calls_across_foreign_and_truncated_r
                 if self.attempts < 3:
                     self.prompts.append(prompt)
                     return "Mẫu này đẹp能找到." if self.attempts == 1 else "Mẫu này chưa kết thúc"
-                assert "能找到" in prompt and "NGẮN HƠN" in prompt
+                # Each retry repairs the latest rejected text for its own reason.
+                assert "Mẫu này chưa kết thúc" in prompt and "NGẮN HƠN" in prompt
             return super().__call__(prompt)
 
     llm = MixedLLM()

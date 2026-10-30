@@ -94,7 +94,8 @@ from backend.application.script_authoring.generation.ordered_units import (
     claims_not_spoken,
     fallback_unit_text,
     offending_phrases,
-    retry_hint,
+    guard_problem,
+    guard_repair_prompt,
     rescue_unit_text,
     salvage_unit_text,
     uncovered_claims,
@@ -183,6 +184,17 @@ _COVERAGE_RETRY = "\n\nLần trước thiếu ý BẮT BUỘC. Phải nói đủ
 _SHORTER_RETRY = (
     "\n\nLần trước câu bị cụt hoặc quá dài. Viết NGẮN HƠN: tối đa 4 câu, kết thúc trọn câu."
 )
+
+
+def _guard_problem(
+    why: str | None, raw: str | None, approved: tuple[str, ...], must: tuple[str, ...]
+) -> str:
+    """The exact reason a rejected text failed, as one line for the repair prompt."""
+    if why == "coverage":
+        return _COVERAGE_RETRY.strip() + " " + " | ".join(uncovered_claims(raw or "", must))
+    if why in ("truncated", "too_long"):
+        return _SHORTER_RETRY.strip()
+    return guard_problem(why, raw, approved)
 
 
 def _legacy_spec(intent: str | None, roles: list[UnitSpec], index: int) -> UnitSpec | None:
@@ -1453,6 +1465,7 @@ class ScriptAuthoringServiceImpl:
         def write(index: int, prompt: str, continuity: ContinuityState) -> SegmentStepOutcome:
             # Guards and gate repair share at most three writes (including the initial call).
             reason = "empty"
+            base_prompt = prompt
             for attempt in (1, 2, 3):
                 # Guard retry and gate repair share ONE semantic budget, instead
                 # of nesting two-by-two calls for the same part.
@@ -1538,13 +1551,12 @@ class ScriptAuthoringServiceImpl:
                     offending_phrases(raw, reason, check["approved"]),
                     (raw or "")[:120],
                 )
-                if reason in ("truncated", "too_long"):
-                    prompt = prompt + _SHORTER_RETRY
-                elif reason == "coverage":
-                    left_out = uncovered_claims(raw or "", roles[index].must)
-                    prompt = prompt + _COVERAGE_RETRY + " | ".join(left_out)
-                else:
-                    prompt = prompt + retry_hint(reason, raw, check["approved"])
+                # The next write corrects THIS rejected text for exactly this reason (not a blind redo).
+                prompt = guard_repair_prompt(
+                    base_prompt,
+                    raw,
+                    _guard_problem(reason, raw, check["approved"], roles[index].must),
+                )
             return SegmentStepOutcome(index=index, state=continuity, error=f"guard:{reason}")
 
         def segment_generate(index, continuity, _target=None) -> SegmentStepOutcome:
@@ -3469,6 +3481,7 @@ class ScriptAuthoringServiceImpl:
                 + current.spoken_text
             )
             new_segment = None
+            base_prompt = prompt
             # The durable reservation and this loop both permit three total writes.
             for attempt in (1, 2, 3):
                 budget = getattr(self._repos, "model_budget", None)
@@ -3535,19 +3548,17 @@ class ScriptAuthoringServiceImpl:
                         else "Phần này chưa đạt vì "
                         + explanations.get(why, "cách diễn đạt chưa phù hợp")
                     )[:600].rstrip(". ") + ". Giữ bản hiện tại."
-                    if why == "coverage":
-                        prompt += _COVERAGE_RETRY + " | ".join(detail)
-                    elif why in ("truncated", "too_long"):
-                        prompt += _SHORTER_RETRY
-                    else:
-                        prompt += retry_hint(why, raw, check["approved"])
+                    prompt = guard_repair_prompt(
+                        base_prompt, raw, _guard_problem(why, raw, check["approved"], spec.must)
+                    )
                     continue
                 if spec.revisit and recap_violation(text):
                     job.input_snapshot["last_rejection"] = (
                         "Phần này cần là lời nhắc lại nhưng đang giống phần giới thiệu. "
                         "Giữ bản hiện tại."
                     )
-                    prompt += RECAP_RETRY
+                    # Kept in the base so a later guard repair still carries this constraint.
+                    base_prompt = prompt = base_prompt + RECAP_RETRY
                     continue
                 low, high = role_bounds_s(spec.role)
                 result = self._gate.run_segment(
@@ -3580,7 +3591,7 @@ class ScriptAuthoringServiceImpl:
                         [v.rule_id for v in result.violations][:6],
                         [v.message[:240] for v in result.violations][:6],
                     )
-                    prompt = (
+                    base_prompt = prompt = (
                         build_unit_repair_prompt(
                             ordered.session,
                             product,
@@ -3598,7 +3609,10 @@ class ScriptAuthoringServiceImpl:
                     job.input_snapshot["last_rejection"] = (
                         "Phần này còn lặp cách mở đầu với các phần khác. Giữ bản hiện tại."
                     )
-                    prompt += "\nĐổi cách mở đầu, tránh các cách mở đầu đã dùng trong cả phiên."
+                    base_prompt = prompt = (
+                        base_prompt
+                        + "\nĐổi cách mở đầu, tránh các cách mở đầu đã dùng trong cả phiên."
+                    )
                     continue
                 new_segment = ScriptSegment(
                     **{
