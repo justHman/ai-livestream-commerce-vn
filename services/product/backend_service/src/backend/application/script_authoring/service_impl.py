@@ -3557,7 +3557,8 @@ class ScriptAuthoringServiceImpl:
                         "Phần này cần là lời nhắc lại nhưng đang giống phần giới thiệu. "
                         "Giữ bản hiện tại."
                     )
-                    prompt += RECAP_RETRY
+                    # Kept in the base so a later guard repair still carries this constraint.
+                    base_prompt = prompt = base_prompt + RECAP_RETRY
                     continue
                 low, high = role_bounds_s(spec.role)
                 result = self._gate.run_segment(
@@ -3590,7 +3591,7 @@ class ScriptAuthoringServiceImpl:
                         [v.rule_id for v in result.violations][:6],
                         [v.message[:240] for v in result.violations][:6],
                     )
-                    prompt = (
+                    base_prompt = prompt = (
                         build_unit_repair_prompt(
                             ordered.session,
                             product,
@@ -3608,7 +3609,10 @@ class ScriptAuthoringServiceImpl:
                     job.input_snapshot["last_rejection"] = (
                         "Phần này còn lặp cách mở đầu với các phần khác. Giữ bản hiện tại."
                     )
-                    prompt += "\nĐổi cách mở đầu, tránh các cách mở đầu đã dùng trong cả phiên."
+                    base_prompt = prompt = (
+                        base_prompt
+                        + "\nĐổi cách mở đầu, tránh các cách mở đầu đã dùng trong cả phiên."
+                    )
                     continue
                 new_segment = ScriptSegment(
                     **{
