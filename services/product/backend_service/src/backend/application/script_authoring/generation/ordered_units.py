@@ -19,7 +19,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, replace
 
-from ..compile import compile_spoken_text, number_to_vietnamese_words
+from ..compile import brand_spans, compile_spoken_text, number_to_vietnamese_words
 from ..duration import spoken_duration_ms
 from ..gate.rules.commerce_claims import _vnd_amount
 
@@ -29,6 +29,7 @@ __all__ = [
     "ProductBrief",
     "SessionBrief",
     "UnitSpec",
+    "brand_mentions",
     "build_unit_prompt",
     "build_unit_repair_prompt",
     "clean_unit_text",
@@ -114,6 +115,8 @@ _GUIDE = {
         "không dùng 'không bỏ lỡ' hay 'đừng bỏ lỡ'."
     ),
 }
+# The only roles where the brand may be said (at most once per part, never in two adjacent parts).
+_BRAND_ROLES = ("opening", "intro", "offer", "closing")
 # The role title is also sent to the model. "Cam kết và lưu ý" made it open every assurance part with
 # "Mình cam kết", so the prompt uses a neutral title; the owner-visible title stays in _TITLES.
 _PROMPT_TITLES = {**_TITLES, "assurance": "Chính sách mua hàng và lưu ý"}
@@ -395,6 +398,9 @@ class ProductBrief:
     claims_by_type: tuple[tuple[str, tuple[str, ...]], ...] = ()  # optional grouping
     info: tuple[tuple[str, str], ...] = ()  # brand / category / short_description
     previous_name: str | None = None  # only when the set is ORDER_AWARE
+    brand: str = ""
+    # How the voice says the brand; never shown to the model, applied to spoken_text only.
+    brand_pronunciation: str = ""
 
 
 @dataclass(frozen=True)
@@ -791,6 +797,16 @@ def _topics(sentence: str) -> set[str]:
     return {name for name, rx in _TOPICS.items() if rx.search(sentence)}
 
 
+def brand_mentions(text: str, brand: str, product_name: str = "") -> int:
+    """How often a text says the brand. The brand inside the product name is the name's business
+    (name_repeat), not a brand mention."""
+    if not brand:
+        return 0
+    if product_name:
+        text = re.sub(re.escape(product_name), " ", text, flags=re.IGNORECASE)
+    return len(brand_spans(text, brand))
+
+
 def check_unit_text(
     raw: str | None,
     *,
@@ -802,11 +818,15 @@ def check_unit_text(
     name_used_elsewhere: int = 0,
     must: tuple[str, ...] = (),
     aware: bool = True,
+    brand: str = "",
+    brand_used_nearby: int = 0,
 ) -> tuple[str | None, str | None]:
     """(text, None) when usable, else (None, machine reason code).
 
     Reasons: empty, too_long, truncated, missing_info, hard_sell, bridge, address, cta,
-    mashup, opener, name_repeat. Approved prices written as digits become words.
+    mashup, opener, name_repeat, brand_repeat. Approved prices written as digits become words.
+    ``brand_used_nearby`` counts the adjacent units of the same product that already say the brand.
+    A missing brand is never a rejection.
     """
     if not raw:
         return None, "empty"
@@ -872,6 +892,10 @@ def check_unit_text(
     if product_name and role not in ("intro", "offer", "") and name_used_elsewhere >= 3:
         if product_name.lower() in text.lower():
             return None, "name_repeat"
+    if brand:
+        said = brand_mentions(text, brand, product_name)
+        if said and (role not in (*_BRAND_ROLES, "") or said > 1 or brand_used_nearby):
+            return None, "brand_repeat"
     return text, None
 
 
@@ -1029,6 +1053,8 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
         )
     if why == "name_repeat":
         return "\nBản trước lặp tên sản phẩm đầy đủ. Gọi là 'mẫu này' hoặc loại sản phẩm; không lặp tên thương hiệu."
+    if why == "brand_repeat":
+        return "\nBản trước nhắc tên thương hiệu sai chỗ hoặc quá một lần. Bỏ tên thương hiệu khỏi phần này."
     template = _RETRY_HINTS.get(why or "")
     phrases = offending_phrases(raw, why, approved)
     if template and phrases:
@@ -1093,7 +1119,19 @@ def clean_unit_text(raw: str | None, **kwargs) -> str | None:
     return check_unit_text(raw, **kwargs)[0]
 
 
-def _facts_block(product: ProductBrief, spec: UnitSpec, used: list[str]) -> str:
+def _brand_units(specs: list[UnitSpec]) -> set[int]:
+    """Parts invited to say the brand: brand roles only, never two adjacent parts, the intro first."""
+    chosen: set[int] = set()
+    for role in ("intro", "offer", "closing", "opening"):
+        for i, spec in enumerate(specs):
+            if spec.role == role and not spec.revisit and not {i - 1, i + 1} & chosen:
+                chosen.add(i)
+    return chosen
+
+
+def _facts_block(
+    product: ProductBrief, spec: UnitSpec, used: list[str], brand_invited: bool = False
+) -> str:
     lines = [f"Tên sản phẩm: {product.name or product.product_id}"]
     if spec.role not in ("intro", "offer"):
         # The name is context only: a part that repeats it is rejected (name_repeat) and falls back
@@ -1101,8 +1139,18 @@ def _facts_block(product: ProductBrief, spec: UnitSpec, used: list[str]) -> str:
         lines.append(
             "Không nhắc tên sản phẩm này trong phần này; gọi là 'mẫu này' hoặc loại sản phẩm."
         )
+    if product.brand and brand_invited:
+        lines.append(
+            f"Thương hiệu: {product.brand}. Nhắc tên thương hiệu đúng chính tả '{product.brand}' "
+            "tối đa một lần trong phần này, tự nhiên (không chèn vào mọi câu)."
+        )
+    elif product.brand:
+        lines.append("Không nhắc tên thương hiệu trong phần này.")
     if spec.role == "intro":
-        lines += [f"{k}: {v}" for k, v in product.info if v]
+        # The brand line above already carries it.
+        lines += [
+            f"{k}: {v}" for k, v in product.info if v and not (product.brand and k == "Thương hiệu")
+        ]
     if spec.claims:
         lines.append(
             "Thông tin được phép nói (phải nhắc đủ các ý này, đúng sự thật, sắp xếp lại cho tự nhiên):"
@@ -1197,7 +1245,7 @@ def build_unit_prompt(
     position = _position_line(product, spec)
     if position:
         parts.append(position)
-    parts.append(_facts_block(product, spec, used))
+    parts.append(_facts_block(product, spec, used, index in _brand_units(specs)))
     if spec.with_cta:
         parts.append(_CTA_LINE)
     elif spec.role not in ("opening", "closing", "sizes"):

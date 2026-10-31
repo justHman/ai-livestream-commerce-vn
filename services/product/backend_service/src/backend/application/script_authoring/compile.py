@@ -17,6 +17,8 @@ idempotent: compiled text compiles to itself.
 from __future__ import annotations
 
 import re
+import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,6 +26,9 @@ from pydantic import BaseModel, ConfigDict, Field
 __all__ = [
     "CompileResult",
     "CompiledScriptVersion",
+    "apply_brand_pronunciation",
+    "brand_of",
+    "brand_spans",
     "compile_spoken_text",
     "expand_vietnamese_number",
     "number_to_vietnamese_words",
@@ -33,6 +38,7 @@ __all__ = [
 # Normalizer ids in application order. Stable: they are provenance values
 # recorded on compiled versions, so their meaning never changes.
 NORMALIZER_IDS: tuple[str, ...] = (
+    "brand_pronunciation",
     "strip_markup_and_controls",
     "collapse_whitespace",
     "punctuation_and_hyphen",
@@ -333,6 +339,63 @@ def _spell_acronym(match: re.Match[str]) -> str:
     return " ".join(ch for ch in token if ch.isalnum())
 
 
+def _fold(text: str) -> str:
+    """Lowercase without diacritics (đ -> d)."""
+    folded = unicodedata.normalize("NFD", text.lower().replace("đ", "d"))
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Mn")
+
+
+def brand_of(product_info: object) -> tuple[str, str]:
+    """(brand, pronunciation) of a product's ``product_info``; the pronunciation only counts with a brand."""
+    if not isinstance(product_info, dict):
+        return "", ""
+    brand, pronunciation = product_info.get("brand"), product_info.get("brand_pronunciation")
+    brand = brand.strip() if isinstance(brand, str) else ""
+    pronunciation = pronunciation.strip() if isinstance(pronunciation, str) and brand else ""
+    return brand, pronunciation
+
+
+def brand_spans(text: str, brand: str) -> list[tuple[int, int]]:
+    """Whole-word occurrences of ``brand`` in ``text``, ignoring case and diacritics.
+
+    Words of the brand may be separated by spaces or hyphens. A single word of three letters or
+    fewer ("Mai") is also an ordinary Vietnamese word, so it must match exactly as written.
+    """
+    words = [w for w in re.split(r"[\s-]+", brand.strip()) if w]
+    if not words:
+        return []
+    if len(words) == 1 and len(words[0]) <= 3:
+        return [m.span() for m in re.finditer(rf"(?<!\w){re.escape(words[0])}(?!\w)", text)]
+    folded: list[str] = []
+    origin: list[int] = []
+    for i, ch in enumerate(text):
+        for f in _fold(ch):
+            folded.append(f)
+            origin.append(i)
+    pattern = r"(?<!\w)" + r"[\s-]+".join(re.escape(_fold(w)) for w in words) + r"(?!\w)"
+    return [
+        (origin[m.start()], origin[m.end() - 1] + 1) for m in re.finditer(pattern, "".join(folded))
+    ]
+
+
+def apply_brand_pronunciation(text: str, brand: str, pronunciation: str) -> str:
+    """Replace every whole-word ``brand`` with how the voice must say it ("Lai-ven-to" -> "Lai ven to").
+
+    Runs before the acronym speller, so an all-caps brand ("LIVENTO") is read as its pronunciation
+    instead of letter by letter. Idempotent: a pronunciation that still contains the brand is ignored.
+    """
+    spoken = " ".join(w for w in re.split(r"[\s-]+", pronunciation) if w)
+    if not brand.strip() or not spoken or brand_spans(spoken, brand):
+        return text
+    nfc = unicodedata.normalize("NFC", text)
+    spans = brand_spans(nfc, brand)
+    if not spans:
+        return text
+    for start, end in reversed(spans):
+        nfc = nfc[:start] + spoken + nfc[end:]
+    return nfc
+
+
 def _expand_currency(match: re.Match[str]) -> str:
     """Expand a compact price form into spoken Vietnamese words."""
     number, unit = match.group(1), match.group(2).lower()
@@ -368,7 +431,12 @@ class CompileResult:
     applied: tuple[str, ...]
 
 
-def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> CompileResult:
+def compile_spoken_text(
+    display_text: str,
+    *,
+    denomination: str = "đồng",
+    brand_map: Mapping[str, str] | None = None,
+) -> CompileResult:
     """Compile a display string into the exact spoken form (task 4.1).
 
     Deterministic and idempotent: applying ``compile_spoken_text`` to the
@@ -376,7 +444,8 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
     applied, since spoken forms are already spoken forms).
 
     ``denomination`` names the currency suffix word used for bare "đ"
-    prices (``"đồng"`` by default).
+    prices (``"đồng"`` by default). ``brand_map`` maps a brand to its
+    owner-given pronunciation (see ``apply_brand_pronunciation``).
     """
     if denomination not in ("đồng", "VND", "đô"):
         raise ValueError(f"unsupported denomination {denomination!r}")
@@ -384,7 +453,10 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
     paragraphs = [p for p in re.split(r"\n[ \t]*\n", display_text) if p.strip()]
     if len(paragraphs) > 1:
         # Blank-line paragraphs are the script's units: compile each, keep the boundaries.
-        parts = [compile_spoken_text(p, denomination=denomination) for p in paragraphs]
+        parts = [
+            compile_spoken_text(p, denomination=denomination, brand_map=brand_map)
+            for p in paragraphs
+        ]
         applied_all = tuple(dict.fromkeys(a for part in parts for a in part.applied))
         return CompileResult("\n\n".join(part.spoken_text for part in parts), applied_all)
     applied: list[str] = []
@@ -393,6 +465,11 @@ def compile_spoken_text(display_text: str, *, denomination: str = "đồng") -> 
         if new != old:
             applied.append(nid)
         return new
+
+    branded = display_text
+    for brand, pronunciation in (brand_map or {}).items():
+        branded = apply_brand_pronunciation(branded, brand, pronunciation)
+    display_text = _changed(display_text, branded, "brand_pronunciation")
 
     text = _GREATER_RE.sub("trên ", _LESS_RE.sub("dưới ", _strip_markup(display_text)))
     text = _CONTROL_RE.sub("", text)

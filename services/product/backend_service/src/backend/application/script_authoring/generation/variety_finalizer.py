@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from ..compile import apply_brand_pronunciation
 from ..gate.context import ScriptGateContext
 from ..models import GateRun, ScriptSegment, ScriptSource, ScriptState, ScriptVersion, new_id
 from ..repositories import LeaseLostError
-from .ordered_units import build_unit_repair_prompt, check_unit_text, role_bounds_s, spoken_price
+from .ordered_units import (
+    brand_mentions,
+    build_unit_repair_prompt,
+    check_unit_text,
+    role_bounds_s,
+    spoken_price,
+)
 from .script_variety import (
     VarietyPart,
     audit,
@@ -109,7 +116,7 @@ async def finalize(service, state, bridge, revisions, existing_versions, *, leas
     Style failures retain the already valid text. Persistence/lease failures
     propagate: a worker must never declare completion after losing its fence.
     """
-    from ..service_impl import _PRODUCT_SCRIPT_MIN_SECONDS, _to_gate_violation
+    from ..service_impl import _PRODUCT_SCRIPT_MIN_SECONDS, _brand_allowlist, _to_gate_violation
 
     if not state.ordered_units or state.variety.get("done"):
         return
@@ -198,7 +205,8 @@ async def finalize(service, state, bridge, revisions, existing_versions, *, leas
             product,
             roles,
             index,
-            failed_text=current.spoken_text,
+            # What the model wrote: spoken_text may carry a brand pronunciation it must not copy.
+            failed_text=current.display_text,
             problems=[
                 "Chỉ đổi tối đa sáu từ dẫn trung tính ở đầu câu bị lặp, giữ nguyên số câu và "
                 "toàn bộ phần còn lại, mọi giá, thông tin và điều kiện bắt buộc. "
@@ -230,6 +238,7 @@ async def finalize(service, state, bridge, revisions, existing_versions, *, leas
         ):
             continue
         latest_parts, _ = await selected_parts(service, latest)
+        position = next(i for i, s in enumerate(selected) if s.id == current.id)
         text, _reason = check_unit_text(
             raw,
             spec=spec,
@@ -238,7 +247,7 @@ async def finalize(service, state, bridge, revisions, existing_versions, *, leas
             approved=(*product.claims, *product.discounts),
             product_name=product.name,
             name_used_elsewhere=sum(
-                product.name.lower() in s.spoken_text.lower()
+                product.name.lower() in s.display_text.lower()
                 for s in selected
                 if s.id != current.id
             )
@@ -246,12 +255,18 @@ async def finalize(service, state, bridge, revisions, existing_versions, *, leas
             else 0,
             must=spec.must,
             aware=script_set.brief.transition_policy == "ORDER_AWARE",
+            brand=product.brand,
+            brand_used_nearby=sum(
+                brand_mentions(selected[p].display_text, product.brand, product.name) > 0
+                for p in (position - 1, position + 1)
+                if 0 <= p < len(selected)
+            ),
         )
         if (
             text is None
-            or not opening_only(current.spoken_text, text)
+            or not opening_only(current.display_text, text)
             or any(
-                spoken_price(price) in current.spoken_text and spoken_price(price) not in text
+                spoken_price(price) in current.display_text and spoken_price(price) not in text
                 for price in product.prices
             )
             or (spec.revisit and recap_violation(text))
@@ -259,20 +274,24 @@ async def finalize(service, state, bridge, revisions, existing_versions, *, leas
         ):
             continue
         facts = service._product_facts(script_set.brief, item.product_id)
+        allowlist = _brand_allowlist(script_set.brief, item.product_id)
+        spoken = apply_brand_pronunciation(text, product.brand, product.brand_pronunciation)
         low, high = role_bounds_s(spec.role)
         context = ScriptGateContext(
             facts=facts,
+            brand_allowlist=allowlist,
             transition_policy=script_set.brief.transition_policy,
             target_min_seconds=low,
             target_max_seconds=high,
         )
-        if not service._gate.run_segment(text, context).passed:
+        if not service._gate.run_segment(spoken, context).passed:
             continue
-        candidate_texts = [text if s.id == current.id else s.spoken_text for s in selected]
+        candidate_texts = [spoken if s.id == current.id else s.spoken_text for s in selected]
         result = service._gate.run_full_script(
             candidate_texts,
             ScriptGateContext(
                 facts=facts,
+                brand_allowlist=allowlist,
                 transition_policy=script_set.brief.transition_policy,
                 total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
             ),
@@ -287,7 +306,7 @@ async def finalize(service, state, bridge, revisions, existing_versions, *, leas
                 "version": max(s.version for s in rows if s.segment_index == current.segment_index)
                 + 1,
                 "display_text": text,
-                "spoken_text": text,
+                "spoken_text": spoken,
                 "status": ScriptState.DRAFT,
                 "provenance": {**provenance("llm"), "variety_repair": True},
             }

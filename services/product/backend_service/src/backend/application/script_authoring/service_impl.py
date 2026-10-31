@@ -44,7 +44,11 @@ from backend.application.script_authoring.approval import (
     ApprovalRequest,
     approve_script,
 )
-from backend.application.script_authoring.compile import compile_spoken_text
+from backend.application.script_authoring.compile import (
+    apply_brand_pronunciation,
+    brand_of,
+    compile_spoken_text,
+)
 from backend.application.script_authoring.duration import gate_duration_band
 from backend.application.script_authoring.fingerprints import (
     ApprovalDependencies,
@@ -88,6 +92,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     ProductBrief,
     SessionBrief,
     UnitSpec,
+    brand_mentions,
     build_unit_prompt,
     build_unit_repair_prompt,
     check_unit_text,
@@ -226,7 +231,7 @@ def _legacy_spec(intent: str | None, roles: list[UnitSpec], index: int) -> UnitS
 
 def _neighbor_gist(segment: ScriptSegment) -> str:
     """Bounded neighbour context for a rewrite: the beginning of the part, as data."""
-    text = " ".join(segment.spoken_text.split())
+    text = " ".join(segment.display_text.split())
     return text if len(text) <= 160 else text[:160].rsplit(" ", 1)[0] + "..."
 
 
@@ -254,6 +259,27 @@ def _product_info(raw: Any) -> tuple[tuple[str, str], ...]:
         for key, label in labels.items()
         if isinstance(raw.get(key), str) and raw[key].strip()
     )
+
+
+def _brand(brief: Any, product_id: str) -> tuple[str, str]:
+    # The pronunciation is kept out of _product_info: it is never an allowed claim nor shown to the model.
+    return brand_of(((brief.product_facts or {}).get(product_id) or {}).get("product_info"))
+
+
+def _brand_map(brief: Any, product_id: str) -> dict[str, str]:
+    brand, pronunciation = _brand(brief, product_id)
+    return {brand: pronunciation} if pronunciation else {}
+
+
+def _brand_allowlist(brief: Any, product_id: str) -> tuple[str, ...]:
+    """Brand and pronunciation words for the gate's spelling/profanity allowlists.
+
+    Shorter words are left out: both rules exempt any token that merely CONTAINS an allowlisted
+    word, so a two-letter syllable ("to") would exempt every profane token containing it.
+    """
+    brand, pronunciation = _brand(brief, product_id)
+    words = re.split(r"[\s-]+", f"{brand} {pronunciation}")
+    return tuple(dict.fromkeys(w for w in words if len(w) >= 3))
 
 
 @dataclass
@@ -712,6 +738,7 @@ class ScriptAuthoringServiceImpl:
         context = ScriptGateContext(
             transition_policy=brief.transition_policy,
             facts=self._product_facts(brief, item.product_id),
+            brand_allowlist=_brand_allowlist(brief, item.product_id),
             # One product's script is a part of the show: the 300s total minimum is for the
             # compiled show. A single short product line (name + a claim) is valid here.
             total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
@@ -1267,8 +1294,11 @@ class ScriptAuthoringServiceImpl:
         ordered: "_OrderedBatch | None" = None,
     ):
         facts = self._product_facts(script_set.brief, item.product_id)
+        allowlist = _brand_allowlist(script_set.brief, item.product_id)
         base_context = ScriptGateContext(
-            transition_policy=script_set.brief.transition_policy, facts=facts
+            transition_policy=script_set.brief.transition_policy,
+            facts=facts,
+            brand_allowlist=allowlist,
         )
 
         def segment_gate(text: str, target_duration_s: float | None = None) -> GateRunResult:
@@ -1285,6 +1315,7 @@ class ScriptAuthoringServiceImpl:
                 ctx = ScriptGateContext(
                     transition_policy=script_set.brief.transition_policy,
                     facts=facts,
+                    brand_allowlist=allowlist,
                     target_min_seconds=min_s,
                     target_max_seconds=max_s,
                 )
@@ -1300,6 +1331,7 @@ class ScriptAuthoringServiceImpl:
                 ctx = ScriptGateContext(
                     transition_policy=script_set.brief.transition_policy,
                     facts=facts,
+                    brand_allowlist=allowlist,
                     total_min_seconds=min_s,
                     total_max_seconds=max_s,
                 )
@@ -1371,6 +1403,7 @@ class ScriptAuthoringServiceImpl:
         roles: dict[str, list[UnitSpec]] = {}
         for i, pid in enumerate(ordered_ids):
             raw = (brief.product_facts or {}).get(pid) or {}
+            brand, pronunciation = _brand(brief, pid)
             products[pid] = ProductBrief(
                 product_id=pid,
                 name=name[pid],
@@ -1380,6 +1413,8 @@ class ScriptAuthoringServiceImpl:
                 claims_by_type=_claims_by_type(raw.get("claims_by_type")),
                 info=_product_info(raw.get("product_info")),
                 previous_name=name[ordered_ids[i - 1]] if aware and i > 0 else None,
+                brand=brand,
+                brand_pronunciation=pronunciation,
             )
             roles[pid] = plan_units(
                 products[pid],
@@ -1437,6 +1472,7 @@ class ScriptAuthoringServiceImpl:
         product = ordered.products[pid]
         facts = self._product_facts(script_set.brief, pid)
         policy = script_set.brief.transition_policy
+        allowlist = _brand_allowlist(script_set.brief, pid)
 
         def unit_gate(index: int, text: str) -> GateRunResult:
             low, high = role_bounds_s(roles[index].role)
@@ -1445,6 +1481,7 @@ class ScriptAuthoringServiceImpl:
                 ScriptGateContext(
                     transition_policy=policy,
                     facts=facts,
+                    brand_allowlist=allowlist,
                     target_min_seconds=low,
                     target_max_seconds=high,
                 ),
@@ -1455,11 +1492,13 @@ class ScriptAuthoringServiceImpl:
             ScriptGateContext(
                 transition_policy=policy,
                 facts=facts,
+                brand_allowlist=allowlist,
                 total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
             ),
         )
 
         name_units: set[int] = set()  # units that already carry the full product name
+        brand_units: set[int] = set()  # units that already say the brand
         unit_writes: dict[int, int] = {}
 
         def write(index: int, prompt: str, continuity: ContinuityState) -> SegmentStepOutcome:
@@ -1512,6 +1551,8 @@ class ScriptAuthoringServiceImpl:
                     "name_used_elsewhere": len(name_units - {index}),
                     "must": roles[index].must,
                     "aware": policy == "ORDER_AWARE",
+                    "brand": product.brand,
+                    "brand_used_nearby": len(brand_units & {index - 1, index + 1}),
                 }
                 text, why = check_unit_text(raw, **check)
                 if text is None:
@@ -1527,6 +1568,8 @@ class ScriptAuthoringServiceImpl:
                 if text is not None:
                     if product.name and product.name.lower() in text.lower():
                         name_units.add(index)
+                    if brand_mentions(text, product.brand, product.name):
+                        brand_units.add(index)
                     words = text.split()
                     return SegmentStepOutcome(
                         index=index,
@@ -1534,7 +1577,9 @@ class ScriptAuthoringServiceImpl:
                         result=SegmentGenerationResult(
                             segment_index=index,
                             display_text=text,
-                            spoken_text=text,
+                            spoken_text=apply_brand_pronunciation(
+                                text, product.brand, product.brand_pronunciation
+                            ),
                             opening_fingerprint=" ".join(words[:5])[:80],
                             topic=role_title(roles[index].role),
                         ),
@@ -2094,7 +2139,9 @@ class ScriptAuthoringServiceImpl:
             # None AND blank both mean "not provided": never store an empty spoken text.
             spoken_text
             if spoken_text is not None and spoken_text.strip()
-            else compile_spoken_text(display_text).spoken_text
+            else compile_spoken_text(
+                display_text, brand_map=_brand_map(script_set.brief, product_id)
+            ).spoken_text
         )
         bridge = _SyncPersistBridge()
         workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
@@ -2190,6 +2237,7 @@ class ScriptAuthoringServiceImpl:
         final: list[ScriptSegment] = []
         created: list[ScriptSegment] = []
         used: set[str] = set()
+        brand_map = _brand_map(script_set.brief, product_id)
         base_plan = selected[0].plan_id
         next_index = max(r.segment_index for r in await plan_rows(base_plan)) + 1
         for p in parts:
@@ -2205,7 +2253,7 @@ class ScriptAuthoringServiceImpl:
                 old = by_part.get(p["part_id"])
             if old is not None and old.id in used:
                 raise ScriptAuthoringError("invalid_parts", "Một phần bị lặp trong danh sách.")
-            spoken = compile_spoken_text(text).spoken_text
+            spoken = compile_spoken_text(text, brand_map=brand_map).spoken_text
             if old is not None:
                 used.add(old.id)
                 if old.display_text.strip() == text.strip():
@@ -2382,6 +2430,7 @@ class ScriptAuthoringServiceImpl:
         context = ScriptGateContext(
             transition_policy=script_set.brief.transition_policy,
             facts=self._product_facts(script_set.brief, product_id),
+            brand_allowlist=_brand_allowlist(script_set.brief, product_id),
             total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,  # same per-product floor as submit
         )
         result = self._gate.run_full_script([version.spoken_text], context)  # exactly once
@@ -3478,7 +3527,14 @@ class ScriptAuthoringServiceImpl:
             prompt += rewrite_instruction
             prompt += (
                 "\nChỉ soạn lại phần được chọn, giữ đúng vai trò và các thông tin được phép. Bản đang có:\n"
-                + current.spoken_text
+                + current.display_text
+            )
+            allowlist = _brand_allowlist(script_set.brief, item.product_id)
+            # Adjacent parts of the same product that already say the brand.
+            brand_nearby = sum(
+                brand_mentions(selected[p].display_text, product.brand, product.name) > 0
+                for p in (position - 1, position + 1)
+                if 0 <= p < len(selected)
             )
             new_segment = None
             base_prompt = prompt
@@ -3513,6 +3569,8 @@ class ScriptAuthoringServiceImpl:
                     "approved": (*product.claims, *product.discounts),
                     "must": spec.must,
                     "aware": script_set.brief.transition_policy == "ORDER_AWARE",
+                    "brand": product.brand,
+                    "brand_used_nearby": brand_nearby,
                 }
                 text, why = check_unit_text(raw, **check)
                 if text is None:
@@ -3561,10 +3619,12 @@ class ScriptAuthoringServiceImpl:
                     base_prompt = prompt = base_prompt + RECAP_RETRY
                     continue
                 low, high = role_bounds_s(spec.role)
+                spoken = apply_brand_pronunciation(text, product.brand, product.brand_pronunciation)
                 result = self._gate.run_segment(
-                    text,
+                    spoken,
                     ScriptGateContext(
                         facts=facts,
+                        brand_allowlist=allowlist,
                         transition_policy=script_set.brief.transition_policy,
                         target_min_seconds=low,
                         target_max_seconds=high,
@@ -3620,7 +3680,7 @@ class ScriptAuthoringServiceImpl:
                         "id": new_id("segment"),
                         "version": row_version + 1,
                         "display_text": text,
-                        "spoken_text": text,
+                        "spoken_text": spoken,
                         "status": ScriptState.DRAFT,
                         "provenance": provenance("llm"),
                     }
@@ -3636,6 +3696,7 @@ class ScriptAuthoringServiceImpl:
                 [s.spoken_text for s in selected],
                 ScriptGateContext(
                     facts=facts,
+                    brand_allowlist=allowlist,
                     transition_policy=script_set.brief.transition_policy,
                     total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
                 ),
