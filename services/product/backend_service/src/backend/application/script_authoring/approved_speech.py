@@ -65,7 +65,8 @@ class ApprovedProduct:
         in the host's own words and almost never contain a claim as one exact sentence. Still no
         fragments, negation removal or free connectors; the model only chooses one whole string.
         Numbers are written as words (what the voice reads); a price is only ever the approved
-        price in a fixed sentence.
+        price in a fixed sentence. The brand keeps its real spelling: these strings reach model
+        prompts, and ``speak`` applies the pronunciation to the final speech only.
         """
         from .compile import compile_spoken_text
         from .generation.ordered_units import _CONDITION_CLAIM_RE, claim_covered, spoken_price
@@ -89,10 +90,12 @@ class ApprovedProduct:
         for claim in facts.get("allowed_claims", []):
             if not isinstance(claim, str) or not claim.strip():
                 continue
-            spoken = compile_spoken_text(claim.strip(), brand_map=brand_map).spoken_text
+            spoken = compile_spoken_text(claim.strip()).spoken_text
+            # The approved units carry the pronunciation, so the claim is compared in that form too.
+            said = _speak_brand(claim, brand_map)
             if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # a condition only restricts: never dropped
-            elif not any(claim_covered(claim, unit) for unit in self.units):
+            elif not any(claim_covered(said, unit) for unit in self.units):
                 continue  # not part of what the owner approved: a changed fact must not slip in
             elif claim in promotions:
                 conditional.append(spoken)  # never alone: a discount without its condition misleads
@@ -104,11 +107,15 @@ class ApprovedProduct:
         for price in facts.get("prices", []):
             words = spoken_price(str(price))
             if words and _states_number(script_words, words):  # the script states this price
-                name = _speak_brand(str(facts.get("product_name") or "").strip(), brand_map)
+                name = str(facts.get("product_name") or "").strip()
                 found.append(
                     f"{name} giá {words} nhé mọi người." if name else f"Giá {words} nhé mọi người."
                 )
         return tuple(dict.fromkeys(found))
+
+    def speak(self, text: str) -> str:
+        """The final speech of an answer: the brand as the voice must say it."""
+        return _speak_brand(text, _brand_map(json.loads(self.facts_json)))
 
 
 def _brand_map(facts: dict) -> dict[str, str]:
@@ -139,8 +146,11 @@ def _states_number(script_words: list[str], phrase: str) -> bool:
 
 
 def _is_script_text(text: str, product: "ApprovedProduct") -> bool:
-    """The whole approved script, one of its units, or (a viewer question) a whole approved fact."""
-    return text == product.spoken_text or text in product.units or text in product.answers()
+    """The whole approved script, one of its units, or (a viewer question) a whole approved fact,
+    as written or as spoken."""
+    if text == product.spoken_text or text in product.units:
+        return True
+    return any(text in (a, product.speak(a)) for a in product.answers())
 
 
 # Said when the approved facts cannot answer a viewer: fixed bytes, no facts of its own.
@@ -695,6 +705,7 @@ class ApprovedSpeech:
                 else None
             )
             if direct is not None:
+                direct = candidates[0].speak(direct)
                 self._fence(session_id, epoch, live)
                 self._said_ok.setdefault(session_id, set()).add((candidates[0].product_id, direct))
                 speech = ValidatedSpeech(envelope, candidates[0], direct, epoch, route)
@@ -746,11 +757,14 @@ class ApprovedSpeech:
                 ),
                 None,
             )  # replayed by the Director: it was judged when first produced
+        # Everything above (facts, model prompts, checks) uses the brand's real spelling; only the
+        # final answer that is cached, replayed and spoken carries the pronunciation.
         if trusted or replay is not None:
+            product = replay or candidates[0]
             if generate and text != DEFLECTION:
+                text = product.speak(text)
                 self._fence(session_id, epoch, live)  # a cancelled turn must not fill the cache
                 self._said_ok.setdefault(session_id, set()).add((candidates[0].product_id, text))
-            product = replay or candidates[0]
         else:
             product = next(
                 (
@@ -760,6 +774,8 @@ class ApprovedSpeech:
                 ),
                 None,
             )
+            if product is not None and generated:
+                text = product.speak(text)
         if product is None:
             raise SpeechRejected("unsupported_content")
         speech = ValidatedSpeech(envelope, product, text, epoch, route)
@@ -878,10 +894,7 @@ class ApprovedSpeech:
             verdict[:20],
             answer[:160],
         )
-        if not accepted:
-            return None
-        # The model may copy the brand from the product name; the voice must say its pronunciation.
-        return _speak_brand(answer, _brand_map(json.loads(product.facts_json)))
+        return answer if accepted else None
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
         # Fatal-session and cancellation fences take precedence over any

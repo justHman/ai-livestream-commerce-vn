@@ -356,16 +356,18 @@ def brand_of(product_info: object) -> tuple[str, str]:
 
 
 def brand_spans(text: str, brand: str) -> list[tuple[int, int]]:
-    """Whole-word occurrences of ``brand`` in ``text``, ignoring case and diacritics.
+    """Whole-word occurrences of ``brand`` in ``text`` (both compared in NFC).
 
-    Words of the brand may be separated by spaces or hyphens. A single word of three letters or
-    fewer ("Mai") is also an ordinary Vietnamese word, so it must match exactly as written.
+    A one-word brand is often an ordinary word too ("Xinh", "Đồng", "Mai"), so it matches only as
+    the owner wrote it or in all capitals. A brand of several words (spaces or hyphens between them)
+    ignores case and diacritics.
     """
-    words = [w for w in re.split(r"[\s-]+", brand.strip()) if w]
+    words = [w for w in re.split(r"[\s-]+", unicodedata.normalize("NFC", brand).strip()) if w]
     if not words:
         return []
-    if len(words) == 1 and len(words[0]) <= 3:
-        return [m.span() for m in re.finditer(rf"(?<!\w){re.escape(words[0])}(?!\w)", text)]
+    if len(words) == 1:
+        forms = "|".join(map(re.escape, dict.fromkeys((words[0], words[0].upper()))))
+        return [m.span() for m in re.finditer(rf"(?<!\w)(?:{forms})(?!\w)", text)]
     folded: list[str] = []
     origin: list[int] = []
     for i, ch in enumerate(text):
@@ -382,10 +384,14 @@ def apply_brand_pronunciation(text: str, brand: str, pronunciation: str) -> str:
     """Replace every whole-word ``brand`` with how the voice must say it ("Lai-ven-to" -> "Lai ven to").
 
     Runs before the acronym speller, so an all-caps brand ("LIVENTO") is read as its pronunciation
-    instead of letter by letter. Idempotent: a pronunciation that still contains the brand is ignored.
+    instead of letter by letter. One non-cascading pass; a result that would still contain the
+    brand (the pronunciation overlaps it, e.g. "Lai Lai" -> "Lai") is dropped and the text kept, so
+    the function is idempotent: its output is always a fixed point.
     """
-    spoken = " ".join(w for w in re.split(r"[\s-]+", pronunciation) if w)
-    if not brand.strip() or not spoken or brand_spans(spoken, brand):
+    spoken = " ".join(
+        w for w in re.split(r"[\s-]+", unicodedata.normalize("NFC", pronunciation)) if w
+    )
+    if not brand.strip() or not spoken:
         return text
     nfc = unicodedata.normalize("NFC", text)
     spans = brand_spans(nfc, brand)
@@ -393,7 +399,7 @@ def apply_brand_pronunciation(text: str, brand: str, pronunciation: str) -> str:
         return text
     for start, end in reversed(spans):
         nfc = nfc[:start] + spoken + nfc[end:]
-    return nfc
+    return text if brand_spans(nfc, brand) else nfc
 
 
 def _expand_currency(match: re.Match[str]) -> str:

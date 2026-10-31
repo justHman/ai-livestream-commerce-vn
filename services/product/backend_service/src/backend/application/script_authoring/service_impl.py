@@ -266,20 +266,21 @@ def _brand(brief: Any, product_id: str) -> tuple[str, str]:
     return brand_of(((brief.product_facts or {}).get(product_id) or {}).get("product_info"))
 
 
+def _spoken(brief: Any, product_id: str, text: str) -> str:
+    """What the voice reads for a text in display spelling: the brand as its pronunciation."""
+    brand, pronunciation = _brand(brief, product_id)
+    return apply_brand_pronunciation(text, brand, pronunciation)
+
+
 def _brand_map(brief: Any, product_id: str) -> dict[str, str]:
     brand, pronunciation = _brand(brief, product_id)
     return {brand: pronunciation} if pronunciation else {}
 
 
 def _brand_allowlist(brief: Any, product_id: str) -> tuple[str, ...]:
-    """Brand and pronunciation words for the gate's spelling/profanity allowlists.
-
-    Shorter words are left out: both rules exempt any token that merely CONTAINS an allowlisted
-    word, so a two-letter syllable ("to") would exempt every profane token containing it.
-    """
+    """Brand and pronunciation words for the gate's spelling/profanity allowlists (whole-token matches)."""
     brand, pronunciation = _brand(brief, product_id)
-    words = re.split(r"[\s-]+", f"{brand} {pronunciation}")
-    return tuple(dict.fromkeys(w for w in words if len(w) >= 3))
+    return tuple(dict.fromkeys(w for w in re.split(r"[\s-]+", f"{brand} {pronunciation}") if w))
 
 
 @dataclass
@@ -1218,7 +1219,7 @@ class ScriptAuthoringServiceImpl:
                 result=SegmentGenerationResult(
                     segment_index=index,
                     display_text=raw,
-                    spoken_text=raw,
+                    spoken_text=_spoken(script_set.brief, item.product_id, raw),
                     opening_fingerprint=" ".join(words[:5])[:80] if words else None,
                     covered_fact_ids=frozenset(c["claim"] for c in claims if "claim" in c),
                     topic=f"Phần {index + 1}",
@@ -1271,7 +1272,7 @@ class ScriptAuthoringServiceImpl:
                 result=SegmentGenerationResult(
                     segment_index=index,
                     display_text=raw,
-                    spoken_text=raw,
+                    spoken_text=_spoken(script_set.brief, item.product_id, raw),
                     opening_fingerprint=" ".join(words[:5])[:80] if words else None,
                     covered_fact_ids=frozenset(c["claim"] for c in claims if "claim" in c),
                     topic=f"Phần {index + 1}",
@@ -2137,7 +2138,7 @@ class ScriptAuthoringServiceImpl:
             return {"ok": True, "product_id": product_id, "state": item.state.name}
         spoken = (
             # None AND blank both mean "not provided": never store an empty spoken text.
-            spoken_text
+            _spoken(script_set.brief, product_id, spoken_text)
             if spoken_text is not None and spoken_text.strip()
             else compile_spoken_text(
                 display_text, brand_map=_brand_map(script_set.brief, product_id)
@@ -3793,7 +3794,7 @@ class ScriptAuthoringServiceImpl:
                 intent=current_segment.intent,
                 target_duration_s=current_segment.target_duration_s,
                 display_text=raw,
-                spoken_text=raw,
+                spoken_text=_spoken(script_set.brief, item.product_id, raw),
                 status=ScriptState.DRAFT,
                 version=current_segment.version + 1,
             )
@@ -3810,6 +3811,7 @@ class ScriptAuthoringServiceImpl:
             context = ScriptGateContext(
                 transition_policy=script_set.brief.transition_policy,
                 facts=self._product_facts(script_set.brief, item.product_id),
+                brand_allowlist=_brand_allowlist(script_set.brief, item.product_id),
                 total_min_seconds=_PRODUCT_SCRIPT_MIN_SECONDS,
             )
             result = self._gate.run_full_script([s.spoken_text for s in ordered], context)
@@ -3879,7 +3881,10 @@ class ScriptAuthoringServiceImpl:
         bridge = _SyncPersistBridge()
         workflow = self._make_workflow(item, current_version, bridge, script_set.brief)
         workflow.generate = self._make_fix_generate(
-            current_version, llm_fn, await self._failed_rule_ids(item.id)
+            current_version,
+            llm_fn,
+            await self._failed_rule_ids(item.id),
+            speak=lambda text: _spoken(script_set.brief, item.product_id, text),
         )
         try:
             try:
@@ -3912,14 +3917,15 @@ class ScriptAuthoringServiceImpl:
         except LeaseLostError:
             return  # fence lost before the final persist; stop writing
 
-    def _make_fix_generate(self, current_version, llm_fn, failed_rules):
+    def _make_fix_generate(self, current_version, llm_fn, failed_rules, *, speak=lambda t: t):
         failed_ids = [rule_id for rule_id, _message in failed_rules]
         instructions = [message for _rule_id, message in failed_rules]
         if not failed_ids:
             failed_ids = ["REVIEW"]
             instructions = ["Review the script and fix any remaining issues."]
         parts = build_repair_prompt(
-            source_text=current_version.spoken_text,
+            # The model fixes the written text; the brand pronunciation is applied to its output only.
+            source_text=current_version.display_text,
             failed_rule_ids=failed_ids,
             rule_repair_instructions=instructions,
             authoritative_facts=AuthoritativeContext(),
@@ -3928,7 +3934,9 @@ class ScriptAuthoringServiceImpl:
 
         def generate():
             raw = llm_fn(prompt)
-            return SegmentGenerationResult(segment_index=0, display_text=raw, spoken_text=raw)
+            return SegmentGenerationResult(
+                segment_index=0, display_text=raw, spoken_text=speak(raw)
+            )
 
         return generate
 

@@ -802,8 +802,10 @@ def brand_mentions(text: str, brand: str, product_name: str = "") -> int:
     (name_repeat), not a brand mention."""
     if not brand:
         return 0
+    text = unicodedata.normalize("NFC", text)
     if product_name:
-        text = re.sub(re.escape(product_name), " ", text, flags=re.IGNORECASE)
+        name = unicodedata.normalize("NFC", product_name)
+        text = re.sub(re.escape(name), " ", text, flags=re.IGNORECASE)
     return len(brand_spans(text, brand))
 
 

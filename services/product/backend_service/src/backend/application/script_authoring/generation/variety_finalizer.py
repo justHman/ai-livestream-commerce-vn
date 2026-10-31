@@ -47,8 +47,8 @@ async def selected_parts(service, script_set):
         selected = [await service._repos.segments.get(sid) for sid in version.segment_version_ids]
         if not selected or any(s is None for s in selected):
             # Legacy/manual whole scripts remain visible to the detector too.
-            if version.spoken_text:
-                parts.append(VarietyPart(f"legacy:{item.id}", pid, "", version.spoken_text))
+            if version.display_text:
+                parts.append(VarietyPart(f"legacy:{item.id}", pid, "", version.display_text))
             continue
         for segment in selected:
             plan = await service._repos.plans.get(segment.plan_id)
@@ -64,7 +64,8 @@ async def selected_parts(service, script_set):
                     key,
                     pid,
                     brief["role"] if brief else segment.intent,
-                    segment.spoken_text,
+                    # Written text: openings from here reach repair prompts, which never see a pronunciation.
+                    segment.display_text,
                     editable,
                     tuple(
                         dict.fromkeys(
