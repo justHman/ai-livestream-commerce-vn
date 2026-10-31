@@ -247,7 +247,8 @@ class WorkflowDriver:
             if attempt > 1 and last_failure is not None and self.segment_repair is not None:
                 prev_result, prev_gate = last_failure
                 hint = SegmentRepairHint(
-                    source_text=prev_result.spoken_text,
+                    # What the model wrote: spoken_text may carry a brand pronunciation it must not copy.
+                    source_text=prev_result.display_text,
                     failed_rule_ids=[v.rule_id for v in prev_gate.violations],
                     repair_instructions=[v.message for v in prev_gate.violations],
                     target_duration_s=segment_target,
@@ -320,15 +321,17 @@ class WorkflowDriver:
         # used_ctas + closing_fingerprints let the prompt list EVERY already-used
         # CTA/closing so a real LLM cannot repeat one across non-adjacent
         # segments (segments 1,3,5 of a K=5 script, 15.4 real-LLM E2E finding).
+        # The next prompt quotes the previous part, so it sees what the model wrote (display_text),
+        # never a brand pronunciation applied to spoken_text.
         self._continuity = ContinuityState(
-            previous_segment_tail=build_tail(selected.spoken_text),
+            previous_segment_tail=build_tail(selected.display_text),
             covered_fact_ids=continuity.covered_fact_ids
             | (selected.covered_fact_ids or frozenset()),
             opening_fingerprints=continuity.opening_fingerprints
             | ({selected.opening_fingerprint} if selected.opening_fingerprint else frozenset()),
-            used_ctas=continuity.used_ctas | extract_ctas(selected.spoken_text),
+            used_ctas=continuity.used_ctas | extract_ctas(selected.display_text),
             closing_fingerprints=continuity.closing_fingerprints
-            | ({fp for fp in (closing_fingerprint(selected.spoken_text),) if fp}),
+            | ({fp for fp in (closing_fingerprint(selected.display_text),) if fp}),
             cta_count=continuity.cta_count + (1 if selected.cta_used else 0),
             last_topic=selected.topic or continuity.last_topic,
             next_topic=None,

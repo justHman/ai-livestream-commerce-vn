@@ -188,6 +188,32 @@ async def test_units_adapt_to_the_facts_and_never_repeat_a_fact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_script_shows_the_brand_and_the_voice_reads_its_pronunciation() -> None:
+    service, repos = _service(FakeLLM())
+    brief = {
+        "title": "Live thử nghiệm",
+        "product_facts": {
+            "P1": {
+                "product_name": "Áo thun Livento",
+                "prices": ["150000.00 VND"],
+                "allowed_claims": P1_CLAIMS,
+                "product_info": {"brand": "Livento", "brand_pronunciation": "Lai-ven-to"},
+            }
+        },
+    }
+    set_id = (
+        await service.create_script_set(
+            name="Phiên", transition_policy="ORDER_AWARE", product_ids=["P1"], brief=brief
+        )
+    )["id"]
+    await _run(service, repos, set_id)
+    item, version = await _text(repos, set_id, "P1")
+    assert item.state is ScriptState.REVIEWABLE  # the gate passed the spoken text
+    assert "Livento" in version.display_text and "Livento" not in version.spoken_text
+    assert "Lai ven to" in version.spoken_text
+
+
+@pytest.mark.asyncio
 async def test_a_later_part_is_told_how_the_earlier_parts_opened() -> None:
     llm = FakeLLM()
     service, repos = _service(llm)

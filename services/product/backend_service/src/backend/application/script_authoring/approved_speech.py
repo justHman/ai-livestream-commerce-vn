@@ -71,6 +71,7 @@ class ApprovedProduct:
         from .generation.ordered_units import _CONDITION_CLAIM_RE, claim_covered, spoken_price
 
         facts = json.loads(self.facts_json)
+        brand_map = _brand_map(facts)
         promotions = {
             text
             for kind, texts in (facts.get("claims_by_type") or {}).items()
@@ -88,7 +89,7 @@ class ApprovedProduct:
         for claim in facts.get("allowed_claims", []):
             if not isinstance(claim, str) or not claim.strip():
                 continue
-            spoken = compile_spoken_text(claim.strip()).spoken_text
+            spoken = compile_spoken_text(claim.strip(), brand_map=brand_map).spoken_text
             if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # a condition only restricts: never dropped
             elif not any(claim_covered(claim, unit) for unit in self.units):
@@ -103,11 +104,26 @@ class ApprovedProduct:
         for price in facts.get("prices", []):
             words = spoken_price(str(price))
             if words and _states_number(script_words, words):  # the script states this price
-                name = str(facts.get("product_name") or "").strip()
+                name = _speak_brand(str(facts.get("product_name") or "").strip(), brand_map)
                 found.append(
                     f"{name} giá {words} nhé mọi người." if name else f"Giá {words} nhé mọi người."
                 )
         return tuple(dict.fromkeys(found))
+
+
+def _brand_map(facts: dict) -> dict[str, str]:
+    from .compile import brand_of
+
+    brand, pronunciation = brand_of(facts.get("product_info"))
+    return {brand: pronunciation} if pronunciation else {}
+
+
+def _speak_brand(text: str, brand_map: dict[str, str]) -> str:
+    from .compile import apply_brand_pronunciation
+
+    for brand, pronunciation in brand_map.items():
+        text = apply_brand_pronunciation(text, brand, pronunciation)
+    return text
 
 
 def _states_number(script_words: list[str], phrase: str) -> bool:
@@ -862,7 +878,10 @@ class ApprovedSpeech:
             verdict[:20],
             answer[:160],
         )
-        return answer if accepted else None
+        if not accepted:
+            return None
+        # The model may copy the brand from the product name; the voice must say its pronunciation.
+        return _speak_brand(answer, _brand_map(json.loads(product.facts_json)))
 
     def check_live(self, speech: ValidatedSpeech, live: Callable[[], bool]) -> None:
         # Fatal-session and cancellation fences take precedence over any
