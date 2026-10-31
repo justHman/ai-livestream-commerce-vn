@@ -255,9 +255,9 @@ class _RecordingLlm:
         yield SimpleNamespace(text="OK" if judge else "Livento dùng vải cotton thoáng mát nhé.")
 
 
-async def _answer(monkeypatch, llm):
+def _speech(monkeypatch, facts=BRANDED_FACTS) -> ApprovedSpeech:
     product = ApprovedProduct(
-        "p1", "v1", BRANDED_SCRIPT, "h", json.dumps(BRANDED_FACTS, ensure_ascii=False)
+        "p1", "v1", BRANDED_SCRIPT, "h", json.dumps(facts, ensure_ascii=False)
     )
     envelope = SimpleNamespace(product=lambda pid: product, products=(product,))
 
@@ -269,8 +269,12 @@ async def _answer(monkeypatch, llm):
 
     monkeypatch.setattr(ApprovedSpeech, "resolve", resolve)
     monkeypatch.setattr(ApprovedSpeech, "revalidate", revalidate)
+    return ApprovedSpeech(None, lambda: None)
+
+
+async def _answer(monkeypatch, llm):
     question = "áo dùng vải gì vậy"
-    return await ApprovedSpeech(None, lambda: None).prepare(
+    return await _speech(monkeypatch).prepare(
         "s1",
         question,
         llm=llm,
@@ -279,6 +283,42 @@ async def _answer(monkeypatch, llm):
         route="director",
         question_text=question,
     )
+
+
+async def _replay(speech: ApprovedSpeech, text: str):
+    return await speech.prepare("s1", text, generate=False, product_id="p1", route="director")
+
+
+@pytest.mark.asyncio
+async def test_accepted_display_answer_is_spoken_with_the_pronunciation(monkeypatch) -> None:
+    speech = await _replay(_speech(monkeypatch), "Livento dùng vải cotton thoáng mát.")
+    assert speech.text == "Lai ven to dùng vải cotton thoáng mát."
+
+
+@pytest.mark.asyncio
+async def test_approved_unit_already_in_spoken_form_is_unchanged(monkeypatch) -> None:
+    unit = BRANDED_SCRIPT.split("\n\n")[0]
+    speech = await _replay(_speech(monkeypatch), unit)
+    assert speech.text == unit
+
+
+@pytest.mark.asyncio
+async def test_answer_without_a_configured_pronunciation_keeps_its_bytes(monkeypatch) -> None:
+    facts = {**BRANDED_FACTS, "product_info": {"brand": "Livento"}}
+    speech = await _replay(_speech(monkeypatch, facts), "Livento dùng vải cotton thoáng mát.")
+    assert speech.text == "Livento dùng vải cotton thoáng mát."
+
+
+@pytest.mark.parametrize("brand", ["Livento", "LIVENTO"])
+def test_an_all_caps_brand_in_a_claim_survives_answer_compilation(brand) -> None:
+    facts = {
+        **BRANDED_FACTS,
+        "allowed_claims": ["LIVENTO dùng vải cotton thoáng mát."],
+        "product_info": {"brand": brand, "brand_pronunciation": "Lai-ven-to"},
+    }
+    product = ApprovedProduct("p1", "v1", BRANDED_SCRIPT, "h", json.dumps(facts))
+    spoken = [product.speak(a) for a in product.answers()]
+    assert "Lai ven to dùng vải cotton thoáng mát." in spoken
 
 
 @pytest.mark.asyncio

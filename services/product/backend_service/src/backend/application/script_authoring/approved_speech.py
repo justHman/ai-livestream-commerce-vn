@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from typing import Any, Callable
 
 from .fingerprints import ApprovalDependencies, approval_dependency_hash
@@ -90,7 +91,7 @@ class ApprovedProduct:
         for claim in facts.get("allowed_claims", []):
             if not isinstance(claim, str) or not claim.strip():
                 continue
-            spoken = compile_spoken_text(claim.strip()).spoken_text
+            spoken = _compile_keeping_brand(claim.strip(), brand_map)
             # The approved units carry the pronunciation, so the claim is compared in that form too.
             said = _speak_brand(claim, brand_map)
             if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
@@ -123,6 +124,26 @@ def _brand_map(facts: dict) -> dict[str, str]:
 
     brand, pronunciation = brand_of(facts.get("product_info"))
     return {brand: pronunciation} if pronunciation else {}
+
+
+def _compile_keeping_brand(text: str, brand_map: dict[str, str]) -> str:
+    """compile_spoken_text, except that a brand with a pronunciation keeps its spelling: the
+    acronym speller would turn "LIVENTO" into "L I V E N T O", which ``speak`` can no longer find."""
+    from .compile import brand_spans, compile_spoken_text
+
+    if not brand_map:
+        return compile_spoken_text(text).spoken_text
+    text = unicodedata.normalize("NFC", text)
+    kept: list[str] = []
+    for brand in brand_map:
+        for start, end in reversed(brand_spans(text, brand)):
+            # A private-use character: no normalizer touches it, so it survives as one word.
+            kept.append(text[start:end])
+            text = f"{text[:start]}{chr(0xE000 + len(kept) - 1)}{text[end:]}"
+    spoken = compile_spoken_text(text).spoken_text
+    for i, original in enumerate(kept):
+        spoken = spoken.replace(chr(0xE000 + i), original)
+    return spoken
 
 
 def _speak_brand(text: str, brand_map: dict[str, str]) -> str:
@@ -774,7 +795,11 @@ class ApprovedSpeech:
                 ),
                 None,
             )
-            if product is not None and generated:
+            # An accepted answer in display spelling is spoken with the pronunciation; the approved
+            # script and its units are already in spoken form and stay byte for byte.
+            if product is not None and (
+                generated or not (text == product.spoken_text or text in product.units)
+            ):
                 text = product.speak(text)
         if product is None:
             raise SpeechRejected("unsupported_content")
