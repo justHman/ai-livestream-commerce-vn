@@ -19,6 +19,8 @@ _STANDARD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 # Free text can carry a BYOK provider key or transit envelope (`api_key=..`, a JSON blob): scrub the
 # VALUE after the name, whatever the quoting. The envelope may be a flat JSON object.
+# LIMIT: only these named fields are scrubbed (not `Authorization: Bearer ..` or a bare key with
+# no name); the code never logs a key or envelope, this is a safety net, not a guarantee.
 _SECRET_TEXT = re.compile(
     r"(?i)((?:avatar_credential_envelope|api[_-]?key|api-secret|x-simli-api-key)[\"']?\s*[:=]\s*)"
     r"(\"[^\"]*\"|'[^']*'|\{[^}]*\}|[^\s,;]+)"

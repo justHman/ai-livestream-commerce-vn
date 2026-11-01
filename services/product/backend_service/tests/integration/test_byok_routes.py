@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 
 import pytest
@@ -40,7 +41,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def seal(session_id=SESSION, tenant_id=TENANT, provider="lemonslice", exp=None, **over) -> dict:
     exp = int(time.time()) + 100 if exp is None else exp
-    nonce = bytes(range(12))
+    nonce = os.urandom(12)  # unique per envelope: the Runtime refuses a replayed nonce
     plain = json.dumps({"api_key": API_KEY, "provider": provider}, separators=(",", ":"))
     aad = f"{session_id}|{tenant_id}|{provider}|{exp}".encode()
     ct = AESGCM(KEY).encrypt(nonce, plain.encode(), aad)
@@ -273,3 +274,63 @@ def test_check_with_the_flag_off_is_a_400(fake_check):
     with client(avatar_byok_enabled=False) as c:
         r = c.post(CHECK, json=check_body(), headers={"X-Livento-Internal-Token": "internal-t"})
     assert (r.status_code, r.json()["error"]["code"]) == (400, "AVATAR_ENVELOPE_INVALID")
+
+
+def test_a_replayed_start_envelope_is_refused():
+    body = start_body()
+    with client(Capture()) as c:
+        first = c.post("/api/v1/sessions", json=body, headers=HEADERS)
+        second = c.post("/api/v1/sessions", json=body, headers=HEADERS)
+    assert (first.status_code, second.status_code, second.json()["error"]["code"]) == (
+        200,
+        400,
+        "AVATAR_ENVELOPE_INVALID",
+    )
+
+
+def test_a_replayed_check_envelope_is_refused(fake_check):
+    body = check_body()
+    h = {"X-Livento-Internal-Token": "internal-t"}
+    with client() as c:
+        first = c.post(CHECK, json=body, headers=h)
+        second = c.post(CHECK, json=body, headers=h)
+    assert (first.status_code, second.status_code) == (200, 400)
+
+
+def test_a_wrong_check_token_uses_its_own_bucket_and_never_drains_the_good_one(fake_check):
+    with client() as c:
+        keys: list[str] = []
+        real = c.app.state.api_limiter.allow
+
+        async def spy(key):
+            keys.append(key.split(":")[0])
+            return await real(key)
+
+        c.app.state.api_limiter.allow = spy
+        c.post(CHECK, json=check_body(), headers={"X-Livento-Internal-Token": "nope"})
+        c.post(CHECK, json=check_body(), headers={"X-Livento-Internal-Token": "internal-t"})
+    assert keys == ["avatar-check-bad", "avatar-check"]
+
+
+@pytest.mark.parametrize("field", ["avatar_credential_session_id", "avatar_credential_tenant_id"])
+def test_an_aad_separator_in_an_id_is_refused(field):
+    body = start_body(**{field: "a|b"})
+    with client(Capture()) as c:
+        r = c.post("/api/v1/sessions", json=body, headers=HEADERS)
+    assert (r.status_code, r.json()["error"]["code"]) == (400, "AVATAR_ENVELOPE_INVALID")
+
+
+def test_a_422_on_start_never_reflects_the_envelope():
+    env = seal()
+    body = start_body(avatar_credential_envelope=env, avatar_agent_id="not-valid")
+    with client(Capture()) as c:
+        r = c.post("/api/v1/sessions", json=body, headers=HEADERS)
+    assert r.status_code == 422 and env["ct"] not in r.text and env["nonce"] not in r.text
+
+
+def test_a_422_on_check_never_reflects_the_envelope(fake_check):
+    env = seal(session_id=f"check:{CHECK_ID}", provider="simli")
+    body = check_body(avatar_credential_envelope=env, provider="nope")
+    with client() as c:
+        r = c.post(CHECK, json=body, headers={"X-Livento-Internal-Token": "internal-t"})
+    assert r.status_code == 422 and env["ct"] not in r.text

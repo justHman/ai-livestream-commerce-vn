@@ -50,6 +50,8 @@ def open_tenant_credential(
         reject_envelope("byok_disabled")
     if not (envelope and session_ref and tenant_id and provider):
         reject_envelope("tenant_fields_missing")
+    if "|" in session_ref or "|" in tenant_id:  # the AAD is "|"-separated: no ambiguity
+        reject_envelope("aad_separator")
     try:
         return open_envelope(
             envelope,
@@ -71,32 +73,33 @@ class CredentialCheckReq(BaseModel):
     avatar_credential_envelope: Union[str, dict[str, Any]] = Field(repr=False)
 
 
-async def _rate_limit_check(request: Request) -> None:
-    key = f"avatar-check:{quota_identity_key(request, router._rate_limit_config(request))}"
-    if not await request.app.state.api_limiter.allow(key):
-        raise HTTPException(status_code=429, detail="rate limit exceeded")
-
-
-def _internal_token(request: Request, config: Any) -> None:
+async def _check_guard(request: Request) -> None:
+    """Token first (constant time), THEN the per-caller bucket; a wrong token only drains its own
+    small bucket and never touches the legitimate caller's."""
     from backend.api.security.authentication import tokens_match
 
+    config = container_from_request(request).config
     expected = (getattr(config, "avatar_internal_token", "") or "").strip()
     given = (request.headers.get("x-livento-internal-token") or "").strip()
+    identity = quota_identity_key(request, router._rate_limit_config(request))
     if not expected or not given or not tokens_match(given, expected):
+        if not await request.app.state.api_limiter.allow(f"avatar-check-bad:{identity}"):
+            raise HTTPException(status_code=429, detail="rate limit exceeded")
         raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
+    if not await request.app.state.api_limiter.allow(f"avatar-check:{identity}"):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
 
 
 @internal_router.post("/avatar/credential-check")
 async def credential_check(
     req: CredentialCheckReq,
     request: Request,
-    _limit: None = Depends(_rate_limit_check),
+    _guard: None = Depends(_check_guard),
 ) -> dict[str, str]:
     """Returns {code}: ok | invalid_key | not_found | unknown | provider_error."""
     from backend.application.clients.avatar.byok import check_credential
 
     d = container_from_request(request)
-    _internal_token(request, d.config)
     credential = open_tenant_credential(
         d.config,
         session_ref=f"check:{req.check_id}",  # a start envelope can never be replayed as a check

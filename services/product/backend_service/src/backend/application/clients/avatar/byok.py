@@ -21,6 +21,7 @@ import base64
 import binascii
 import json
 import re
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -112,6 +113,32 @@ def _b64d(value: Any) -> bytes:
         raise EnvelopeError("envelope_malformed") from None
 
 
+class NonceCache:
+    """Nonces already opened, kept until their envelope can no longer be valid (replay guard).
+
+    In memory and per process: a Runtime restart forgets them, but an envelope lives at most
+    `MAX_ENVELOPE_WINDOW_S + CLOCK_SKEW_S` seconds, so the exposure is that window only.
+    Full cache = refuse (fail closed): it takes the transit key to fill it.
+    """
+
+    def __init__(self, capacity: int = 10_000) -> None:
+        self._capacity = capacity
+        self._seen: dict[bytes, float] = {}  # nonce -> unix time after which it is forgotten
+        self._lock = threading.Lock()
+
+    def first_use(self, nonce: bytes, forget_at: float, now: float) -> bool:
+        with self._lock:
+            if len(self._seen) >= self._capacity:
+                self._seen = {n: t for n, t in self._seen.items() if t > now}
+            if nonce in self._seen or len(self._seen) >= self._capacity:
+                return False
+            self._seen[nonce] = forget_at
+            return True
+
+
+_SEEN = NonceCache()
+
+
 def open_envelope(
     envelope: Any,
     *,
@@ -121,6 +148,7 @@ def open_envelope(
     key: bytes,
     kid: str,
     now: float | None = None,
+    seen: NonceCache | None = None,
 ) -> AvatarCredential:
     """Decrypt into memory or raise ``EnvelopeError``. Expired, wrong kid / AAD / tag all fail."""
     if isinstance(envelope, str):
@@ -159,6 +187,9 @@ def open_envelope(
         or body.get("provider") != provider
     ):
         raise EnvelopeError("envelope_malformed")
+    cache = _SEEN if seen is None else seen
+    if not cache.first_use(nonce, exp + CLOCK_SKEW_S, current):
+        raise EnvelopeError("envelope_replay")
     return AvatarCredential(api_key=api_key, provider=provider)
 
 

@@ -107,7 +107,7 @@ requires-dist = [
     { name = "ai-livestream-tts", directory = "../tts_service" },
     { name = "async-timeout", marker = "extra == 'test'" },
     { name = "asyncpg", marker = "extra == 'postgres'" },
-    { name = "cryptography" },
+    { name = "cryptography", specifier = ">=50.0.2" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "livekit", marker = "extra == 'livekit'" },

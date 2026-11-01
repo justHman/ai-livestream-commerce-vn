@@ -28,6 +28,11 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 
+_CREDENTIAL_ROUTES = frozenset(
+    {("POST", "/api/v1/sessions"), ("POST", "/internal/v1/avatar/credential-check")}
+)
+
+
 def _envelope(
     status_code: int,
     code: str,
@@ -71,6 +76,10 @@ async def _request_validation_handler(
 ) -> JSONResponse:
     if any(error["type"] == "string_too_long" for error in exc.errors()):
         return _envelope(413, "input_too_long", "input too long")
+    if (request.method, request.url.path) in _CREDENTIAL_ROUTES:
+        # the default 422 echoes `input`, which may be the sealed key envelope: never reflect it
+        errors = [{k: e[k] for k in ("type", "loc", "msg") if k in e} for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errors})
     return await request_validation_exception_handler(request, exc)
 
 

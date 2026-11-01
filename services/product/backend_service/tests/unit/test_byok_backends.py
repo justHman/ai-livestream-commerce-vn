@@ -509,3 +509,27 @@ def test_bithuman_is_a_tenant_provider_when_enabled():
         avatar_byok_enabled=True, avatar_cred_transit_key=TRANSIT, bithuman_enabled=True
     ).build_render_backend()
     assert isinstance(router._by_provider["bithuman"], BitHumanRenderBackend)
+
+
+def test_a_tenant_session_that_lost_its_key_never_falls_back_to_the_platform_key():
+    backend, _, rest, _ = make_ls()
+    res = backend.start(tenant_opts("lemonslice", AGENT))
+    backend._tenant_keys.clear()  # the key is gone (bug / eviction): fail closed
+    try:
+        backend.stop(res.session_id)
+    except LemonSliceError:
+        pass
+    backend.stop_all()
+    assert PLATFORM_KEY not in {h["X-API-Key"] for _, h, _ in rest.calls}
+
+
+def test_bithuman_tenant_session_that_lost_its_key_never_uses_the_platform_key():
+    backend, _, rest = make_bh()
+    res = backend.start(tenant_opts("bithuman", "agent_code_1"))
+    backend._tenant_keys.clear()
+    try:
+        backend.stop(res.session_id)
+    except LemonSliceError:
+        pass
+    backend.stop_all()
+    assert rest.stage("/v1/runtime-sessions/bh-1/end") == []

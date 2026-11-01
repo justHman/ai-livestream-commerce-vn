@@ -18,7 +18,7 @@ Contract: `023-prep/BYOK_AVATAR_CONTRACT_2026-11-01.md` (API addendum is authori
 | `BITHUMAN_ENABLED` | off | bitHuman selectable for tenant sessions. Unverified against the real service. |
 | `BITHUMAN_API_BASE` | `https://api.bithuman.ai` | |
 | `BITHUMAN_MODEL` | `essence-2` | |
-| `BITHUMAN_API_KEY` / `BITHUMAN_AGENT_ID` | empty | Platform-account fallback only; BYOK sessions bring their own. |
+| `BITHUMAN_API_KEY` / `BITHUMAN_AGENT_ID` | empty | Platform-account use of bitHuman is not routed (the router never sends a platform session to bitHuman); BYOK sessions bring their own key, so both stay empty. |
 | `BITHUMAN_MAX_SESSION_S` | 3600 | Runtime near-cap guard (provider cap unknown). |
 | `BITHUMAN_IDLE_BOUND_S` | 120 | End bound of a derived cost row (provider idle unknown). |
 | `BITHUMAN_START_TIMEOUT_S` / `BITHUMAN_REQUEST_TIMEOUT_S` | 30 / 15 | |

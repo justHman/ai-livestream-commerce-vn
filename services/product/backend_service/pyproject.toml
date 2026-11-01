@@ -13,7 +13,7 @@ dependencies = [
   "python-dotenv",
   "redis",
   "PyJWT",
-  "cryptography",
+  "cryptography>=50.0.2",
   "numpy",
   "Pillow",
   "requests",

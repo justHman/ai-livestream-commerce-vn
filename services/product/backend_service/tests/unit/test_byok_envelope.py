@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from backend.application.clients.avatar.byok import (
     AvatarCredential,
     EnvelopeError,
+    NonceCache,
     check_credential,
     load_transit_key,
     open_envelope,
@@ -21,7 +22,9 @@ from backend.application.clients.avatar.byok import (
 )
 from backend.observability.logging.filters import StructuredFieldsFilter
 
-# FROZEN: identical to cmd/ai-connector-service/internal/avatarcred/testdata/transit_vector.json
+# FROZEN: copied verbatim from the API repo file
+# cmd/ai-connector-service/internal/avatarcred/testdata/transit_vector.json at API PR 136 head
+# 8e73f95e2ed983c2048b0f7ddce3f2904ae88299 (key, kid, nonce, ids, exp, aad, plaintext, ct_b64).
 # in the API repo (contract addendum 2026-11-01). Never regenerate it.
 VECTOR = {
     "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
@@ -32,8 +35,8 @@ VECTOR = {
     "provider": "simli",
     "exp": 1893456000,
     "aad": "33333333-3333-4333-8333-333333333333|22222222-2222-4222-8222-222222222222|simli|1893456000",
-    "plaintext": '{"api_key":"sk_test_0123456789","provider":"simli"}',
-    "ct_b64": "nTodXSyUadobR73xdBGfqhXfLU+ihnBfqDsQsUeSVy3wBjWQ2Us3WC2+Pup6E+6VLjk7C/BXZa2u20omtqqir+RoeQ==",
+    "plaintext": '{"api_key":"key_test_0123456789","provider":"simli"}',
+    "ct_b64": "nTodXSyUadobR73xbB+5gQTJKmTNh3NerzoTsEiTTCP+VDeNwFQ6WTruJvIrCeqUK3JkNTXHDh7FJfoHwy63xe24v0k=",
 }
 KEY = base64.b64decode(VECTOR["key_b64"])
 NOW = VECTOR["exp"] - 60
@@ -59,6 +62,7 @@ def opened(env=None, **over):
         key=KEY,
         kid="t1",
         now=NOW,
+        seen=NonceCache(),  # a fresh cache: the vector is reused by many tests
     )
     return open_envelope(envelope() if env is None else env, **(args | over))
 
@@ -83,15 +87,15 @@ def test_vector_encrypts_to_the_exact_ciphertext():
 
 def test_open_envelope_returns_the_key_in_a_redacted_credential():
     cred = opened()
-    assert cred == AvatarCredential(api_key="sk_test_0123456789", provider="simli")
+    assert cred == AvatarCredential(api_key="key_test_0123456789", provider="simli")
 
 
 def test_credential_repr_never_shows_the_key():
-    assert "sk_test_0123456789" not in repr(opened())
+    assert "key_test_0123456789" not in repr(opened())
 
 
 def test_envelope_may_arrive_as_a_json_string():
-    assert opened(json.dumps(envelope())).api_key == "sk_test_0123456789"
+    assert opened(json.dumps(envelope())).api_key == "key_test_0123456789"
 
 
 @pytest.mark.parametrize(
@@ -169,7 +173,14 @@ def test_plaintext_provider_must_match_the_request_provider():
 def test_a_sealed_envelope_round_trips():
     env = _sealed({"api_key": "k", "provider": "simli"})
     got = open_envelope(
-        env, session_id="s", tenant_id="t", provider="simli", key=KEY, kid="t1", now=NOW
+        env,
+        session_id="s",
+        tenant_id="t",
+        provider="simli",
+        key=KEY,
+        kid="t1",
+        now=NOW,
+        seen=NonceCache(),
     )
     assert got.api_key == "k"
 
@@ -302,3 +313,30 @@ def test_log_filter_scrubs_a_quoted_key_with_lazy_args():
 
 def test_log_filter_leaves_ordinary_messages_alone():
     assert _log_text("session %s started", "abc") == "session abc started"
+
+
+def test_the_same_envelope_cannot_be_opened_twice():
+    seen = NonceCache()
+    opened(seen=seen)
+    with pytest.raises(EnvelopeError) as err:
+        opened(seen=seen)
+    assert err.value.code == "envelope_replay"
+
+
+def test_a_rejected_envelope_does_not_burn_its_nonce():
+    seen = NonceCache()
+    with pytest.raises(EnvelopeError):
+        opened(session_id="x", seen=seen)  # wrong AAD
+    assert opened(seen=seen).provider == "simli"
+
+
+def test_a_full_nonce_cache_refuses_instead_of_forgetting():
+    seen = NonceCache(capacity=1)
+    assert seen.first_use(b"a", NOW + 100, NOW)
+    assert not seen.first_use(b"b", NOW + 100, NOW)
+
+
+def test_expired_nonces_are_forgotten_to_make_room():
+    seen = NonceCache(capacity=1)
+    seen.first_use(b"a", NOW + 1, NOW)
+    assert seen.first_use(b"b", NOW + 100, NOW + 2)

@@ -542,6 +542,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         # BYOK: provider_session_id -> tenant key, so terminate / keep-alive / cleanup retries of
         # that session use the tenant account. Dropped when the provider confirms the end.
         self._tenant_keys: dict[str, str] = {}
+        # every tenant sid ever seen (bounded): a tenant sid without its key must FAIL CLOSED, never
+        # fall back to the platform key
+        self._tenant_sids = _BoundedSet(4096)
+        # every tenant sid ever seen (bounded): a tenant sid without its key must FAIL CLOSED, never
+        # fall back to the platform key
+        self._tenant_sids = _BoundedSet(4096)
         self._stop_tasks: dict[str, asyncio.Task] = {}  # repeated stop waits for the same teardown
         self._reapers: set[asyncio.Task] = set()  # late-REST-session cleanups (loop thread)
         self._loop_lock = threading.Lock()
@@ -1005,6 +1011,8 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     def _register_tenant_key(self, provider_session_id: Any, api_key: str | None) -> None:
         if api_key and isinstance(provider_session_id, str):
             self._tenant_keys[provider_session_id] = api_key
+            self._tenant_sids.add(provider_session_id)
+            self._tenant_sids.add(provider_session_id)
 
     def _cost_open(self, session_id: str, provider_session_id: str, derived: bool = False) -> None:
         tenant = provider_session_id in self._tenant_keys
@@ -1831,9 +1839,12 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         s = self._s
         if event == "reset-idle-timeout":
             await self._extend_charge(provider_session_id, self._deadline())
-        headers = {
-            self._control_header: self._tenant_keys.get(provider_session_id, s.lemonslice_api_key)
-        }
+        key = self._tenant_keys.get(provider_session_id)
+        if key is None:
+            if provider_session_id in self._tenant_sids:
+                raise LemonSliceError("tenant_key_missing", "tenant key is not available")
+            key = s.lemonslice_api_key
+        headers = {self._control_header: key}
         payload = self._control_body(event)
         rel = path.format(session_id=quote(provider_session_id, safe="")).lstrip("/")
         url = f"{s.api_base.rstrip('/')}/{rel}"
