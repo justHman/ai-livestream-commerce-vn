@@ -58,6 +58,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.application.clients.avatar.byok import PROVIDER_UNAVAILABLE
 from backend.application.clients.avatar.lemonslice import (
     _CREDIT_CODE,
     _SAFE_SESSION_ID,
@@ -244,7 +245,12 @@ class SimliRenderBackend(LemonSliceRenderBackend):
         return build_token_body(self._sm, face_id)
 
     async def _simli_post(
-        self, path: str, headers: dict[str, str], body: dict[str, Any], stage: str
+        self,
+        path: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        stage: str,
+        tenant: bool = False,
     ):
         sm = self._sm
         url = f"{sm.api_base.rstrip('/')}/{path}"
@@ -263,9 +269,11 @@ class SimliRenderBackend(LemonSliceRenderBackend):
         # carry the URL); the provider body is never echoed
         if failure is not None:
             raise LemonSliceError(
-                "session_request_failed",
+                PROVIDER_UNAVAILABLE if tenant else "session_request_failed",
                 f"Simli {stage} request failed error_type={type(failure).__name__}",
             )
+        if tenant and (mapped := self._provider_status_error(status)):
+            raise mapped  # the tenant's own account: stable code, no platform credit state
         if status == 402:
             self._trip_credit()
             raise self._credit_error()
@@ -276,22 +284,30 @@ class SimliRenderBackend(LemonSliceRenderBackend):
         return data
 
     async def _request_session(
-        self, agent_id: str | None, image_url: str | None, avatar_token: str, room_sid: str
+        self,
+        agent_id: str | None,
+        image_url: str | None,
+        avatar_token: str,
+        room_sid: str,
+        api_key: str | None = None,
+        room_name: str = "",
     ) -> Any:
         """Start the provider session: compose token, then join our room. Returns session_id."""
         sm = self._sm
-        self._check_creation()
+        self._check_creation(api_key)
         assert agent_id
+        key = sm.simli_api_key if api_key is None else api_key
         token_data = await self._simli_post(
             "compose/token",
-            {"x-simli-api-key": sm.simli_api_key},
+            {"x-simli-api-key": key},
             self._token_body(agent_id),
             "token",
+            tenant=api_key is not None,
         )
         session_token = token_data.get("session_token")
         if not isinstance(session_token, str) or not session_token:
             raise LemonSliceError("session_request_failed", "Simli token response has no token")
-        self._log_warnings(token_data.get("warnings"), (sm.simli_api_key, session_token))
+        self._log_warnings(token_data.get("warnings"), (key, session_token))
         join_data = await self._simli_post(
             "integrations/livekit/agents",
             {},
@@ -301,10 +317,12 @@ class SimliRenderBackend(LemonSliceRenderBackend):
                 "livekit_url": sm.livekit_url,
             },
             "join",
+            tenant=api_key is not None,
         )
         sid = join_data.get("session_id")
         if not isinstance(sid, str) or not _SAFE_SESSION_ID.fullmatch(sid):
             raise LemonSliceError("session_id_invalid", "Simli returned an unusable session id")
+        self._register_tenant_key(sid, api_key)  # label only: Simli has no control calls
         return sid
 
     @staticmethod
@@ -345,6 +363,7 @@ class SimliRenderBackend(LemonSliceRenderBackend):
             except Exception as exc:
                 failure = exc
         cost_meter.avatar_close(sid, confirmed=False, extra_s=float(self._s.idle_timeout_s))
+        self._tenant_keys.pop(sid, None)
         if failure is not None:
             log.error("simli room leave failed error_type=%s", type(failure).__name__)
             raise ProviderCleanupIncomplete()

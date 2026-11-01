@@ -426,6 +426,7 @@ def _backend(status):
     b = object.__new__(LemonSliceRenderBackend)
     b._s = SimpleNamespace(terminate_path="/t", terminate_attempts=1, idle_timeout_s=60)
     b._budget_tokens, b._budget, b._async_post = {}, None, None
+    b._tenant_keys = {}
     b._deadline = lambda: 1.0
 
     async def control(*_a, **_k):
@@ -644,7 +645,7 @@ def test_stop_all_settles_the_avatar_even_when_the_loop_fails_early(meter):
 
     b = object.__new__(LemonSliceRenderBackend)
     b._s = SimpleNamespace(idle_timeout_s=60)
-    b._sessions, b._pending_terminate, b._closing = {}, {}, {}
+    b._sessions, b._pending_terminate, b._closing, b._tenant_keys = {}, {}, {}, {}
     b._loop = object()
     b._run = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("loop gone"))
     b._drain = lambda name: None

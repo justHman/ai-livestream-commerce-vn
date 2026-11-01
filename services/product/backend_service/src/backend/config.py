@@ -47,6 +47,10 @@ def _timer_env(name: str, default: str) -> float:
     return value
 
 
+def _flag_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _positive_timer_env(name: str, default: str) -> float:
     value = _timer_env(name, default)
     if value <= 0:
@@ -630,6 +634,20 @@ class AppConfig:
     simli_background_id: str = ""
     simli_foreground_id: str = ""
     simli_camera_json: str = ""
+    # BYOK avatar (clients/avatar/byok.py, docs/runbooks/byok-avatar-runtime.md). All OFF by default.
+    avatar_byok_enabled: bool = False  # AVATAR_BYOK_ENABLED: accept tenant credentials
+    avatar_cred_transit_key: str = field(default="", repr=False)  # base64 32 bytes
+    avatar_cred_transit_key_id: str = "t1"
+    bithuman_enabled: bool = False  # BITHUMAN_ENABLED: bitHuman backend selectable
+    bithuman_api_key: str = field(default="", repr=False)
+    bithuman_api_base: str = "https://api.bithuman.ai"
+    bithuman_agent_id: str = ""
+    bithuman_model: str = "essence-2"
+    bithuman_avatar_identity: str = "bithuman-avatar-agent"
+    bithuman_max_session_s: float = 3600.0
+    bithuman_idle_bound_s: int = 120
+    bithuman_start_timeout_s: float = 30.0
+    bithuman_request_timeout_s: float = 15.0
 
     # Engine configs
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -769,6 +787,20 @@ class AppConfig:
             simli_background_id=os.environ.get("SIMLI_BACKGROUND_ID", "").strip(),
             simli_foreground_id=os.environ.get("SIMLI_FOREGROUND_ID", "").strip(),
             simli_camera_json=os.environ.get("SIMLI_CAMERA_JSON", "").strip(),
+            avatar_byok_enabled=_flag_env("AVATAR_BYOK_ENABLED"),
+            avatar_cred_transit_key=os.environ.get("AVATAR_CRED_TRANSIT_KEY", "").strip(),
+            avatar_cred_transit_key_id=os.environ.get("AVATAR_CRED_TRANSIT_KEY_ID") or "t1",
+            bithuman_enabled=_flag_env("BITHUMAN_ENABLED"),
+            bithuman_api_key=os.environ.get("BITHUMAN_API_KEY", ""),
+            bithuman_api_base=os.environ.get("BITHUMAN_API_BASE") or "https://api.bithuman.ai",
+            bithuman_agent_id=os.environ.get("BITHUMAN_AGENT_ID", "").strip(),
+            bithuman_model=os.environ.get("BITHUMAN_MODEL") or "essence-2",
+            bithuman_avatar_identity=os.environ.get("BITHUMAN_AVATAR_IDENTITY")
+            or "bithuman-avatar-agent",
+            bithuman_max_session_s=_positive_timer_env("BITHUMAN_MAX_SESSION_S", "3600"),
+            bithuman_idle_bound_s=_int_env("BITHUMAN_IDLE_BOUND_S", "120", 1),
+            bithuman_start_timeout_s=_positive_timer_env("BITHUMAN_START_TIMEOUT_S", "30"),
+            bithuman_request_timeout_s=_positive_timer_env("BITHUMAN_REQUEST_TIMEOUT_S", "15"),
             llm=llm_cfg,
             tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),
@@ -834,6 +866,26 @@ class AppConfig:
         return InMemorySessionStore()
 
     def build_render_backend(self):
+        """The global backend; with AVATAR_BYOK_ENABLED a per-session provider router around it."""
+        default = self._build_default_render_backend()
+        if not self.avatar_byok_enabled:
+            return default  # today's behaviour, untouched
+        return self._build_avatar_router(default)
+
+    def _build_avatar_router(self, default):
+        from backend.application.clients.avatar.byok import load_transit_key
+        from backend.application.clients.avatar.router import AvatarProviderRouter
+
+        load_transit_key(self.avatar_cred_transit_key)  # fail closed at startup
+        builders = {
+            "lemonslice": lambda: self._build_lemonslice_backend(tenant_only=True),
+            "simli": lambda: self._build_simli_backend(tenant_only=True),
+        }
+        if self.bithuman_enabled:
+            builders["bithuman"] = lambda: self._build_bithuman_backend(tenant_only=True)
+        return AvatarProviderRouter.build(default, builders)
+
+    def _build_default_render_backend(self):
         """Build the canonical offline renderer for this backend service.
 
         The mock renderer lives in the canonical avatar_service
@@ -938,7 +990,7 @@ class AppConfig:
             )
         )
 
-    def _build_simli_backend(self):
+    def _build_simli_backend(self, *, tenant_only: bool = False):
         """Fail closed at startup: no Simli key, no LiveKit, or a second audio publisher."""
         missing = [
             name
@@ -948,7 +1000,7 @@ class AppConfig:
                 ("LIVEKIT_API_SECRET", self.livekit_api_secret),
                 ("SIMLI_API_KEY", self.simli_api_key),
             )
-            if not value
+            if not value and not (tenant_only and name == "SIMLI_API_KEY")  # BYOK: key per session
         ]
         if missing:
             raise ValueError("cloud_simli requires " + ", ".join(missing))
@@ -997,7 +1049,53 @@ class AppConfig:
             )
         )
 
-    def _build_lemonslice_backend(self):
+    def _build_bithuman_backend(self, *, tenant_only: bool = False):
+        """Fail closed: bitHuman needs LiveKit and (unless tenant-only) a platform key; no double audio."""
+        missing = [
+            name
+            for name, value in (
+                ("LIVEKIT_URL", self.livekit_url),
+                ("LIVEKIT_API_KEY", self.livekit_api_key),
+                ("LIVEKIT_API_SECRET", self.livekit_api_secret),
+                ("BITHUMAN_API_KEY", self.bithuman_api_key),
+            )
+            if not value and not (tenant_only and name == "BITHUMAN_API_KEY")
+        ]
+        if missing:
+            raise ValueError("cloud_bithuman requires " + ", ".join(missing))
+        if self.livekit_publish:
+            raise ValueError(
+                "cloud_bithuman refuses LIVEKIT_PUBLISH=true: the avatar is the only audio source"
+            )
+        from backend.application.clients.avatar.bithuman import (
+            BitHumanRenderBackend,
+            BitHumanSettings,
+        )
+
+        return BitHumanRenderBackend(
+            BitHumanSettings(
+                livekit_url=self.livekit_url,
+                livekit_api_key=self.livekit_api_key,
+                livekit_api_secret=self.livekit_api_secret,
+                bithuman_api_key=self.bithuman_api_key,
+                api_base=self.bithuman_api_base,
+                agent_id=self.bithuman_agent_id,
+                model=self.bithuman_model,
+                avatar_identity=self.bithuman_avatar_identity,
+                max_session_s=self.bithuman_max_session_s,
+                idle_bound_s=self.bithuman_idle_bound_s,
+                ready_timeout_s=self.bithuman_start_timeout_s,
+                request_timeout_s=self.bithuman_request_timeout_s,
+                speak_ready_gate_enabled=self.lemonslice_speak_ready_gate_enabled,
+                speak_ready_wait_s=self.lemonslice_speak_ready_wait_s,
+                fallback_publish=self.avatar_audio_fallback_publish,
+                render_offset_ms=self.avatar_render_offset_ms,
+                ready_ttl_s=self.runtime_ready_ttl_s,
+                payment_backoff_s=self.lemonslice_payment_backoff_s,
+            )
+        )
+
+    def _build_lemonslice_backend(self, *, tenant_only: bool = False):
         """Fail loud on missing credentials or a second audio publisher (double audio)."""
         missing = [
             name
@@ -1007,7 +1105,7 @@ class AppConfig:
                 ("LIVEKIT_API_SECRET", self.livekit_api_secret),
                 ("LEMONSLICE_API_KEY", self.lemonslice_api_key),
             )
-            if not value
+            if not value and not (tenant_only and name == "LEMONSLICE_API_KEY")
         ]
         if missing:
             raise ValueError("cloud_lemonslice requires " + ", ".join(missing))

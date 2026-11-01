@@ -30,6 +30,7 @@ from .terminal_guard import (
     teardown_then_persist,
     terminal_retry_pending,
 )
+from .avatar_credentials import open_tenant_credential, reject_envelope
 from .router import logger
 from .router import router as _router  # noqa: F401
 
@@ -101,7 +102,23 @@ async def sessions_start(
         not req.execution_contract or not _authenticated_internal_caller(request, d.config)
     ):
         raise HTTPException(status_code=403, detail={"code": "host_identity_not_authorized"})
-    override_mode = getattr(d.backend, "avatar_override_mode", None)
+    credential = None
+    if req.avatar_credential_source == "tenant":
+        credential = open_tenant_credential(
+            d.config,
+            session_ref=req.avatar_credential_session_id,
+            tenant_id=req.avatar_credential_tenant_id,
+            provider=req.avatar_provider,
+            envelope=req.avatar_credential_envelope,
+        )
+    elif req.avatar_credential_envelope is not None:
+        reject_envelope("platform_with_envelope")
+    # tenant backends are all LemonSlice-derived (avatar and voice); the global one may not be
+    override_mode = (
+        "avatar_and_voice"
+        if credential is not None
+        else getattr(d.backend, "avatar_override_mode", None)
+    )
     if req.has_avatar_or_voice_override() and override_mode not in (
         "avatar_and_voice",
         "voice_only",
@@ -138,11 +155,17 @@ async def sessions_start(
                 avatar_image_url=req.avatar_image_url,
                 voice_id=req.voice_id,
                 is_sandbox=req.is_sandbox,
+                extra={"avatar_credential": credential} if credential is not None else {},
             ),
         )
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except Exception as exc:
+        from backend.application.clients.avatar.byok import AVATAR_CODES
+
+        code = getattr(exc, "code", None)
+        if code in AVATAR_CODES:  # stable BYOK code for the Web; no provider text, no secret
+            raise HTTPException(status_code=502, detail={"code": code, "message": code}) from None
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         cost_meter.expect_reset(expect)

@@ -17,6 +17,12 @@ from backend.observability.logging.config import (
 
 _STANDARD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+# Free text can carry a BYOK provider key or transit envelope (`api_key=..`, a JSON blob): scrub the
+# VALUE after the name, whatever the quoting. The envelope may be a flat JSON object.
+_SECRET_TEXT = re.compile(
+    r"(?i)((?:avatar_credential_envelope|api[_-]?key|api-secret|x-simli-api-key)[\"']?\s*[:=]\s*)"
+    r"(\"[^\"]*\"|'[^']*'|\{[^}]*\}|[^\s,;]+)"
+)
 _LEVEL_NUMBERS = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
@@ -74,6 +80,7 @@ class StructuredFieldsFilter(logging.Filter):
     """Keep approved scalar fields, redact secrets, and omit free-form data."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        self._scrub_message(record)
         has_sensitive_field = False
         for key in tuple(record.__dict__):
             if key in _STANDARD_FIELDS:
@@ -89,6 +96,16 @@ class StructuredFieldsFilter(logging.Filter):
         if has_sensitive_field:
             record.__dict__[REDACTION_FIELD] = REDACTION_MARKER
         return True
+
+    @staticmethod
+    def _scrub_message(record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+        except Exception:  # a broken format string is the caller's bug, not ours to raise
+            return
+        scrubbed = _SECRET_TEXT.sub(lambda m: m.group(1) + REDACTION_MARKER, message)
+        if scrubbed != message:
+            record.msg, record.args = scrubbed, ()
 
 
 class ContextFilter(logging.Filter):

@@ -85,7 +85,9 @@ class CostMeter:
         self.reopened = 0  # avatar_open on a provider session that was still open
         self._closed = False  # shut down: late samples are logged as lost, never silent
         self.avatar_idle_bound_s = 0.0  # provider idle timeout: the end bound of a derived row
-        self.avatar_provider = "lemonslice"  # label of avatar rows; set by the active backend
+        self.avatar_provider = "lemonslice"  # default label of avatar rows (active backend)
+        # provider_session_id -> (provider, credential_source); popped when the row is emitted
+        self._avatar_labels: dict[str, tuple[str | None, str]] = {}
         self.evicted = 0  # identity / open avatar record removed to make room (an error)
 
     def configure(self, *, enabled: bool, buffer: int = 5000) -> None:
@@ -321,7 +323,13 @@ class CostMeter:
         )
 
     def avatar_open(
-        self, session_id: str, provider_session_id: str, *, derived: bool = False
+        self,
+        session_id: str,
+        provider_session_id: str,
+        *,
+        derived: bool = False,
+        provider: str | None = None,
+        credential_source: str = "platform",
     ) -> None:
         """A provider avatar session began (start, rollover, or a reaped late session).
 
@@ -336,6 +344,7 @@ class CostMeter:
                 tenant = identity.tenant_id if identity else "unknown"
                 self._late(provider_session_id, tenant, "AVATAR")
             return
+        self._avatar_labels[provider_session_id] = (provider, credential_source)
         expected = _expected.get()
         known = (
             ExecutionIdentity(
@@ -430,18 +439,20 @@ class CostMeter:
         identity: ExecutionIdentity | None = None,
     ) -> None:
         session_id, mono, started, derived_start, opened_identity = rec
+        provider, source = self._avatar_labels.pop(psid, (None, "platform"))
         extra = 0.0 if confirmed else max(0.0, float(extra_s))
         self._push(
             session_id,
             AVATAR,
             psid,
-            provider=self.avatar_provider,
+            provider=provider or self.avatar_provider,
             _identity=identity or opened_identity,
             usage_source="measured" if confirmed and not derived_start else "derived",
             seconds=round(max(0.0, time.monotonic() - mono) + extra, 3),
             started_at=started,
             ended_at=datetime.now(timezone.utc) + timedelta(seconds=extra),
             provider_session_id=psid,
+            **({"credential_source": source} if source != "platform" else {}),
         )
         with self._lock:
             if session_id in self._unbound_pending and not any(

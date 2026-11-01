@@ -13,6 +13,7 @@ dependencies = [
   "python-dotenv",
   "redis",
   "PyJWT",
+  "cryptography",
   "numpy",
   "Pillow",
   "requests",
