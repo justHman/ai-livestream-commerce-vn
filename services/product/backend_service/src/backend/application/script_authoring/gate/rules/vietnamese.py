@@ -70,12 +70,10 @@ def _word_span(match: re.Match[str]) -> TextSpan:
 
 
 def _allowed(word: str, context) -> bool:
-    """True when the token is an allowlisted brand/product term."""
+    """True when the token IS an allowlisted brand/product word (a whole token: a short syllable
+    must never exempt every word that merely contains it)."""
     lowered = word.lower()
-    return any(
-        lowered in allowed.lower() or allowed.lower() in lowered
-        for allowed in context.brand_allowlist
-    )
+    return any(lowered == allowed.lower() for allowed in context.brand_allowlist)
 
 
 def check_common_spelling(text: str, context) -> list[RuleViolation]:

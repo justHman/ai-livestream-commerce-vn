@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from typing import Any, Callable
 
 from .fingerprints import ApprovalDependencies, approval_dependency_hash
@@ -65,12 +66,14 @@ class ApprovedProduct:
         in the host's own words and almost never contain a claim as one exact sentence. Still no
         fragments, negation removal or free connectors; the model only chooses one whole string.
         Numbers are written as words (what the voice reads); a price is only ever the approved
-        price in a fixed sentence.
+        price in a fixed sentence. The brand keeps its real spelling: these strings reach model
+        prompts, and ``speak`` applies the pronunciation to the final speech only.
         """
         from .compile import compile_spoken_text
         from .generation.ordered_units import _CONDITION_CLAIM_RE, claim_covered, spoken_price
 
         facts = json.loads(self.facts_json)
+        brand_map = _brand_map(facts)
         promotions = {
             text
             for kind, texts in (facts.get("claims_by_type") or {}).items()
@@ -88,10 +91,12 @@ class ApprovedProduct:
         for claim in facts.get("allowed_claims", []):
             if not isinstance(claim, str) or not claim.strip():
                 continue
-            spoken = compile_spoken_text(claim.strip()).spoken_text
+            spoken = _compile_keeping_brand(claim.strip(), brand_map)
+            # The approved units carry the pronunciation, so the claim is compared in that form too.
+            said = _speak_brand(claim, brand_map)
             if claim in limitations or _CONDITION_CLAIM_RE.search(claim):
                 conditional.append(spoken)  # a condition only restricts: never dropped
-            elif not any(claim_covered(claim, unit) for unit in self.units):
+            elif not any(claim_covered(said, unit) for unit in self.units):
                 continue  # not part of what the owner approved: a changed fact must not slip in
             elif claim in promotions:
                 conditional.append(spoken)  # never alone: a discount without its condition misleads
@@ -109,6 +114,52 @@ class ApprovedProduct:
                 )
         return tuple(dict.fromkeys(found))
 
+    def speak(self, text: str) -> str:
+        """The final speech of an answer: the brand as the voice must say it."""
+        return _speak_brand(text, _brand_map(json.loads(self.facts_json)))
+
+
+def _brand_map(facts: dict) -> dict[str, str]:
+    from .compile import brand_of
+
+    brand, pronunciation = brand_of(facts.get("product_info"))
+    return {brand: pronunciation} if pronunciation else {}
+
+
+def _compile_keeping_brand(text: str, brand_map: dict[str, str]) -> str:
+    """compile_spoken_text, except that a brand with a pronunciation keeps its spelling: the
+    acronym speller would turn "LIVENTO" into "L I V E N T O", which ``speak`` can no longer find."""
+    from .compile import brand_spans, compile_spoken_text
+
+    if not brand_map:
+        return compile_spoken_text(text).spoken_text
+    original_text = text
+    text = unicodedata.normalize("NFC", text)
+    # Private-use characters no normalizer touches, each one absent from the claim itself so a
+    # character the owner typed is never mistaken for a placeholder.
+    free = (chr(c) for c in range(0xE000, 0xF900) if chr(c) not in text)
+    kept: dict[str, str] = {}
+    for brand in brand_map:
+        for start, end in reversed(brand_spans(text, brand)):
+            mark = next(free, None)
+            if mark is None:
+                # No free placeholder left (an absurd claim): plain compile, the brand may be spelled out.
+                return compile_spoken_text(original_text).spoken_text
+            kept[mark] = text[start:end]
+            text = f"{text[:start]}{mark}{text[end:]}"
+    spoken = compile_spoken_text(text).spoken_text
+    for mark, original in kept.items():
+        spoken = spoken.replace(mark, original)
+    return spoken
+
+
+def _speak_brand(text: str, brand_map: dict[str, str]) -> str:
+    from .compile import apply_brand_pronunciation
+
+    for brand, pronunciation in brand_map.items():
+        text = apply_brand_pronunciation(text, brand, pronunciation)
+    return text
+
 
 def _states_number(script_words: list[str], phrase: str) -> bool:
     """The phrase occurs as a whole number: "tám mươi nghìn" is not inside "một trăm tám mươi nghìn"."""
@@ -123,8 +174,11 @@ def _states_number(script_words: list[str], phrase: str) -> bool:
 
 
 def _is_script_text(text: str, product: "ApprovedProduct") -> bool:
-    """The whole approved script, one of its units, or (a viewer question) a whole approved fact."""
-    return text == product.spoken_text or text in product.units or text in product.answers()
+    """The whole approved script, one of its units, or (a viewer question) a whole approved fact,
+    as written or as spoken."""
+    if text == product.spoken_text or text in product.units:
+        return True
+    return any(text in (a, product.speak(a)) for a in product.answers())
 
 
 # Said when the approved facts cannot answer a viewer: fixed bytes, no facts of its own.
@@ -679,6 +733,7 @@ class ApprovedSpeech:
                 else None
             )
             if direct is not None:
+                direct = candidates[0].speak(direct)
                 self._fence(session_id, epoch, live)
                 self._said_ok.setdefault(session_id, set()).add((candidates[0].product_id, direct))
                 speech = ValidatedSpeech(envelope, candidates[0], direct, epoch, route)
@@ -730,11 +785,14 @@ class ApprovedSpeech:
                 ),
                 None,
             )  # replayed by the Director: it was judged when first produced
+        # Everything above (facts, model prompts, checks) uses the brand's real spelling; only the
+        # final answer that is cached, replayed and spoken carries the pronunciation.
         if trusted or replay is not None:
+            product = replay or candidates[0]
             if generate and text != DEFLECTION:
+                text = product.speak(text)
                 self._fence(session_id, epoch, live)  # a cancelled turn must not fill the cache
                 self._said_ok.setdefault(session_id, set()).add((candidates[0].product_id, text))
-            product = replay or candidates[0]
         else:
             product = next(
                 (
@@ -744,6 +802,12 @@ class ApprovedSpeech:
                 ),
                 None,
             )
+            # An accepted answer in display spelling is spoken with the pronunciation; the approved
+            # script and its units are already in spoken form and stay byte for byte.
+            if product is not None and (
+                generated or not (text == product.spoken_text or text in product.units)
+            ):
+                text = product.speak(text)
         if product is None:
             raise SpeechRejected("unsupported_content")
         speech = ValidatedSpeech(envelope, product, text, epoch, route)

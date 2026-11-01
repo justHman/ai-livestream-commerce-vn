@@ -187,7 +187,8 @@ def check_profanity(
     violations: list[RuleViolation] = []
     for match in _CANDIDATE_RE.finditer(text):
         token = match.group()
-        if any(allowed.lower() in token.lower() for allowed in context.brand_allowlist):
+        # Whole tokens only: the syllable "Shi" of a brand must not exempt "shit".
+        if any(allowed.lower() == token.lower() for allowed in context.brand_allowlist):
             continue
         if lexicon.is_offensive(token):
             violations.append(
