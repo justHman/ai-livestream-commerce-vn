@@ -294,8 +294,10 @@ def _include_router(app: FastAPI) -> None:
     """
     from backend.api.health import router as health_router
     from backend.api.v1 import router as v1_router
+    from backend.api.v1.avatar_credentials import internal_router
 
     app.include_router(v1_router)
+    app.include_router(internal_router)
     app.include_router(health_router)
 
 

@@ -22,10 +22,10 @@ removed. This router exposes:
 
 from __future__ import annotations
 
+import json
 import logging
-import re
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, Union
 
 if TYPE_CHECKING:
     from backend.application.schemas.run_plan import RunPlan
@@ -40,6 +40,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.application.clients.avatar.byok import valid_avatar_id
 from backend.application.clients.avatar.image_url import check_image_url
 from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
 from backend.application.entity.registry import (
@@ -111,8 +112,16 @@ class ControlHub:
 
 class StartReq(BaseModel):
     avatar_id: Optional[str] = Field(default=None, max_length=128)
-    avatar_provider: Optional[Literal["lemonslice"]] = None
-    avatar_agent_id: Optional[str] = Field(default=None, max_length=38)
+    avatar_provider: Optional[Literal["lemonslice", "simli", "bithuman"]] = None
+    avatar_agent_id: Optional[str] = Field(default=None, max_length=64)
+    avatar_credential_source: Literal["platform", "tenant"] = "platform"
+    # AES-256-GCM transit envelope of the tenant's provider key (clients/avatar/byok.py); the AAD
+    # ids are separate from the execution identity fields on purpose.
+    avatar_credential_session_id: Optional[str] = Field(default=None, max_length=128)
+    avatar_credential_tenant_id: Optional[str] = Field(default=None, max_length=128)
+    avatar_credential_envelope: Optional[Union[str, dict[str, Any]]] = Field(
+        default=None, repr=False
+    )
     avatar_image_url: Optional[str] = Field(default=None, max_length=2_048)
     voice_id: Optional[str] = Field(default=None, max_length=128)
     is_sandbox: bool = True
@@ -130,13 +139,11 @@ class StartReq(BaseModel):
 
         return validated_host_name(value) if value is not None else None
 
-    @field_validator("avatar_agent_id")
+    @field_validator("avatar_credential_envelope")
     @classmethod
-    def validate_avatar_agent_id(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        if not re.fullmatch(r"agent_[0-9a-f]{8,32}", value):
-            raise ValueError("avatar_agent_id has an invalid format")
+    def validate_envelope_size(cls, value: Any) -> Any:
+        if value is not None and len(json.dumps(value)) > 4_096:
+            raise ValueError("avatar_credential_envelope is too large")
         return value
 
     @field_validator("avatar_image_url")
@@ -166,8 +173,13 @@ class StartReq(BaseModel):
             raise ValueError("avatar_agent_id and avatar_image_url are mutually exclusive")
         if self.avatar_id and (self.avatar_agent_id or self.avatar_image_url):
             raise ValueError("avatar_id cannot be combined with a per-session avatar source")
+        if self.avatar_agent_id and (
+            not self.avatar_provider
+            or not valid_avatar_id(self.avatar_provider, self.avatar_agent_id)
+        ):
+            raise ValueError("avatar_agent_id has an invalid format")
         if self.has_avatar_or_voice_override() and (
-            self.avatar_provider != "lemonslice"
+            not self.avatar_provider
             or not (self.avatar_agent_id or self.avatar_image_url)
             or not self.voice_id
         ):
