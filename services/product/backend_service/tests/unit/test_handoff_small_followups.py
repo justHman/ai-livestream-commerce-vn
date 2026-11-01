@@ -30,6 +30,7 @@ def test_lemonslice_stop_all_closes_client_and_loop_even_when_drain_fails(monkey
     backend._loop = object()
     backend._sessions = {}
     backend._closing = {}
+    backend._tenant_keys = {}  # stop_all wipes tenant keys (BYOK)
     closed = []
 
     async def drain(kind):
