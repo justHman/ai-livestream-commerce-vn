@@ -6,7 +6,7 @@ service is self-contained. The core module is frozen and will be deleted after
 the whole refactor completes.
 
 Engine selection (the production seam):
-  RENDER_BACKEND   cloud_liveavatar | self_host_avatarforcing_half |
+  RENDER_BACKEND   cloud_liveavatar | cloud_lemonslice | cloud_simli | self_host_avatarforcing_half |
                    self_host_echoavatar_full | static_avatar (free test avatar) | mock
   SESSION_STORE    memory(Colab) | redis(AWS)
   LLM_ENGINE       vllm | llamacpp | sglang | hf | openai_compat | none(default echo)
@@ -62,6 +62,31 @@ def _int_env(name: str, default: str, minimum: int = 0) -> int:
         raise ValueError(f"{name} must be an integer >= {minimum}") from None
     if value < minimum:
         raise ValueError(f"{name} must be an integer >= {minimum}")
+    return value
+
+
+def _opt_int_env(name: str) -> int | None:
+    """Optional integer: unset or empty = None; errors name the variable, never the value."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer") from None
+
+
+def _opt_unit_env(name: str) -> float | None:
+    """Optional float in [0, 1]: unset or empty = None."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number between 0 and 1") from None
+    if not 0 <= value <= 1:
+        raise ValueError(f"{name} must be a number between 0 and 1")
     return value
 
 
@@ -588,6 +613,23 @@ class AppConfig:
     lemonslice_payment_backoff_s: float = 3600.0
     avatar_audio_fallback_publish: bool = False
     avatar_render_offset_ms: int = 0
+    # cloud_simli (see clients/avatar/simli.py, docs/runbooks/simli-backend.md). Off unless
+    # RENDER_BACKEND=cloud_simli; speak-ready gate, credit backoff and ready TTL are shared.
+    simli_api_key: str = field(default="", repr=False)
+    simli_api_base: str = "https://api.simli.ai"
+    simli_face_id: str = ""
+    simli_avatar_identity: str = "simli-avatar-agent"
+    simli_max_session_s: float = 3600.0
+    simli_max_idle_s: int = 120
+    simli_start_timeout_s: float = 30.0
+    simli_request_timeout_s: float = 15.0
+    simli_streaming_width: int | None = None
+    simli_streaming_height: int | None = None
+    simli_avatar_position_x: float | None = None
+    simli_avatar_position_y: float | None = None
+    simli_background_id: str = ""
+    simli_foreground_id: str = ""
+    simli_camera_json: str = ""
 
     # Engine configs
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -712,6 +754,21 @@ class AppConfig:
             ).lower()
             in ("1", "true", "on", "yes"),
             avatar_render_offset_ms=_int_env("AVATAR_RENDER_OFFSET_MS", "0"),
+            simli_api_key=os.environ.get("SIMLI_API_KEY", ""),
+            simli_api_base=os.environ.get("SIMLI_API_BASE") or "https://api.simli.ai",
+            simli_face_id=os.environ.get("SIMLI_FACE_ID", "").strip(),
+            simli_avatar_identity=os.environ.get("SIMLI_AVATAR_IDENTITY") or "simli-avatar-agent",
+            simli_max_session_s=_positive_timer_env("SIMLI_MAX_SESSION_S", "3600"),
+            simli_max_idle_s=_int_env("SIMLI_MAX_IDLE_S", "120", 1),
+            simli_start_timeout_s=_positive_timer_env("SIMLI_START_TIMEOUT_S", "30"),
+            simli_request_timeout_s=_positive_timer_env("SIMLI_REQUEST_TIMEOUT_S", "15"),
+            simli_streaming_width=_opt_int_env("SIMLI_STREAMING_WIDTH"),
+            simli_streaming_height=_opt_int_env("SIMLI_STREAMING_HEIGHT"),
+            simli_avatar_position_x=_opt_unit_env("SIMLI_AVATAR_POSITION_X"),
+            simli_avatar_position_y=_opt_unit_env("SIMLI_AVATAR_POSITION_Y"),
+            simli_background_id=os.environ.get("SIMLI_BACKGROUND_ID", "").strip(),
+            simli_foreground_id=os.environ.get("SIMLI_FOREGROUND_ID", "").strip(),
+            simli_camera_json=os.environ.get("SIMLI_CAMERA_JSON", "").strip(),
             llm=llm_cfg,
             tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),
@@ -796,6 +853,8 @@ class AppConfig:
             )
         if self.render_backend == "cloud_lemonslice":
             return self._build_lemonslice_backend()
+        if self.render_backend == "cloud_simli":
+            return self._build_simli_backend()
         if self.render_backend == "static_avatar":
             return self._build_static_avatar_backend()
         if self.render_backend in (
@@ -839,7 +898,7 @@ class AppConfig:
             return _RemoteBackend()
         raise ValueError(
             "unknown RENDER_BACKEND "
-            f"{self.render_backend!r}; expected cloud_liveavatar, cloud_lemonslice, "
+            f"{self.render_backend!r}; expected cloud_liveavatar, cloud_lemonslice, cloud_simli, "
             "self_host_avatarforcing_half, self_host_echoavatar_full, static_avatar, or mock"
         )
 
@@ -876,6 +935,65 @@ class AppConfig:
                 height=self.static_avatar_height,
                 fps=self.static_avatar_fps,
                 audio_sample_rate=self.static_avatar_sample_rate,
+            )
+        )
+
+    def _build_simli_backend(self):
+        """Fail closed at startup: no Simli key, no LiveKit, or a second audio publisher."""
+        missing = [
+            name
+            for name, value in (
+                ("LIVEKIT_URL", self.livekit_url),
+                ("LIVEKIT_API_KEY", self.livekit_api_key),
+                ("LIVEKIT_API_SECRET", self.livekit_api_secret),
+                ("SIMLI_API_KEY", self.simli_api_key),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError("cloud_simli requires " + ", ".join(missing))
+        if self.livekit_publish:
+            raise ValueError(
+                "cloud_simli refuses LIVEKIT_PUBLISH=true: the avatar is the only audio source"
+            )
+        import json
+
+        camera = None
+        if self.simli_camera_json:
+            try:
+                camera = json.loads(self.simli_camera_json)
+            except ValueError:
+                raise ValueError("SIMLI_CAMERA_JSON must be a JSON object") from None
+            if not isinstance(camera, dict):
+                raise ValueError("SIMLI_CAMERA_JSON must be a JSON object")
+        from backend.application.clients.avatar.simli import SimliRenderBackend, SimliSettings
+
+        return SimliRenderBackend(
+            SimliSettings(
+                livekit_url=self.livekit_url,
+                livekit_api_key=self.livekit_api_key,
+                livekit_api_secret=self.livekit_api_secret,
+                simli_api_key=self.simli_api_key,
+                api_base=self.simli_api_base,
+                face_id=self.simli_face_id,
+                avatar_identity=self.simli_avatar_identity,
+                max_session_s=self.simli_max_session_s,
+                max_idle_s=self.simli_max_idle_s,
+                streaming_width=self.simli_streaming_width,
+                streaming_height=self.simli_streaming_height,
+                avatar_position_x=self.simli_avatar_position_x,
+                avatar_position_y=self.simli_avatar_position_y,
+                background_id=self.simli_background_id,
+                foreground_id=self.simli_foreground_id,
+                camera=camera,
+                ready_timeout_s=self.simli_start_timeout_s,
+                request_timeout_s=self.simli_request_timeout_s,
+                speak_ready_gate_enabled=self.lemonslice_speak_ready_gate_enabled,
+                speak_ready_wait_s=self.lemonslice_speak_ready_wait_s,
+                fallback_publish=self.avatar_audio_fallback_publish,
+                render_offset_ms=self.avatar_render_offset_ms,
+                ready_ttl_s=self.runtime_ready_ttl_s,
+                payment_backoff_s=self.lemonslice_payment_backoff_s,
             )
         )
 
