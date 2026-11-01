@@ -133,6 +133,7 @@ def _compile_keeping_brand(text: str, brand_map: dict[str, str]) -> str:
 
     if not brand_map:
         return compile_spoken_text(text).spoken_text
+    original_text = text
     text = unicodedata.normalize("NFC", text)
     # Private-use characters no normalizer touches, each one absent from the claim itself so a
     # character the owner typed is never mistaken for a placeholder.
@@ -140,7 +141,10 @@ def _compile_keeping_brand(text: str, brand_map: dict[str, str]) -> str:
     kept: dict[str, str] = {}
     for brand in brand_map:
         for start, end in reversed(brand_spans(text, brand)):
-            mark = next(free)
+            mark = next(free, None)
+            if mark is None:
+                # No free placeholder left (an absurd claim): plain compile, the brand may be spelled out.
+                return compile_spoken_text(original_text).spoken_text
             kept[mark] = text[start:end]
             text = f"{text[:start]}{mark}{text[end:]}"
     spoken = compile_spoken_text(text).spoken_text

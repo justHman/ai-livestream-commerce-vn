@@ -316,6 +316,14 @@ def test_private_use_characters_typed_in_a_claim_are_kept() -> None:
     assert claim in product.answers()
 
 
+def test_a_claim_without_free_placeholders_still_gives_an_answer() -> None:
+    every = "".join(chr(c) for c in range(0xE000, 0xF900))
+    claim = f"Livento cotton {every}."
+    facts = {**BRANDED_FACTS, "allowed_claims": [claim]}
+    product = ApprovedProduct("p1", "v1", BRANDED_SCRIPT, "h", json.dumps(facts))
+    assert any(a.startswith("Livento cotton") for a in product.answers())
+
+
 @pytest.mark.parametrize("brand", ["Livento", "LIVENTO"])
 def test_an_all_caps_brand_in_a_claim_survives_answer_compilation(brand) -> None:
     facts = {
