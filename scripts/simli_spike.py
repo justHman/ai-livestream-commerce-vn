@@ -24,6 +24,17 @@ Safety: total run <= --max-total-s (default 120 s, also sent as maxSessionLength
 always left in ``finally`` (that ends the avatar: no terminate endpoint is documented). The room
 name is ``simli-spike-<timestamp>``; livekit-api is not installed, so the room is not deleted and
 closes on LiveKit's empty timeout. Nothing in this file runs at import time.
+
+Short run (~25-30 s) to look at lip-sync and framing:
+    ... --audio vi.wav --audio-seconds 12 --no-clear --record-mp4 out/clip.mp4 \
+        --camera-json '{"zoom":0.8,"pos_z_off":1.0}' --avatar-position-y 0.3
+``--record-mp4`` (needs ffmpeg on PATH, or --ffmpeg) records the observer view from the start of the
+audio scenario at the measured fps, <= 60 s, with sound: the avatar audio track when there is one,
+else the PCM the runtime sent (report ``record.audio_source`` = avatar_track | sent_pcm).
+Expected A/V offset error ~100-300 ms (see ``Recorder``). ``--camera-json`` (keys/ranges checked, Simli
+does not clamp: pos_*_off -10..10, pos_z_off -5..5, zoom >0..4, rot_* -180..180, orbit_x_off -80..80,
+orbit_y_off -180..180), ``--avatar-position-x/y`` (0..1) go straight into the compose/token body and
+are echoed in the report. ``--no-clear`` skips the clear_buffer scenario. Idle/soak stay off by default.
 """
 
 from __future__ import annotations
@@ -215,12 +226,202 @@ def validate_plan(a: argparse.Namespace) -> None:
         raise SystemExit("--soak-seconds needs --max-total-s >= soak + 60 (raised on purpose)")
     if a.idle_seconds and a.idle_seconds < a.max_idle_s * 2.2:
         raise SystemExit("--idle-seconds must be >= 2.2 x --max-idle-s")
-    planned = 30 + a.audio_seconds * 2 + 10 + a.idle_seconds + a.soak_seconds + 15
+    clear = 0 if a.no_clear else 22  # the clear scenario sends up to 12 s of audio, then waits
+    planned = 30 + a.audio_seconds + clear + a.idle_seconds + a.soak_seconds + 15
     if planned > a.max_total_s:
         raise SystemExit(f"planned ~{planned:.0f}s exceeds --max-total-s {a.max_total_s:.0f}")
 
 
+# Camera keys and ranges from the Simli docs; Simli does not clamp, so out-of-range is refused.
+CAMERA_RANGES: dict[str, tuple[float, float]] = {
+    "pos_x_off": (-10, 10),
+    "pos_y_off": (-10, 10),
+    "pos_z_off": (-5, 5),
+    "zoom": (0, 4),  # exclusive lower bound, see validate_camera
+    "rot_x_off": (-180, 180),
+    "rot_y_off": (-180, 180),
+    "rot_z_off": (-180, 180),
+    "orbit_x_off": (-80, 80),
+    "orbit_y_off": (-180, 180),
+}
+
+
+def validate_camera(cam: Any) -> dict[str, float]:
+    if not isinstance(cam, dict) or not cam:
+        raise ValueError("camera must be a non-empty JSON object")
+    out: dict[str, float] = {}
+    for key, value in cam.items():
+        if key not in CAMERA_RANGES:
+            raise ValueError(f"unknown camera key {key!r}")
+        if isinstance(value, bool) or not isinstance(value, int | float) or value != value:
+            raise ValueError(f"camera {key} must be a number")
+        low, high = CAMERA_RANGES[key]
+        if value > high or value < low or (key == "zoom" and value <= 0):
+            raise ValueError(f"camera {key} is out of range ({low}..{high})")
+        out[key] = value
+    return out
+
+
+def repeat_count(written: int, elapsed_s: float, fps: int) -> int:
+    """Frames to write now so frame N sits at N/fps: repeats fill gaps, 0 skips an early frame."""
+    return max(0, min(50, int(round(elapsed_s * fps)) + 1 - written))
+
+
+def silence_gap_samples(received: int, elapsed_s: float, rate: int, tol_s: float = 0.05) -> int:
+    """Samples of silence to insert when audio arrived later than its place on the timeline."""
+    gap = int(elapsed_s * rate) - received
+    return gap if gap > tol_s * rate else 0
+
+
+def ffmpeg_video_cmd(ffmpeg: str, width: int, height: int, fps: int, out: str) -> list[str]:
+    return [
+        ffmpeg, "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", f"{width}x{height}",
+        "-framerate", str(fps), "-i", "pipe:0",
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p", out,
+    ]  # fmt: skip
+
+
+def ffmpeg_mux_cmd(
+    ffmpeg: str, video: str, audio: str, rate: int, channels: int, offset_s: float, out: str
+) -> list[str]:
+    """Video copied, PCM audio shifted by ``offset_s`` (audio start minus video start)."""
+    return [
+        ffmpeg, "-y", "-loglevel", "error", "-i", video,
+        "-itsoffset", f"{offset_s:.3f}", "-f", "s16le", "-ar", str(rate), "-ac", str(channels),
+        "-i", audio, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
+        "-shortest", "-t", str(MAX_RECORD_S), out,
+    ]  # fmt: skip
+
+
+MAX_RECORD_S = 60
+
+
 # ---- real run (network) -----------------------------------------------------------------------
+
+
+class Recorder:
+    """Observer-side mp4 recording through ffmpeg (subprocess, no Python dependency).
+
+    Video frames are piped live to a temp H.264 file at the MEASURED fps (``repeat_count`` repeats
+    or skips frames so each sits at its arrival time). Audio is raw PCM in the temp dir: the avatar
+    audio track if one exists (gaps filled with silence), else the PCM the runtime sent, placed at
+    ``lk.playback_started`` (or the first write). Both are muxed with an ``-itsoffset`` of
+    (audio start - video start). Expected A/V offset error: ~100-300 ms for the avatar track (frame
+    delivery jitter); the sent-PCM fallback is only approximate (avatar latency is not modelled), so
+    judge lip-sync by the ``avatar_track`` case. Recording stops after MAX_RECORD_S seconds.
+    """
+
+    def __init__(self, ffmpeg: str, path: str, max_s: float = MAX_RECORD_S) -> None:
+        import tempfile
+
+        self.ffmpeg, self.path, self.max_s = ffmpeg, path, min(max_s, MAX_RECORD_S)
+        self.tmp = tempfile.mkdtemp(prefix="simli-rec-")
+        self.fps = 25
+        self.armed = False
+        self.proc: Any = None
+        self.size: tuple[int, int] | None = None
+        self.video_t0: float | None = None
+        self.video_wall0 = 0.0
+        self.written = 0
+        self.audio_file: Any = None
+        self.audio_t0: float | None = None
+        self.audio_samples = 0
+        self.audio_rate, self.audio_channels = 48000, 1
+        self.sent_pcm = b""
+        self.sent_wall: float | None = None
+        self.error = ""
+
+    def arm(self, fps: float) -> None:
+        self.fps = int(min(60, max(5, round(fps)))) if fps else 25
+        self.armed = True
+
+    def live(self, now: float) -> bool:
+        return self.armed and (self.video_t0 is None or now - self.video_t0 < self.max_s)
+
+    def write_video(self, now: float, width: int, height: int, rgba: bytes) -> None:
+        import subprocess
+
+        if not self.live(now):
+            return
+        if self.proc is None:
+            self.size, self.video_t0, self.video_wall0 = (width, height), now, time.time()
+            self.proc = subprocess.Popen(
+                ffmpeg_video_cmd(
+                    self.ffmpeg, width, height, self.fps, str(Path(self.tmp) / "video.mp4")
+                ),
+                stdin=subprocess.PIPE,
+            )
+        if (width, height) != self.size or self.video_t0 is None:
+            return
+        n = repeat_count(self.written, now - self.video_t0, self.fps)
+        try:
+            for _ in range(n):
+                self.proc.stdin.write(rgba)
+            self.proc.stdin.flush()
+        except OSError:
+            self.error = "ffmpeg_pipe_closed"
+            self.armed = False
+            return
+        self.written += n
+
+    def write_audio(self, now: float, data: bytes, samples: int, rate: int, channels: int) -> None:
+        if not self.live(now) or self.video_t0 is None:
+            return
+        if self.audio_file is None:
+            self.audio_file = open(Path(self.tmp) / "audio.pcm", "wb")
+            self.audio_t0, self.audio_rate, self.audio_channels = now, rate, channels
+        assert self.audio_t0 is not None
+        gap = silence_gap_samples(self.audio_samples, now - self.audio_t0, rate)
+        if gap:
+            self.audio_file.write(b"\x00\x00" * channels * gap)
+            self.audio_samples += gap
+        self.audio_file.write(data)
+        self.audio_samples += samples
+
+    def finish(self) -> dict[str, Any]:
+        """Close ffmpeg, mux, delete the temp dir. Blocking: call it in a thread."""
+        import shutil
+        import subprocess
+
+        info: dict[str, Any] = {"path": self.path, "frames_written": self.written, "fps": self.fps}
+        try:
+            if self.audio_file is not None:
+                self.audio_file.close()
+            if self.proc is None:
+                info["error"] = "no_video_frames"
+                return info
+            self.proc.stdin.close()
+            self.proc.wait(timeout=30)
+            video = str(Path(self.tmp) / "video.mp4")
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            audio, rate, ch, source = str(Path(self.tmp) / "audio.pcm"), self.audio_rate, 1, ""
+            offset = 0.0
+            if self.audio_samples:
+                ch, source = self.audio_channels, "avatar_track"
+                offset = (self.audio_t0 or 0.0) - (self.video_t0 or 0.0)
+            elif self.sent_pcm:
+                Path(audio).write_bytes(self.sent_pcm)
+                rate, source = SAMPLE_RATE, "sent_pcm"
+                offset = max(0.0, (self.sent_wall or self.video_wall0) - self.video_wall0)
+            if source:
+                cmd = ffmpeg_mux_cmd(self.ffmpeg, video, audio, rate, ch, offset, self.path)
+                subprocess.run(cmd, check=True, timeout=90)
+            else:
+                shutil.copyfile(video, self.path)
+            info |= {
+                "audio_source": source or "none",
+                "audio_offset_s": round(offset, 3),
+                "size": f"{self.size[0]}x{self.size[1]}" if self.size else None,
+            }
+        except Exception as exc:  # fixed text only
+            info["error"] = type(exc).__name__
+        finally:
+            shutil.rmtree(self.tmp, ignore_errors=True)
+        if self.error:
+            info["warning"] = self.error
+        return info
 
 
 class Observer:
@@ -241,6 +442,7 @@ class Observer:
         self.saving = False
         self.save_every = 5
         self.disconnect_reason = ""
+        self.rec: Recorder | None = None
 
     def fps(self) -> float:
         span = self.last_frame_t - self.first_frame_t
@@ -262,6 +464,8 @@ async def _consume_video(rtc: Any, obs: Observer, track: Any) -> None:
             obs.first_video_at = now
             obs.first_frame_t = now
         obs.last_frame_t, obs.frames = now, obs.frames + 1
+        if obs.rec is not None and obs.rec.live(now):
+            await asyncio.to_thread(obs.rec.write_video, now, frame.width, frame.height, data)
         if prev is not None:
             obs.motion.append((now, motion_energy(prev, data)))
         prev = data
@@ -274,6 +478,20 @@ async def _consume_video(rtc: Any, obs: Observer, track: Any) -> None:
             obs.saved += 1
             out = Path(obs.frames_dir) / f"frame_{obs.saved:03d}.png"
             out.write_bytes(png_bytes(frame.width, frame.height, data))
+
+
+async def _consume_audio(rtc: Any, obs: Observer, track: Any) -> None:
+    async for event in rtc.AudioStream(track):
+        f = event.frame
+        obs.audio_track = True
+        if obs.rec is not None:
+            obs.rec.write_audio(
+                time.monotonic(),
+                bytes(f.data),
+                f.samples_per_channel,
+                f.sample_rate,
+                f.num_channels,
+            )
 
 
 async def _post_json(client: Any, url: str, headers: dict, body: dict, timeout: float):
@@ -300,6 +518,9 @@ async def run(cfg: dict[str, str], args: argparse.Namespace, results: list[Resul
     if not pcm:
         raise SystemExit("audio is empty after conversion")
     obs = Observer(avatar_id, args.save_frames, args.frames_dir)
+    camera = validate_camera(json.loads(args.camera_json)) if args.camera_json else None
+    if args.record_mp4:
+        obs.rec = Recorder(args.ffmpeg, args.record_mp4)
     runtime, observer = rtc.Room(), rtc.Room()
     channel: AvatarAudioChannel | None = None
     t_join_done: float | None = None
@@ -330,6 +551,7 @@ async def run(cfg: dict[str, str], args: argparse.Namespace, results: list[Resul
             asyncio.ensure_future(_consume_video(rtc, obs, track))
         elif track.kind == rtc.TrackKind.KIND_AUDIO:
             obs.audio_track = True
+            asyncio.ensure_future(_consume_audio(rtc, obs, track))
 
     observer.on("participant_connected", on_joined)
     observer.on("participant_disconnected", on_left)
@@ -364,7 +586,12 @@ async def run(cfg: dict[str, str], args: argparse.Namespace, results: list[Resul
                     max_idle_s=args.max_idle_s,
                     streaming_width=args.streaming_width,
                     streaming_height=args.streaming_height,
+                    avatar_position_x=args.avatar_position_x,
+                    avatar_position_y=args.avatar_position_y,
+                    camera=camera,
                 )
+                info["camera"] = camera
+                info["avatar_position"] = [args.avatar_position_x, args.avatar_position_y]
                 base = cfg["api_base"].rstrip("/")
                 t0 = time.monotonic()
                 st, data = await _post_json(
@@ -441,6 +668,9 @@ async def run(cfg: dict[str, str], args: argparse.Namespace, results: list[Resul
             0.0 if t_join_done is None else round((time.monotonic() - t_join_done) / 60, 2)
         )
         info["total_s"] = round(time.monotonic() - started, 1)
+        if obs.rec is not None:
+            info["record"] = await asyncio.to_thread(obs.rec.finish)
+            print("recording:", info["record"].get("error") or "saved " + obs.rec.path)
         if channel is not None:
             try:
                 await channel.shutdown()
@@ -470,6 +700,9 @@ async def _scenarios(rtc, args, results, obs, channel, pcm, info) -> float:
     obs.saving = args.save_frames > 0
     obs.save_every = max(1, int(max(obs.fps(), 10) * secs / max(args.save_frames, 1)))
     t_send_wall, t_send = time.time(), mono()
+    if obs.rec is not None:
+        obs.rec.arm(obs.fps())
+        obs.rec.sent_pcm, obs.rec.sent_wall = pcm, t_send_wall
     try:
         await _speak(channel, pcm, "spike-1")
         finished = await channel.wait_finished("spike-1", secs + 8)
@@ -479,6 +712,8 @@ async def _scenarios(rtc, args, results, obs, channel, pcm, info) -> float:
     obs.saving = False
     t_end = mono()
     started_at = channel.playback_started_at.get("spike-1")
+    if obs.rec is not None and started_at:
+        obs.rec.sent_wall = started_at
     first_motion = next((t for t, e in obs.motion if t >= t_send and e > base * 3 + 1.0), None)
     speech = obs.mean_motion(t_send, t_end)
     moved = first_motion is not None
@@ -506,7 +741,14 @@ async def _scenarios(rtc, args, results, obs, channel, pcm, info) -> float:
         )
     )
     last_audio = t_end
-    # (c) clear_buffer
+    if not args.no_clear:
+        await _clear_scenario(args, results, obs, channel, pcm, info, base)
+        last_audio = mono()
+    return await _tail_scenarios(args, results, obs, channel, pcm, info, last_audio)
+
+
+async def _clear_scenario(args, results, obs, channel, pcm, info, base) -> None:
+    mono = time.monotonic
     long_pcm = (pcm * (1 + int(8 * SAMPLE_RATE * 2 // max(len(pcm), 1))))[: 12 * SAMPLE_RATE * 2]
     t_wall = time.time()
     await _speak(channel, long_pcm, "spike-2", final=False)
@@ -543,7 +785,10 @@ async def _scenarios(rtc, args, results, obs, channel, pcm, info) -> float:
             "clear acknowledged" if ack_s is not None else "clear_buffer raised or timed out",
         )
     )
-    last_audio = mono()
+
+
+async def _tail_scenarios(args, results, obs, channel, pcm, info, last_audio) -> float:
+    mono = time.monotonic
     # (d) idle_timeout / idle_silence_resets
     if args.idle_seconds and obs.left_at is None:
         idle = args.max_idle_s
@@ -668,6 +913,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--save-frames", type=int, default=0)
     p.add_argument("--frames-dir")
     p.add_argument("--clear-after-s", type=float, default=1.5)
+    p.add_argument("--no-clear", action="store_true", help="skip the clear_buffer scenario")
+    p.add_argument("--record-mp4", help="save a short mp4 (video + sound) via ffmpeg, <= 60 s")
+    p.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg executable (default: on PATH)")
+    p.add_argument("--camera-json", help='JSON object, e.g. {"zoom":0.8,"pos_z_off":1.0}')
+    p.add_argument("--avatar-position-x", type=float, help="0..1, sent to compose/token")
+    p.add_argument("--avatar-position-y", type=float, help="0..1, sent to compose/token")
     p.add_argument("--max-idle-s", type=int, default=20, help="maxIdleTime sent (default 20)")
     p.add_argument("--idle-seconds", type=float, default=0, help="idle test budget; 0 = skip")
     p.add_argument("--soak-seconds", type=float, default=0, help="long session; 0 = skip (default)")
@@ -678,6 +929,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("refusing to run: pass --confirm-real-api (this calls the real Simli API)")
     if a.save_frames and not a.frames_dir:
         p.error("--save-frames needs --frames-dir")
+    for name in ("avatar_position_x", "avatar_position_y"):
+        v = getattr(a, name)
+        if v is not None and not 0 <= v <= 1:
+            p.error(f"--{name.replace('_', '-')} must be between 0 and 1")
+    if a.camera_json:
+        try:
+            validate_camera(json.loads(a.camera_json))
+        except ValueError as exc:  # message names the key, never a secret
+            p.error(f"--camera-json: {exc}")
+    if a.record_mp4:
+        import shutil
+
+        if shutil.which(a.ffmpeg) is None:
+            p.error("--record-mp4 needs ffmpeg on PATH (or --ffmpeg PATH)")
     validate_plan(a)
     return a
 

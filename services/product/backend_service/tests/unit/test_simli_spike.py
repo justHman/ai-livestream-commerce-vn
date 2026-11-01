@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import struct
 import sys
 import wave
@@ -150,3 +151,103 @@ def test_plan_limits():
     assert ok.soak_seconds == 300
     with pytest.raises(SystemExit):
         spike.parse_args(base + ["--idle-seconds", "30"])  # < 2.2 x max-idle
+
+
+def test_camera_validation_accepts_docs_ranges():
+    cam = {"zoom": 0.8, "pos_z_off": 1.0, "pos_y_off": 0.3, "orbit_x_off": -80, "rot_z_off": 180}
+    assert spike.validate_camera(cam) == cam
+
+
+@pytest.mark.parametrize(
+    "cam",
+    [
+        {"zoom": 0},
+        {"zoom": 4.1},
+        {"pos_z_off": 5.5},
+        {"pos_x_off": -10.1},
+        {"orbit_x_off": 81},
+        {"rot_x_off": 181},
+        {"bogus": 1},
+        {"zoom": "1"},
+        {"zoom": True},
+        {},
+        [1],
+    ],
+)
+def test_camera_validation_refuses_out_of_range_or_unknown(cam):
+    with pytest.raises(ValueError):
+        spike.validate_camera(cam)
+
+
+def test_cli_camera_and_position_flags_are_validated():
+    base = ["--confirm-real-api", "--audio", "x.wav"]
+    ok = spike.parse_args(base + ["--camera-json", '{"zoom":0.8}', "--avatar-position-x", "0.5"])
+    assert ok.avatar_position_x == 0.5
+    for bad in (["--camera-json", '{"zoom":9}'], ["--avatar-position-y", "1.5"]):
+        with pytest.raises(SystemExit):
+            spike.parse_args(base + bad)
+
+
+def test_no_clear_shortens_the_plan():
+    base = ["--confirm-real-api", "--audio", "x.wav", "--max-total-s", "70"]
+    assert spike.parse_args(base + ["--no-clear"]).no_clear is True
+    with pytest.raises(SystemExit):
+        spike.parse_args(base)  # clear step does not fit in 70 s
+
+
+def test_record_flag_needs_ffmpeg(tmp_path):
+    base = ["--confirm-real-api", "--audio", "x.wav", "--record-mp4", str(tmp_path / "a.mp4")]
+    with pytest.raises(SystemExit):
+        spike.parse_args(base + ["--ffmpeg", str(tmp_path / "missing-ffmpeg")])
+    assert spike.parse_args(base + ["--ffmpeg", sys.executable]).record_mp4
+
+
+def test_repeat_count_places_frames_on_the_timeline():
+    assert spike.repeat_count(0, 0.0, 25) == 1  # first frame
+    assert spike.repeat_count(1, 0.04, 25) == 1  # on time
+    assert spike.repeat_count(2, 0.04, 25) == 0  # early frame is skipped
+    assert spike.repeat_count(2, 0.24, 25) == 5  # 200 ms gap is filled by repeats
+    assert spike.repeat_count(0, 100.0, 25) == 50  # bounded
+
+
+def test_silence_gap_samples_ignores_jitter():
+    assert spike.silence_gap_samples(16000, 1.02, 16000) == 0
+    assert spike.silence_gap_samples(16000, 1.5, 16000) == 8000
+
+
+def test_ffmpeg_commands():
+    v = spike.ffmpeg_video_cmd("ffmpeg", 1366, 768, 25, "v.mp4")
+    assert v[v.index("-video_size") + 1] == "1366x768" and v[-1] == "v.mp4" and "pipe:0" in v
+    m = spike.ffmpeg_mux_cmd("ffmpeg", "v.mp4", "a.pcm", 48000, 1, -0.12, "o.mp4")
+    assert m[m.index("-itsoffset") + 1] == "-0.120" and m.index("-itsoffset") < m.index("a.pcm")
+    assert m[m.index("-t") + 1] == "60"
+
+
+def test_recorder_fps_is_measured_and_clamped():
+    rec = spike.Recorder("ffmpeg", "x.mp4")
+    rec.arm(24.6)
+    assert rec.fps == 25
+    rec.arm(200)
+    assert rec.fps == 60
+    rec.arm(0)
+    assert rec.fps == 25
+    rec.finish()
+
+
+def test_recorder_without_frames_reports_and_cleans_up():
+    rec = spike.Recorder("ffmpeg", "x.mp4")
+    tmp = Path(rec.tmp)
+    assert rec.finish()["error"] == "no_video_frames" and not tmp.exists()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_recorder_makes_an_mp4_with_sent_pcm_audio(tmp_path):
+    out = tmp_path / "clip.mp4"
+    rec = spike.Recorder("ffmpeg", str(out))
+    rec.arm(10)
+    rec.sent_pcm, rec.sent_wall = b"\x01\x00" * 16000, 0.0
+    for i in range(10):
+        rec.write_video(100.0 + i * 0.1, 64, 64, bytes([i * 20, 0, 0, 255]) * 64 * 64)
+    info = rec.finish()
+    assert info.get("error") is None and info["audio_source"] == "sent_pcm"
+    assert out.stat().st_size > 0 and not Path(rec.tmp).exists()
