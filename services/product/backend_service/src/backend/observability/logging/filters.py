@@ -22,7 +22,7 @@ _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 # LIMIT: only these named fields are scrubbed (not `Authorization: Bearer ..` or a bare key with
 # no name); the code never logs a key or envelope, this is a safety net, not a guarantee.
 _SECRET_TEXT = re.compile(
-    r"(?i)((?:avatar_credential_envelope|api[_-]?key|api-secret|x-simli-api-key)[\"']?\s*[:=]\s*)"
+    r"(?i)((?:avatar_credential_envelope|api[_-]?key|api-secret|x-simli-api-key|livekit[_-]?(?:room[_-])?token|livekitToken)[\"']?\s*[:=]\s*)"
     r"(\"[^\"]*\"|'[^']*'|\{[^}]*\}|[^\s,;]+)"
 )
 _LEVEL_NUMBERS = {

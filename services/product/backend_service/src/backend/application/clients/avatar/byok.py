@@ -41,7 +41,8 @@ AVATAR_CODES = frozenset(
 # a live that hits one of these cannot continue on this account: ends like platform credit loss
 AVATAR_FATAL_CODES = frozenset({KEY_INVALID, OUT_OF_CREDIT})
 
-PROVIDERS = ("lemonslice", "simli", "bithuman")
+WAVE2_PROVIDERS = ("beyondpresence", "tavus", "anam", "runway")
+PROVIDERS = ("lemonslice", "simli", "bithuman", *WAVE2_PROVIDERS)
 MAX_ENVELOPE_WINDOW_S = 120  # exp may be at most this far ahead of now
 CLOCK_SKEW_S = 30  # S1/S2 clocks are not synchronized: exp may be at most now + 150 s
 
@@ -52,7 +53,38 @@ _AVATAR_ID = {
         r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
     ),
     "bithuman": re.compile(r"[A-Za-z0-9_-]{3,64}"),
+    # wave 2, all UNVERIFIED formats: bey = UUID (one stock avatar has a "_v2" suffix); Tavus face
+    # ids look like "r4067604db72"; Anam / Runway ids are opaque, so only a safe character set.
+    "beyondpresence": re.compile(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(_v2)?"
+    ),
+    "tavus": re.compile(r"[A-Za-z0-9_-]{6,40}"),
+    "anam": re.compile(r"[A-Za-z0-9_.-]{3,64}"),
+    "runway": re.compile(r"[A-Za-z0-9_.-]{3,64}"),
 }
+
+# additive `avatar_params`: whitelisted keys per provider; unknown keys are rejected
+AVATAR_PARAM_KEYS: dict[str, frozenset[str]] = {
+    "tavus": frozenset({"pal_id"}),
+    "anam": frozenset({"avatar_model"}),
+    "runway": frozenset({"kind"}),
+}
+MAX_AVATAR_PARAMS = 4
+_PARAM_VALUE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+RUNWAY_KINDS = ("avatar", "preset")
+
+
+def valid_avatar_params(provider: str, params: Any) -> bool:
+    """None / empty is valid. Otherwise: str values matching the pattern, whitelisted keys only."""
+    if params is None:
+        return True
+    if not isinstance(params, dict) or len(params) > MAX_AVATAR_PARAMS:
+        return False
+    allowed = AVATAR_PARAM_KEYS.get(provider, frozenset())
+    for key, value in params.items():
+        if key not in allowed or not isinstance(value, str) or not _PARAM_VALUE.fullmatch(value):
+            return False
+    return provider != "runway" or params.get("kind", "avatar") in RUNWAY_KINDS
 
 
 def valid_avatar_id(provider: str, avatar_id: str) -> bool:
@@ -210,6 +242,19 @@ async def httpx_get(url: str, headers: dict[str, str], timeout: float) -> tuple[
     return r.status_code, data
 
 
+# Read-only, free list endpoints (paths from the providers' API docs; the response shapes and the
+# Runway headers are UNVERIFIED). A non-auth 4xx means we cannot decide: ``unknown``.
+WAVE2_CHECKS: dict[str, tuple[str, Callable[[str], dict[str, str]]]] = {
+    "beyondpresence": ("v1/avatars?limit=50", lambda k: {"x-api-key": k}),
+    "tavus": ("v2/conversations?limit=1", lambda k: {"x-api-key": k}),
+    "anam": ("v1/avatars", lambda k: {"Authorization": f"Bearer {k}"}),
+    "runway": (
+        "v1/organization",
+        lambda k: {"Authorization": f"Bearer {k}", "X-Runway-Version": "2024-11-06"},
+    ),
+}
+
+
 async def check_credential(
     provider: str,
     api_key: str,
@@ -217,6 +262,7 @@ async def check_credential(
     *,
     simli_base: str,
     bithuman_base: str,
+    wave2_bases: dict[str, str] | None = None,
     http_get: AsyncHttpGet = httpx_get,
     timeout_s: float = 10.0,
 ) -> str:
@@ -234,6 +280,12 @@ async def check_credential(
         url, headers = f"{simli_base.rstrip('/')}/faces", {"x-simli-api-key": api_key}
     elif provider == "bithuman":
         url, headers = f"{bithuman_base.rstrip('/')}/v1/me", {"api-secret": api_key}
+    elif provider in WAVE2_CHECKS:
+        base = (wave2_bases or {}).get(provider, "")
+        if not base:
+            return "unknown"
+        path, make_headers = WAVE2_CHECKS[provider]
+        url, headers = f"{base.rstrip('/')}/{path}", make_headers(api_key)
     else:
         return "unknown"
     try:
@@ -242,10 +294,15 @@ async def check_credential(
         return "provider_error"
     if status in (401, 403):
         return "invalid_key"
+    if provider in WAVE2_CHECKS and 400 <= status < 500 and status != 429:
+        return "unknown"
     if not 200 <= status < 300:
         return "provider_error"
     if avatar_id is None:
         return "ok"
-    if provider == "simli" and avatar_id.lower() in json.dumps(data, default=str).lower():
+    if (
+        provider in ("simli", "beyondpresence", "anam")
+        and avatar_id.lower() in json.dumps(data, default=str).lower()
+    ):
         return "ok"
     return "unknown"  # key is valid, the avatar cannot be confirmed without a billable session

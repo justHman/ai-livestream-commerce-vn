@@ -494,6 +494,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
     start_mode = "LEMONSLICE"  # StartResult.mode (subclasses for other providers override)
     cost_provider = "lemonslice"  # provider label of the avatar cost evidence rows
     _control_header = "X-API-Key"  # auth header of the control endpoint (terminate, keep-alive)
+    _control_prefix = ""  # prepended to the key in that header (e.g. "Bearer ")
 
     @staticmethod
     def _control_body(event: str) -> dict[str, Any]:
@@ -1844,7 +1845,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             if provider_session_id in self._tenant_sids:
                 raise LemonSliceError("tenant_key_missing", "tenant key is not available")
             key = s.lemonslice_api_key
-        headers = {self._control_header: key}
+        headers = {self._control_header: self._control_prefix + key}
         payload = self._control_body(event)
         rel = path.format(session_id=quote(provider_session_id, safe="")).lstrip("/")
         url = f"{s.api_base.rstrip('/')}/{rel}"

@@ -47,6 +47,14 @@ def _timer_env(name: str, default: str) -> float:
     return value
 
 
+_WAVE2_ENV = {
+    "beyondpresence": "BEYOND_PRESENCE",
+    "tavus": "TAVUS",
+    "anam": "ANAM",
+    "runway": "RUNWAY",
+}
+
+
 def _flag_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -648,6 +656,23 @@ class AppConfig:
     bithuman_idle_bound_s: int = 120
     bithuman_start_timeout_s: float = 30.0
     bithuman_request_timeout_s: float = 15.0
+    # BYOK wave 2 (tenant-only, default OFF, UNVERIFIED): per-provider flag, base, identity, rate
+    # (0 = the backend default), session guard, idle bound, timeouts.
+    beyond_presence_enabled: bool = False
+    beyond_presence_api_base: str = "https://api.bey.dev"
+    tavus_enabled: bool = False
+    tavus_api_base: str = "https://tavusapi.com"
+    tavus_default_pal_id: str = "pb87e71797da"
+    anam_enabled: bool = False
+    anam_api_base: str = "https://api.anam.ai"
+    runway_enabled: bool = False
+    runway_api_base: str = "https://api.dev.runwayml.com"
+    wave2_avatar_identity: dict[str, str] = field(default_factory=dict)
+    wave2_audio_sample_rate: dict[str, int] = field(default_factory=dict)
+    wave2_max_session_s: dict[str, float] = field(default_factory=dict)
+    wave2_idle_bound_s: dict[str, int] = field(default_factory=dict)
+    wave2_start_timeout_s: float = 30.0
+    wave2_request_timeout_s: float = 15.0
 
     # Engine configs
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -801,6 +826,32 @@ class AppConfig:
             bithuman_idle_bound_s=_int_env("BITHUMAN_IDLE_BOUND_S", "120", 1),
             bithuman_start_timeout_s=_positive_timer_env("BITHUMAN_START_TIMEOUT_S", "30"),
             bithuman_request_timeout_s=_positive_timer_env("BITHUMAN_REQUEST_TIMEOUT_S", "15"),
+            beyond_presence_enabled=_flag_env("BEYOND_PRESENCE_ENABLED"),
+            beyond_presence_api_base=os.environ.get("BEYOND_PRESENCE_API_BASE")
+            or "https://api.bey.dev",
+            tavus_enabled=_flag_env("TAVUS_ENABLED"),
+            tavus_api_base=os.environ.get("TAVUS_API_BASE") or "https://tavusapi.com",
+            tavus_default_pal_id=os.environ.get("TAVUS_DEFAULT_PAL_ID") or "pb87e71797da",
+            anam_enabled=_flag_env("ANAM_ENABLED"),
+            anam_api_base=os.environ.get("ANAM_API_BASE") or "https://api.anam.ai",
+            runway_enabled=_flag_env("RUNWAY_ENABLED"),
+            runway_api_base=os.environ.get("RUNWAY_API_BASE") or "https://api.dev.runwayml.com",
+            wave2_avatar_identity={
+                p: v
+                for p, e in _WAVE2_ENV.items()
+                if (v := os.environ.get(f"{e}_AVATAR_IDENTITY", "").strip())
+            },
+            wave2_audio_sample_rate={
+                p: _int_env(f"{e}_AUDIO_SAMPLE_RATE", "0", 0) for p, e in _WAVE2_ENV.items()
+            },
+            wave2_max_session_s={
+                p: _positive_timer_env(f"{e}_MAX_SESSION_S", "3600") for p, e in _WAVE2_ENV.items()
+            },
+            wave2_idle_bound_s={
+                p: _int_env(f"{e}_IDLE_BOUND_S", "120", 1) for p, e in _WAVE2_ENV.items()
+            },
+            wave2_start_timeout_s=_positive_timer_env("WAVE2_AVATAR_START_TIMEOUT_S", "30"),
+            wave2_request_timeout_s=_positive_timer_env("WAVE2_AVATAR_REQUEST_TIMEOUT_S", "15"),
             llm=llm_cfg,
             tts=tts_cfg,
             script_authoring=ScriptAuthoringConfig.from_env(),
@@ -883,6 +934,14 @@ class AppConfig:
         }
         if self.bithuman_enabled:
             builders["bithuman"] = lambda: self._build_bithuman_backend(tenant_only=True)
+        for provider, enabled in (
+            ("beyondpresence", self.beyond_presence_enabled),
+            ("tavus", self.tavus_enabled),
+            ("anam", self.anam_enabled),
+            ("runway", self.runway_enabled),
+        ):
+            if enabled:
+                builders[provider] = lambda p=provider: self._build_wave2_backend(p)
         return AvatarProviderRouter.build(default, builders)
 
     def _build_default_render_backend(self):
@@ -1040,6 +1099,56 @@ class AppConfig:
                 camera=camera,
                 ready_timeout_s=self.simli_start_timeout_s,
                 request_timeout_s=self.simli_request_timeout_s,
+                speak_ready_gate_enabled=self.lemonslice_speak_ready_gate_enabled,
+                speak_ready_wait_s=self.lemonslice_speak_ready_wait_s,
+                fallback_publish=self.avatar_audio_fallback_publish,
+                render_offset_ms=self.avatar_render_offset_ms,
+                ready_ttl_s=self.runtime_ready_ttl_s,
+                payment_backoff_s=self.lemonslice_payment_backoff_s,
+            )
+        )
+
+    def wave2_api_bases(self) -> dict[str, str]:
+        return {
+            "beyondpresence": self.beyond_presence_api_base,
+            "tavus": self.tavus_api_base,
+            "anam": self.anam_api_base,
+            "runway": self.runway_api_base,
+        }
+
+    def _build_wave2_backend(self, provider: str):
+        """Tenant-only wave 2 backend (no platform key exists); fail closed like bitHuman."""
+        missing = [
+            n
+            for n, v in (
+                ("LIVEKIT_URL", self.livekit_url),
+                ("LIVEKIT_API_KEY", self.livekit_api_key),
+                ("LIVEKIT_API_SECRET", self.livekit_api_secret),
+            )
+            if not v
+        ]
+        if missing:
+            raise ValueError(f"cloud_{provider} requires " + ", ".join(missing))
+        if self.livekit_publish:
+            raise ValueError(f"cloud_{provider} refuses LIVEKIT_PUBLISH=true")
+        from backend.application.clients.avatar.byok_providers import (
+            BACKENDS,
+            ByokProviderSettings,
+        )
+
+        return BACKENDS[provider](
+            ByokProviderSettings(
+                livekit_url=self.livekit_url,
+                livekit_api_key=self.livekit_api_key,
+                livekit_api_secret=self.livekit_api_secret,
+                api_base=self.wave2_api_bases()[provider],
+                avatar_identity=self.wave2_avatar_identity.get(provider, ""),
+                audio_sample_rate=self.wave2_audio_sample_rate.get(provider, 0),
+                max_session_s=self.wave2_max_session_s.get(provider, 3600.0),
+                idle_bound_s=self.wave2_idle_bound_s.get(provider, 120),
+                ready_timeout_s=self.wave2_start_timeout_s,
+                request_timeout_s=self.wave2_request_timeout_s,
+                default_pal_id=self.tavus_default_pal_id,
                 speak_ready_gate_enabled=self.lemonslice_speak_ready_gate_enabled,
                 speak_ready_wait_s=self.lemonslice_speak_ready_wait_s,
                 fallback_publish=self.avatar_audio_fallback_publish,

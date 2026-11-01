@@ -40,7 +40,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from backend.application.clients.avatar.byok import valid_avatar_id
+from backend.application.clients.avatar.byok import valid_avatar_id, valid_avatar_params
 from backend.application.clients.avatar.image_url import check_image_url
 from backend.application.entity.models import EntityDocument, Fact, KnowledgeBlock
 from backend.application.entity.registry import (
@@ -112,8 +112,12 @@ class ControlHub:
 
 class StartReq(BaseModel):
     avatar_id: Optional[str] = Field(default=None, max_length=128)
-    avatar_provider: Optional[Literal["lemonslice", "simli", "bithuman"]] = None
+    avatar_provider: Optional[
+        Literal["lemonslice", "simli", "bithuman", "beyondpresence", "tavus", "anam", "runway"]
+    ] = None
     avatar_agent_id: Optional[str] = Field(default=None, max_length=64)
+    # additive, whitelisted per provider (tavus pal_id, anam avatar_model, runway kind)
+    avatar_params: Optional[dict[str, str]] = None
     avatar_credential_source: Literal["platform", "tenant"] = "platform"
     # AES-256-GCM transit envelope of the tenant's provider key (clients/avatar/byok.py); the AAD
     # ids are separate from the execution identity fields on purpose.
@@ -178,6 +182,11 @@ class StartReq(BaseModel):
             or not valid_avatar_id(self.avatar_provider, self.avatar_agent_id)
         ):
             raise ValueError("avatar_agent_id has an invalid format")
+        if self.avatar_params is not None and (
+            not self.avatar_agent_id
+            or not valid_avatar_params(self.avatar_provider or "", self.avatar_params)
+        ):
+            raise ValueError("avatar_params is not accepted")
         if self.has_avatar_or_voice_override() and (
             not self.avatar_provider
             or not (self.avatar_agent_id or self.avatar_image_url)

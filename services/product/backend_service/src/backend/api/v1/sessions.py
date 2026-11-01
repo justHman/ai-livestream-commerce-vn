@@ -155,7 +155,11 @@ async def sessions_start(
                 avatar_image_url=req.avatar_image_url,
                 voice_id=req.voice_id,
                 is_sandbox=req.is_sandbox,
-                extra={"avatar_credential": credential} if credential is not None else {},
+                extra=(
+                    {"avatar_credential": credential, "avatar_params": req.avatar_params or {}}
+                    if credential is not None
+                    else {}
+                ),
             ),
         )
     except NotImplementedError as exc:
