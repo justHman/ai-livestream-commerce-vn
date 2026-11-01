@@ -525,6 +525,63 @@ def test_a_tenant_402_never_pauses_platform_creation(provider):
     assert backend._credit_until == 0.0
 
 
+# Beyond Presence has no end call (it only leaves the room), so no key is ever sent after start
+@pytest.mark.parametrize("provider", ["tavus", "anam", "runway"])
+def test_a_lost_tenant_key_fails_closed_and_never_falls_back(provider):
+    backend, _, rest = make(provider)
+    res = backend.start(opts(provider))
+    backend._tenant_keys.clear()  # the key vanished; the session is still a tenant session
+    with pytest.raises(Exception):  # noqa: B017 - ProviderCleanupIncomplete
+        backend.stop(res.session_id)
+    backend.stop_all()
+    assert rest.end_calls() == [] and rest.deletes == []
+
+
+@pytest.mark.parametrize("provider", ALL)
+def test_a_wave2_envelope_opens_once_through_the_shared_replay_cache(provider):
+    import base64
+    import json
+    import os
+    import time
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from backend.api.v1.avatar_credentials import open_tenant_credential
+    from fastapi import HTTPException
+
+    key = bytes(range(32))
+    exp, nonce = int(time.time()) + 100, os.urandom(12)
+    aad = f"sess-1|ten-1|{provider}|{exp}".encode()
+    plain = json.dumps({"api_key": TENANT_KEY, "provider": provider}).encode()
+    envelope = {
+        "v": 1,
+        "alg": "A256GCM",
+        "kid": "t1",
+        "nonce": base64.b64encode(nonce).decode(),
+        "ct": base64.b64encode(AESGCM(key).encrypt(nonce, plain, aad)).decode(),
+        "exp": exp,
+    }
+    config = SimpleNamespace(
+        avatar_byok_enabled=True,
+        avatar_cred_transit_key=base64.b64encode(key).decode(),
+        avatar_cred_transit_key_id="t1",
+    )
+
+    def open_():
+        return open_tenant_credential(
+            config,
+            session_ref="sess-1",
+            tenant_id="ten-1",
+            provider=provider,
+            envelope=envelope,
+        )
+
+    first = open_()
+    with pytest.raises(HTTPException) as err:
+        open_()
+    assert (first.provider, err.value.status_code) == (provider, 400)
+
+
 # ---- router / flags -----------------------------------------------------------------------
 
 
