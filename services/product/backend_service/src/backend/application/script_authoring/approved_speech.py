@@ -134,15 +134,18 @@ def _compile_keeping_brand(text: str, brand_map: dict[str, str]) -> str:
     if not brand_map:
         return compile_spoken_text(text).spoken_text
     text = unicodedata.normalize("NFC", text)
-    kept: list[str] = []
+    # Private-use characters no normalizer touches, each one absent from the claim itself so a
+    # character the owner typed is never mistaken for a placeholder.
+    free = (chr(c) for c in range(0xE000, 0xF900) if chr(c) not in text)
+    kept: dict[str, str] = {}
     for brand in brand_map:
         for start, end in reversed(brand_spans(text, brand)):
-            # A private-use character: no normalizer touches it, so it survives as one word.
-            kept.append(text[start:end])
-            text = f"{text[:start]}{chr(0xE000 + len(kept) - 1)}{text[end:]}"
+            mark = next(free)
+            kept[mark] = text[start:end]
+            text = f"{text[:start]}{mark}{text[end:]}"
     spoken = compile_spoken_text(text).spoken_text
-    for i, original in enumerate(kept):
-        spoken = spoken.replace(chr(0xE000 + i), original)
+    for mark, original in kept.items():
+        spoken = spoken.replace(mark, original)
     return spoken
 
 

@@ -309,6 +309,13 @@ async def test_answer_without_a_configured_pronunciation_keeps_its_bytes(monkeyp
     assert speech.text == "Livento dùng vải cotton thoáng mát."
 
 
+def test_private_use_characters_typed_in_a_claim_are_kept() -> None:
+    claim = "LIVENTO cotton  ."
+    facts = {**BRANDED_FACTS, "allowed_claims": [claim]}
+    product = ApprovedProduct("p1", "v1", BRANDED_SCRIPT, "h", json.dumps(facts))
+    assert claim in product.answers()
+
+
 @pytest.mark.parametrize("brand", ["Livento", "LIVENTO"])
 def test_an_all_caps_brand_in_a_claim_survives_answer_compilation(brand) -> None:
     facts = {
