@@ -483,6 +483,8 @@ class _Sess:
 class LemonSliceRenderBackend(StreamingAvatarBackend):
     name = "cloud_lemonslice"
     avatar_override_mode = "avatar_and_voice"  # _resolve_avatar applies the per-session agent/image
+    start_mode = "LEMONSLICE"  # StartResult.mode (subclasses for other providers override)
+    cost_provider = "lemonslice"  # provider label of the avatar cost evidence rows
 
     def __init__(
         self,
@@ -499,6 +501,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
         self._mono = monotonic
         self._s = settings
         cost_meter.avatar_idle_bound_s = float(getattr(settings, "idle_timeout_s", 0) or 0)
+        cost_meter.avatar_provider = self.cost_provider
         self._room_factory = room_factory or self._default_room
         self._session_client = session_client_factory or _plugin_client_factory(
             settings, _load_plugin()
@@ -943,7 +946,7 @@ class LemonSliceRenderBackend(StreamingAvatarBackend):
             session_id=room_name,
             livekit_url=s.livekit_url,
             livekit_client_token=client_token,
-            mode="LEMONSLICE",
+            mode=self.start_mode,
         )
 
     @staticmethod

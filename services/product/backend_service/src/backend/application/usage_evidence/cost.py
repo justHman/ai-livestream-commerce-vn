@@ -85,6 +85,7 @@ class CostMeter:
         self.reopened = 0  # avatar_open on a provider session that was still open
         self._closed = False  # shut down: late samples are logged as lost, never silent
         self.avatar_idle_bound_s = 0.0  # provider idle timeout: the end bound of a derived row
+        self.avatar_provider = "lemonslice"  # label of avatar rows; set by the active backend
         self.evicted = 0  # identity / open avatar record removed to make room (an error)
 
     def configure(self, *, enabled: bool, buffer: int = 5000) -> None:
@@ -434,7 +435,7 @@ class CostMeter:
             session_id,
             AVATAR,
             psid,
-            provider="lemonslice",
+            provider=self.avatar_provider,
             _identity=identity or opened_identity,
             usage_source="measured" if confirmed and not derived_start else "derived",
             seconds=round(max(0.0, time.monotonic() - mono) + extra, 3),
