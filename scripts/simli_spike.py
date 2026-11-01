@@ -296,6 +296,12 @@ def ffmpeg_mux_cmd(
 
 
 MAX_RECORD_S = 60
+HIGH_WIDTH = 900  # the full simulcast layer is ~1020x576; the low one 340x192
+LOW_LAYER_GRACE_S = 3.0  # recording may start on a low frame only if no high one came this soon
+
+
+def layer_key(width: int, height: int) -> str:
+    return f"{width}x{height}"
 
 
 # ---- real run (network) -----------------------------------------------------------------------
@@ -332,6 +338,9 @@ class Recorder:
         self.sent_pcm = b""
         self.sent_wall: float | None = None
         self.error = ""
+        self.low_seen_at: float | None = None
+        self.started_on_low = False
+        self.dropped: dict[str, int] = {}  # frames of another size than the clip, by size
 
     def arm(self, fps: float) -> None:
         self.fps = int(min(60, max(5, round(fps)))) if fps else 25
@@ -345,6 +354,13 @@ class Recorder:
 
         if not self.live(now):
             return
+        if self.proc is None and width < HIGH_WIDTH:
+            # The clip size is fixed by its first frame: prefer the full simulcast layer.
+            if self.low_seen_at is None:
+                self.low_seen_at = now
+            if now - self.low_seen_at < LOW_LAYER_GRACE_S:
+                return
+            self.started_on_low = True
         if self.proc is None:
             self.size, self.video_t0, self.video_wall0 = (width, height), now, time.time()
             self.proc = subprocess.Popen(
@@ -354,6 +370,8 @@ class Recorder:
                 stdin=subprocess.PIPE,
             )
         if (width, height) != self.size or self.video_t0 is None:
+            key = layer_key(width, height)
+            self.dropped[key] = self.dropped.get(key, 0) + 1
             return
         n = repeat_count(self.written, now - self.video_t0, self.fps)
         try:
@@ -385,7 +403,13 @@ class Recorder:
         import shutil
         import subprocess
 
-        info: dict[str, Any] = {"path": self.path, "frames_written": self.written, "fps": self.fps}
+        info: dict[str, Any] = {
+            "path": self.path,
+            "frames_written": self.written,
+            "fps": self.fps,
+            "started_on_low_layer": self.started_on_low,
+            "dropped_other_size": self.dropped,
+        }
         try:
             if self.audio_file is not None:
                 self.audio_file.close()
@@ -443,6 +467,16 @@ class Observer:
         self.save_every = 5
         self.disconnect_reason = ""
         self.rec: Recorder | None = None
+        self.layers: dict[str, dict[str, float]] = {}  # "WxH" -> first_seen (mono), frames
+        self.high_at: float | None = None
+        self.quality: dict[str, Any] = {"requested": False}
+
+    def layer_summary(self) -> dict[str, Any]:
+        t0 = self.first_video_at or 0.0
+        return {
+            k: {"frames": int(v["frames"]), "first_seen_s": round(v["first"] - t0, 2)}
+            for k, v in self.layers.items()
+        }
 
     def fps(self) -> float:
         span = self.last_frame_t - self.first_frame_t
@@ -460,6 +494,12 @@ async def _consume_video(rtc: Any, obs: Observer, track: Any) -> None:
         frame = event.frame.convert(rtc.VideoBufferType.RGBA)
         data = bytes(frame.data)
         obs.size = (frame.width, frame.height)
+        layer = obs.layers.setdefault(
+            layer_key(frame.width, frame.height), {"first": now, "frames": 0}
+        )
+        layer["frames"] += 1
+        if frame.width >= HIGH_WIDTH and obs.high_at is None:
+            obs.high_at = now
         if obs.first_video_at is None:
             obs.first_video_at = now
             obs.first_frame_t = now
@@ -544,10 +584,22 @@ async def run(cfg: dict[str, str], args: argparse.Namespace, results: list[Resul
         if p.identity == avatar_id:
             obs.left_at = time.monotonic()
 
-    def on_track(track: Any, _pub: Any, p: Any) -> None:
+    def on_track(track: Any, pub: Any, p: Any) -> None:
         if p.identity != avatar_id:
             return
         if track.kind == rtc.TrackKind.KIND_VIDEO:
+            # The server may start on the lowest simulcast layer (340x192): ask for the full one
+            # so the clip and PNGs show what a viewer would get. Outcome goes to the report.
+            obs.quality = {"requested": True, "simulcasted": None, "result": ""}
+            try:
+                obs.quality["simulcasted"] = bool(pub.simulcasted)
+                if pub.simulcasted:
+                    pub.set_video_quality(rtc.VideoQuality.VIDEO_QUALITY_HIGH)
+                    obs.quality["result"] = "set_high"
+                else:
+                    obs.quality["result"] = "not_simulcast: only one layer is published"
+            except Exception as exc:
+                obs.quality["result"] = f"error:{type(exc).__name__}"
             asyncio.ensure_future(_consume_video(rtc, obs, track))
         elif track.kind == rtc.TrackKind.KIND_AUDIO:
             obs.audio_track = True
@@ -654,6 +706,26 @@ async def run(cfg: dict[str, str], args: argparse.Namespace, results: list[Resul
                 if not ok:
                     return info
             await asyncio.sleep(2.0)  # idle baseline
+            deadline = time.monotonic() + 15
+            while obs.high_at is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+            high = obs.high_at is not None
+            results.append(
+                Result(
+                    "video_layer",
+                    "PASS" if high else "INCONCLUSIVE",
+                    {
+                        "high_first_seen_s": None
+                        if not high
+                        else round(obs.high_at - (obs.first_video_at or 0.0), 2),
+                        "layers": obs.layer_summary(),
+                        "quality_request": obs.quality,
+                    },
+                    "full layer received before audio"
+                    if high
+                    else f"no frame >= {HIGH_WIDTH}px wide within 15 s (low layer only)",
+                )
+            )
             channel = AvatarAudioChannel(runtime, avatar_id, sample_rate=SAMPLE_RATE)
             last_audio_at = await _scenarios(rtc, args, results, obs, channel, pcm, info)
             info["last_audio_at"] = last_audio_at
@@ -670,6 +742,11 @@ async def run(cfg: dict[str, str], args: argparse.Namespace, results: list[Resul
         info["total_s"] = round(time.monotonic() - started, 1)
         if obs.rec is not None:
             info["record"] = await asyncio.to_thread(obs.rec.finish)
+            info["record"]["layers_seen"] = obs.layer_summary()
+            info["record"]["high_layer_first_seen_s"] = (
+                None if obs.high_at is None else round(obs.high_at - (obs.first_video_at or 0.0), 2)
+            )
+            info["record"]["video_quality_request"] = obs.quality
             print("recording:", info["record"].get("error") or "saved " + obs.rec.path)
         if channel is not None:
             try:

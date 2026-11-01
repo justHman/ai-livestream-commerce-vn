@@ -247,7 +247,50 @@ def test_recorder_makes_an_mp4_with_sent_pcm_audio(tmp_path):
     rec.arm(10)
     rec.sent_pcm, rec.sent_wall = b"\x01\x00" * 16000, 0.0
     for i in range(10):
-        rec.write_video(100.0 + i * 0.1, 64, 64, bytes([i * 20, 0, 0, 255]) * 64 * 64)
+        rec.write_video(100.0 + i * 0.1, 904, 64, bytes([i * 20, 0, 0, 255]) * 904 * 64)
     info = rec.finish()
     assert info.get("error") is None and info["audio_source"] == "sent_pcm"
     assert out.stat().st_size > 0 and not Path(rec.tmp).exists()
+
+
+def _fake_ffmpeg(monkeypatch):
+    sink = [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"]
+    monkeypatch.setattr(spike, "ffmpeg_video_cmd", lambda *a, **k: sink)
+
+
+def test_recorder_waits_for_the_high_layer_and_counts_dropped_sizes(monkeypatch):
+    _fake_ffmpeg(monkeypatch)
+    rec = spike.Recorder("ffmpeg", "x.mp4")
+    rec.arm(10)
+    rec.write_video(10.0, 340, 192, b"\x00" * 340 * 192 * 4)  # low layer first: not started
+    assert rec.proc is None
+    rec.write_video(11.0, 1020, 576, b"\x00" * 1020 * 576 * 4)  # high layer starts the clip
+    assert rec.size == (1020, 576)
+    rec.write_video(11.1, 340, 192, b"\x00" * 340 * 192 * 4)  # later low frame: counted, not silent
+    info = rec.finish()
+    assert info["started_on_low_layer"] is False
+    assert info["dropped_other_size"] == {"340x192": 1}
+
+
+def test_recorder_falls_back_to_the_low_layer_after_the_grace_and_says_so(monkeypatch):
+    _fake_ffmpeg(monkeypatch)
+    rec = spike.Recorder("ffmpeg", "x.mp4")
+    rec.arm(10)
+    rec.write_video(10.0, 340, 192, b"\x00" * 340 * 192 * 4)
+    rec.write_video(10.0 + spike.LOW_LAYER_GRACE_S + 0.1, 340, 192, b"\x00" * 340 * 192 * 4)
+    assert rec.size == (340, 192)
+    assert rec.finish()["started_on_low_layer"] is True
+
+
+def test_observer_layer_summary_is_relative_to_the_first_video():
+    obs = spike.Observer("a", 0, None)
+    obs.first_video_at = 100.0
+    obs.layers = {
+        "340x192": {"first": 100.0, "frames": 12},
+        "1020x576": {"first": 103.5, "frames": 90},
+    }
+    assert obs.layer_summary() == {
+        "340x192": {"frames": 12, "first_seen_s": 0.0},
+        "1020x576": {"frames": 90, "first_seen_s": 3.5},
+    }
+    assert spike.layer_key(1020, 576) == "1020x576"
