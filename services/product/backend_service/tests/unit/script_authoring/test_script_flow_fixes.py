@@ -150,7 +150,7 @@ def test_order_code_from_another_service_is_sanitized(raw, code):
 
 @pytest.mark.parametrize(
     "text",
-    ["Gói có 1.800 phút dùng trong 30 ngày.", "Có 1.799.000 phút.", "Đã có 2.500 người dùng thử."],
+    ["Gói có 1.800 phút dùng trong 30 ngày.", "Có 12.500 phút.", "Đã có 2.500 người dùng thử."],
 )
 def test_grouped_quantities_are_not_prices(text):
     assert _PRICE_RE.findall(text) == []
@@ -163,6 +163,8 @@ def test_grouped_quantities_are_not_prices(text):
         ("Giá 299.000 đồng.", "299.000 đồng"),
         ("Giá chỉ 299.000.", "299.000"),
         ("Giá 499k thôi.", "499k"),
+        ("Giá 299.000 tháng đầu.", "299.000"),
+        ("Chỉ 1.990.000 năm đầu.", "1.990.000"),
     ],
 )
 def test_real_prices_are_still_found(text, price):

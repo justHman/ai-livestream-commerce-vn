@@ -39,9 +39,12 @@ _PRICE_RE = re.compile(
     # or any number followed by a currency/multiplier unit.
     # Attached/spaced suffix variants ("kđ", "k đ", "k₫", "₫") belong to the token so a
     # multiplier can never be dropped and the remainder compared as a plain price.
-    # The two lookaheads keep a quantity ("1.800 phút") out and stop a shorter prefix of a longer
-    # number ("1.799" of "1.799.000 phút") from matching after backtracking.
-    r"\d{1,3}(?:[.,]\d{3})+(?![.,]\d)(?!\s*" + _QUANTITY_UNIT + r"(?!\w))"
+    # Only a short grouped number (1.000-99.999) followed by a quantity word is a quantity ("1.800 phút");
+    # a 6-7 digit number ("299.000 tháng đầu", "1.990.000 năm đầu") stays a price even if the writer
+    # dropped the currency word. The (?![.,]\d) guards stop a shorter prefix of a longer number
+    # ("1.799" of "1.799.000 phút") from matching after backtracking.
+    r"(?:\d{1,2}[.,]\d{3}(?![.,]\d)(?!\s*" + _QUANTITY_UNIT + r"(?!\w))"
+    r"|\d{1,3}(?:[.,]\d{3}){2,}(?![.,]\d)|\d{3}[.,]\d{3}(?![.,]\d))"
     r"(?:\s*" + _UNIT + r"(?!\w))?"
     r"|\d+(?:[.,]\d+)?\s*" + _UNIT + r"(?!\w)",
     re.UNICODE | re.IGNORECASE,
