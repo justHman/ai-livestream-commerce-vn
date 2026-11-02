@@ -29,6 +29,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     spoken_price,
 )
 from backend.application.script_authoring.models import ScriptState
+from backend.engine_manager import LLMText
 from backend.application.script_authoring.service import ScriptAuthoringError
 from backend.application.script_authoring.duration import spoken_duration_ms
 from backend.application.script_authoring.units import split_units
@@ -1166,7 +1167,7 @@ def test_known_typos_and_shorthand_are_fixed_and_cheap_price_claim_is_rejected()
         product_id="p", name="Áo", claims=("Có đổi size được kh? Có, trong 15 ngày.",)
     )
     text = fallback_unit_text(UnitSpec("assurance", claims=brief.claims), brief)
-    assert text.startswith("Nhiều bạn hỏi:") and "kh?" not in text and "không?" in text
+    assert not text.startswith("Nhiều bạn hỏi:") and "kh?" not in text and "không?" in text
 
 
 def test_garment_weight_facts_are_not_a_size_chart_and_approved_cheapness_passes() -> None:
@@ -1246,3 +1247,33 @@ def test_owner_written_pressure_wording_passes_and_follow_exemption_is_narrow() 
     closing = UnitSpec("closing")
     assert check_unit_text("Đừng bỏ lỡ ưu đãi nhé mọi người.", spec=closing) == (None, "hard_sell")
     assert check_unit_text("Nhấn theo dõi để không bỏ lỡ các buổi live sau nhé.", spec=closing)[0]
+
+
+class FinishingLLM(TruncatingLLM):
+    """Cuts the highlight reply every time and reports why the provider stopped."""
+
+    def __init__(self, finish):
+        super().__init__(always=True)
+        self.finish = finish
+
+    def __call__(self, prompt):
+        return LLMText(super().__call__(prompt), self.finish)
+
+
+@pytest.mark.asyncio
+async def test_a_finished_reply_without_a_final_stop_is_closed_not_retried() -> None:
+    llm = FinishingLLM("stop")
+    service, repos = _service(llm)
+    set_id = await _new_set(service)
+    await _run(service, repos, set_id)
+    assert len(llm.prompts) == 9  # no retry write was paid for
+
+
+@pytest.mark.asyncio
+async def test_a_reply_cut_by_the_output_limit_is_not_closed() -> None:
+    service, repos = _service(FinishingLLM("length"))
+    set_id = await _new_set(service)
+    batch_id = await _run(service, repos, set_id)
+    snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
+    entry = next(p for p in snapshot["products"] if p["product_id"] == "P2")
+    assert entry["fallback_units"] == [{"unit_index": 2, "reasons": ["guard:truncated"]}]

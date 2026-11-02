@@ -26,12 +26,14 @@ a warm-standby pool (load new BEFORE unloading old) — future work.
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Optional
 
 from backend.application.contracts.llm_engines import (
     LLMEngine,
+    LLMRequest,
     load_engine as load_llm_engine,
     to_llm_fn,
 )
@@ -40,6 +42,20 @@ from backend.application.contracts.tts_engines import (
     load_engine as load_tts_engine,
     to_tts_fn,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+class LLMText(str):
+    """A reply that remembers why the provider stopped (``stop`` | ``length`` | ...)."""
+
+    finish_reason: str
+
+    def __new__(cls, text: str, finish_reason: str = "stop") -> "LLMText":
+        obj = super().__new__(cls, text)
+        obj.finish_reason = finish_reason
+        return obj
 
 
 def _resource_id(engine: str, model: str) -> str:
@@ -203,6 +219,8 @@ class EngineManager:
         self._llm: Optional[LLMEngine] = None
         self._tts: Optional[TTSEngine] = None
         self._llm_cfg: dict = {}
+        self._model_engines: dict[str, LLMEngine] = {}
+        self._llm_generation = 0  # bumped by load_llm: a retry engine built before it is stale
         self._tts_cfg: dict = {}
         self._system_prompt: str = ""
         self._lock = threading.Lock()
@@ -238,6 +256,10 @@ class EngineManager:
             previous = self._llm
             self._llm = candidate
             self._llm_cfg = dict(cfg)
+            self._llm_generation += 1
+            for retry_engine in self._model_engines.values():  # built from the previous config
+                self._unload_quietly(retry_engine)
+            self._model_engines.clear()
             self.llm_load_error = None
             if previous is not None:
                 previous.unload()
@@ -254,20 +276,75 @@ class EngineManager:
         load (Finding 2). /health/ready uses this to report not-ready."""
         return self.llm_load_error is not None
 
-    def get_llm_fn(self, max_tokens: int | None = None):
+    def get_llm_fn(
+        self,
+        max_tokens: int | None = None,
+        *,
+        temperature: float | None = None,
+        model: str | None = None,
+        with_finish: bool = False,
+    ):
         """Return the (text)->str callable for the cloud RenderBackend.
 
         ``max_tokens`` raises the output budget for callers that need longer replies
-        (script units); the configured value is never lowered.
+        (script units); the configured value is never lowered. ``temperature`` overrides the
+        configured one; ``model`` runs the same OpenAI-compatible endpoint with another model
+        (silently the configured model when that cannot be built); ``with_finish`` returns
+        ``LLMText`` so the caller can tell a provider cut-off (``length``) from a finished reply.
+        With none of the three set the behaviour is unchanged.
         """
         if self._llm is None:
             return None
-        return to_llm_fn(
-            self._llm,
-            system_prompt=self._system_prompt,
-            max_tokens=max(int(self._llm_cfg.get("max_tokens", 512)), int(max_tokens or 0)),
-            temperature=float(self._llm_cfg.get("temperature", 0.7)),
-        )
+        kwargs = {
+            "max_tokens": max(int(self._llm_cfg.get("max_tokens", 512)), int(max_tokens or 0)),
+            "temperature": float(
+                self._llm_cfg.get("temperature", 0.7) if temperature is None else temperature
+            ),
+        }
+        engine = self._engine_for_model(model) if model else self._llm
+        if engine is self._llm and not with_finish:
+            return to_llm_fn(self._llm, system_prompt=self._system_prompt, **kwargs)
+        system_prompt = self._system_prompt or None
+
+        def llm_fn(user_text: str) -> str:
+            req = LLMRequest.from_prompt(user_text, system_prompt=system_prompt, **kwargs)
+            response = engine.generate(req)
+            return LLMText(response.text, response.finish_reason)
+
+        return llm_fn
+
+    def _engine_for_model(self, model: str) -> LLMEngine:
+        """The configured endpoint with another model (cached); the active engine when unsupported."""
+        with self._lock:
+            active, cfg, generation = self._llm, dict(self._llm_cfg), self._llm_generation
+            if cfg.get("engine") != "openai_compat" or model == cfg.get("model"):
+                return active
+            cached = self._model_engines.get(model)
+        if cached is not None:
+            return cached
+        try:
+            built = load_llm_engine({**cfg, "model": model})
+        except Exception as exc:  # noqa: BLE001 - keep the configured model
+            logger.warning("retry model unavailable class=%s", type(exc).__name__)
+            return active
+        with self._lock:
+            if generation != self._llm_generation:
+                # load_llm replaced the configuration while this engine was being built: never cache it.
+                stale = built
+            else:
+                stale = None
+                built = self._model_engines.setdefault(model, built)
+        if stale is not None:
+            self._unload_quietly(stale)
+            return self._llm
+        return built
+
+    @staticmethod
+    def _unload_quietly(engine: LLMEngine) -> None:
+        try:
+            engine.unload()
+        except Exception as exc:  # noqa: BLE001 - a remote client has nothing to free
+            logger.warning("retry engine unload failed class=%s", type(exc).__name__)
 
     # ── TTS ─────────────────────────────────────────────────────────────
 

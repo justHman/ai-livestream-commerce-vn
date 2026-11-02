@@ -11,6 +11,7 @@ guards below decide whether a text may be kept.
 
 from __future__ import annotations
 
+import logging
 import re
 import math
 import time
@@ -22,6 +23,8 @@ from dataclasses import dataclass, replace
 from ..compile import brand_spans, compile_spoken_text, number_to_vietnamese_words
 from ..duration import spoken_duration_ms
 from ..gate.rules.commerce_claims import _vnd_amount
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "BoundedLLM",
@@ -385,12 +388,31 @@ def _ask_aloud(claim: str) -> str:
     return f"Nhiều bạn hỏi: {claim}" if sep and len(head) > 3 else claim
 
 
+_COMPACT_ROLES = ("highlight", "assurance")
+
+
+def compact_unit_text(spec: "UnitSpec") -> str | None:
+    """A readable unit made only of the unit's own claims: every claim once, each its own sentence
+    in ONE short paragraph (at most three claims, within the fallback paragraph bound), the stored FAQ
+    spoken as written (no "Nhiều bạn hỏi:" lead-in). None when there are more claims than that or they
+    would not fit, so the verbatim paragraphs (which keep must-keep claims first) take over. Adds no word
+    of its own."""
+    if spec.role not in _COMPACT_ROLES:
+        return None
+    sentences = list(dict.fromkeys(_end(c) for c in spec.claims if c.strip()))
+    if not sentences or len(sentences) > _MAX_PARAGRAPH_CLAIMS:
+        return None
+    text = " ".join(sentences)
+    unit_s = min(role_bounds_s(spec.role)[1] - (4.0 if spec.revisit else 0.0), _FALLBACK_MAX_S)
+    return text if _duration_s(text) <= unit_s else None
+
+
 def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     """Deterministic extractive unit for a part the model could not write.
 
-    Only approved claim sentences (ALL of the unit's claims, verbatim, in short paragraphs;
-    size rows as many as fit, restricted ones always) and price words; fixed greetings carry
-    no facts. No LLM, no invented facts, no markup.
+    Only approved claim sentences (a compact single paragraph when it fits, else ALL of the unit's
+    claims verbatim in short paragraphs; size rows as many as fit, restricted ones always) and price
+    words; fixed greetings carry no facts. No LLM, no invented facts, no markup.
     """
     name = product.name or product.product_id
     max_s = min(role_bounds_s(spec.role)[1], _FALLBACK_MAX_S)
@@ -411,8 +433,10 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     elif spec.role == "sizes":
         text = "\n\n".join(_size_paragraphs(tuple(map(_end, spec.claims)), set(spec.must), max_s))
     else:
-        paragraphs = _paragraphs([_end(_ask_aloud(c)) for c in spec.claims], max_s)
-        text = "\n\n".join(_within_bound(paragraphs, unit_s, spec.must))
+        text = compact_unit_text(spec) or ""
+        if not text:
+            paragraphs = _paragraphs([_end(_ask_aloud(c)) for c in spec.claims], max_s)
+            text = "\n\n".join(_within_bound(paragraphs, unit_s, spec.must))
     text = _KH_RE.sub("không", text or f"Mình giới thiệu thêm về {name}.")
     if spec.revisit:
         text = "Mình nhắc lại để các bạn mới theo dõi tiện tham khảo. " + text
@@ -1068,6 +1092,31 @@ def _supported(sentence: str, facts: tuple[str, ...]) -> bool:
     return sum(1 for w in words if w in known) >= _COVERAGE * len(words)
 
 
+_OPEN_ENDINGS = frozenset("và của với để nhưng hay hoặc cho từ trong ở là".split())
+
+
+def close_unfinished(raw: str | None) -> str | None:
+    """A reply the provider FINISHED (finish_reason "stop") that only lacks its final stop mark: add the period.
+    A reply that ends on a comma, colon or dash, on a digit ("giá 299") or on a conjunction/preposition
+    ("cotton và") was cut mid-thought, so it is returned unchanged and stays truncated."""
+    text = (raw or "").rstrip()
+    if not text or text[-1] in ",;:-–—(" or text[-1].isdigit():
+        return raw
+    last = re.sub(r"\W+$", "", text.split()[-1]).lower()
+    if last in _OPEN_ENDINGS:
+        return raw
+    return text + "."
+
+
+def unit_max_tokens(specs: list["UnitSpec"]) -> int:
+    """Output budget for one unit write, from the longest unit's character target (about 0.9 token per
+    Vietnamese character in the worst tokenizers plus headroom), bounded. The engine never lowers its
+    own configured budget, so this only raises it."""
+    seconds = max((s.target_seconds or role_bounds_s(s.role)[1] for s in specs), default=60.0)
+    chars = min(850.0, seconds * _VOICE_CHARS_PER_S * 1.15)
+    return int(min(1800, max(700, chars * 0.9 + 300)))
+
+
 def rescue_unit_text(
     raw: str | None, why: str | None, *, final: bool = False, **kwargs
 ) -> str | None:
@@ -1368,6 +1417,33 @@ def build_unit_prompt(
     return "\n".join(parts)
 
 
+_OVERSHOOT_RE = re.compile(r"estimated\s+([\d.]+)s\s+spoken,\s+target maximum is\s+([\d.]+)s")
+
+
+def _overshoot(problems: list[str]) -> tuple[float, float] | None:
+    """(measured, limit) seconds from a SPEECH_DURATION_SEGMENT "too long" gate message, else None."""
+    for problem in problems:
+        match = _OVERSHOOT_RE.search(problem)
+        if match and float(match.group(1)) > float(match.group(2)) > 0:
+            return float(match.group(1)), float(match.group(2))
+    return None
+
+
+def fit_unit_claims(spec: "UnitSpec", limit_s: float) -> "UnitSpec":
+    """The unit with only the claims a writer can voice inside ``limit_s``: a writer elaborates about
+    twice what the claims take verbatim, so the claims get half the bound. Must-keep claims always stay;
+    the others stay in order while they fit (at least one stays)."""
+    budget = limit_s * 0.5
+    kept: list[str] = []
+    spent = 0.0
+    for claim in spec.claims:
+        seconds = _duration_s(claim)
+        if claim in spec.must or not kept or spent + seconds <= budget:
+            kept.append(claim)
+            spent += seconds
+    return replace(spec, claims=tuple(kept))
+
+
 def build_unit_repair_prompt(
     session: SessionBrief,
     product: ProductBrief,
@@ -1381,6 +1457,18 @@ def build_unit_repair_prompt(
     after: str = "",
     used_openings: tuple[str, ...] = (),
 ) -> str:
+    over = _overshoot(problems)
+    shortened = ""
+    if over is not None:
+        measured_s, limit_s = over
+        # A unit that ran past its bound is asked again with fewer facts (must-keep ones stay) and a hard
+        # sentence limit, instead of the same long prompt a second time.
+        specs = [*specs[:index], fit_unit_claims(specs[index], limit_s), *specs[index + 1 :]]
+        shortened = (
+            f"\nBản trước nói khoảng {measured_s:.0f} giây, giới hạn {limit_s:.0f} giây. Viết lại tối đa "
+            f"{max(2, min(4, int(limit_s // 15)))} câu ngắn (khoảng {int(limit_s * _VOICE_CHARS_PER_S * 0.7)} "
+            "ký tự), chỉ giữ ý chính của các thông tin bên dưới, bỏ câu đệm."
+        )
     base = build_unit_prompt(
         session,
         product,
@@ -1408,7 +1496,12 @@ def build_unit_repair_prompt(
         + failed_text
         + "\nLý do:\n- "
         + "\n- ".join(problems)
-        + "\nViết lại phần này, sửa đúng các lỗi trên, vẫn tự nhiên và đủ dài, không thêm thông tin sai."
+        + shortened
+        + (
+            "\nViết lại phần này, sửa đúng các lỗi trên, vẫn tự nhiên và đủ dài, không thêm thông tin sai."
+            if not shortened
+            else "\nViết lại phần này, sửa đúng các lỗi trên, không thêm thông tin sai."
+        )
     )
 
 
@@ -1429,6 +1522,7 @@ class BoundedLLM:
         fn: Callable[[str], str] | None,
         *,
         repair_fn: Callable[[str], str] | None = None,
+        final_fn: Callable[[str], str] | None = None,
         attempts: int = 2,
         call_timeout_s: float = 60.0,
         job_deadline_s: float = 600.0,
@@ -1438,6 +1532,7 @@ class BoundedLLM:
     ) -> None:
         self._fn = fn
         self._repair_fn = repair_fn
+        self._final_fn = final_fn
         self._attempts = max(1, attempts)
         self._call_timeout_s = call_timeout_s
         self._deadline = clock() + job_deadline_s
@@ -1445,20 +1540,33 @@ class BoundedLLM:
         self._clock = clock
         self._sleep = sleep or (lambda seconds: time.sleep(seconds))
 
-    def __call__(self, prompt: str, *, repair: bool = False) -> str:
+    def __call__(self, prompt: str, *, repair: bool = False, final: bool = False) -> str:
         if self._fn is None:
             raise ConnectionError("llm_unavailable")
+        # Write 1 uses ``fn``; later writes use ``repair_fn`` (larger output budget, calmer sampling);
+        # the last write may use ``final_fn`` (an optional stronger model). Missing ones fall back.
+        chosen = self._fn
+        if repair and self._repair_fn is not None:
+            chosen = self._repair_fn
+        if final and self._final_fn is not None:
+            try:
+                return self._run(prompt, self._final_fn)
+            except (LLMDeadlineError, TimeoutError):
+                raise  # a timeout keeps behaving as before: no overlapping paid call
+            except Exception as exc:  # noqa: BLE001 - e.g. HTTP 404/400 for a bad retry model name
+                logger.warning(
+                    "retry model write failed class=%s; using the normal model", type(exc).__name__
+                )
+        return self._run(prompt, chosen)
+
+    def _run(self, prompt: str, chosen: Callable[[str], str]) -> str:
         last: Exception | None = None
         for attempt in range(self._attempts):
             remaining = self._deadline - self._clock()
             if remaining <= 0:
                 raise LLMDeadlineError("generation deadline exceeded")
             try:
-                return self._call_once(
-                    prompt,
-                    min(self._call_timeout_s, remaining),
-                    self._repair_fn if repair and self._repair_fn is not None else self._fn,
-                )
+                return self._call_once(prompt, min(self._call_timeout_s, remaining), chosen)
             except Exception as exc:  # noqa: BLE001 - any provider failure is a transport failure
                 last = exc
                 # A timed-out sync request may already be billed and still running.
