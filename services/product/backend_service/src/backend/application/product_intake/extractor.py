@@ -40,6 +40,7 @@ MIN_EVIDENCE_WORDS = 2
 # Share of the fact's content words that the evidence quote itself must contain. Probes (false facts glued to an
 # unrelated real quote) score 0.00-0.33; honest paraphrases of the quote score 0.75-1.00 (see the tests).
 MIN_EVIDENCE_OVERLAP = 0.6
+MIN_STUFFED_EVIDENCE_CHARS = 200  # evidence longer than max(this, 3 x the fact) is dropped
 MAX_OUTPUT_CHARS = 100_000
 MAX_RAW_FACTS = (
     200  # entries examined; the rest are dropped unread (denial-of-wallet / output abuse)
@@ -57,8 +58,9 @@ _INSTRUCTION = (
 _RISK_PATTERNS: dict[str, re.Pattern[str]] = {
     "health": re.compile(
         r"chua (?:khoi|benh|tri)|dieu tri|khoi benh|ung thu|giam can|giam (?:dau|viem)|tri (?:mun|nam|seo|benh)|tang chieu cao"
-        r"|detox|thai doc|mien dich|ho tro suc khoe|tang can|an toan cho (?:ba bau|tre)"
+        r"|detox|thai doc|mien dich|suc khoe|tang can|an toan cho (?:ba bau|tre)"
         r"|lam sang|bac si|kich ung|lam trang|tri lieu|hieu qua (?:sau|trong)"
+        r"|giam (?:moi|nhuc|stress)|xuong khop|de khang|het mun|ngu ngon|cai thien"
     ),
     "certification": re.compile(
         r"chung nhan|giay phep|giay chung|cong bo|bo y te|\biso\b|\bfda\b|\bgmp\b|\bhalal\b|kiem dinh|chinh hang|dat chuan|\bocop\b"
@@ -87,6 +89,8 @@ _RISK_PATTERNS: dict[str, re.Pattern[str]] = {
 _ZERO_WIDTH_CATEGORIES = {"Cc", "Cf", "Cs", "Co", "Cn"}
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
 _THOUSANDS_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+")
+_SENTENCE_BREAK_RE = re.compile(r"[.!?]\s+\S|\n\s*\S")
+_NEGATION_WORDS = frozenset({"không", "chưa", "chẳng", "khong", "chang"})
 # Function words and the generic noun "sản phẩm", which carry no claim. "khong" is NOT here: a negation still counts.
 _STOPWORDS = frozenset(
     "la va cua cho co duoc cac nhung mot nay do de voi trong tren o tai tu den nen thi ma cung rat se da dang boi nhu khi neu "
@@ -166,6 +170,26 @@ def _number_key(raw: str) -> str:
 
 def _numbers(text: str) -> set[str]:
     return {_number_key(m) for m in _NUMBER_RE.findall(text)}
+
+
+def _evidence_stuffed(evidence: str, fact_text: str) -> bool:
+    """Evidence far longer than the fact, or spanning three or more sentences, can be pasted (up to the whole
+    source) to match any fact; a quote must tie the fact to ONE statement."""
+    stripped = evidence.strip()
+    if len(stripped) > max(MIN_STUFFED_EVIDENCE_CHARS, 3 * len(fact_text)):
+        return True
+    return len(_SENTENCE_BREAK_RE.findall(stripped)) >= 2
+
+
+def _negated(text: str) -> bool:
+    """Whole-word negation (không, chưa, chẳng). Accents are kept for "chưa", because folded it equals "chứa"
+    (contains): the bare "chua" counts only in text typed with no accents at all."""
+    lowered = unicodedata.normalize("NFC", text).lower()
+    words = _WORD_RE.findall(lowered)
+    if any(w in _NEGATION_WORDS for w in words):
+        return True
+    unaccented = all(ch == fold_text(ch) for ch in lowered if ch.isalpha())
+    return unaccented and "chua" in words
 
 
 def _content_tokens(text: str) -> list[str]:
@@ -265,12 +289,19 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
         if len(quote) < MIN_EVIDENCE_CHARS or len(quote.split()) < MIN_EVIDENCE_WORDS:
             drop("evidence_too_short")
             continue
+        if _evidence_stuffed(evidence, ftext):
+            drop("evidence_too_long")
+            continue
         if quote not in source_norm:
             drop("evidence_not_in_source")
             continue
         # Numbers must come from the quote itself: another item's price elsewhere in the source does not count.
         if not _numbers(ftext) <= _numbers(evidence):
             drop("number_not_in_source")
+            continue
+        # "không giao hàng" must not ride on a quote that says "giao hàng" (or the other way round).
+        if _negated(ftext) != _negated(evidence):
+            drop("negation_mismatch")
             continue
         if _evidence_overlap(ftext, evidence) < MIN_EVIDENCE_OVERLAP:
             drop("evidence_mismatch")

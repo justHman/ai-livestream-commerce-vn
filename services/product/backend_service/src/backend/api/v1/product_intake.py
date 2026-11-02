@@ -37,7 +37,12 @@ _ERRORS = {
 }
 
 _BUSY_WAIT_S = 5.0  # how long a request waits for a free slot before INTAKE_BUSY
-_gate: asyncio.Semaphore | None = None  # module-level: one process-wide cap on paid LLM calls
+# Module-level cap on paid LLM calls. Two known limits (ponytail: accepted for the first version):
+# - the cap is PER PROCESS, so it is per uvicorn worker: N workers allow N x PRODUCT_INTAKE_MAX_CONCURRENCY calls;
+# - the slot is released as soon as the request ends, but a call that timed out or was cancelled keeps running in its
+#   worker thread (a sync client cannot be killed; see BoundedLLM._call_once) until the provider's own HTTP timeout, so
+#   the real number of in-flight calls can briefly exceed the cap. A shared (Redis) counter would fix both.
+_gate: asyncio.Semaphore | None = None
 
 _intake_guard = internal_token_guard("intake")
 

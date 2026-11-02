@@ -11,6 +11,7 @@ from backend.application.product_intake.extractor import (
     MIN_EVIDENCE_OVERLAP,
     _evidence_overlap,
     _flags,
+    _negated,
     _numbers,
     build_prompt,
 )
@@ -410,3 +411,101 @@ def test_risky_wording_is_flagged_in_the_right_category(text, flag):
 )
 def test_plain_wording_is_not_flagged(text):
     assert _flags(text) == ()
+
+
+# --- last hardening round: negation, stuffed evidence, wider health wording -------------------------------------------
+SHIP_SOURCE = (
+    "Giao hàng toàn quốc trong 2-4 ngày. Chứa paraben. Không chứa paraben. Chưa có chất bảo quản."
+)
+LONG_SOURCE = PROBE_SOURCE + " " + "Cam kết đổi trả trong 7 ngày nếu còn tem. " * 5
+
+
+def test_negated_fact_on_a_positive_quote_is_dropped():
+    assert probe(
+        "Giao hàng không toàn quốc", "giao hàng toàn quốc trong 2-4 ngày", SHIP_SOURCE
+    ) == ["negation_mismatch"]
+
+
+def test_negation_in_front_of_the_whole_statement_is_dropped():
+    assert probe(
+        "Không giao hàng toàn quốc trong 2-4 ngày",
+        "giao hàng toàn quốc trong 2-4 ngày",
+        SHIP_SOURCE,
+    ) == ["negation_mismatch"]
+
+
+def test_no_paraben_fact_on_a_contains_paraben_quote_is_dropped():
+    # "chứa" (contains) folds to "chua", which must not be read as the negation "chưa"
+    assert probe("Kem ABC không chứa paraben", "Chứa paraben", SHIP_SOURCE) == ["negation_mismatch"]
+
+
+def test_positive_fact_on_a_negated_quote_is_dropped():
+    assert probe("Kem ABC chứa paraben", "Không chứa paraben", SHIP_SOURCE) == ["negation_mismatch"]
+
+
+def test_fact_and_quote_both_negated_stays_kept():
+    llm = fake([fact("feature", "Không chứa paraben.", "Không chứa paraben")])
+    assert texts(extract_facts(SHIP_SOURCE, llm)) == ["Không chứa paraben."]
+
+
+def test_not_yet_pair_stays_kept():
+    llm = fake([fact("feature", "Chưa có chất bảo quản.", "Chưa có chất bảo quản")])
+    assert texts(extract_facts(SHIP_SOURCE, llm)) == ["Chưa có chất bảo quản."]
+
+
+def test_contains_pair_without_negation_stays_kept():
+    llm = fake([fact("feature", "Sản phẩm chứa paraben.", "Chứa paraben")])
+    assert texts(extract_facts(SHIP_SOURCE, llm)) == ["Sản phẩm chứa paraben."]
+
+
+def test_negation_is_read_in_text_typed_without_accents():
+    assert _negated("Chua co chat bao quan") is True
+
+
+def test_accented_contains_is_not_a_negation():
+    assert _negated("Chứa paraben") is False
+
+
+def test_plain_sentence_is_not_negated():
+    assert _negated("Giao hàng toàn quốc trong 2-4 ngày") is False
+
+
+def test_evidence_equal_to_a_long_source_is_dropped_as_too_long():
+    assert probe("Kem dưỡng da ABC giá 599.000đ", LONG_SOURCE, LONG_SOURCE) == ["evidence_too_long"]
+
+
+def test_evidence_equal_to_a_short_multi_sentence_source_is_dropped_as_too_long():
+    assert probe("Kem dưỡng da ABC giá 599.000đ", PROBE_SOURCE) == ["evidence_too_long"]
+
+
+def test_evidence_three_times_longer_than_the_fact_but_under_200_chars_is_kept():
+    llm = fake([fact("shipping", "Giao hàng toàn quốc.", "giao hàng toàn quốc trong 2-4 ngày")])
+    assert texts(extract_facts(SHIP_SOURCE, llm)) == ["Giao hàng toàn quốc."]
+
+
+def test_two_sentence_evidence_is_kept():
+    source = "Thanh toán qua PayOS. Đây là sản phẩm số."
+    llm = fake([fact("shipping", "Thanh toán qua PayOS, đây là sản phẩm số.", source)])
+    assert texts(extract_facts(source, llm)) == ["Thanh toán qua PayOS, đây là sản phẩm số."]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Giúp giảm mỏi vai gáy.",
+        "Giảm nhức mỏi sau tập.",
+        "Giảm stress mỗi ngày.",
+        "Tốt cho xương khớp.",
+        "Tốt cho sức khỏe.",
+        "Tăng đề kháng cho bé.",
+        "Hết mụn sau một tuần.",
+        "Giúp ngủ ngon hơn.",
+        "Cải thiện làn da.",
+    ],
+)
+def test_wider_health_wording_is_flagged(text):
+    assert "health" in _flags(text)
+
+
+def test_cotton_100_percent_is_still_unflagged():
+    assert _flags("Cotton 100% thấm hút tốt.") == ()
