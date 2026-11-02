@@ -30,12 +30,19 @@ __all__ = [
 # "299k", "2.99 triệu", "2 triệu". The group separator is "." or "," (both
 # appear in Vietnamese commerce text); "k" and "triệu" are unit suffixes.
 _UNIT = r"(?:k\s?[đ₫]|₫|đồng|đ|(?i:vnđ|vnd)|nghìn|ngàn|triệu|tr|k|K)"
+# A grouped number counted in these units is a quantity, not money ("1.800 phút").
+_QUANTITY_UNIT = (
+    r"(?:phút|giờ|giây|ngày|tuần|tháng|năm|lần|người|sản phẩm|kết nối|lượt|phiên|tin|câu)"
+)
 _PRICE_RE = re.compile(
     # grouped number with an optional unit (so "299.000k" is read whole, not as 299.000),
     # or any number followed by a currency/multiplier unit.
     # Attached/spaced suffix variants ("kđ", "k đ", "k₫", "₫") belong to the token so a
     # multiplier can never be dropped and the remainder compared as a plain price.
-    r"\d{1,3}(?:[.,]\d{3})+(?:\s*" + _UNIT + r"(?!\w))?"
+    # The two lookaheads keep a quantity ("1.800 phút") out and stop a shorter prefix of a longer
+    # number ("1.799" of "1.799.000 phút") from matching after backtracking.
+    r"\d{1,3}(?:[.,]\d{3})+(?![.,]\d)(?!\s*" + _QUANTITY_UNIT + r"(?!\w))"
+    r"(?:\s*" + _UNIT + r"(?!\w))?"
     r"|\d+(?:[.,]\d+)?\s*" + _UNIT + r"(?!\w)",
     re.UNICODE | re.IGNORECASE,
 )

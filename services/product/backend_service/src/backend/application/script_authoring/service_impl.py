@@ -261,6 +261,13 @@ def _product_info(raw: Any) -> tuple[tuple[str, str], ...]:
     )
 
 
+def _order_code(raw: Any) -> str:
+    """The comment code viewers type to order ("Chốt G30 1"): 2-8 letters/digits starting with a letter, else none
+    (the value comes from another service and is spoken, so anything else is dropped)."""
+    code = str(raw or "").strip().upper()
+    return code if re.fullmatch(r"[A-Z][A-Z0-9]{1,7}", code) else ""
+
+
 def _brand(brief: Any, product_id: str) -> tuple[str, str]:
     # The pronunciation is kept out of _product_info: it is never an allowed claim nor shown to the model.
     return brand_of(((brief.product_facts or {}).get(product_id) or {}).get("product_info"))
@@ -1416,6 +1423,7 @@ class ScriptAuthoringServiceImpl:
                 previous_name=name[ordered_ids[i - 1]] if aware and i > 0 else None,
                 brand=brand,
                 brand_pronunciation=pronunciation,
+                order_code=_order_code(raw.get("order_code")),
             )
             roles[pid] = plan_units(
                 products[pid],
