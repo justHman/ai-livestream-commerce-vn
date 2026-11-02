@@ -75,21 +75,29 @@ class CredentialCheckReq(BaseModel):
     avatar_credential_envelope: Union[str, dict[str, Any]] = Field(repr=False)
 
 
-async def _check_guard(request: Request) -> None:
-    """Token first (constant time), THEN the per-caller bucket; a wrong token only drains its own
-    small bucket and never touches the legitimate caller's."""
-    from backend.api.security.authentication import tokens_match
+def internal_token_guard(bucket: str):
+    """FastAPI dependency: X-Livento-Internal-Token (= AVATAR_INTERNAL_TOKEN, the value the Go side sends as
+    AI_RUNTIME_INTERNAL_TOKEN) first, in constant time, THEN the per-caller bucket ``bucket``; a wrong token only
+    drains its own small ``bucket-bad`` bucket and never touches the legitimate caller's."""
 
-    config = container_from_request(request).config
-    expected = (getattr(config, "avatar_internal_token", "") or "").strip()
-    given = (request.headers.get("x-livento-internal-token") or "").strip()
-    identity = quota_identity_key(request, router._rate_limit_config(request))
-    if not expected or not given or not tokens_match(given, expected):
-        if not await request.app.state.api_limiter.allow(f"avatar-check-bad:{identity}"):
+    async def guard(request: Request) -> None:
+        from backend.api.security.authentication import tokens_match
+
+        config = container_from_request(request).config
+        expected = (getattr(config, "avatar_internal_token", "") or "").strip()
+        given = (request.headers.get("x-livento-internal-token") or "").strip()
+        identity = quota_identity_key(request, router._rate_limit_config(request))
+        if not expected or not given or not tokens_match(given, expected):
+            if not await request.app.state.api_limiter.allow(f"{bucket}-bad:{identity}"):
+                raise HTTPException(status_code=429, detail="rate limit exceeded")
+            raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
+        if not await request.app.state.api_limiter.allow(f"{bucket}:{identity}"):
             raise HTTPException(status_code=429, detail="rate limit exceeded")
-        raise HTTPException(status_code=403, detail={"code": "avatar_override_not_authorized"})
-    if not await request.app.state.api_limiter.allow(f"avatar-check:{identity}"):
-        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    return guard
+
+
+_check_guard = internal_token_guard("avatar-check")
 
 
 @internal_router.post("/avatar/credential-check")

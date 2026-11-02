@@ -86,7 +86,7 @@ def test_evidence_not_in_source_is_dropped():
     assert reasons(result) == ["evidence_not_in_source"]
 
 
-def test_invented_brand_name_is_dropped():
+def test_invented_brand_name_is_kept_and_flagged_unknown_proper_name():
     result = extract_facts(
         SOURCE,
         fake(
@@ -99,7 +99,7 @@ def test_invented_brand_name_is_dropped():
             ]
         ),
     )
-    assert reasons(result) == ["name_not_in_source"]
+    assert [f.flags for f in result.facts] == [("unknown_proper_name",)]
 
 
 def test_name_present_in_source_is_kept():

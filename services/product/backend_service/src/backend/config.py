@@ -644,6 +644,8 @@ class AppConfig:
     simli_camera_json: str = ""
     # BYOK avatar (clients/avatar/byok.py, docs/runbooks/byok-avatar-runtime.md). All OFF by default.
     avatar_byok_enabled: bool = False  # AVATAR_BYOK_ENABLED: accept tenant credentials
+    # Product intake (free-form text -> proposed facts, internal route). OFF by default.
+    product_intake_enabled: bool = False  # PRODUCT_INTAKE_ENABLED
     avatar_cred_transit_key: str = field(default="", repr=False)  # base64 32 bytes
     avatar_cred_transit_key_id: str = "t1"
     bithuman_enabled: bool = False  # BITHUMAN_ENABLED: bitHuman backend selectable
@@ -813,6 +815,7 @@ class AppConfig:
             simli_foreground_id=os.environ.get("SIMLI_FOREGROUND_ID", "").strip(),
             simli_camera_json=os.environ.get("SIMLI_CAMERA_JSON", "").strip(),
             avatar_byok_enabled=_flag_env("AVATAR_BYOK_ENABLED"),
+            product_intake_enabled=_flag_env("PRODUCT_INTAKE_ENABLED"),
             avatar_cred_transit_key=os.environ.get("AVATAR_CRED_TRANSIT_KEY", "").strip(),
             avatar_cred_transit_key_id=os.environ.get("AVATAR_CRED_TRANSIT_KEY_ID") or "t1",
             bithuman_enabled=_flag_env("BITHUMAN_ENABLED"),

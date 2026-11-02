@@ -30,7 +30,7 @@ ALLOWED_TYPES = (
     "limitation",
     "faq",
 )
-MAX_INPUT_CHARS = 8000
+MAX_INPUT_CHARS = 20_000
 MAX_FACTS = 40  # same cap as claims per product (apps/studio productFields.ts)
 MIN_FACT_CHARS, MAX_FACT_CHARS = 5, 500  # same bounds as a typed claim
 MIN_EVIDENCE_CHARS = 4
@@ -146,7 +146,7 @@ def _numbers(text: str) -> set[str]:
 
 def _names_missing(text: str, source_words: set[str]) -> bool:
     """A capitalised word (not sentence-initial, or CamelCase/ALL-CAPS anywhere) that the source never uses.
-    ponytail: heuristic, a sentence-initial plain Capitalised name is not checked; swap for NER if that bites."""
+    ponytail: heuristic that only FLAGS; a sentence-initial plain Capitalised name is not checked; swap for NER if that bites."""
     for match in _WORD_RE.finditer(text):
         word = match.group()
         before = text[: match.start()].rstrip(" ")
@@ -231,9 +231,6 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
         if not _numbers(ftext) <= source_numbers:
             drop("number_not_in_source")
             continue
-        if _names_missing(ftext, source_words):
-            drop("name_not_in_source")
-            continue
         key = _norm(ftext)
         if key in seen:
             drop("duplicate")
@@ -242,5 +239,9 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
             drop("over_cap")
             continue
         seen.add(key)
-        facts.append(ExtractedFact(ftype, ftext, evidence.strip(), _flags(ftext)))
+        flags = _flags(ftext)
+        if _names_missing(ftext, source_words):
+            # Owner decision: lenient. The merchant edits freely, so a name the source never uses is flagged, not dropped.
+            flags = tuple(sorted({*flags, "unknown_proper_name"}))
+        facts.append(ExtractedFact(ftype, ftext, evidence.strip(), flags))
     return ExtractionResult(tuple(facts), tuple(dropped))

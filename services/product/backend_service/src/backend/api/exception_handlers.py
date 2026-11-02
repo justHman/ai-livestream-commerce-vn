@@ -28,8 +28,13 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 
+# Routes whose default 422 would echo the request `input` (a sealed key envelope, or the merchant's pasted text).
 _CREDENTIAL_ROUTES = frozenset(
-    {("POST", "/api/v1/sessions"), ("POST", "/internal/v1/avatar/credential-check")}
+    {
+        ("POST", "/api/v1/sessions"),
+        ("POST", "/internal/v1/avatar/credential-check"),
+        ("POST", "/internal/v1/product-intake/extract"),
+    }
 )
 
 
