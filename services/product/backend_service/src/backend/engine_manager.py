@@ -26,12 +26,14 @@ a warm-standby pool (load new BEFORE unloading old) — future work.
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Optional
 
 from backend.application.contracts.llm_engines import (
     LLMEngine,
+    LLMRequest,
     load_engine as load_llm_engine,
     to_llm_fn,
 )
@@ -40,6 +42,20 @@ from backend.application.contracts.tts_engines import (
     load_engine as load_tts_engine,
     to_tts_fn,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+class LLMText(str):
+    """A reply that remembers why the provider stopped (``stop`` | ``length`` | ...)."""
+
+    finish_reason: str
+
+    def __new__(cls, text: str, finish_reason: str = "stop") -> "LLMText":
+        obj = super().__new__(cls, text)
+        obj.finish_reason = finish_reason
+        return obj
 
 
 def _resource_id(engine: str, model: str) -> str:
@@ -203,6 +219,7 @@ class EngineManager:
         self._llm: Optional[LLMEngine] = None
         self._tts: Optional[TTSEngine] = None
         self._llm_cfg: dict = {}
+        self._model_engines: dict[str, LLMEngine] = {}
         self._tts_cfg: dict = {}
         self._system_prompt: str = ""
         self._lock = threading.Lock()
@@ -238,6 +255,7 @@ class EngineManager:
             previous = self._llm
             self._llm = candidate
             self._llm_cfg = dict(cfg)
+            self._model_engines.clear()  # built from the previous config
             self.llm_load_error = None
             if previous is not None:
                 previous.unload()
@@ -254,20 +272,56 @@ class EngineManager:
         load (Finding 2). /health/ready uses this to report not-ready."""
         return self.llm_load_error is not None
 
-    def get_llm_fn(self, max_tokens: int | None = None):
+    def get_llm_fn(
+        self,
+        max_tokens: int | None = None,
+        *,
+        temperature: float | None = None,
+        model: str | None = None,
+        with_finish: bool = False,
+    ):
         """Return the (text)->str callable for the cloud RenderBackend.
 
         ``max_tokens`` raises the output budget for callers that need longer replies
-        (script units); the configured value is never lowered.
+        (script units); the configured value is never lowered. ``temperature`` overrides the
+        configured one; ``model`` runs the same OpenAI-compatible endpoint with another model
+        (silently the configured model when that cannot be built); ``with_finish`` returns
+        ``LLMText`` so the caller can tell a provider cut-off (``length``) from a finished reply.
+        With none of the three set the behaviour is unchanged.
         """
         if self._llm is None:
             return None
-        return to_llm_fn(
-            self._llm,
-            system_prompt=self._system_prompt,
-            max_tokens=max(int(self._llm_cfg.get("max_tokens", 512)), int(max_tokens or 0)),
-            temperature=float(self._llm_cfg.get("temperature", 0.7)),
-        )
+        kwargs = {
+            "max_tokens": max(int(self._llm_cfg.get("max_tokens", 512)), int(max_tokens or 0)),
+            "temperature": float(
+                self._llm_cfg.get("temperature", 0.7) if temperature is None else temperature
+            ),
+        }
+        engine = self._engine_for_model(model) if model else self._llm
+        if engine is self._llm and not with_finish:
+            return to_llm_fn(self._llm, system_prompt=self._system_prompt, **kwargs)
+        system_prompt = self._system_prompt or None
+
+        def llm_fn(user_text: str) -> str:
+            req = LLMRequest.from_prompt(user_text, system_prompt=system_prompt, **kwargs)
+            response = engine.generate(req)
+            return LLMText(response.text, response.finish_reason)
+
+        return llm_fn
+
+    def _engine_for_model(self, model: str) -> LLMEngine:
+        """The configured endpoint with another model (cached); the active engine when unsupported."""
+        if self._llm_cfg.get("engine") != "openai_compat" or model == self._llm_cfg.get("model"):
+            return self._llm
+        cached = self._model_engines.get(model)
+        if cached is None:
+            try:
+                cached = load_llm_engine({**self._llm_cfg, "model": model})
+            except Exception as exc:  # noqa: BLE001 - keep the configured model
+                logger.warning("retry model unavailable class=%s", type(exc).__name__)
+                return self._llm
+            self._model_engines[model] = cached
+        return cached
 
     # ── TTS ─────────────────────────────────────────────────────────────
 
