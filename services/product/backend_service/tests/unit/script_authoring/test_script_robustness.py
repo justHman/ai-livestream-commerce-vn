@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from backend.application.script_authoring.generation.ordered_units import (
     BoundedLLM,
     ProductBrief,
@@ -15,7 +17,8 @@ from backend.application.script_authoring.generation.ordered_units import (
 )
 from backend.application.script_authoring.generation.reason_text import reason_text
 from backend.application.script_authoring.generation.unit_brief import provenance
-from backend.application.contracts.llm_engines import LLMResponse
+from backend.application.clients.composition import ensure_remote_engines_registered
+from backend.application.contracts.llm_engines import LLMEngine, LLMResponse, register_engine
 from backend.engine_manager import EngineManager, LLMText
 
 LONG_CLAIMS = tuple(
@@ -144,7 +147,7 @@ def test_an_offer_unit_is_never_compacted() -> None:
 
 
 def test_a_duration_failure_has_a_plain_reason() -> None:
-    assert reason_text(["SPEECH_DURATION_SEGMENT"]).startswith("Phần này dài quá giới hạn")
+    assert reason_text(["SPEECH_DURATION_SEGMENT"]).startswith("Phần này dài hơn giới hạn")
 
 
 def test_a_truncated_reply_has_a_plain_reason() -> None:
@@ -198,3 +201,151 @@ def test_the_configured_output_budget_is_never_lowered() -> None:
 def test_another_model_is_ignored_when_the_engine_cannot_switch_models() -> None:
     engine = _Engine()
     assert _manager(engine)._engine_for_model("bigger") is engine
+
+
+def _failing(_prompt):
+    raise LookupError("HTTP 404 model not found")
+
+
+def _timing_out(_prompt):
+    raise TimeoutError("slow")
+
+
+def test_a_failing_retry_model_falls_back_to_the_normal_model() -> None:
+    llm = BoundedLLM(lambda p: "first", repair_fn=lambda p: "repair", final_fn=_failing, attempts=1)
+    assert llm("x", repair=True, final=True) == "repair"
+
+
+def test_a_failing_retry_model_without_a_repair_function_uses_the_plain_one() -> None:
+    llm = BoundedLLM(lambda p: "first", final_fn=_failing, attempts=1)
+    assert llm("x", repair=True, final=True) == "first"
+
+
+def test_a_retry_model_timeout_is_not_retried_on_another_model() -> None:
+    llm = BoundedLLM(
+        lambda p: "first", repair_fn=lambda p: "repair", final_fn=_timing_out, attempts=1
+    )
+    with pytest.raises(TimeoutError):
+        llm("x", repair=True, final=True)
+
+
+def test_a_reply_ending_on_a_conjunction_is_not_closed() -> None:
+    assert close_unfinished("Áo làm bằng chất liệu cotton và") == "Áo làm bằng chất liệu cotton và"
+
+
+def test_a_reply_ending_on_a_preposition_is_not_closed() -> None:
+    assert close_unfinished("Mua thêm để") == "Mua thêm để"
+
+
+def test_a_reply_ending_on_a_bare_number_is_not_closed() -> None:
+    assert close_unfinished("Áo này giá 299") == "Áo này giá 299"
+
+
+def test_a_number_followed_by_a_unit_word_still_closes() -> None:
+    assert close_unfinished("Gói dùng trong 7 ngày") == "Gói dùng trong 7 ngày."
+
+
+class _Spy:
+    def __init__(self):
+        self.unloaded = 0
+
+    def unload(self):
+        self.unloaded += 1
+
+
+@register_engine("robust_fake")
+class _RegisteredEngine(LLMEngine):
+    @classmethod
+    def from_config(cls, cfg):
+        return cls()
+
+    def generate(self, req):
+        return LLMResponse(text="ok")
+
+
+def _remote_manager(**cfg):
+    ensure_remote_engines_registered()
+    manager = EngineManager()
+    manager._llm = object()
+    manager._llm_cfg = {
+        "engine": "openai_compat",
+        "model": "flash",
+        "base_url": "http://localhost:1",
+        "api_key": "x",
+        **cfg,
+    }
+    return manager
+
+
+def test_a_retry_engine_is_built_once_and_reused() -> None:
+    manager = _remote_manager()
+    assert manager._engine_for_model("pro") is manager._engine_for_model("pro")
+
+
+def test_the_retry_engine_runs_the_requested_model() -> None:
+    assert _remote_manager()._engine_for_model("pro")._client.model == "pro"
+
+
+def test_a_retry_engine_that_cannot_be_built_falls_back_to_the_active_engine(monkeypatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    manager = _remote_manager(base_url="")
+    assert manager._engine_for_model("pro") is manager._llm
+
+
+def test_the_configured_model_is_the_active_engine_not_a_new_one() -> None:
+    manager = _remote_manager()
+    assert manager._engine_for_model("flash") is manager._llm
+
+
+def test_reloading_the_llm_unloads_the_retry_engines() -> None:
+    manager = _remote_manager()
+    manager._llm = _Spy()
+    spy = _Spy()
+    manager._model_engines["pro"] = spy
+    manager.load_llm({"engine": "robust_fake"})
+    assert spy.unloaded == 1
+
+
+def test_reloading_the_llm_clears_the_retry_engine_cache() -> None:
+    manager = _remote_manager()
+    manager._llm = _Spy()
+    manager._model_engines["pro"] = _Spy()
+    manager.load_llm({"engine": "robust_fake"})
+    assert manager._model_engines == {}
+
+
+def test_a_retry_engine_built_during_a_reload_is_not_cached(monkeypatch) -> None:
+    manager = _remote_manager()
+    built = _Spy()
+
+    def build_while_reloading(_cfg):
+        manager._llm_generation += 1  # load_llm ran while this engine was being built
+        return built
+
+    monkeypatch.setattr("backend.engine_manager.load_llm_engine", build_while_reloading)
+    manager._engine_for_model("pro")
+    assert manager._model_engines == {}
+
+
+def test_a_retry_engine_built_during_a_reload_is_unloaded(monkeypatch) -> None:
+    manager = _remote_manager()
+    built = _Spy()
+
+    def build_while_reloading(_cfg):
+        manager._llm_generation += 1
+        return built
+
+    monkeypatch.setattr("backend.engine_manager.load_llm_engine", build_while_reloading)
+    manager._engine_for_model("pro")
+    assert built.unloaded == 1
+
+
+def test_a_reload_during_the_build_returns_the_active_engine(monkeypatch) -> None:
+    manager = _remote_manager()
+
+    def build_while_reloading(_cfg):
+        manager._llm_generation += 1
+        return _Spy()
+
+    monkeypatch.setattr("backend.engine_manager.load_llm_engine", build_while_reloading)
+    assert manager._engine_for_model("pro") is manager._llm

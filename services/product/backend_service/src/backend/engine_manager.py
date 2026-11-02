@@ -220,6 +220,7 @@ class EngineManager:
         self._tts: Optional[TTSEngine] = None
         self._llm_cfg: dict = {}
         self._model_engines: dict[str, LLMEngine] = {}
+        self._llm_generation = 0  # bumped by load_llm: a retry engine built before it is stale
         self._tts_cfg: dict = {}
         self._system_prompt: str = ""
         self._lock = threading.Lock()
@@ -255,7 +256,10 @@ class EngineManager:
             previous = self._llm
             self._llm = candidate
             self._llm_cfg = dict(cfg)
-            self._model_engines.clear()  # built from the previous config
+            self._llm_generation += 1
+            for retry_engine in self._model_engines.values():  # built from the previous config
+                self._unload_quietly(retry_engine)
+            self._model_engines.clear()
             self.llm_load_error = None
             if previous is not None:
                 previous.unload()
@@ -311,17 +315,36 @@ class EngineManager:
 
     def _engine_for_model(self, model: str) -> LLMEngine:
         """The configured endpoint with another model (cached); the active engine when unsupported."""
-        if self._llm_cfg.get("engine") != "openai_compat" or model == self._llm_cfg.get("model"):
+        with self._lock:
+            active, cfg, generation = self._llm, dict(self._llm_cfg), self._llm_generation
+            if cfg.get("engine") != "openai_compat" or model == cfg.get("model"):
+                return active
+            cached = self._model_engines.get(model)
+        if cached is not None:
+            return cached
+        try:
+            built = load_llm_engine({**cfg, "model": model})
+        except Exception as exc:  # noqa: BLE001 - keep the configured model
+            logger.warning("retry model unavailable class=%s", type(exc).__name__)
+            return active
+        with self._lock:
+            if generation != self._llm_generation:
+                # load_llm replaced the configuration while this engine was being built: never cache it.
+                stale = built
+            else:
+                stale = None
+                built = self._model_engines.setdefault(model, built)
+        if stale is not None:
+            self._unload_quietly(stale)
             return self._llm
-        cached = self._model_engines.get(model)
-        if cached is None:
-            try:
-                cached = load_llm_engine({**self._llm_cfg, "model": model})
-            except Exception as exc:  # noqa: BLE001 - keep the configured model
-                logger.warning("retry model unavailable class=%s", type(exc).__name__)
-                return self._llm
-            self._model_engines[model] = cached
-        return cached
+        return built
+
+    @staticmethod
+    def _unload_quietly(engine: LLMEngine) -> None:
+        try:
+            engine.unload()
+        except Exception as exc:  # noqa: BLE001 - a remote client has nothing to free
+            logger.warning("retry engine unload failed class=%s", type(exc).__name__)
 
     # ── TTS ─────────────────────────────────────────────────────────────
 

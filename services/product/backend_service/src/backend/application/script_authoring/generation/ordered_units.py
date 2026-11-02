@@ -11,6 +11,7 @@ guards below decide whether a text may be kept.
 
 from __future__ import annotations
 
+import logging
 import re
 import math
 import time
@@ -22,6 +23,8 @@ from dataclasses import dataclass, replace
 from ..compile import brand_spans, compile_spoken_text, number_to_vietnamese_words
 from ..duration import spoken_duration_ms
 from ..gate.rules.commerce_claims import _vnd_amount
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "BoundedLLM",
@@ -1089,11 +1092,18 @@ def _supported(sentence: str, facts: tuple[str, ...]) -> bool:
     return sum(1 for w in words if w in known) >= _COVERAGE * len(words)
 
 
+_OPEN_ENDINGS = frozenset("và của với để nhưng hay hoặc cho từ trong ở là".split())
+
+
 def close_unfinished(raw: str | None) -> str | None:
     """A reply the provider FINISHED (finish_reason "stop") that only lacks its final stop mark: add the period.
-    A reply ending on a comma, colon or dash was cut, so it is returned unchanged."""
+    A reply that ends on a comma, colon or dash, on a digit ("giá 299") or on a conjunction/preposition
+    ("cotton và") was cut mid-thought, so it is returned unchanged and stays truncated."""
     text = (raw or "").rstrip()
-    if not text or text[-1] in ",;:-–—(":
+    if not text or text[-1] in ",;:-–—(" or text[-1].isdigit():
+        return raw
+    last = re.sub(r"\W+$", "", text.split()[-1]).lower()
+    if last in _OPEN_ENDINGS:
         return raw
     return text + "."
 
@@ -1539,7 +1549,17 @@ class BoundedLLM:
         if repair and self._repair_fn is not None:
             chosen = self._repair_fn
         if final and self._final_fn is not None:
-            chosen = self._final_fn
+            try:
+                return self._run(prompt, self._final_fn)
+            except (LLMDeadlineError, TimeoutError):
+                raise  # a timeout keeps behaving as before: no overlapping paid call
+            except Exception as exc:  # noqa: BLE001 - e.g. HTTP 404/400 for a bad retry model name
+                logger.warning(
+                    "retry model write failed class=%s; using the normal model", type(exc).__name__
+                )
+        return self._run(prompt, chosen)
+
+    def _run(self, prompt: str, chosen: Callable[[str], str]) -> str:
         last: Exception | None = None
         for attempt in range(self._attempts):
             remaining = self._deadline - self._clock()

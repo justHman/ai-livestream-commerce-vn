@@ -9,10 +9,14 @@ list a unit recorded (gate rule ids such as ``SPEECH_DURATION_SEGMENT``, guard c
 from __future__ import annotations
 
 _FALLBACK = "đã dùng thông tin gốc của bạn"
+_TOO_LONG = (
+    "Phần này dài hơn giới hạn nên AI chưa viết gọn được; đang giữ thông tin của bạn, "
+    "bạn có thể sửa hoặc tách phần."
+)
 
 REASON_TEXT: dict[str, str] = {
-    "SPEECH_DURATION_SEGMENT": "Phần này dài quá giới hạn thời gian của một phần nên mình đã rút gọn",
-    "too_long": "Phần này dài quá giới hạn thời gian của một phần nên mình đã rút gọn",
+    "SPEECH_DURATION_SEGMENT": _TOO_LONG,
+    "too_long": _TOO_LONG,
     "truncated": f"AI viết dở câu, {_FALLBACK}",
     "empty": f"AI trả về nội dung rỗng, {_FALLBACK}",
     "foreign_script": f"AI lẫn chữ ngoài tiếng Việt, {_FALLBACK}",

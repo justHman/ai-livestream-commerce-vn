@@ -193,6 +193,16 @@ _SHORTER_RETRY = (
 )
 
 
+def _check_closing_unfinished(raw: str | None, check: dict) -> tuple[str | None, str | None]:
+    """``check_unit_text`` for a model reply; a reply the provider FINISHED (finish_reason "stop") that only
+    lacks its final stop mark is closed and checked again instead of costing another paid write. A reply cut
+    by the output limit, or one that does not say why it stopped, is never closed."""
+    text, why = check_unit_text(raw, **check)
+    if text is None and why == "truncated" and getattr(raw, "finish_reason", None) == "stop":
+        return check_unit_text(close_unfinished(raw), **check)
+    return text, why
+
+
 def _guard_problem(
     why: str | None, raw: str | None, approved: tuple[str, ...], must: tuple[str, ...]
 ) -> str:
@@ -1594,11 +1604,7 @@ class ScriptAuthoringServiceImpl:
                     "brand_used_nearby": len(brand_units & {index - 1, index + 1}),
                 }
                 finish = getattr(raw, "finish_reason", None)  # None: the engine did not say
-                text, why = check_unit_text(raw, **check)
-                if text is None and why == "truncated" and finish == "stop":
-                    # The provider finished the reply and only left off the final stop mark: add it
-                    # instead of paying for another write. A reply cut by the output limit is not closed.
-                    text, why = check_unit_text(close_unfinished(raw), **check)
+                text, why = _check_closing_unfinished(raw, check)
                 if text is None:
                     # Wording-only rejection: cut the offending sentence instead of another paid call.
                     text = salvage_unit_text(raw, why, **check)
@@ -3620,13 +3626,7 @@ class ScriptAuthoringServiceImpl:
                     "brand": product.brand,
                     "brand_used_nearby": brand_nearby,
                 }
-                text, why = check_unit_text(raw, **check)
-                if (
-                    text is None
-                    and why == "truncated"
-                    and getattr(raw, "finish_reason", None) == "stop"
-                ):
-                    text, why = check_unit_text(close_unfinished(raw), **check)
+                text, why = _check_closing_unfinished(raw, check)
                 if text is None:
                     text = salvage_unit_text(raw, why, **check)
                 if text is None:
