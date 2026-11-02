@@ -16,6 +16,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     UnitSpec,
     role_title,
 )
+from backend.application.script_authoring.generation.reason_text import reason_text
 
 BRIEF_SCHEMA_VERSION = 1
 PLANNER_VERSION = "ordered_units/1"
@@ -180,6 +181,9 @@ def provenance(source: str, reasons: list[str] | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"source": source}
     if source == "fallback":
         out["fallback_reason_code"] = fallback_reason_code(reasons or [])
+        text = reason_text(reasons or [])
+        if text:
+            out["fallback_reason_text"] = text
     return out
 
 

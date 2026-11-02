@@ -11,6 +11,7 @@ guards below decide whether a text may be kept.
 
 from __future__ import annotations
 
+import logging
 import re
 import math
 import time
@@ -22,6 +23,8 @@ from dataclasses import dataclass, replace
 from ..compile import brand_spans, compile_spoken_text, number_to_vietnamese_words
 from ..duration import spoken_duration_ms
 from ..gate.rules.commerce_claims import _vnd_amount
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "BoundedLLM",
@@ -76,7 +79,7 @@ _GUIDE = {
     "opening": (
         "Chào khán giả thật ấm áp như gặp người quen, nói vài câu về không khí buổi live hôm "
         "nay, hứa hẹn những gì mọi người sẽ xem, và MỜI khán giả bình luận, đặt câu hỏi (ví dụ "
-        "hỏi size, hỏi giá) ngay trong phiên. 2 đến 4 câu. Không nói giá, không nêu tính "
+        "hỏi giá, hỏi thêm thông tin) ngay trong phiên. 2 đến 4 câu. Không nói giá, không nêu tính "
         "năng, không nhắc sản phẩm cụ thể."
     ),
     "intro": (
@@ -120,17 +123,35 @@ _BRAND_ROLES = ("opening", "intro", "offer", "closing")
 # The role title is also sent to the model. "Cam kết và lưu ý" made it open every assurance part with
 # "Mình cam kết", so the prompt uses a neutral title; the owner-visible title stays in _TITLES.
 _PROMPT_TITLES = {**_TITLES, "assurance": "Chính sách mua hàng và lưu ý"}
+# Facebook Live has no cart, so the default invitation never mentions one (it also contradicted _TRUTH_RULES).
 _CTA_LINE = (
-    "Cuối phần này thêm MỘT lời mời nhẹ nhàng (ví dụ bạn nào quan tâm thì nhắn mình hoặc xem "
-    "giỏ hàng). Không dùng: chốt đơn ngay, đặt ngay, mua ngay, nhanh tay, không bỏ lỡ, số "
+    "Cuối phần này thêm MỘT lời mời nhẹ nhàng (ví dụ bạn nào quan tâm thì bình luận hoặc nhắn "
+    "mình). Không dùng: chốt đơn ngay, đặt ngay, mua ngay, nhanh tay, không bỏ lỡ, số "
     "lượng có hạn."
+)
+_ORDER_CTA_LINE = (
+    "Cuối phần này mời mọi người chốt bằng cách bình luận đúng mẫu 'Chốt {code} 1' (viết nguyên "
+    "như vậy, chỉ một lần, không thêm mã hay cách chốt nào khác). Không dùng: chốt đơn ngay, "
+    "đặt ngay, mua ngay, nhanh tay, không bỏ lỡ, số lượng có hạn."
 )
 _STYLE_RULES = (
     "Luôn gọi người xem là 'mọi người' hoặc 'các bạn' (không dùng quý vị, quý khách, anh, "
     "chị, em, bạn nam, bạn nữ) và xưng 'mình' (không xưng em, tôi; không gọi sản phẩm là "
     "'em nó'). Viết đúng chính tả. Chỉ nhắc tên sản phẩm đầy đủ ở phần giới "
-    "thiệu; các phần sau gọi 'mẫu này' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn. Tránh lặp các cụm quen tai ('thật lòng', 'yên tâm', 'có tò mò ... không', 'cực kỳ'): mỗi cụm dùng nhiều nhất một lần trong một phần, đổi cách nói ở các phần khác nhau."
+    "thiệu; các phần sau gọi '{noun}' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn. Tránh lặp các cụm quen tai ('thật lòng', 'yên tâm', 'có tò mò ... không', 'cực kỳ'): mỗi cụm dùng nhiều nhất một lần trong một phần, đổi cách nói ở các phần khác nhau."
 )
+
+
+def _item_noun(name: str) -> str:
+    """What later parts call the product: a plan or service is not a 'mẫu' (a fashion/merchandise word)."""
+    head = unicodedata.normalize("NFC", name or "").strip().lower()
+    if head.startswith("gói"):
+        return "gói này"
+    if head.startswith("dịch vụ"):
+        return "dịch vụ này"
+    return "sản phẩm này"
+
+
 _TRUTH_RULES = (
     "Phần 'Thông tin được phép nói' là SỰ THẬT bạn phải giữ đúng, KHÔNG phải kịch bản để đọc "
     "lại: hãy diễn đạt bằng lời của MC, sắp xếp cho tự nhiên, thêm câu hỏi gợi mở hoặc "
@@ -196,6 +217,13 @@ _MAX_CLAIMS_PER_UNIT = 6  # decorative claims (typed mode) speak at most this ma
 _MAX_HIGHLIGHT_CLAIMS = 18  # typed mode keeps at most three highlight units of selling points
 _MAX_MUST_PER_UNIT = 4  # must-keep (assurance) and untyped claims per unit
 _MAX_PROMOS_PER_UNIT = 3
+# The facts of one unit, spoken verbatim, stay within this: the writer elaborates (x1.5-2) and the gate bound is 60s.
+# Logs: units of 4-6 claims reached 87-167s and fell back to raw text.
+_MAX_UNIT_VERBATIM_S = 24.0
+# A product's script follows how much the owner wrote, not only the platform target: ~14s of speech per fact
+# (never below 90s). Padding thin products to the target produced repeated "nhắc lại" units.
+_SECONDS_PER_FACT = 14
+_MIN_TARGET_S = 90
 _MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
 _MAX_SIZE_ROWS = 40
 _SIZE_ROW_RE = re.compile(
@@ -208,6 +236,21 @@ _SENTENCE_END_RE = re.compile(r"[.!?…][\"'”’)\]]*$")
 _FOREIGN_SCRIPT_RE = re.compile(
     r"[\u3400-\u9fff\uf900-\ufaff\U00020000-\U0003134f\u3040-\u30ff\uac00-\ud7af\ufffd]+"
 )
+# Narrow on purpose: English number/time words and a few function words a model leaks into Vietnamese
+# ("vòng tròn thirty ngày"). Anything the owner wrote (facts, name, brand) is allowed.
+_FOREIGN_WORD_RE = re.compile(
+    r"(?<![\w-])(?:thirty|twenty|forty|fifty|sixty|ninety|hundred|thousand|minutes?|hours?|days"
+    r"|weeks?|months?|and|with|please)(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+def _foreign_words(raw: str, allowed: tuple[str, ...]) -> list[str]:
+    """English words in ``raw`` that no owner-written text contains."""
+    owner = " ".join(allowed).lower()
+    return [m.group() for m in _FOREIGN_WORD_RE.finditer(raw) if m.group().lower() not in owner]
+
+
 _EXPERIENCE_RE = re.compile(
     r"\b(?:mình|tôi)\s+(?:(?:đã|từng|có)\s+)?(?:dùng thử|mặc thử|sử dụng thử|trải nghiệm|sờ vào)"
     r"|\bsờ vào (?:thấy|là)\b",
@@ -297,6 +340,21 @@ def _paragraphs(items: list[str], max_s: float) -> list[str]:
     return [" ".join(p) for p in paras]
 
 
+def _within_bound(paragraphs: list[str], bound_s: float, must: tuple[str, ...]) -> list[str]:
+    """Paragraphs (original order) whose total speech fits ``bound_s``: the first paragraph and the ones
+    carrying a must-keep claim go first, the rest only while they fit."""
+    order = sorted(range(len(paragraphs)), key=lambda i: not any(m in paragraphs[i] for m in must))
+    kept: list[int] = []
+    spent = 0.0
+    for i in order:
+        seconds = _duration_s(paragraphs[i])
+        if kept and spent + seconds > bound_s:
+            continue
+        kept.append(i)
+        spent += seconds
+    return [paragraphs[i] for i in sorted(kept)]
+
+
 def _is_condition(claim: str) -> bool:
     return bool(_CONDITION_CLAIM_RE.search(claim))
 
@@ -330,15 +388,36 @@ def _ask_aloud(claim: str) -> str:
     return f"Nhiều bạn hỏi: {claim}" if sep and len(head) > 3 else claim
 
 
+_COMPACT_ROLES = ("highlight", "assurance")
+
+
+def compact_unit_text(spec: "UnitSpec") -> str | None:
+    """A readable unit made only of the unit's own claims: every claim once, each its own sentence
+    in ONE short paragraph (at most three claims, within the fallback paragraph bound), the stored FAQ
+    spoken as written (no "Nhiều bạn hỏi:" lead-in). None when there are more claims than that or they
+    would not fit, so the verbatim paragraphs (which keep must-keep claims first) take over. Adds no word
+    of its own."""
+    if spec.role not in _COMPACT_ROLES:
+        return None
+    sentences = list(dict.fromkeys(_end(c) for c in spec.claims if c.strip()))
+    if not sentences or len(sentences) > _MAX_PARAGRAPH_CLAIMS:
+        return None
+    text = " ".join(sentences)
+    unit_s = min(role_bounds_s(spec.role)[1] - (4.0 if spec.revisit else 0.0), _FALLBACK_MAX_S)
+    return text if _duration_s(text) <= unit_s else None
+
+
 def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     """Deterministic extractive unit for a part the model could not write.
 
-    Only approved claim sentences (ALL of the unit's claims, verbatim, in short paragraphs;
-    size rows as many as fit, restricted ones always) and price words; fixed greetings carry
-    no facts. No LLM, no invented facts, no markup.
+    Only approved claim sentences (a compact single paragraph when it fits, else ALL of the unit's
+    claims verbatim in short paragraphs; size rows as many as fit, restricted ones always) and price
+    words; fixed greetings carry no facts. No LLM, no invented facts, no markup.
     """
     name = product.name or product.product_id
     max_s = min(role_bounds_s(spec.role)[1], _FALLBACK_MAX_S)
+    # The whole unit (not only each paragraph) must fit the role bound; the revisit lead-in takes a few seconds.
+    unit_s = role_bounds_s(spec.role)[1] - (4.0 if spec.revisit else 0.0)
     if spec.role == "opening":
         text = "Chào mọi người, chào mừng mọi người đến với buổi live hôm nay."
     elif spec.role == "closing":
@@ -348,11 +427,16 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     elif spec.role == "offer":
         words = [w for w in (spoken_price(p) for p in product.prices) if w]
         price = [f"Giá {' hoặc '.join(words)}."] if words and spec.with_price else []
-        text = "\n\n".join(_paragraphs([*price, *spec.promos], max_s))
+        text = "\n\n".join(
+            _within_bound(_paragraphs([*price, *spec.promos], max_s), unit_s, spec.must)
+        )
     elif spec.role == "sizes":
         text = "\n\n".join(_size_paragraphs(tuple(map(_end, spec.claims)), set(spec.must), max_s))
     else:
-        text = "\n\n".join(_paragraphs([_end(_ask_aloud(c)) for c in spec.claims], max_s))
+        text = compact_unit_text(spec) or ""
+        if not text:
+            paragraphs = _paragraphs([_end(_ask_aloud(c)) for c in spec.claims], max_s)
+            text = "\n\n".join(_within_bound(paragraphs, unit_s, spec.must))
     text = _KH_RE.sub("không", text or f"Mình giới thiệu thêm về {name}.")
     if spec.revisit:
         text = "Mình nhắc lại để các bạn mới theo dõi tiện tham khảo. " + text
@@ -401,6 +485,8 @@ class ProductBrief:
     brand: str = ""
     # How the voice says the brand; never shown to the model, applied to spoken_text only.
     brand_pronunciation: str = ""
+    # Code viewers comment to order this product ("Chốt G30 1"); empty when order-by-comment is off.
+    order_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -418,6 +504,7 @@ class UnitSpec:
     must: tuple[str, ...] = ()  # claims of this unit the text MUST cover (checked)
     target_seconds: float = 0.0
     revisit: bool = False
+    order_code: str = ""  # the product's comment code: said only in the with_cta unit
 
 
 _KIND_RANK = {"warranty": 0, "limitation": 1, "compliance": 2}
@@ -425,6 +512,23 @@ _KIND_RANK = {"warranty": 0, "limitation": 1, "compliance": 2}
 
 def _chunks(items: list[str], size: int) -> list[tuple[str, ...]]:
     return [tuple(items[i : i + size]) for i in range(0, len(items), size)]
+
+
+def _chunks_by_duration(items: list[str], size: int) -> list[tuple[str, ...]]:
+    """Chunks of at most ``size`` claims whose verbatim speech stays within _MAX_UNIT_VERBATIM_S.
+
+    Every claim is kept (a long claim gets a chunk of its own), so a must-keep claim is never dropped."""
+    chunks: list[list[str]] = []
+    spent = 0.0
+    for item in items:
+        seconds = _duration_s(item)
+        if chunks and len(chunks[-1]) < size and spent + seconds <= _MAX_UNIT_VERBATIM_S:
+            chunks[-1].append(item)
+            spent += seconds
+        else:
+            chunks.append([item])
+            spent = seconds
+    return [tuple(c) for c in chunks]
 
 
 def _cluster_claims(product: ProductBrief) -> dict:
@@ -505,11 +609,20 @@ def plan_units(
     c = _cluster_claims(product)
     must: set[str] = c["must"]
     positional = {"first_product": first and ordered_aware, "last_product": last and ordered_aware}
+    if target_duration_s:
+        facts = len({*product.claims, *product.discounts})
+        target_duration_s = min(target_duration_s, max(_MIN_TARGET_S, _SECONDS_PER_FACT * facts))
 
     def spec(role: str, claims=(), promos=(), **extra) -> UnitSpec:
         covered = tuple(x for x in (*claims, *promos) if x in must)
         return UnitSpec(
-            role, claims=tuple(claims), promos=tuple(promos), must=covered, **positional, **extra
+            role,
+            claims=tuple(claims),
+            promos=tuple(promos),
+            must=covered,
+            order_code=product.order_code,
+            **positional,
+            **extra,
         )
 
     highlights: list[str] = c["highlights"]
@@ -521,9 +634,9 @@ def plan_units(
             if x not in keep:
                 keep.append(x)
         highlights = [x for x in highlights if x in keep]
-        highlight_chunks = _chunks(highlights, _MAX_CLAIMS_PER_UNIT)
+        highlight_chunks = _chunks_by_duration(highlights, _MAX_CLAIMS_PER_UNIT)
     else:
-        highlight_chunks = _chunks(highlights, _MAX_MUST_PER_UNIT)
+        highlight_chunks = _chunks_by_duration(highlights, _MAX_MUST_PER_UNIT)
 
     def rank(claim: str) -> int:
         kind = c["kinds"].get(claim)
@@ -540,7 +653,10 @@ def plan_units(
         *(spec("highlight", chunk) for chunk in highlight_chunks),
         *([spec("sizes", c["sizes"])] if c["sizes"] else []),
         *(spec("sizes", chunk) for chunk in _chunks(c["size_overflow"], _MAX_SIZE_ROWS)),
-        *(spec("assurance", chunk) for chunk in _chunks(ordered_assurance, _MAX_MUST_PER_UNIT)),
+        *(
+            spec("assurance", chunk)
+            for chunk in _chunks_by_duration(ordered_assurance, _MAX_MUST_PER_UNIT)
+        ),
     ]
     has_price = any(spoken_price(p) for p in product.prices)
     promo_chunks = _chunks(c["promos"], _MAX_PROMOS_PER_UNIT) or ([()] if has_price else [])
@@ -832,7 +948,7 @@ def check_unit_text(
     """
     if not raw:
         return None, "empty"
-    if _FOREIGN_SCRIPT_RE.search(raw):
+    if _FOREIGN_SCRIPT_RE.search(raw) or _foreign_words(raw, (*approved, product_name, brand)):
         return None, "foreign_script"
     if _EXPERIENCE_RE.search(raw):
         return None, "personal_experience"
@@ -872,6 +988,8 @@ def check_unit_text(
     if spec is not None and role not in ("opening", "closing", "sizes") and not spec.with_cta:
         if _CTA_RE.search(text):
             return None, "cta"  # one soft call to action per product, in its last unit
+        if spec.order_code and re.search(rf"\bchốt\s+{re.escape(spec.order_code)}\b", text, re.I):
+            return None, "cta"  # the order code is invited once, in the with_cta unit only
     for sentence in re.split(r"(?<=[.!?])\s+", text):
         if " và " in sentence:
             left, _, right = sentence.partition(" và ")
@@ -974,6 +1092,31 @@ def _supported(sentence: str, facts: tuple[str, ...]) -> bool:
     return sum(1 for w in words if w in known) >= _COVERAGE * len(words)
 
 
+_OPEN_ENDINGS = frozenset("và của với để nhưng hay hoặc cho từ trong ở là".split())
+
+
+def close_unfinished(raw: str | None) -> str | None:
+    """A reply the provider FINISHED (finish_reason "stop") that only lacks its final stop mark: add the period.
+    A reply that ends on a comma, colon or dash, on a digit ("giá 299") or on a conjunction/preposition
+    ("cotton và") was cut mid-thought, so it is returned unchanged and stays truncated."""
+    text = (raw or "").rstrip()
+    if not text or text[-1] in ",;:-–—(" or text[-1].isdigit():
+        return raw
+    last = re.sub(r"\W+$", "", text.split()[-1]).lower()
+    if last in _OPEN_ENDINGS:
+        return raw
+    return text + "."
+
+
+def unit_max_tokens(specs: list["UnitSpec"]) -> int:
+    """Output budget for one unit write, from the longest unit's character target (about 0.9 token per
+    Vietnamese character in the worst tokenizers plus headroom), bounded. The engine never lowers its
+    own configured budget, so this only raises it."""
+    seconds = max((s.target_seconds or role_bounds_s(s.role)[1] for s in specs), default=60.0)
+    chars = min(850.0, seconds * _VOICE_CHARS_PER_S * 1.15)
+    return int(min(1800, max(700, chars * 0.9 + 300)))
+
+
 def rescue_unit_text(
     raw: str | None, why: str | None, *, final: bool = False, **kwargs
 ) -> str | None:
@@ -1038,7 +1181,9 @@ _RETRY_HINTS = {
 def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ()) -> str:
     """What to tell the model on the second attempt: the exact wording to drop, not just a reason code."""
     if why == "foreign_script":
-        bad = ", ".join(_FOREIGN_SCRIPT_RE.findall(raw or ""))[:80]
+        bad = ", ".join(
+            [*_FOREIGN_SCRIPT_RE.findall(raw or ""), *_foreign_words(raw or "", approved)]
+        )[:80]
         return f"\nBản trước lẫn ký tự khác tiếng Việt: {bad}. Chỉ dùng tiếng Việt, viết lại trọn câu, giữ đúng thông tin."
     if why == "empty":
         return "\nBản trước rỗng. Trả về lời thoại tiếng Việt hoàn chỉnh, không trả suy nghĩ hay chuỗi rỗng."
@@ -1054,7 +1199,7 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
             "(từ lợi ích của khách hoặc câu khách hay hỏi), không dùng từ 'cam kết' để mở câu."
         )
     if why == "name_repeat":
-        return "\nBản trước lặp tên sản phẩm đầy đủ. Gọi là 'mẫu này' hoặc loại sản phẩm; không lặp tên thương hiệu."
+        return "\nBản trước lặp tên sản phẩm đầy đủ. Gọi là 'sản phẩm này', 'gói này' hoặc loại sản phẩm; không lặp tên thương hiệu."
     if why == "brand_repeat":
         return "\nBản trước nhắc tên thương hiệu sai chỗ hoặc quá một lần. Bỏ tên thương hiệu khỏi phần này."
     template = _RETRY_HINTS.get(why or "")
@@ -1139,7 +1284,8 @@ def _facts_block(
         # The name is context only: a part that repeats it is rejected (name_repeat) and falls back
         # to the verbatim owner text.
         lines.append(
-            "Không nhắc tên sản phẩm này trong phần này; gọi là 'mẫu này' hoặc loại sản phẩm."
+            f"Không nhắc tên sản phẩm này trong phần này; gọi là '{_item_noun(product.name)}' "
+            "hoặc loại sản phẩm."
         )
     if product.brand and brand_invited:
         lines.append(
@@ -1214,7 +1360,7 @@ def build_unit_prompt(
         "không dấu gạch ngang dài. Chỉ dùng tiếng Việt; tên thương hiệu giữ nguyên.",
         _TRUTH_RULES,
         _COMMON_RULES,
-        _STYLE_RULES,
+        _STYLE_RULES.format(noun=_item_noun(product.name)),
         f"Phiên live: {session.title or '(chưa đặt tên)'}"
         + (f"; shop: {session.shop_name}" if session.shop_name else "")
         + (f"; MC: {session.persona}" if session.persona else ""),
@@ -1249,7 +1395,9 @@ def build_unit_prompt(
         parts.append(position)
     parts.append(_facts_block(product, spec, used, index in _brand_units(specs)))
     if spec.with_cta:
-        parts.append(_CTA_LINE)
+        parts.append(
+            _ORDER_CTA_LINE.format(code=product.order_code) if product.order_code else _CTA_LINE
+        )
     elif spec.role not in ("opening", "closing", "sizes"):
         parts.append(
             "Phần này không có lời mời mua hay nhắn tin: không dùng đặt hàng, chốt đơn, giỏ hàng, nhắn mình, inbox."
@@ -1269,6 +1417,33 @@ def build_unit_prompt(
     return "\n".join(parts)
 
 
+_OVERSHOOT_RE = re.compile(r"estimated\s+([\d.]+)s\s+spoken,\s+target maximum is\s+([\d.]+)s")
+
+
+def _overshoot(problems: list[str]) -> tuple[float, float] | None:
+    """(measured, limit) seconds from a SPEECH_DURATION_SEGMENT "too long" gate message, else None."""
+    for problem in problems:
+        match = _OVERSHOOT_RE.search(problem)
+        if match and float(match.group(1)) > float(match.group(2)) > 0:
+            return float(match.group(1)), float(match.group(2))
+    return None
+
+
+def fit_unit_claims(spec: "UnitSpec", limit_s: float) -> "UnitSpec":
+    """The unit with only the claims a writer can voice inside ``limit_s``: a writer elaborates about
+    twice what the claims take verbatim, so the claims get half the bound. Must-keep claims always stay;
+    the others stay in order while they fit (at least one stays)."""
+    budget = limit_s * 0.5
+    kept: list[str] = []
+    spent = 0.0
+    for claim in spec.claims:
+        seconds = _duration_s(claim)
+        if claim in spec.must or not kept or spent + seconds <= budget:
+            kept.append(claim)
+            spent += seconds
+    return replace(spec, claims=tuple(kept))
+
+
 def build_unit_repair_prompt(
     session: SessionBrief,
     product: ProductBrief,
@@ -1282,6 +1457,18 @@ def build_unit_repair_prompt(
     after: str = "",
     used_openings: tuple[str, ...] = (),
 ) -> str:
+    over = _overshoot(problems)
+    shortened = ""
+    if over is not None:
+        measured_s, limit_s = over
+        # A unit that ran past its bound is asked again with fewer facts (must-keep ones stay) and a hard
+        # sentence limit, instead of the same long prompt a second time.
+        specs = [*specs[:index], fit_unit_claims(specs[index], limit_s), *specs[index + 1 :]]
+        shortened = (
+            f"\nBản trước nói khoảng {measured_s:.0f} giây, giới hạn {limit_s:.0f} giây. Viết lại tối đa "
+            f"{max(2, min(4, int(limit_s // 15)))} câu ngắn (khoảng {int(limit_s * _VOICE_CHARS_PER_S * 0.7)} "
+            "ký tự), chỉ giữ ý chính của các thông tin bên dưới, bỏ câu đệm."
+        )
     base = build_unit_prompt(
         session,
         product,
@@ -1309,7 +1496,12 @@ def build_unit_repair_prompt(
         + failed_text
         + "\nLý do:\n- "
         + "\n- ".join(problems)
-        + "\nViết lại phần này, sửa đúng các lỗi trên, vẫn tự nhiên và đủ dài, không thêm thông tin sai."
+        + shortened
+        + (
+            "\nViết lại phần này, sửa đúng các lỗi trên, vẫn tự nhiên và đủ dài, không thêm thông tin sai."
+            if not shortened
+            else "\nViết lại phần này, sửa đúng các lỗi trên, không thêm thông tin sai."
+        )
     )
 
 
@@ -1330,6 +1522,7 @@ class BoundedLLM:
         fn: Callable[[str], str] | None,
         *,
         repair_fn: Callable[[str], str] | None = None,
+        final_fn: Callable[[str], str] | None = None,
         attempts: int = 2,
         call_timeout_s: float = 60.0,
         job_deadline_s: float = 600.0,
@@ -1339,6 +1532,7 @@ class BoundedLLM:
     ) -> None:
         self._fn = fn
         self._repair_fn = repair_fn
+        self._final_fn = final_fn
         self._attempts = max(1, attempts)
         self._call_timeout_s = call_timeout_s
         self._deadline = clock() + job_deadline_s
@@ -1346,20 +1540,33 @@ class BoundedLLM:
         self._clock = clock
         self._sleep = sleep or (lambda seconds: time.sleep(seconds))
 
-    def __call__(self, prompt: str, *, repair: bool = False) -> str:
+    def __call__(self, prompt: str, *, repair: bool = False, final: bool = False) -> str:
         if self._fn is None:
             raise ConnectionError("llm_unavailable")
+        # Write 1 uses ``fn``; later writes use ``repair_fn`` (larger output budget, calmer sampling);
+        # the last write may use ``final_fn`` (an optional stronger model). Missing ones fall back.
+        chosen = self._fn
+        if repair and self._repair_fn is not None:
+            chosen = self._repair_fn
+        if final and self._final_fn is not None:
+            try:
+                return self._run(prompt, self._final_fn)
+            except (LLMDeadlineError, TimeoutError):
+                raise  # a timeout keeps behaving as before: no overlapping paid call
+            except Exception as exc:  # noqa: BLE001 - e.g. HTTP 404/400 for a bad retry model name
+                logger.warning(
+                    "retry model write failed class=%s; using the normal model", type(exc).__name__
+                )
+        return self._run(prompt, chosen)
+
+    def _run(self, prompt: str, chosen: Callable[[str], str]) -> str:
         last: Exception | None = None
         for attempt in range(self._attempts):
             remaining = self._deadline - self._clock()
             if remaining <= 0:
                 raise LLMDeadlineError("generation deadline exceeded")
             try:
-                return self._call_once(
-                    prompt,
-                    min(self._call_timeout_s, remaining),
-                    self._repair_fn if repair and self._repair_fn is not None else self._fn,
-                )
+                return self._call_once(prompt, min(self._call_timeout_s, remaining), chosen)
             except Exception as exc:  # noqa: BLE001 - any provider failure is a transport failure
                 last = exc
                 # A timed-out sync request may already be billed and still running.

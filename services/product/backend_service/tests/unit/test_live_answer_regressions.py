@@ -61,16 +61,12 @@ def test_six_minute_plan_adds_spaced_fact_recaps_and_duration_instructions():
         build_unit_prompt,
     )
 
-    claims = (
-        "Denim dày dặn.",
-        "Có size M, L, XL.",
-        "Giao hàng từ 2 đến 3 ngày.",
-        "Đổi trả trong 15 ngày.",
-        "Không giặt nước nóng.",
-    )
+    # A script follows how much the owner wrote (~14 s per fact, never below 90 s), so only a product whose
+    # natural units fall short of that is given recaps. Two short facts: intro + one highlight + one recap.
+    claims = ("Denim dày dặn.", "Màu xanh đậm dễ phối.")
     product = ProductBrief("p", "Áo denim", claims=claims)
-    short = plan_units(product, first=True, last=True)
-    long = plan_units(product, first=True, last=True, target_duration_s=360)
+    short = plan_units(product, first=False, last=False)
+    long = plan_units(product, first=False, last=False, target_duration_s=360)
     assert len(long) > len(short)
     assert all(u.role not in ("opening", "closing", "intro") for u in long if u.revisit)
     assert sum(u.with_cta for u in long) == 1
@@ -129,7 +125,8 @@ def test_unit_length_follows_the_measured_voice_pace_and_the_share_of_the_live()
         plan_units,
     )
 
-    claims = tuple(f"Thông tin số {n}." for n in range(1, 8))
+    # 30 facts: enough information that the 360 s platform target is not reduced (14 s per fact).
+    claims = tuple(f"Thông tin số {n}." for n in range(1, 31))
     product = ProductBrief("p", "Áo denim", claims=claims)
     units = plan_units(product, first=True, last=True, target_duration_s=360)
     assert (

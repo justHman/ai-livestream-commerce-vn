@@ -97,6 +97,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     build_unit_repair_prompt,
     check_unit_text,
     claims_not_spoken,
+    close_unfinished,
     fallback_unit_text,
     offending_phrases,
     guard_problem,
@@ -107,6 +108,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     plan_units,
     role_bounds_s,
     role_title,
+    unit_max_tokens,
 )
 from backend.application.script_authoring.generation.unit_brief import (
     RECAP_RETRY,
@@ -191,6 +193,16 @@ _SHORTER_RETRY = (
 )
 
 
+def _check_closing_unfinished(raw: str | None, check: dict) -> tuple[str | None, str | None]:
+    """``check_unit_text`` for a model reply; a reply the provider FINISHED (finish_reason "stop") that only
+    lacks its final stop mark is closed and checked again instead of costing another paid write. A reply cut
+    by the output limit, or one that does not say why it stopped, is never closed."""
+    text, why = check_unit_text(raw, **check)
+    if text is None and why == "truncated" and getattr(raw, "finish_reason", None) == "stop":
+        return check_unit_text(close_unfinished(raw), **check)
+    return text, why
+
+
 def _guard_problem(
     why: str | None, raw: str | None, approved: tuple[str, ...], must: tuple[str, ...]
 ) -> str:
@@ -259,6 +271,13 @@ def _product_info(raw: Any) -> tuple[tuple[str, str], ...]:
         for key, label in labels.items()
         if isinstance(raw.get(key), str) and raw[key].strip()
     )
+
+
+def _order_code(raw: Any) -> str:
+    """The comment code viewers type to order ("Chốt G30 1"): 2-8 letters/digits starting with a letter, else none
+    (the value comes from another service and is spoken, so anything else is dropped)."""
+    code = str(raw or "").strip().upper()
+    return code if re.fullmatch(r"[A-Z][A-Z0-9]{1,7}", code) else ""
 
 
 def _brand(brief: Any, product_id: str) -> tuple[str, str]:
@@ -1397,7 +1416,6 @@ class ScriptAuthoringServiceImpl:
         brief = script_set.brief
         ordered_ids = list(script_set.product_ids)
         aware = brief.transition_policy == "ORDER_AWARE"
-        llm_fn = self._unit_llm_fn() or llm_fn
         facts = {pid: self._product_facts(brief, pid) for pid in ordered_ids}
         name = {pid: facts[pid].product_name or pid for pid in ordered_ids}
         products: dict[str, ProductBrief] = {}
@@ -1416,6 +1434,7 @@ class ScriptAuthoringServiceImpl:
                 previous_name=name[ordered_ids[i - 1]] if aware and i > 0 else None,
                 brand=brand,
                 brand_pronunciation=pronunciation,
+                order_code=_order_code(raw.get("order_code")),
             )
             roles[pid] = plan_units(
                 products[pid],
@@ -1425,6 +1444,20 @@ class ScriptAuthoringServiceImpl:
                 target_duration_s=target_duration_s,
             )
         cfg = self._config
+        # Output budget follows the longest unit's character target (never below the old fixed values);
+        # later writes get more room, calmer sampling, and optionally a stronger model on the last one.
+        cap = max(_UNIT_MAX_TOKENS, unit_max_tokens([s for specs in roles.values() for s in specs]))
+        retry_cap = min(4096, max(1400, int(cap * 1.6)))
+        retry_model = os.environ.get("LLM_RETRY_MODEL", "").strip()
+        llm_fn = self._unit_llm_fn(max_tokens=cap, with_finish=True) or llm_fn
+        repair_fn = self._unit_llm_fn(max_tokens=retry_cap, temperature=0.3, with_finish=True)
+        final_fn = (
+            self._unit_llm_fn(
+                max_tokens=retry_cap, temperature=0.3, model=retry_model, with_finish=True
+            )
+            if retry_model
+            else None
+        )
         return _OrderedBatch(
             session=SessionBrief(
                 title=brief.title,
@@ -1436,7 +1469,8 @@ class ScriptAuthoringServiceImpl:
             roles=roles,
             llm=BoundedLLM(
                 llm_fn,
-                repair_fn=self._unit_llm_fn(max_tokens=1400),
+                repair_fn=repair_fn,
+                final_fn=final_fn,
                 # Content repair owns the shared three-write budget. Retrying
                 # transport here would multiply dispatches and ambiguous bills.
                 attempts=1,
@@ -1447,8 +1481,20 @@ class ScriptAuthoringServiceImpl:
             ),
         )
 
-    def _unit_llm_fn(self, max_tokens: int = _UNIT_MAX_TOKENS) -> Callable[[str], str] | None:
-        """The engine's llm function with a larger output budget, when it supports one."""
+    def _unit_llm_fn(
+        self, max_tokens: int = _UNIT_MAX_TOKENS, **options
+    ) -> Callable[[str], str] | None:
+        """The engine's llm function with a larger output budget, when it supports one.
+
+        ``options`` (temperature, model, with_finish) go to engines that accept them; a manager that
+        does not (fakes, older ones) still gets the plain call, and a final failure means no function.
+        """
+        try:
+            return self._engine_manager.get_llm_fn(max_tokens=max_tokens, **options)
+        except TypeError:
+            pass
+        except Exception:  # noqa: BLE001 - no usable engine
+            return None
         try:
             return self._engine_manager.get_llm_fn(max_tokens=max_tokens)
         except Exception:  # noqa: BLE001 - fakes/older managers take no argument
@@ -1532,7 +1578,9 @@ class ScriptAuthoringServiceImpl:
                         )
                 unit_writes[index] = unit_writes.get(index, 0) + 1
                 try:
-                    raw = ordered.llm(prompt, repair=unit_writes[index] > 1)
+                    raw = ordered.llm(
+                        prompt, repair=unit_writes[index] > 1, final=unit_writes[index] >= 3
+                    )
                 except Exception as exc:  # noqa: BLE001 - provider/transport failure of this unit
                     code = f"llm_failed:{type(exc).__name__}"
                     logger.warning(
@@ -1555,7 +1603,8 @@ class ScriptAuthoringServiceImpl:
                     "brand": product.brand,
                     "brand_used_nearby": len(brand_units & {index - 1, index + 1}),
                 }
-                text, why = check_unit_text(raw, **check)
+                finish = getattr(raw, "finish_reason", None)  # None: the engine did not say
+                text, why = _check_closing_unfinished(raw, check)
                 if text is None:
                     # Wording-only rejection: cut the offending sentence instead of another paid call.
                     text = salvage_unit_text(raw, why, **check)
@@ -1588,7 +1637,7 @@ class ScriptAuthoringServiceImpl:
                 reason = why or "empty"
                 logger.warning(
                     "script unit rejected by guard product=%s unit=%s role=%s attempt=%s "
-                    "reason=%s detail=%s sample=%r",
+                    "reason=%s detail=%s sample=%r finish=%s",
                     pid,
                     index,
                     roles[index].role,
@@ -1596,6 +1645,7 @@ class ScriptAuthoringServiceImpl:
                     reason,
                     offending_phrases(raw, reason, check["approved"]),
                     (raw or "")[:120],
+                    finish,
                 )
                 # The next write corrects THIS rejected text for exactly this reason (not a blind redo).
                 prompt = guard_repair_prompt(
@@ -1986,6 +2036,9 @@ class ScriptAuthoringServiceImpl:
             }
             if fallback or failed:
                 part["needs_regeneration"] = True
+            if fallback and prov.get("fallback_reason_text"):
+                # Additive: the plain sentence for the owner; clients that do not know it ignore it.
+                part["fallback_reason_text"] = prov["fallback_reason_text"]
             parts.append(part)
         return parts
 
@@ -3573,7 +3626,7 @@ class ScriptAuthoringServiceImpl:
                     "brand": product.brand,
                     "brand_used_nearby": brand_nearby,
                 }
-                text, why = check_unit_text(raw, **check)
+                text, why = _check_closing_unfinished(raw, check)
                 if text is None:
                     text = salvage_unit_text(raw, why, **check)
                 if text is None:

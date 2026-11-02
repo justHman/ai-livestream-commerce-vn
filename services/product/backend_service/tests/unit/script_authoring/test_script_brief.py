@@ -115,7 +115,7 @@ async def test_legacy_segment_without_provenance_is_never_reported_as_llm():
 async def test_regenerating_a_recap_part_keeps_the_stored_recap_intent():
     llm = RepairLLM()
     service, repos = _service(llm)
-    set_id = await _new_set(service)
+    set_id = await _new_rich_set(service)
     await _generate(service, repos, set_id)
     _, before = await _text(repos, set_id, "P2")
     version = await _parts(service, set_id, "P2")
@@ -164,6 +164,32 @@ P2_ITEMS = [
     "Bảo hành 1 năm.",
     "Giảm 20% vào thứ Tư đầu tháng.",
 ]
+
+
+def _rich_brief():
+    """BRIEF whose P2 has enough facts (22) to earn recap parts: a script now follows how much the owner wrote
+    (about 14 s per fact), so the 4-fact P2 of BRIEF is no longer padded with recaps to reach the target."""
+    import copy
+
+    from test_ordered_generation import BRIEF
+
+    brief = copy.deepcopy(BRIEF)
+    extra = [f"Điểm cộng số {n} của kem." for n in range(1, 19)]
+    facts = brief["product_facts"]["P2"]
+    facts["allowed_claims"] = [*facts["allowed_claims"], *extra]
+    facts["claims_by_type"]["feature"] = [*facts["claims_by_type"]["feature"], *extra]
+    return brief
+
+
+async def _new_rich_set(service):
+    return (
+        await service.create_script_set(
+            name="Phiên",
+            transition_policy="ORDER_AWARE",
+            product_ids=["P2", "P1"],
+            brief=_rich_brief(),
+        )
+    )["id"]
 
 
 @pytest.mark.asyncio
@@ -295,16 +321,12 @@ async def _regen(service, set_id, before, part, key, **extra):
 
 @pytest.mark.asyncio
 async def test_price_change_blocks_regenerate_before_any_model_call():
-    import copy
-
-    from test_ordered_generation import BRIEF
-
     llm = RepairLLM()
     service, repos = _service(llm)
-    set_id = await _new_set(service)
+    set_id = await _new_rich_set(service)
     await _generate(service, repos, set_id)
     before, _version, recap = await _recap_part(service, repos, set_id)
-    changed = copy.deepcopy(BRIEF)
+    changed = _rich_brief()
     changed["product_facts"]["P2"]["prices"] = ["120000.00 VND"]
     stored = repos.script_sets.rows[set_id]
     stored.brief = service._brief_from_dict(changed, stored.brief.transition_policy)
@@ -318,7 +340,7 @@ async def test_price_change_blocks_regenerate_before_any_model_call():
 async def test_legacy_part_without_brief_is_not_replanned_unless_owner_picks_intent():
     llm = RepairLLM()
     service, repos = _service(llm)
-    set_id = await _new_set(service)
+    set_id = await _new_rich_set(service)
     await _generate(service, repos, set_id)
     before, version, recap = await _recap_part(service, repos, set_id)
     plan = await repos.plans.get((await repos.segments.get(recap["segment_id"])).plan_id)
@@ -401,7 +423,7 @@ async def test_gate_repair_keeps_neighbours_and_opening_inventory(monkeypatch):
 
     llm = RepairLLM()
     service, repos = _service(llm)
-    set_id = await _new_set(service)
+    set_id = await _new_rich_set(service)
     await _generate(service, repos, set_id)
     before, _version, recap = await _recap_part(service, repos, set_id)
     real = service._gate.run_segment
