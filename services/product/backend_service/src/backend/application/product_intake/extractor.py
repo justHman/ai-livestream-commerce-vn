@@ -33,7 +33,13 @@ ALLOWED_TYPES = (
 MAX_INPUT_CHARS = 20_000
 MAX_FACTS = 40  # same cap as claims per product (apps/studio productFields.ts)
 MIN_FACT_CHARS, MAX_FACT_CHARS = 5, 500  # same bounds as a typed claim
-MIN_EVIDENCE_CHARS = 4
+MIN_EVIDENCE_CHARS = (
+    12  # after normalisation; a short snippet ("Kem dưỡng") can be attached to any false fact
+)
+MIN_EVIDENCE_WORDS = 2
+# Share of the fact's content words that the evidence quote itself must contain. Probes (false facts glued to an
+# unrelated real quote) score 0.00-0.33; honest paraphrases of the quote score 0.75-1.00 (see the tests).
+MIN_EVIDENCE_OVERLAP = 0.6
 MAX_OUTPUT_CHARS = 100_000
 MAX_RAW_FACTS = (
     200  # entries examined; the rest are dropped unread (denial-of-wallet / output abuse)
@@ -52,19 +58,25 @@ _RISK_PATTERNS: dict[str, re.Pattern[str]] = {
     "health": re.compile(
         r"chua (?:khoi|benh|tri)|dieu tri|khoi benh|ung thu|giam can|giam (?:dau|viem)|tri (?:mun|nam|seo|benh)|tang chieu cao"
         r"|detox|thai doc|mien dich|ho tro suc khoe|tang can|an toan cho (?:ba bau|tre)"
+        r"|lam sang|bac si|kich ung|lam trang|tri lieu|hieu qua (?:sau|trong)"
     ),
     "certification": re.compile(
         r"chung nhan|giay phep|giay chung|cong bo|bo y te|\biso\b|\bfda\b|\bgmp\b|\bhalal\b|kiem dinh|chinh hang|dat chuan|\bocop\b"
+        r"|kiem nghiem|chuyen gia khuyen"
     ),
     "guarantee": re.compile(
         r"bao hanh|hoan tien|cam ket|doi tra|dam bao|hoan lai|tra hang|1 doi 1|tron doi|vinh vien|\bkhong hai long\b"
     ),
     "superlative": re.compile(
         r"tot nhat|so mot|\bso 1\b|\bno\.? ?1\b|hang dau|re nhat|chat luong nhat|hieu qua nhat|dinh cao|duy nhat|vuot troi|tuyet doi"
-        r"|hon han|(?:tot|re|manh|ben) hon"
+        # a comparative only counts against competitors; "ben hon" / "nhe hon" alone is just a description
+        r"|hon han|hon (?:tat ca|moi)|(?:tot|re|manh|ben|nhe|nhanh) hon (?:cac|nhung|moi|hang|doi thu|loai khac|san pham khac)"
     ),
     "discount": re.compile(
-        r"giam (?:\d|gia|toi)|khuyen mai|uu dai|tang (?:kem|them|ngay)|mien phi|free ?ship|voucher|ma giam|\d\s?%|mua \d+ (?:tang|duoc)"
+        r"giam (?:\d|gia|toi)|giam .{0,25}phan tram|khuyen mai|uu dai|tang (?:kem|ngay)|tang them (?:\d|mot|hai|ba|qua|voucher|san pham)"
+        r"|mien phi|free ?ship|voucher|ma giam|mua \d+ (?:tang|duoc)"
+        # a bare "100% tu nhien" is not a discount: a percentage counts only next to a price-cut word
+        r"|(?:giam|khuyen mai|uu dai|off|sale)\D{0,12}\d+(?:[.,]\d+)?\s?%|\d+(?:[.,]\d+)?\s?%\s?(?:off|giam)"
     ),
     "time_limited": re.compile(
         r"hom nay|chi (?:con|trong|co)|co han|gioi han|hop le den|den het|trong \d+ (?:gio|phut|ngay)|flash sale|ngay mai"
@@ -73,7 +85,13 @@ _RISK_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 _ZERO_WIDTH_CATEGORIES = {"Cc", "Cf", "Cs", "Co", "Cn"}
-_NUMBER_RE = re.compile(r"\d[\d.,]*")
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+_THOUSANDS_RE = re.compile(r"\d{1,3}(?:[.,]\d{3})+")
+# Function words and the generic noun "sản phẩm", which carry no claim. "khong" is NOT here: a negation still counts.
+_STOPWORDS = frozenset(
+    "la va cua cho co duoc cac nhung mot nay do de voi trong tren o tai tu den nen thi ma cung rat se da dang boi nhu khi neu "
+    "hay hoac nhe nha a oi san pham".split()
+)
 _WORD_RE = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*", re.UNICODE)
 _SENTENCE_END = ".!?:;\n"
 
@@ -139,9 +157,29 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", fold_text(text))).strip()
 
 
+def _number_key(raw: str) -> str:
+    """A thousands group ("299.000", "299,000") is 299000; any other separator is a decimal point ("1,5" is 1.5, not 15)."""
+    if _THOUSANDS_RE.fullmatch(raw):
+        return re.sub(r"[.,]", "", raw)
+    return raw.replace(",", ".")
+
+
 def _numbers(text: str) -> set[str]:
-    """Digit runs with grouping separators removed ("299.000" and "299,000" are both 299000)."""
-    return {re.sub(r"[.,]", "", m).strip() for m in _NUMBER_RE.findall(text)} - {""}
+    return {_number_key(m) for m in _NUMBER_RE.findall(text)}
+
+
+def _content_tokens(text: str) -> list[str]:
+    """Normalised words of ``text`` without function words and numbers."""
+    return [t for t in _norm(text).split() if t not in _STOPWORDS and not t.isdigit()]
+
+
+def _evidence_overlap(fact_text: str, evidence: str) -> float:
+    """Share of the fact's content words found among the evidence's own words (0 when the fact has none)."""
+    wanted = _content_tokens(fact_text)
+    if not wanted:
+        return 0.0
+    have = set(_norm(evidence).split())
+    return sum(1 for t in wanted if t in have) / len(wanted)
 
 
 def _names_missing(text: str, source_words: set[str]) -> bool:
@@ -191,7 +229,6 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
     entries = _parse(raw)
 
     source_norm = _norm(source)
-    source_numbers = _numbers(source)
     source_words = {fold_text(w) for w in _WORD_RE.findall(source)}
     facts: list[ExtractedFact] = []
     dropped: list[DroppedFact] = []
@@ -225,11 +262,18 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
             drop("too_long")
             continue
         quote = _norm(evidence)
-        if len(quote) < MIN_EVIDENCE_CHARS or quote not in source_norm:
+        if len(quote) < MIN_EVIDENCE_CHARS or len(quote.split()) < MIN_EVIDENCE_WORDS:
+            drop("evidence_too_short")
+            continue
+        if quote not in source_norm:
             drop("evidence_not_in_source")
             continue
-        if not _numbers(ftext) <= source_numbers:
+        # Numbers must come from the quote itself: another item's price elsewhere in the source does not count.
+        if not _numbers(ftext) <= _numbers(evidence):
             drop("number_not_in_source")
+            continue
+        if _evidence_overlap(ftext, evidence) < MIN_EVIDENCE_OVERLAP:
+            drop("evidence_mismatch")
             continue
         key = _norm(ftext)
         if key in seen:

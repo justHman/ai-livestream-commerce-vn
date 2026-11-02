@@ -5,7 +5,15 @@ import json
 import pytest
 
 from backend.application.product_intake import IntakeError, extract_facts
-from backend.application.product_intake.extractor import MAX_FACTS, MAX_INPUT_CHARS, build_prompt
+from backend.application.product_intake.extractor import (
+    MAX_FACTS,
+    MAX_INPUT_CHARS,
+    MIN_EVIDENCE_OVERLAP,
+    _evidence_overlap,
+    _flags,
+    _numbers,
+    build_prompt,
+)
 
 SOURCE = (
     "Gói 1 ngày 30 phút của Livento giá 49.000 đồng, dùng trong 24 giờ kể từ khi thanh toán thành công. "
@@ -93,7 +101,7 @@ def test_invented_brand_name_is_kept_and_flagged_unknown_proper_name():
             [
                 fact(
                     "feature",
-                    "Dùng công nghệ của Samsung cho gói.",
+                    "Gói 1 ngày 30 phút của Livento và Samsung.",
                     "Gói 1 ngày 30 phút của Livento",
                 )
             ]
@@ -159,7 +167,7 @@ def test_too_long_fact_is_dropped():
 
 def test_empty_evidence_is_dropped():
     result = extract_facts(SOURCE, fake([fact("feature", "Thanh toán qua PayOS.", "")]))
-    assert reasons(result) == ["evidence_not_in_source"]
+    assert reasons(result) == ["evidence_too_short"]
 
 
 def test_duplicates_are_dropped_after_the_first():
@@ -168,22 +176,19 @@ def test_duplicates_are_dropped_after_the_first():
     assert reasons(extract_facts(SOURCE, fake([same, again]))) == ["duplicate"]
 
 
+MANY_SOURCE = SOURCE + " " + " ".join(f"Mục {i} thanh toán qua PayOS." for i in range(1, 60))
+MANY_FACTS = [
+    fact("feature", f"Thanh toán qua PayOS mục {i}.", f"Mục {i} thanh toán qua PayOS")
+    for i in range(1, 60)
+]
+
+
 def test_count_is_capped_at_forty():
-    many = [
-        fact("feature", f"Thanh toán qua PayOS số {i}.", "Thanh toán qua PayOS")
-        for i in range(1, 60)
-    ]
-    source = SOURCE + " " + " ".join(str(i) for i in range(1, 60))
-    assert len(extract_facts(source, fake(many)).facts) == MAX_FACTS
+    assert len(extract_facts(MANY_SOURCE, fake(MANY_FACTS)).facts) == MAX_FACTS
 
 
 def test_facts_over_the_cap_are_reported_as_dropped():
-    many = [
-        fact("feature", f"Thanh toán qua PayOS số {i}.", "Thanh toán qua PayOS")
-        for i in range(1, 60)
-    ]
-    source = SOURCE + " " + " ".join(str(i) for i in range(1, 60))
-    assert reasons(extract_facts(source, fake(many)))[-1] == "over_cap"
+    assert reasons(extract_facts(MANY_SOURCE, fake(MANY_FACTS)))[-1] == "over_cap"
 
 
 def test_invalid_json_is_a_typed_error():
@@ -277,3 +282,131 @@ def test_dropped_counts_by_reason_for_the_owner_message():
     bad = fact("feature", "Giao hàng nhanh.", "giao hàng nhanh trong ngày")
     result = extract_facts(SOURCE, fake([bad, bad]))
     assert result.dropped_by_reason() == {"evidence_not_in_source": 2}
+
+
+# --- adversarial review: evidence must be long enough, tied to the fact, and carry the fact's numbers ---------------
+PROBE_SOURCE = (
+    "Kem dưỡng da ABC giá 299.000đ. Serum XYZ giá 599.000đ. Bao bì đẹp, giao hàng toàn quốc."
+)
+
+
+def probe(text, evidence, source=PROBE_SOURCE):
+    return reasons(extract_facts(source, fake([fact("feature", text, evidence)])))
+
+
+def test_false_fact_with_a_tiny_evidence_snippet_is_dropped_as_too_short():
+    assert probe("Kem ABC chống nước, dùng được cho mọi loại da", "Kem dưỡng") == [
+        "evidence_too_short"
+    ]
+
+
+def test_evidence_of_three_letters_and_a_space_is_too_short():
+    assert probe("Kem ABC dùng được cho trẻ sơ sinh", "ABC g") == ["evidence_too_short"]
+
+
+def test_evidence_with_a_single_long_word_is_too_short():
+    assert probe("Sản phẩm giảm năm mươi phần trăm", "giaohangtoanquoc") == ["evidence_too_short"]
+
+
+def test_false_fact_glued_to_an_unrelated_real_quote_is_a_mismatch():
+    assert probe("Sản phẩm giảm năm mươi phần trăm", "giao hàng toàn quốc") == ["evidence_mismatch"]
+
+
+def test_doctor_endorsement_glued_to_the_packaging_quote_is_a_mismatch():
+    assert probe("Sản phẩm được bác sĩ khuyên dùng", "Bao bì đẹp, giao hàng toàn quốc") == [
+        "evidence_mismatch"
+    ]
+
+
+def test_newborn_claim_glued_to_the_product_name_is_a_mismatch():
+    assert probe("Kem ABC dùng được cho trẻ sơ sinh", "Kem dưỡng da ABC giá") == [
+        "evidence_mismatch"
+    ]
+
+
+def test_another_items_price_is_dropped():
+    assert probe("Kem ABC giá 599.000đ", "Kem dưỡng da ABC giá 299.000đ") == [
+        "number_not_in_source"
+    ]
+
+
+def test_honest_paraphrase_of_the_quote_is_kept():
+    source = "Giao hàng toàn quốc trong 2-4 ngày. Thanh toán qua PayOS."
+    llm = fake([fact("shipping", "Giao hàng toàn quốc.", "giao hàng toàn quốc trong 2-4 ngày")])
+    assert texts(extract_facts(source, llm)) == ["Giao hàng toàn quốc."]
+
+
+def test_paraphrase_that_adds_a_function_word_is_kept():
+    llm = fake([fact("shipping", "Có giao hàng trên toàn quốc.", "Giao hàng toàn quốc")])
+    assert texts(extract_facts(PROBE_SOURCE, llm)) == ["Có giao hàng trên toàn quốc."]
+
+
+def test_price_with_a_different_currency_spelling_is_kept():
+    llm = fake(
+        [fact("feature", "Kem dưỡng da có giá 299.000 đồng.", "Kem dưỡng da ABC giá 299.000đ")]
+    )
+    assert texts(extract_facts(PROBE_SOURCE, llm)) == ["Kem dưỡng da có giá 299.000 đồng."]
+
+
+def test_decimal_and_integer_are_different_numbers():
+    source = "Dung tích 1.5 lít. Bình có 15 cốc."
+    assert probe("Dung tích 15 lít", "Dung tích 1.5 lít", source) == ["number_not_in_source"]
+
+
+def test_thousands_group_equals_the_plain_integer():
+    llm = fake([fact("feature", "Kem dưỡng da ABC giá 299000.", "Kem dưỡng da ABC giá 299.000đ")])
+    assert texts(extract_facts(PROBE_SOURCE, llm)) == ["Kem dưỡng da ABC giá 299000."]
+
+
+def test_comma_decimal_is_not_a_thousands_group():
+    assert _numbers("1,5 lít") != _numbers("15 lít")
+
+
+def test_evidence_overlap_of_a_real_paraphrase_is_above_the_threshold():
+    assert _evidence_overlap("Giao hàng toàn quốc.", "giao hàng toàn quốc trong 2-4 ngày") >= (
+        MIN_EVIDENCE_OVERLAP
+    )
+
+
+def test_evidence_overlap_of_a_glued_false_fact_is_below_the_threshold():
+    assert _evidence_overlap("Kem ABC dùng được cho trẻ sơ sinh", "Kem dưỡng da ABC giá") < (
+        MIN_EVIDENCE_OVERLAP
+    )
+
+
+# --- risk flags -----------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("text", "flag"),
+    [
+        ("Sản phẩm đã kiểm nghiệm tại phòng lab.", "certification"),
+        ("Đã qua thử nghiệm lâm sàng.", "health"),
+        ("Được bác sĩ khuyên dùng.", "health"),
+        ("Chuyên gia khuyên dùng mỗi ngày.", "certification"),
+        ("Không kích ứng da nhạy cảm.", "health"),
+        ("Công dụng làm trắng da.", "health"),
+        ("Liệu trình trị liệu tại nhà.", "health"),
+        ("Hiệu quả sau 7 ngày sử dụng.", "health"),
+        ("Giảm năm mươi phần trăm cho đơn đầu.", "discount"),
+        ("Giảm 20% cho đơn đầu.", "discount"),
+        ("Sale 50% toàn bộ cửa hàng.", "discount"),
+        ("Tặng thêm 1 móc khóa.", "discount"),
+        ("Bền hơn các loại khác trên thị trường.", "superlative"),
+        ("Tốt hơn các hãng khác.", "superlative"),
+    ],
+)
+def test_risky_wording_is_flagged_in_the_right_category(text, flag):
+    assert flag in _flags(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Chất liệu 100% tự nhiên.",
+        "Cotton 100% thấm hút tốt.",
+        "Tăng thêm vẻ đẹp cho làn da.",
+        "Bền hơn khi giặt máy.",
+        "Nhẹ hơn bản cũ.",
+    ],
+)
+def test_plain_wording_is_not_flagged(text):
+    assert _flags(text) == ()

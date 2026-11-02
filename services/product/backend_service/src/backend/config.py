@@ -646,6 +646,9 @@ class AppConfig:
     avatar_byok_enabled: bool = False  # AVATAR_BYOK_ENABLED: accept tenant credentials
     # Product intake (free-form text -> proposed facts, internal route). OFF by default.
     product_intake_enabled: bool = False  # PRODUCT_INTAKE_ENABLED
+    product_intake_max_concurrency: int = (
+        4  # PRODUCT_INTAKE_MAX_CONCURRENCY: parallel paid LLM calls
+    )
     avatar_cred_transit_key: str = field(default="", repr=False)  # base64 32 bytes
     avatar_cred_transit_key_id: str = "t1"
     bithuman_enabled: bool = False  # BITHUMAN_ENABLED: bitHuman backend selectable
@@ -816,6 +819,9 @@ class AppConfig:
             simli_camera_json=os.environ.get("SIMLI_CAMERA_JSON", "").strip(),
             avatar_byok_enabled=_flag_env("AVATAR_BYOK_ENABLED"),
             product_intake_enabled=_flag_env("PRODUCT_INTAKE_ENABLED"),
+            product_intake_max_concurrency=max(
+                1, int(os.environ.get("PRODUCT_INTAKE_MAX_CONCURRENCY", "4"))
+            ),
             avatar_cred_transit_key=os.environ.get("AVATAR_CRED_TRANSIT_KEY", "").strip(),
             avatar_cred_transit_key_id=os.environ.get("AVATAR_CRED_TRANSIT_KEY_ID") or "t1",
             bithuman_enabled=_flag_env("BITHUMAN_ENABLED"),

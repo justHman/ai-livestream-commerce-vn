@@ -36,7 +36,18 @@ _ERRORS = {
     "bad_output": (502, "INTAKE_LLM_FAILED"),
 }
 
+_BUSY_WAIT_S = 5.0  # how long a request waits for a free slot before INTAKE_BUSY
+_gate: asyncio.Semaphore | None = None  # module-level: one process-wide cap on paid LLM calls
+
 _intake_guard = internal_token_guard("intake")
+
+
+def _slots(request: Request) -> asyncio.Semaphore:
+    global _gate
+    if _gate is None:
+        limit = getattr(container_from_request(request).config, "product_intake_max_concurrency", 4)
+        _gate = asyncio.Semaphore(max(1, int(limit)))
+    return _gate
 
 
 class IntakeExtractReq(BaseModel):
@@ -71,8 +82,14 @@ def intake_llm(request: Request) -> Callable[[str], str]:
     dependencies=[Depends(_intake_guard), Depends(_intake_enabled)],
 )
 async def extract(
-    req: IntakeExtractReq, llm: Callable[[str], str] = Depends(intake_llm)
+    request: Request, req: IntakeExtractReq, llm: Callable[[str], str] = Depends(intake_llm)
 ) -> dict[str, object]:
+    gate = _slots(request)
+    try:
+        await asyncio.wait_for(gate.acquire(), timeout=_BUSY_WAIT_S)
+    except asyncio.TimeoutError:
+        logger.warning("product intake busy chars=%d", len(req.text))
+        _fail(503, "INTAKE_BUSY")
     started = time.monotonic()
     try:
         result = await asyncio.to_thread(extract_facts, req.text, llm)
@@ -82,6 +99,8 @@ async def extract(
         raise HTTPException(
             status_code=status, detail={"code": code, "message": code}
         ) from None  # the cause may carry merchant text
+    finally:
+        gate.release()
     logger.info(
         "product intake ok chars=%d facts=%d dropped=%d latency_ms=%d",
         len(req.text),

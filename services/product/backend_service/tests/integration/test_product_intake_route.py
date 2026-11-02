@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -99,7 +100,13 @@ def test_risky_fact_is_kept_and_flagged():
 
 def test_unknown_proper_name_is_kept_with_a_flag():
     llm = llm_returning(
-        [fact("feature", "Dùng công nghệ của Samsung.", "Gói 1 ngày 30 phút của Livento")]
+        [
+            fact(
+                "feature",
+                "Gói 1 ngày 30 phút của Livento và Samsung.",
+                "Gói 1 ngày 30 phút của Livento",
+            )
+        ]
     )
     assert post(client(llm)).json()["facts"][0]["flags"] == ["unknown_proper_name"]
 
@@ -167,6 +174,43 @@ def test_unparseable_model_output_answers_502():
 def test_malformed_request_422_does_not_echo_the_input():
     r = client(llm_returning(GOOD)).post(URL, json={"text": {"x": SECRET}}, headers=TOKEN)
     assert (r.status_code, SECRET in r.text) == (422, False)
+
+
+def test_saturated_route_answers_503_intake_busy(monkeypatch):
+    from backend.api.v1 import product_intake
+
+    monkeypatch.setattr(product_intake, "_gate", asyncio.Semaphore(0))
+    monkeypatch.setattr(product_intake, "_BUSY_WAIT_S", 0.05)
+    r = post(client(llm_returning(GOOD)))
+    assert (r.status_code, r.json()["error"]["code"]) == (503, "INTAKE_BUSY")
+
+
+def test_a_free_slot_is_used_and_given_back(monkeypatch):
+    from backend.api.v1 import product_intake
+
+    gate = asyncio.Semaphore(1)
+    monkeypatch.setattr(product_intake, "_gate", gate)
+    post(client(llm_returning(GOOD)))
+    assert gate._value == 1
+
+
+def test_a_failed_extraction_also_gives_the_slot_back(monkeypatch):
+    from backend.api.v1 import product_intake
+
+    gate = asyncio.Semaphore(1)
+    monkeypatch.setattr(product_intake, "_gate", gate)
+    post(client(raising_llm))
+    assert gate._value == 1
+
+
+def test_busy_does_not_reach_the_model(monkeypatch):
+    from backend.api.v1 import product_intake
+
+    calls = []
+    monkeypatch.setattr(product_intake, "_gate", asyncio.Semaphore(0))
+    monkeypatch.setattr(product_intake, "_BUSY_WAIT_S", 0.05)
+    post(client(lambda prompt: calls.append(prompt) or "{}"))
+    assert calls == []
 
 
 def test_without_an_engine_manager_the_route_answers_502():
