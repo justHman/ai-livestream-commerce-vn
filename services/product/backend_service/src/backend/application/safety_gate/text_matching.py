@@ -17,6 +17,19 @@ _BENIGN_HOMOGRAPHS = frozenset(
 _BENIGN_HOMOGRAPHS |= frozenset("\u0111\u1ec1u \u0111i\u1ec7n h\u00e0m".split())
 _BENIGN_HOMOGRAPHS |= frozenset("bộ mã máy".split())
 _LEET = str.maketrans({"1": "i", "0": "o", "3": "e", "@": "a", "$": "s"})
+# A short letter prefix plus plain digits ("D30", "M1", "T420") is a shop/order code, not obfuscation. Read
+# through the leetspeak table "D30" becomes "deo" (a curated insult) and the viewer's "Chốt D30 1" order is
+# silently dropped as toxic. Obfuscated words put a letter after the digit ("d3o", "l0n"), so they still match.
+_CODE_TOKEN_RE = re.compile(r"[a-z]{1,2}\d{1,4}")
+_LEET_TOKEN_RE = re.compile(r"[a-z0-9@$]+")
+
+
+def _leet_view(text: str) -> str:
+    return _LEET_TOKEN_RE.sub(
+        lambda m: m[0] if _CODE_TOKEN_RE.fullmatch(m[0]) else m[0].translate(_LEET), text
+    )
+
+
 _AMBIGUOUS = frozenset("ngu lon cac du buoi deo bui dien cut ham deu khung lao hon di".split())
 _EXPLICIT_ABUSE = frozenset(
     "lồn lờn cặc kặc đụ đù buồi đéo điên cứt hâm đểu khùng láo hỗn đĩ".split()
@@ -229,7 +242,7 @@ def matching_view(
         text = re.sub(r"\bchó\b", "markedchotoken", text)
         text = _protect_commerce_homophones(text)
         text = _protect_homographs(text)
-    text = fold_text(text).translate(_LEET)
+    text = _leet_view(fold_text(text))
     text = re.sub(r"\bd[*!]t\b", "dit", text)
     if join_symbols:
         text = re.sub(r"(?<=[a-z])[^\w\s]+(?=[a-z])", "", text)
