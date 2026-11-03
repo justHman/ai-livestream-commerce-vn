@@ -19,7 +19,7 @@ Contract: `023-prep/BYOK_AVATAR_CONTRACT_2026-11-01.md` (API addendum is authori
 | `BITHUMAN_API_BASE` | `https://api.bithuman.ai` | |
 | `BITHUMAN_MODEL` | `essence-2` | |
 | `BITHUMAN_API_KEY` / `BITHUMAN_AGENT_ID` | empty | Platform-account use of bitHuman is not routed (the router never sends a platform session to bitHuman); BYOK sessions bring their own key, so both stay empty. |
-| `BITHUMAN_MAX_SESSION_S` | 3600 | Runtime near-cap guard (provider cap unknown). |
+| `BITHUMAN_MAX_SESSION_S` | 3600 | Runtime near-cap guard. bitHuman says a cloud session runs up to 24 h: set 86400 for long lives. |
 | `BITHUMAN_IDLE_BOUND_S` | 120 | End bound of a derived cost row (provider idle unknown). |
 | `BITHUMAN_START_TIMEOUT_S` / `BITHUMAN_REQUEST_TIMEOUT_S` | 30 / 15 | |
 | `BITHUMAN_AVATAR_IDENTITY` | `bithuman-avatar-agent` | LiveKit identity of the avatar agent. |
