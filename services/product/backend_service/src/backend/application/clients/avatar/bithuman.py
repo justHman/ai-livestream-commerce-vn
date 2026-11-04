@@ -22,8 +22,10 @@ UNVERIFIED ASSUMPTIONS (no paid bitHuman account was available; nothing ran agai
       ``session_id`` (top level or under ``data``). A missing/odd id fails the start.
   B2  End: ``POST /v1/runtime-sessions/{session_id}/end`` with header ``api-secret`` and an empty
       JSON body; 2xx or 404 = ended.
-  B3  Statuses: 401 invalid key; 403 body ``PLAN_REQUIRED`` -> out of credit,
-      ``CONCURRENCY_LIMIT_REACHED`` -> concurrency limit, other 403 -> invalid key;
+  B3  Statuses (B1-B3 match the official OpenAPI spec, checked 2026-11-03): 401 invalid key;
+      402 ``INSUFFICIENT_BALANCE`` -> out of credit; 403 ``CONCURRENCY_LIMIT_REACHED`` ->
+      concurrency limit, any other 403 (``PLAN_REQUIRED`` = free account / model outside the
+      plan, suspended account) -> invalid key;
       404 / 409 (``MODEL_NOT_GENERATED``, ``AGENT_NOT_READY``) -> avatar not found/ready;
       503 (``Retry-After``) -> provider unavailable. The code field name inside the 403 body is
       searched as text, not parsed by key.
@@ -146,8 +148,8 @@ def status_to_code(status: int, body: Any) -> str | None:
         text = json.dumps(body, default=str) if body is not None else ""
         if "CONCURRENCY_LIMIT_REACHED" in text:
             return CONCURRENCY_LIMIT
-        if "PLAN_REQUIRED" in text:
-            return OUT_OF_CREDIT
+        # PLAN_REQUIRED = free account or a model outside the plan, not an empty balance
+        # (that is 402), so it falls through to the key/plan failure below.
     if status == 409:
         return NOT_FOUND
     return status_to_avatar_code(status)

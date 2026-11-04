@@ -350,7 +350,8 @@ def test_bithuman_model_is_configurable():
     ("status", "body", "code"),
     [
         (401, {}, "AVATAR_KEY_INVALID"),
-        (403, {"code": "PLAN_REQUIRED"}, "AVATAR_OUT_OF_CREDIT"),
+        (402, {"code": "INSUFFICIENT_BALANCE"}, "AVATAR_OUT_OF_CREDIT"),
+        (403, {"code": "PLAN_REQUIRED"}, "AVATAR_KEY_INVALID"),
         (403, {"code": "CONCURRENCY_LIMIT_REACHED"}, "AVATAR_CONCURRENCY_LIMIT"),
         (403, {"code": "other"}, "AVATAR_KEY_INVALID"),
         (404, {}, "AVATAR_NOT_FOUND"),
