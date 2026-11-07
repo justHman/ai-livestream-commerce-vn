@@ -185,7 +185,7 @@ _MISSING_INFO_RE = re.compile(
 )
 _HARD_SELL_RE = re.compile(
     r"chốt đơn ngay|đặt (?:hàng )?ngay|mua ngay|nhanh tay|không bỏ lỡ|đừng bỏ lỡ|số lượng có hạn"
-    r"|chốt ngay|order ngay|kẻo hết|sắp hết hàng",
+    r"|chốt ngay|order ngay|kẻo hết|sắp hết hàng|sở hữu ngay",
     re.IGNORECASE,
 )
 # Inviting people to follow the channel is not sales pressure (opening/closing only).
@@ -259,7 +259,9 @@ _EXPERIENCE_RE = re.compile(
 # Viewer-address forms only; "trẻ em", "em bé", "anh em" are ordinary words, not address.
 _ADDRESS_RE = re.compile(
     r"\bquý (?:vị|khách)\b|\bcác anh chị\b|\banh chị\b|\bcác (?:anh|chị)\b"
-    r"|(?<!\w)(?:anh|chị|em) ơi\b|\bbạn (?:nam|nữ)\b|\b(?:chào|mời|cảm ơn) (?:anh|chị)\b",
+    r"|(?<!\w)(?:anh|chị|em) ơi\b|\bbạn (?:nam|nữ)\b|\b(?:chào|mời|cảm ơn) (?:anh|chị)\b"
+    # the product is never "em" ("em nó", "một em thú cưng"); "em bé" and "trẻ em" stay ordinary words
+    r"|\bem (?:nó|ấy)\b|\b(?:một|những) em\b(?! bé)",
     re.IGNORECASE,
 )
 # A restriction/condition that qualifies another claim: never dropped, kept beside it.
@@ -279,7 +281,9 @@ _CTA_RE = re.compile(
 _TYPOS = {"thoải chọn": "thoải mái chọn", "đúng mẫi": "đúng mẫu"}
 _CHEAP_RE = re.compile(
     r"giá (?:siêu )?rẻ|rẻ nhất|bán chạy nhất|tốt nhất|số (?:một|1)\b"
-    r"|hàng (?:nghìn|ngàn|triệu) (?:khách|người)",
+    r"|hàng (?:nghìn|ngàn|triệu) (?:khách|người)"
+    # praise and reassurance the owner never wrote: speed/safety/value verdicts are claims, not wording
+    r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý",
     re.IGNORECASE,
 )  # subjective/superlative claims are not facts unless the owner approved them
 _KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
@@ -292,6 +296,67 @@ _TOPICS = {
     ),
     "price": re.compile(r"\bgiá\b|nghìn|triệu|đồng", re.IGNORECASE),
 }
+
+# Policy statements that contradict each other ("Mua rồi miễn đổi trả" vs "Được đổi trả 100%") are both
+# must-keep, so the coverage gate forced the writer to say both and it merged them into a promise the owner
+# never made. Neither is spoken; the owner sees them in claims_not_spoken. Matched on accent-folded text.
+_POLICY_KINDS = {
+    "return": re.compile(
+        r"\bdoi tra\b|\bdoi hang\b|\btra hang\b|\btra lai\b|\bhoan tien\b|\bhoan lai\b"
+    ),
+    "warranty": re.compile(r"\bbao hanh\b"),
+}
+_POLICY_NO_RE = re.compile(
+    r"\bmien (?:doi|tra)\b(?! phi)|\bkhong (?:duoc |ho tro |cho |chap nhan )?(?:doi|tra|hoan|bao hanh)\b"
+)
+_POLICY_YES_RE = re.compile(
+    r"\b(?:duoc|co|ho tro|cho phep|mien phi) (?:doi|tra|hoan|bao hanh)\b|\b(?:doi|tra|hoan)\b[^.?]*?\b(?:duoc|mien phi)\b|\bbao hanh \d"
+)
+_POLICY_ANSWER_YES_RE = re.compile(r"^\W*(?:duoc|co|vang|da|dung)\b")
+_POLICY_ANSWER_NO_RE = re.compile(r"^\W*(?:khong|chua)\b")
+# A denial with a scope ("không bảo hành khi rơi vỡ", "không đổi trả sau 7 ngày") is a condition, not a blanket no.
+_POLICY_SCOPE_RE = re.compile(
+    r"\b(?:khi|neu|tru|ngoai tru|doi voi|sau|qua|bi|da|pin|phu kien|\d+)\b"
+)
+# A 100% discount on the product is not a price; "giảm 100% phí ship" is a real offer and stays.
+_FREE_DISCOUNT_RE = re.compile(r"\bgiam\s*(?:gia\s*)?(?:100|[1-9]\d{2,})\s*%")
+_FREE_DISCOUNT_OK_RE = re.compile(r"\b(?:ship|phi|van chuyen|giao hang)\b")
+
+
+def _policy_polarity(folded: str) -> str | None:
+    """ "yes" / "no" / None for a return or warranty statement; a "question? answer" takes the answer's polarity."""
+    if "?" in folded:
+        answer = folded.rsplit("?", 1)[1]
+        if _POLICY_ANSWER_NO_RE.search(answer):
+            return "no"
+        if _POLICY_ANSWER_YES_RE.search(answer):
+            return "yes"
+        return None
+    if _POLICY_NO_RE.search(folded):
+        # a scoped denial qualifies a promise instead of contradicting it
+        return None if _POLICY_SCOPE_RE.search(folded) else "no"
+    return "yes" if _POLICY_YES_RE.search(folded) else None
+
+
+def unsafe_claims(claims: tuple[str, ...]) -> set[str]:
+    """Claims the plan must not speak: a return/warranty promise and its blanket denial, and a 100% discount."""
+    out: set[str] = set()
+    by_kind: dict[str, dict[str, list[str]]] = {}
+    for claim in dict.fromkeys(claims):
+        folded = _fold(claim)
+        if _FREE_DISCOUNT_RE.search(folded) and not _FREE_DISCOUNT_OK_RE.search(folded):
+            out.add(claim)
+            continue
+        polarity = _policy_polarity(folded)
+        if polarity is None:
+            continue
+        for kind, rx in _POLICY_KINDS.items():
+            if rx.search(folded):
+                by_kind.setdefault(kind, {"yes": [], "no": []})[polarity].append(claim)
+    for sides in by_kind.values():
+        if sides["yes"] and sides["no"]:
+            out.update(sides["yes"], sides["no"])
+    return out
 
 
 def role_bounds_s(role: str) -> tuple[float, float]:
@@ -549,8 +614,9 @@ def _cluster_claims(product: ProductBrief) -> dict:
     promos: list[str] = []
     must: set[str] = set()
     seen: set[str] = set()
+    unsafe = unsafe_claims((*product.claims, *product.discounts))
     for claim in (*product.claims, *product.discounts):
-        if claim in seen:
+        if claim in seen or claim in unsafe:
             continue
         seen.add(claim)
         kind = typed.get(claim)
@@ -610,7 +676,8 @@ def plan_units(
     must: set[str] = c["must"]
     positional = {"first_product": first and ordered_aware, "last_product": last and ordered_aware}
     if target_duration_s:
-        facts = len({*product.claims, *product.discounts})
+        every = (*product.claims, *product.discounts)
+        facts = len(set(every) - unsafe_claims(every))
         target_duration_s = min(target_duration_s, max(_MIN_TARGET_S, _SECONDS_PER_FACT * facts))
 
     def spec(role: str, claims=(), promos=(), **extra) -> UnitSpec:
