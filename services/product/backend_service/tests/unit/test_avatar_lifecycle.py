@@ -164,8 +164,8 @@ async def test_ttl_execution_error_has_fixed_marker_only_after_cleanup():
         backend.stop_all()
 
 
-def test_default_ttl_is_twenty_minutes(monkeypatch):
+def test_default_ttl_is_ten_minutes(monkeypatch):
     from backend.config import AppConfig
 
     monkeypatch.delenv("RUNTIME_READY_TTL_S", raising=False)
-    assert AppConfig.from_env().runtime_ready_ttl_s == 1200
+    assert AppConfig.from_env().runtime_ready_ttl_s == 600

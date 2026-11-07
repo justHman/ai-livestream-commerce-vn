@@ -9,7 +9,7 @@ those paths. The supplied counts are incident context, not independently measure
 ## Runtime behavior
 
 - Preparing/ready sessions preserve their existing avatar with idle resets until
-  `RUNTIME_READY_TTL_S=1200` (20 minutes). They never heal/recreate or roll over in the
+  `RUNTIME_READY_TTL_S=600` (10 minutes). They never heal/recreate or roll over in the
   background, even when rollover age is exceeded. On-air (`live`, `warming`, `selling`,
   `closing`, or recent speech) retains heal/rollover behavior. First utterance can recreate
   a missing avatar. Active PCM/playback is never replaced.

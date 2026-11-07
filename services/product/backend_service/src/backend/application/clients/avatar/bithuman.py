@@ -91,7 +91,7 @@ class BitHumanSettings:
     speak_ready_wait_s: float = 45.0
     fallback_publish: bool = False
     render_offset_ms: int = 0
-    ready_ttl_s: float = 1200.0
+    ready_ttl_s: float = 600.0
     payment_backoff_s: float = 3600.0
 
     def __post_init__(self) -> None:
