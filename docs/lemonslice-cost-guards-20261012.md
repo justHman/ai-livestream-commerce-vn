@@ -14,7 +14,7 @@ those paths. The supplied counts are incident context, not independently measure
   `closing`, or recent speech) retains heal/rollover behavior. First utterance can recreate
   a missing avatar. Active PCM/playback is never replaced.
 - TTL counts from initial creation, never renewed by ready transitions/provider rollover.
-  Twenty minutes accommodates observed 110-second preparation and operator preview while
+  Ten minutes accommodates observed 110-second preparation and operator preview while
   bounding unattended cost. Zero disables TTL explicitly. At deadline both keepalive loop
   and dispatch guard stop resets independently of the five-second watcher. The watcher fences
   speech, persists failed execution, then owns full stop: reconciliation, avatar/publisher/
