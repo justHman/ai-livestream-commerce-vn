@@ -24,6 +24,7 @@ REASON_TEXT: dict[str, str] = {
     "missing_info": f"AI nói như thể thiếu thông tin, {_FALLBACK}",
     "brand_repeat": f"AI nhắc tên thương hiệu quá nhiều, {_FALLBACK}",
     "name_repeat": f"AI nhắc tên sản phẩm quá nhiều, {_FALLBACK}",
+    "repeat": f"AI chép lại gần nguyên phần đã nói trước đó, {_FALLBACK}",
     "hard_sell": f"AI dùng lời thúc giục mua hàng mà bạn chưa viết, {_FALLBACK}",
     "cta": f"AI chèn lời mời mua hoặc nhắn tin sai chỗ, {_FALLBACK}",
     "personal_experience": f"AI bịa trải nghiệm cá nhân, {_FALLBACK}",

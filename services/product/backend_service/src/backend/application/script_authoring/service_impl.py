@@ -104,7 +104,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     guard_repair_prompt,
     repeats_source,
     rescue_unit_text,
-    revisit_source_index,
+    recap_source_text,
     salvage_unit_text,
     uncovered_claims,
     plan_units,
@@ -1620,12 +1620,8 @@ class ScriptAuthoringServiceImpl:
                         logger.info(
                             "script unit salvaged product=%s unit=%s reason=%s", pid, index, why
                         )
-                source = revisit_source_index(roles, index) if roles[index].revisit else None
-                if (
-                    text is not None
-                    and source in unit_texts
-                    and repeats_source(text, unit_texts[source])
-                ):
+                source_text = recap_source_text(roles, index, unit_texts, product)
+                if text is not None and source_text and repeats_source(text, source_text):
                     raw, text, why = text, None, "repeat"
                 if text is not None:
                     unit_texts[index] = text

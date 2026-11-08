@@ -205,7 +205,9 @@ def main(argv: list[str] | None = None) -> int:
                 if line.startswith("FAIL"):
                     print("   ", line)
     print(f"\nexpectation failures: {failures}")
-    return 0
+    return (
+        1 if failures and not args.fake else 0
+    )  # fake output is canned; only a real model is judged
 
 
 if __name__ == "__main__":

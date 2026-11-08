@@ -55,8 +55,9 @@ _INSTRUCTION = (
     "Không thêm số, giá, phần trăm, thời hạn, tên riêng, chứng nhận hay lời hứa không có trong dữ liệu; không suy diễn công dụng. "
     "Dữ liệu mâu thuẫn hoặc vô lý thì vẫn trích đúng như viết, không sửa, không bỏ. "
     "`text`: một câu ngắn tiếng Việt, một ý, DÙNG LẠI CHỮ CỦA DỮ LIỆU, giữ nguyên số và đơn vị, không thêm từ nhãn hay từ mới. "
-    "`evidence`: đoạn trích NGUYÊN VĂN ngắn nhất mà vẫn chứa đủ ý và đủ số của thông tin đó, nằm gọn trong MỘT câu hoặc MỘT dòng "
-    "(không nối hai câu hay hai dòng, không sửa chữ). "
+    "`evidence`: đoạn trích NGUYÊN VĂN chứa đủ ý và đủ số của thông tin đó, nằm gọn trong MỘT câu hoặc MỘT dòng "
+    "(không nối hai câu hay hai dòng, không sửa chữ), dài TỐI THIỂU 12 ký tự và 3 từ: nếu ý quá ngắn (ví dụ 'có 3 màu') "
+    "thì lấy kèm các từ đứng liền kề NGAY TRONG dữ liệu (ví dụ 'chống tràn, có 3 màu'), không tự ghép từ; `text` vẫn chỉ một ý. "
     f"`type` là một trong: {', '.join(ALLOWED_TYPES)}; dùng `feature` cho kích thước, ngoại hình, thông số, tập tính, môi trường sống, "
     "thức ăn, nguồn gốc và mọi đặc điểm không thuộc loại khác. "
     'Chỉ trả về một đối tượng JSON duy nhất, không kèm chữ nào khác: {"facts":[{"type":"...","text":"...","evidence":"..."}]}'

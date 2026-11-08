@@ -39,6 +39,7 @@ __all__ = [
     "check_unit_text",
     "repeats_source",
     "revisit_source_index",
+    "recap_source_text",
     "claim_covered",
     "claims_not_spoken",
     "uncovered_claims",
@@ -287,7 +288,7 @@ _CHEAP_RE = re.compile(
     # praise and reassurance the owner never wrote: speed/safety/value verdicts are claims, not wording
     r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý"
     # stock filler the style rules already ban, now enforced; a wording rejection cuts the sentence
-    r"|yên tâm|thật lòng|cực kỳ|vô cùng|có tò mò[^.?!]{0,40}không",
+    r"|(?<!\w)(?:yên tâm|thật lòng|cực kỳ|vô cùng)(?!\w)|(?<!\w)có tò mò[^.?!]{0,40}không(?!\w)",
     re.IGNORECASE,
 )  # subjective/superlative claims are not facts unless the owner approved them
 _KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
@@ -1006,6 +1007,17 @@ def revisit_source_index(specs: list["UnitSpec"], index: int) -> int | None:
     )
 
 
+def recap_source_text(
+    specs: list["UnitSpec"], index: int, accepted: dict[int, str], product: "ProductBrief"
+) -> str | None:
+    """What a recap must not copy: its source's accepted model text, else the extractive fallback the
+    driver used for that unit when it exhausted its retries."""
+    source = revisit_source_index(specs, index) if specs[index].revisit else None
+    if source is None:
+        return None
+    return accepted.get(source) or fallback_unit_text(specs[source], product)
+
+
 def _topics(sentence: str) -> set[str]:
     return {name for name, rx in _TOPICS.items() if rx.search(sentence)}
 
@@ -1074,8 +1086,10 @@ def check_unit_text(
         for m in _HARD_SELL_RE.finditer(sell_text)
     ):
         return None, "hard_sell"  # pressure wording the owner did not write
-    lowered = [a.lower() for a in approved]
-    if any(not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(text)):
+    lowered = [_nfc(a).lower() for a in approved]  # NFC both sides: NFD owner text must still match
+    if any(
+        not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(_nfc(text))
+    ):
         return None, "hard_sell"  # each superlative must be one the owner wrote
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"
@@ -1121,12 +1135,16 @@ def check_unit_text(
 WORDING_REASONS = ("hard_sell", "cta", "bridge", "address", "position")
 
 
+def _nfc(text: str) -> str:
+    return unicodedata.normalize("NFC", text)
+
+
 def offending_phrases(
     raw: str | None, why: str | None, approved: tuple[str, ...] = ()
 ) -> list[str]:
     """The wording our own fixed patterns matched for a wording rejection (never any other text)."""
-    text = raw or ""
-    lowered = [a.lower() for a in approved]
+    text = _nfc(raw or "")
+    lowered = [_nfc(a).lower() for a in approved]
     patterns: tuple[re.Pattern, ...] = {
         "hard_sell": (_HARD_SELL_RE, _CHEAP_RE),
         "cta": (_CTA_RE,),
@@ -1154,7 +1172,7 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
     phrases = offending_phrases(raw, why, tuple(kwargs.get("approved") or ()))
     if not phrases:
         return None
-    sentences = re.split(r"(?<=[.!?])\s+", (raw or "").strip())
+    sentences = re.split(r"(?<=[.!?])\s+", _nfc(raw or "").strip())
     kept = [s for s in sentences if not any(p in s.lower() for p in phrases)]
     if not kept or len(kept) == len(sentences):
         return None
