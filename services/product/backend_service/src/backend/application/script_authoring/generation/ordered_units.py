@@ -37,6 +37,8 @@ __all__ = [
     "build_unit_repair_prompt",
     "clean_unit_text",
     "check_unit_text",
+    "repeats_source",
+    "revisit_source_index",
     "claim_covered",
     "claims_not_spoken",
     "uncovered_claims",
@@ -283,7 +285,9 @@ _CHEAP_RE = re.compile(
     r"giá (?:siêu )?rẻ|rẻ nhất|bán chạy nhất|tốt nhất|số (?:một|1)\b"
     r"|hàng (?:nghìn|ngàn|triệu) (?:khách|người)"
     # praise and reassurance the owner never wrote: speed/safety/value verdicts are claims, not wording
-    r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý",
+    r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý"
+    # stock filler the style rules already ban, now enforced; a wording rejection cuts the sentence
+    r"|yên tâm|thật lòng|cực kỳ|vô cùng|có tò mò[^.?!]{0,40}không",
     re.IGNORECASE,
 )  # subjective/superlative claims are not facts unless the owner approved them
 _KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
@@ -976,6 +980,32 @@ def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
     )
 
 
+def repeats_source(text: str, source: str, limit: float = 0.35) -> bool:
+    """A recap that reuses more than ``limit`` of its source part's word 4-grams is the same text again."""
+
+    def grams(s: str) -> set[tuple[str, ...]]:
+        words = re.findall(r"\w+", _fold(s))
+        return {tuple(words[i : i + 4]) for i in range(len(words) - 3)}
+
+    mine = grams(text)
+    return bool(mine) and len(mine & grams(source)) / len(mine) > limit
+
+
+def revisit_source_index(specs: list["UnitSpec"], index: int) -> int | None:
+    """The earlier unit a recap repeats: same role and same facts, not itself a recap."""
+    spec = specs[index]
+    return next(
+        (
+            i
+            for i, u in enumerate(specs[:index])
+            if not u.revisit
+            and u.role == spec.role
+            and (u.claims, u.promos) == (spec.claims, spec.promos)
+        ),
+        None,
+    )
+
+
 def _topics(sentence: str) -> set[str]:
     return {name for name, rx in _TOPICS.items() if rx.search(sentence)}
 
@@ -1267,6 +1297,11 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
         )
     if why == "name_repeat":
         return "\nBản trước lặp tên sản phẩm đầy đủ. Gọi là 'sản phẩm này', 'gói này' hoặc loại sản phẩm; không lặp tên thương hiệu."
+    if why == "repeat":
+        return (
+            "\nBản trước chép lại gần nguyên phần đã nói trước đó. Chỉ nhắc lại các ý bằng một vế ngắn, "
+            "đổi thứ tự và cách nói, không dùng lại câu chữ."
+        )
     if why == "brand_repeat":
         return "\nBản trước nhắc tên thương hiệu sai chỗ hoặc quá một lần. Bỏ tên thương hiệu khỏi phần này."
     template = _RETRY_HINTS.get(why or "")
