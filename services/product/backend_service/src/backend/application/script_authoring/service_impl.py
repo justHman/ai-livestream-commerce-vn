@@ -102,9 +102,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     offending_phrases,
     guard_problem,
     guard_repair_prompt,
-    repeats_source,
     rescue_unit_text,
-    recap_source_text,
     salvage_unit_text,
     uncovered_claims,
     plan_units,
@@ -1548,9 +1546,6 @@ class ScriptAuthoringServiceImpl:
 
         name_units: set[int] = set()  # units that already carry the full product name
         brand_units: set[int] = set()  # units that already say the brand
-        unit_texts: dict[
-            int, str
-        ] = {}  # accepted text per unit, to keep a recap from copying its source
         unit_writes: dict[int, int] = {}
 
         def write(index: int, prompt: str, continuity: ContinuityState) -> SegmentStepOutcome:
@@ -1620,11 +1615,7 @@ class ScriptAuthoringServiceImpl:
                         logger.info(
                             "script unit salvaged product=%s unit=%s reason=%s", pid, index, why
                         )
-                source_text = recap_source_text(roles, index, unit_texts, product)
-                if text is not None and source_text and repeats_source(text, source_text):
-                    raw, text, why = text, None, "repeat"
                 if text is not None:
-                    unit_texts[index] = text
                     if product.name and product.name.lower() in text.lower():
                         name_units.add(index)
                     if brand_mentions(text, product.brand, product.name):

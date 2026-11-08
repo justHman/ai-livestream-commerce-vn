@@ -37,9 +37,6 @@ __all__ = [
     "build_unit_repair_prompt",
     "clean_unit_text",
     "check_unit_text",
-    "repeats_source",
-    "revisit_source_index",
-    "recap_source_text",
     "claim_covered",
     "claims_not_spoken",
     "uncovered_claims",
@@ -981,43 +978,6 @@ def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
     )
 
 
-def repeats_source(text: str, source: str, limit: float = 0.35) -> bool:
-    """A recap that reuses more than ``limit`` of its source part's word 4-grams is the same text again."""
-
-    def grams(s: str) -> set[tuple[str, ...]]:
-        words = re.findall(r"\w+", _fold(s))
-        return {tuple(words[i : i + 4]) for i in range(len(words) - 3)}
-
-    mine = grams(text)
-    return bool(mine) and len(mine & grams(source)) / len(mine) > limit
-
-
-def revisit_source_index(specs: list["UnitSpec"], index: int) -> int | None:
-    """The earlier unit a recap repeats: same role and same facts, not itself a recap."""
-    spec = specs[index]
-    return next(
-        (
-            i
-            for i, u in enumerate(specs[:index])
-            if not u.revisit
-            and u.role == spec.role
-            and (u.claims, u.promos) == (spec.claims, spec.promos)
-        ),
-        None,
-    )
-
-
-def recap_source_text(
-    specs: list["UnitSpec"], index: int, accepted: dict[int, str], product: "ProductBrief"
-) -> str | None:
-    """What a recap must not copy: its source's accepted model text, else the extractive fallback the
-    driver used for that unit when it exhausted its retries."""
-    source = revisit_source_index(specs, index) if specs[index].revisit else None
-    if source is None:
-        return None
-    return accepted.get(source) or fallback_unit_text(specs[source], product)
-
-
 def _topics(sentence: str) -> set[str]:
     return {name for name, rx in _TOPICS.items() if rx.search(sentence)}
 
@@ -1087,9 +1047,7 @@ def check_unit_text(
     ):
         return None, "hard_sell"  # pressure wording the owner did not write
     lowered = [_nfc(a).lower() for a in approved]  # NFC both sides: NFD owner text must still match
-    if any(
-        not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(_nfc(text))
-    ):
+    if any(not _owner_wrote(m.group(), lowered) for m in _CHEAP_RE.finditer(_nfc(text))):
         return None, "hard_sell"  # each superlative must be one the owner wrote
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"
@@ -1139,6 +1097,12 @@ def _nfc(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
+def _owner_wrote(phrase: str, lowered_approved: list[str]) -> bool:
+    """Whole-word match, so "yên tâm" is not covered by the owner's "chuyên tâm"."""
+    rx = re.compile(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)")
+    return any(rx.search(a) for a in lowered_approved)
+
+
 def offending_phrases(
     raw: str | None, why: str | None, approved: tuple[str, ...] = ()
 ) -> list[str]:
@@ -1158,7 +1122,11 @@ def offending_phrases(
     for pattern in patterns:
         for match in pattern.finditer(text):
             phrase = match.group().strip().lower()
-            owner_wrote = why == "hard_sell" and any(phrase in a for a in lowered)
+            owner_wrote = why == "hard_sell" and (
+                _owner_wrote(phrase, lowered)
+                if pattern is _CHEAP_RE
+                else any(phrase in a for a in lowered)
+            )
             if phrase and not owner_wrote and phrase not in hits:
                 hits.append(phrase)
     return hits[:5]
@@ -1315,11 +1283,6 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
         )
     if why == "name_repeat":
         return "\nBản trước lặp tên sản phẩm đầy đủ. Gọi là 'sản phẩm này', 'gói này' hoặc loại sản phẩm; không lặp tên thương hiệu."
-    if why == "repeat":
-        return (
-            "\nBản trước chép lại gần nguyên phần đã nói trước đó. Chỉ nhắc lại các ý bằng một vế ngắn, "
-            "đổi thứ tự và cách nói, không dùng lại câu chữ."
-        )
     if why == "brand_repeat":
         return "\nBản trước nhắc tên thương hiệu sai chỗ hoặc quá một lần. Bỏ tên thương hiệu khỏi phần này."
     template = _RETRY_HINTS.get(why or "")

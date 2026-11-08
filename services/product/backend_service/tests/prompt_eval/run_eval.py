@@ -35,8 +35,6 @@ from backend.application.script_authoring.generation.ordered_units import (
     build_unit_prompt,
     check_unit_text,
     plan_units,
-    repeats_source,
-    revisit_source_index,
 )
 
 CORPUS = Path(__file__).with_name("corpus.json")
@@ -118,9 +116,6 @@ def run_writer(case: dict, claims: tuple[str, ...], llm: Callable[[str], str]) -
             name_used_elsewhere=named,
             must=spec.must,
         )
-        source = revisit_source_index(specs, i) if spec.revisit else None
-        if text is not None and source in texts and repeats_source(text, texts[source]):
-            text, why = None, "repeat"
         if text is None:
             rejected[why or "empty"] += 1
         else:
