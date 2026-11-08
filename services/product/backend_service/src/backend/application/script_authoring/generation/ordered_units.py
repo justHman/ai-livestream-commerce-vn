@@ -283,7 +283,9 @@ _CHEAP_RE = re.compile(
     r"giá (?:siêu )?rẻ|rẻ nhất|bán chạy nhất|tốt nhất|số (?:một|1)\b"
     r"|hàng (?:nghìn|ngàn|triệu) (?:khách|người)"
     # praise and reassurance the owner never wrote: speed/safety/value verdicts are claims, not wording
-    r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý",
+    r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý"
+    # stock filler the style rules already ban, now enforced; a wording rejection cuts the sentence
+    r"|(?<!\w)(?:yên tâm|thật lòng|cực kỳ|vô cùng)(?!\w)|(?<!\w)có tò mò[^.?!]{0,40}không(?!\w)",
     re.IGNORECASE,
 )  # subjective/superlative claims are not facts unless the owner approved them
 _KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
@@ -1044,8 +1046,8 @@ def check_unit_text(
         for m in _HARD_SELL_RE.finditer(sell_text)
     ):
         return None, "hard_sell"  # pressure wording the owner did not write
-    lowered = [a.lower() for a in approved]
-    if any(not any(m.group().lower() in a for a in lowered) for m in _CHEAP_RE.finditer(text)):
+    lowered = [_nfc(a).lower() for a in approved]  # NFC both sides: NFD owner text must still match
+    if any(not _owner_wrote(m.group(), lowered) for m in _CHEAP_RE.finditer(_nfc(text))):
         return None, "hard_sell"  # each superlative must be one the owner wrote
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"
@@ -1091,12 +1093,22 @@ def check_unit_text(
 WORDING_REASONS = ("hard_sell", "cta", "bridge", "address", "position")
 
 
+def _nfc(text: str) -> str:
+    return unicodedata.normalize("NFC", text)
+
+
+def _owner_wrote(phrase: str, lowered_approved: list[str]) -> bool:
+    """Whole-word match, so "yên tâm" is not covered by the owner's "chuyên tâm"."""
+    rx = re.compile(rf"(?<!\w){re.escape(phrase.lower())}(?!\w)")
+    return any(rx.search(a) for a in lowered_approved)
+
+
 def offending_phrases(
     raw: str | None, why: str | None, approved: tuple[str, ...] = ()
 ) -> list[str]:
     """The wording our own fixed patterns matched for a wording rejection (never any other text)."""
-    text = raw or ""
-    lowered = [a.lower() for a in approved]
+    text = _nfc(raw or "")
+    lowered = [_nfc(a).lower() for a in approved]
     patterns: tuple[re.Pattern, ...] = {
         "hard_sell": (_HARD_SELL_RE, _CHEAP_RE),
         "cta": (_CTA_RE,),
@@ -1110,7 +1122,11 @@ def offending_phrases(
     for pattern in patterns:
         for match in pattern.finditer(text):
             phrase = match.group().strip().lower()
-            owner_wrote = why == "hard_sell" and any(phrase in a for a in lowered)
+            owner_wrote = why == "hard_sell" and (
+                _owner_wrote(phrase, lowered)
+                if pattern is _CHEAP_RE
+                else any(phrase in a for a in lowered)
+            )
             if phrase and not owner_wrote and phrase not in hits:
                 hits.append(phrase)
     return hits[:5]
@@ -1124,7 +1140,7 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
     phrases = offending_phrases(raw, why, tuple(kwargs.get("approved") or ()))
     if not phrases:
         return None
-    sentences = re.split(r"(?<=[.!?])\s+", (raw or "").strip())
+    sentences = re.split(r"(?<=[.!?])\s+", _nfc(raw or "").strip())
     kept = [s for s in sentences if not any(p in s.lower() for p in phrases)]
     if not kept or len(kept) == len(sentences):
         return None
