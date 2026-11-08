@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 
 class AvatarLifecycle:
-    def __init__(self, container, ready_ttl_s: float = 1200.0, poll_s: float = 5.0):
+    def __init__(self, container, ready_ttl_s: float = 600.0, poll_s: float = 5.0):
         self.d = container
         self.ready_ttl_s, self.poll_s = ready_ttl_s, poll_s
         self.tasks: dict[str, asyncio.Task] = {}

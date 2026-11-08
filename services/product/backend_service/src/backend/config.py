@@ -620,7 +620,7 @@ class AppConfig:
     lemonslice_max_session_s: float = 1500.0
     lemonslice_rollover_after_s: float = 0.0
     lemonslice_control_deadline_s: float = 15.0
-    runtime_ready_ttl_s: float = 1200.0
+    runtime_ready_ttl_s: float = 600.0
     lemonslice_daily_avatar_minutes: float = 0.0
     lemonslice_payment_backoff_s: float = 3600.0
     avatar_audio_fallback_publish: bool = False
@@ -789,7 +789,7 @@ class AppConfig:
             lemonslice_terminate_path=os.environ.get("LEMONSLICE_TERMINATE_PATH")
             or "sessions/{session_id}/control",
             lemonslice_keepalive_s=_timer_env("LEMONSLICE_KEEPALIVE_S", "20"),
-            runtime_ready_ttl_s=_timer_env("RUNTIME_READY_TTL_S", "1200"),
+            runtime_ready_ttl_s=_timer_env("RUNTIME_READY_TTL_S", "600"),
             lemonslice_daily_avatar_minutes=_timer_env("LEMONSLICE_DAILY_AVATAR_MINUTES", "0"),
             lemonslice_payment_backoff_s=_positive_timer_env("LEMONSLICE_CREDIT_BACKOFF_S", "3600"),
             lemonslice_max_session_s=_timer_env("LEMONSLICE_MAX_SESSION_S", "1500"),

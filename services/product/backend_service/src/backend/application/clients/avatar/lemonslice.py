@@ -142,7 +142,7 @@ class LemonSliceSettings:
     history: int = 256  # bounded playback-history collections
     terminate_attempts: int = 2
     on_air_recent_s: float = 120.0
-    ready_ttl_s: float = 1200.0  # preserve readiness, but bound forgotten pre-live sessions
+    ready_ttl_s: float = 600.0  # preserve readiness, but bound forgotten pre-live sessions
     daily_avatar_minutes: float = 0.0  # 0 = off; shared Redis ledger when enabled
     budget_redis_url: str = field(default="", repr=False)
     payment_backoff_s: float = 3600.0

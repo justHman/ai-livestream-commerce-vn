@@ -168,3 +168,16 @@ def test_idle_provider_really_removes_unprotected_avatar_after_30_seconds():
         assert AVATAR not in room.remote_participants
     finally:
         backend.stop_all()
+
+
+def test_ready_session_expires_exactly_at_600s():
+    backend, _, _, clock = journey_backend()
+    sid = backend.start(StartOptions()).session_id
+    try:
+        backend.set_session_phase(sid, "ready")
+        clock.now += 599
+        assert backend.lifecycle_status(sid, 600) != "RUNTIME_READY_TTL_EXPIRED"
+        clock.now += 1
+        assert backend.lifecycle_status(sid, 600) == "RUNTIME_READY_TTL_EXPIRED"
+    finally:
+        backend.stop_all()
