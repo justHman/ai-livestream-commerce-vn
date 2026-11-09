@@ -42,17 +42,16 @@ AVATAR_CODES = frozenset(
 AVATAR_FATAL_CODES = frozenset({KEY_INVALID, OUT_OF_CREDIT})
 
 WAVE2_PROVIDERS = ("beyondpresence", "tavus", "anam", "runway")
-PROVIDERS = ("lemonslice", "simli", "bithuman", *WAVE2_PROVIDERS)
+PROVIDERS = ("lemonslice", "simli", *WAVE2_PROVIDERS)
 MAX_ENVELOPE_WINDOW_S = 120  # exp may be at most this far ahead of now
 CLOCK_SKEW_S = 30  # S1/S2 clocks are not synchronized: exp may be at most now + 150 s
 
-# per-provider avatar id validation (contract table; bitHuman pattern is UNVERIFIED)
+# per-provider avatar id validation (contract table)
 _AVATAR_ID = {
     "lemonslice": re.compile(r"agent_[0-9a-f]{8,32}"),
     "simli": re.compile(
         r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
     ),
-    "bithuman": re.compile(r"[A-Za-z0-9_-]{3,64}"),
     # wave 2, all UNVERIFIED formats: bey = UUID (one stock avatar has a "_v2" suffix); Tavus face
     # ids look like "r4067604db72"; Anam / Runway ids are opaque, so only a safe character set.
     "beyondpresence": re.compile(
@@ -261,7 +260,6 @@ async def check_credential(
     avatar_id: str | None,
     *,
     simli_base: str,
-    bithuman_base: str,
     wave2_bases: dict[str, str] | None = None,
     http_get: AsyncHttpGet = httpx_get,
     timeout_s: float = 10.0,
@@ -269,7 +267,7 @@ async def check_credential(
     """Best-effort key/avatar verification. Returns ok | invalid_key | not_found | unknown |
     provider_error. Never starts a billable session; the key is only sent to its provider.
 
-    UNVERIFIED: the Simli ``/faces`` list shape and the bitHuman ``/v1/me`` response. LemonSlice
+    UNVERIFIED: the Simli ``/faces`` list shape. LemonSlice
     has no cheap authenticated call in the Runtime client: format-only, so ``unknown``.
     """
     if avatar_id is not None and not valid_avatar_id(provider, avatar_id):
@@ -278,8 +276,6 @@ async def check_credential(
         return "unknown"
     if provider == "simli":
         url, headers = f"{simli_base.rstrip('/')}/faces", {"x-simli-api-key": api_key}
-    elif provider == "bithuman":
-        url, headers = f"{bithuman_base.rstrip('/')}/v1/me", {"api-secret": api_key}
     elif provider in WAVE2_CHECKS:
         base = (wave2_bases or {}).get(provider, "")
         if not base:

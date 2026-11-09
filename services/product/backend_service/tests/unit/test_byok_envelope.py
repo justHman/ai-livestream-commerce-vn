@@ -130,7 +130,7 @@ def test_exp_inside_the_window_with_clock_skew_is_accepted():
 @pytest.mark.parametrize("part", ["session_id", "tenant_id", "provider"])
 def test_a_changed_aad_part_fails_the_tag(part):
     with pytest.raises(EnvelopeError) as err:
-        opened(**{part: "bithuman" if part == "provider" else "x"})
+        opened(**{part: "simli2" if part == "provider" else "x"})
     assert err.value.code == "envelope_auth"
 
 
@@ -215,8 +215,7 @@ def test_provider_status_maps_to_a_stable_code(status, code):
         ("lemonslice", "agent_UPPER", False),
         ("simli", "11111111-2222-4333-8444-555555555555", True),
         ("simli", "not-a-uuid", False),
-        ("bithuman", "A_1234", True),
-        ("bithuman", "x", False),
+        ("bithuman", "A_1234", False),
     ],
 )
 def test_avatar_id_is_validated_per_provider(provider, avatar_id, ok):
@@ -238,7 +237,6 @@ def _check(provider, status, data=None, avatar_id=None, raises=None):
             "the-key",
             avatar_id,
             simli_base="https://simli.test",
-            bithuman_base="https://bh.test",
             http_get=http_get,
         )
     )
@@ -263,13 +261,9 @@ def test_simli_check_cannot_confirm_an_unlisted_face():
     assert _check("simli", 200, [], "11111111-2222-4333-8444-555555555555")[0] == "unknown"
 
 
-def test_bithuman_check_uses_the_account_endpoint_and_api_secret_header():
+def test_bithuman_check_is_unknown_without_a_call():
     code, seen = _check("bithuman", 200)
-    assert (code, seen["url"], seen["headers"]) == (
-        "ok",
-        "https://bh.test/v1/me",
-        {"api-secret": "the-key"},
-    )
+    assert (code, seen) == ("unknown", {})
 
 
 @pytest.mark.parametrize(

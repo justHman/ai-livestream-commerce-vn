@@ -113,7 +113,7 @@ class ControlHub:
 class StartReq(BaseModel):
     avatar_id: Optional[str] = Field(default=None, max_length=128)
     avatar_provider: Optional[
-        Literal["lemonslice", "simli", "bithuman", "beyondpresence", "tavus", "anam", "runway"]
+        Literal["lemonslice", "simli", "beyondpresence", "tavus", "anam", "runway"]
     ] = None
     avatar_agent_id: Optional[str] = Field(default=None, max_length=64)
     # additive, whitelisted per provider (tavus pal_id, anam avatar_model, runway kind)

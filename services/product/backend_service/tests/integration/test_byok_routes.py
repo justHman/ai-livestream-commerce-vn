@@ -170,7 +170,6 @@ def test_tenant_start_without_the_internal_token_is_forbidden():
     ("provider", "agent"),
     [
         ("simli", "11111111-2222-4333-8444-555555555555"),
-        ("bithuman", "agent_code_1"),
     ],
 )
 def test_other_providers_are_accepted_with_their_own_id_format(provider, agent):
@@ -182,6 +181,17 @@ def test_other_providers_are_accepted_with_their_own_id_format(provider, agent):
     with client(Capture()) as c:
         r = c.post("/api/v1/sessions", json=body, headers=HEADERS)
     assert r.status_code == 200, r.text
+
+
+def test_bithuman_is_rejected_as_an_unknown_provider():
+    body = start_body(
+        avatar_provider="bithuman",
+        avatar_agent_id="agent_code_1",
+        avatar_credential_envelope=seal(provider="simli"),
+    )
+    with client(Capture()) as c:
+        r = c.post("/api/v1/sessions", json=body, headers=HEADERS)
+    assert r.status_code == 422
 
 
 def test_an_invalid_avatar_id_for_the_provider_is_rejected():
