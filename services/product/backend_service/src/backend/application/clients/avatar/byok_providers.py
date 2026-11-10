@@ -1,7 +1,7 @@
 """BYOK wave 2 render backends: ``cloud_beyondpresence``, ``cloud_tavus``, ``cloud_anam``,
 ``cloud_runway``.
 
-Same architecture as ``cloud_bithuman`` / ``cloud_simli``: the provider's avatar worker joins a
+Same architecture as ``cloud_simli``: the provider's avatar worker joins a
 Livento-owned LiveKit room (room name = runtime session id) as participant kind ``agent`` with
 attribute ``lk.publish_on_behalf``; the Runtime stays the single speaker and sends guarded TTS PCM
 over ``AvatarAudioChannel`` (topic ``lk.audio_stream``) at the sample rate the provider expects

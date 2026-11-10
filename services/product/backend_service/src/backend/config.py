@@ -651,16 +651,6 @@ class AppConfig:
     )
     avatar_cred_transit_key: str = field(default="", repr=False)  # base64 32 bytes
     avatar_cred_transit_key_id: str = "t1"
-    bithuman_enabled: bool = False  # BITHUMAN_ENABLED: bitHuman backend selectable
-    bithuman_api_key: str = field(default="", repr=False)
-    bithuman_api_base: str = "https://api.bithuman.ai"
-    bithuman_agent_id: str = ""
-    bithuman_model: str = "essence-2"
-    bithuman_avatar_identity: str = "bithuman-avatar-agent"
-    bithuman_max_session_s: float = 3600.0
-    bithuman_idle_bound_s: int = 120
-    bithuman_start_timeout_s: float = 30.0
-    bithuman_request_timeout_s: float = 15.0
     # BYOK wave 2 (tenant-only, default OFF, UNVERIFIED): per-provider flag, base, identity, rate
     # (0 = the backend default), session guard, idle bound, timeouts.
     beyond_presence_enabled: bool = False
@@ -824,17 +814,6 @@ class AppConfig:
             ),
             avatar_cred_transit_key=os.environ.get("AVATAR_CRED_TRANSIT_KEY", "").strip(),
             avatar_cred_transit_key_id=os.environ.get("AVATAR_CRED_TRANSIT_KEY_ID") or "t1",
-            bithuman_enabled=_flag_env("BITHUMAN_ENABLED"),
-            bithuman_api_key=os.environ.get("BITHUMAN_API_KEY", ""),
-            bithuman_api_base=os.environ.get("BITHUMAN_API_BASE") or "https://api.bithuman.ai",
-            bithuman_agent_id=os.environ.get("BITHUMAN_AGENT_ID", "").strip(),
-            bithuman_model=os.environ.get("BITHUMAN_MODEL") or "essence-2",
-            bithuman_avatar_identity=os.environ.get("BITHUMAN_AVATAR_IDENTITY")
-            or "bithuman-avatar-agent",
-            bithuman_max_session_s=_positive_timer_env("BITHUMAN_MAX_SESSION_S", "3600"),
-            bithuman_idle_bound_s=_int_env("BITHUMAN_IDLE_BOUND_S", "120", 1),
-            bithuman_start_timeout_s=_positive_timer_env("BITHUMAN_START_TIMEOUT_S", "30"),
-            bithuman_request_timeout_s=_positive_timer_env("BITHUMAN_REQUEST_TIMEOUT_S", "15"),
             beyond_presence_enabled=_flag_env("BEYOND_PRESENCE_ENABLED"),
             beyond_presence_api_base=os.environ.get("BEYOND_PRESENCE_API_BASE")
             or "https://api.bey.dev",
@@ -941,8 +920,6 @@ class AppConfig:
             "lemonslice": lambda: self._build_lemonslice_backend(tenant_only=True),
             "simli": lambda: self._build_simli_backend(tenant_only=True),
         }
-        if self.bithuman_enabled:
-            builders["bithuman"] = lambda: self._build_bithuman_backend(tenant_only=True)
         for provider, enabled in (
             ("beyondpresence", self.beyond_presence_enabled),
             ("tavus", self.tavus_enabled),
@@ -1126,7 +1103,7 @@ class AppConfig:
         }
 
     def _build_wave2_backend(self, provider: str):
-        """Tenant-only wave 2 backend (no platform key exists); fail closed like bitHuman."""
+        """Tenant-only wave 2 backend (no platform key exists); fail closed."""
         missing = [
             n
             for n, v in (
@@ -1158,52 +1135,6 @@ class AppConfig:
                 ready_timeout_s=self.wave2_start_timeout_s,
                 request_timeout_s=self.wave2_request_timeout_s,
                 default_pal_id=self.tavus_default_pal_id,
-                speak_ready_gate_enabled=self.lemonslice_speak_ready_gate_enabled,
-                speak_ready_wait_s=self.lemonslice_speak_ready_wait_s,
-                fallback_publish=self.avatar_audio_fallback_publish,
-                render_offset_ms=self.avatar_render_offset_ms,
-                ready_ttl_s=self.runtime_ready_ttl_s,
-                payment_backoff_s=self.lemonslice_payment_backoff_s,
-            )
-        )
-
-    def _build_bithuman_backend(self, *, tenant_only: bool = False):
-        """Fail closed: bitHuman needs LiveKit and (unless tenant-only) a platform key; no double audio."""
-        missing = [
-            name
-            for name, value in (
-                ("LIVEKIT_URL", self.livekit_url),
-                ("LIVEKIT_API_KEY", self.livekit_api_key),
-                ("LIVEKIT_API_SECRET", self.livekit_api_secret),
-                ("BITHUMAN_API_KEY", self.bithuman_api_key),
-            )
-            if not value and not (tenant_only and name == "BITHUMAN_API_KEY")
-        ]
-        if missing:
-            raise ValueError("cloud_bithuman requires " + ", ".join(missing))
-        if self.livekit_publish:
-            raise ValueError(
-                "cloud_bithuman refuses LIVEKIT_PUBLISH=true: the avatar is the only audio source"
-            )
-        from backend.application.clients.avatar.bithuman import (
-            BitHumanRenderBackend,
-            BitHumanSettings,
-        )
-
-        return BitHumanRenderBackend(
-            BitHumanSettings(
-                livekit_url=self.livekit_url,
-                livekit_api_key=self.livekit_api_key,
-                livekit_api_secret=self.livekit_api_secret,
-                bithuman_api_key=self.bithuman_api_key,
-                api_base=self.bithuman_api_base,
-                agent_id=self.bithuman_agent_id,
-                model=self.bithuman_model,
-                avatar_identity=self.bithuman_avatar_identity,
-                max_session_s=self.bithuman_max_session_s,
-                idle_bound_s=self.bithuman_idle_bound_s,
-                ready_timeout_s=self.bithuman_start_timeout_s,
-                request_timeout_s=self.bithuman_request_timeout_s,
                 speak_ready_gate_enabled=self.lemonslice_speak_ready_gate_enabled,
                 speak_ready_wait_s=self.lemonslice_speak_ready_wait_s,
                 fallback_publish=self.avatar_audio_fallback_publish,

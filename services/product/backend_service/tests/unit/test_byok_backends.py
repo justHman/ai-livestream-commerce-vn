@@ -1,4 +1,4 @@
-"""BYOK on the avatar backends: per-session tenant key, platform guards, router, bitHuman.
+"""BYOK on the avatar backends: per-session tenant key, platform guards, router.
 
 Protocol doubles only (fake LiveKit room, fake provider HTTP); keys are fake strings.
 """
@@ -6,12 +6,7 @@ Protocol doubles only (fake LiveKit room, fake provider HTTP); keys are fake str
 from __future__ import annotations
 
 import pytest
-import jwt
 
-from backend.application.clients.avatar.bithuman import (
-    BitHumanRenderBackend,
-    BitHumanSettings,
-)
 from backend.application.clients.avatar.byok import AvatarCredential
 from backend.application.clients.avatar.lemonslice import (
     LemonSliceError,
@@ -253,149 +248,6 @@ def test_simli_platform_402_still_trips_the_platform_credit():
     backend.stop_all()
 
 
-# ---- bitHuman ---------------------------------------------------------------------------
-
-
-class FakeBitHuman:
-    def __init__(self, room: FakeRoom) -> None:
-        self.room = room
-        self.calls: list[tuple[str, dict, dict]] = []
-        self.start_status, self.start_body = 200, {"session_id": "bh-1"}
-        self.end_status = 200
-
-    async def __call__(self, url, headers, body, timeout):
-        self.calls.append((url, dict(headers), dict(body)))
-        if url.endswith("/v1/runtime-tokens/request"):
-            if self.start_status < 300:
-                self.room.avatar_joins()
-            return self.start_status, dict(self.start_body)
-        self.room.remote_participants.pop(AVATAR, None)
-        return self.end_status, {}
-
-    def stage(self, suffix: str):
-        return [c for c in self.calls if c[0].endswith(suffix)]
-
-
-def make_bh(**kw):
-    room = FakeRoom("normal", 0.05)
-    rest = FakeBitHuman(room)
-    backend = BitHumanRenderBackend(
-        BitHumanSettings(
-            livekit_url="wss://lk.example.test",
-            livekit_api_key="lk-key",
-            livekit_api_secret=LK_SECRET,
-            bithuman_api_key=PLATFORM_KEY,
-            avatar_identity=AVATAR,
-            ready_timeout_s=0.5,
-            request_timeout_s=1.0,
-            **kw,
-        ),
-        room_factory=lambda: room,
-        async_http_post=rest,
-    )
-    return backend, room, rest
-
-
-def test_bithuman_start_request_matches_the_documented_body():
-    backend, _, rest = make_bh()
-    res = backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend.stop_all()
-    (url, headers, body) = rest.stage("/v1/runtime-tokens/request")[0]
-    assert url == "https://api.bithuman.ai/v1/runtime-tokens/request"
-    assert headers == {"api-secret": TENANT_KEY}
-    assert {k: body[k] for k in body if k != "livekit_token"} == {
-        "mode": "gpu",
-        "model": "essence-2",
-        "agent_id": "agent_code_1",
-        "livekit_url": "wss://lk.example.test",
-        "room_name": res.session_id,
-    }
-
-
-def test_bithuman_avatar_jwt_joins_as_the_publish_on_behalf_agent():
-    backend, _, rest = make_bh()
-    backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend.stop_all()
-    body = rest.stage("/v1/runtime-tokens/request")[0][2]
-    claims = jwt.decode(body["livekit_token"], options={"verify_signature": False})
-    assert (claims["kind"], claims["sub"], claims["attributes"]) == (
-        "agent",
-        AVATAR,
-        {"lk.publish_on_behalf": "livento-runtime"},
-    )
-
-
-def test_bithuman_stop_ends_the_session_with_the_tenant_key_and_no_body():
-    backend, _, rest = make_bh()
-    res = backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend.stop(res.session_id)
-    backend.stop_all()
-    assert rest.stage("/v1/runtime-sessions/bh-1/end") == [
-        (
-            "https://api.bithuman.ai/v1/runtime-sessions/bh-1/end",
-            {"api-secret": TENANT_KEY},
-            {},
-        )
-    ]
-
-
-def test_bithuman_model_is_configurable():
-    backend, _, rest = make_bh(model="essence-3")
-    backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend.stop_all()
-    assert rest.stage("/v1/runtime-tokens/request")[0][2]["model"] == "essence-3"
-
-
-@pytest.mark.parametrize(
-    ("status", "body", "code"),
-    [
-        (401, {}, "AVATAR_KEY_INVALID"),
-        (402, {"code": "INSUFFICIENT_BALANCE"}, "AVATAR_OUT_OF_CREDIT"),
-        (403, {"code": "PLAN_REQUIRED"}, "AVATAR_KEY_INVALID"),
-        (403, {"code": "CONCURRENCY_LIMIT_REACHED"}, "AVATAR_CONCURRENCY_LIMIT"),
-        (403, {"code": "other"}, "AVATAR_KEY_INVALID"),
-        (404, {}, "AVATAR_NOT_FOUND"),
-        (409, {"code": "MODEL_NOT_GENERATED"}, "AVATAR_NOT_FOUND"),
-        (409, {"code": "AGENT_NOT_READY"}, "AVATAR_NOT_FOUND"),
-        (503, {}, "AVATAR_PROVIDER_UNAVAILABLE"),
-    ],
-)
-def test_bithuman_statuses_map_to_stable_codes(status, body, code):
-    backend, _, rest = make_bh()
-    rest.start_status, rest.start_body = status, body
-    with pytest.raises(LemonSliceError) as err:
-        backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend.stop_all()
-    assert err.value.code == code
-
-
-def test_bithuman_session_id_may_arrive_under_data():
-    backend, _, rest = make_bh()
-    rest.start_body = {"data": {"session_id": "bh-2"}}
-    backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend.stop_all()
-    assert rest.stage("/v1/runtime-sessions/bh-2/end")
-
-
-def test_bithuman_rejects_a_bad_agent_code_without_a_call():
-    backend, _, rest = make_bh()
-    with pytest.raises(LemonSliceError) as err:
-        backend.start(tenant_opts("bithuman", "x"))
-    backend.stop_all()
-    assert (err.value.code, rest.calls) == ("agent_id_invalid", [])
-
-
-def test_bithuman_is_costed_as_bithuman(monkeypatch):
-    seen: list = []
-    cost_meter.configure(enabled=True)
-    monkeypatch.setattr(cost_meter, "_push", lambda *a, **k: seen.append(k))
-    backend, _, _ = make_bh()
-    res = backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend.stop(res.session_id)
-    backend.stop_all()
-    assert [(k["provider"], k["credential_source"]) for k in seen] == [("bithuman", "tenant")]
-
-
 # ---- router -----------------------------------------------------------------------------
 
 
@@ -440,7 +292,7 @@ def test_router_reports_status_of_a_tenant_session_through_its_backend():
 def test_router_refuses_a_tenant_provider_without_a_backend():
     router, *_ = make_router()
     with pytest.raises(LemonSliceError) as err:
-        router.start(tenant_opts("bithuman", "agent_code_1"))
+        router.start(tenant_opts("tavus", "r4067604db72"))
     router.stop_all()
     assert err.value.code == "AVATAR_PROVIDER_UNAVAILABLE"
 
@@ -498,18 +350,12 @@ def test_flag_on_without_a_valid_transit_key_refuses_to_start():
         cfg(avatar_byok_enabled=True, avatar_cred_transit_key="").build_render_backend()
 
 
-def test_bithuman_is_not_a_tenant_provider_until_enabled():
+def test_bithuman_is_no_longer_a_tenant_provider():
     router = cfg(avatar_byok_enabled=True, avatar_cred_transit_key=TRANSIT).build_render_backend()
+    assert "bithuman" not in router._by_provider
     with pytest.raises(LemonSliceError) as err:
         router.start(tenant_opts("bithuman", "agent_code_1"))
     assert err.value.code == "AVATAR_PROVIDER_UNAVAILABLE"
-
-
-def test_bithuman_is_a_tenant_provider_when_enabled():
-    router = cfg(
-        avatar_byok_enabled=True, avatar_cred_transit_key=TRANSIT, bithuman_enabled=True
-    ).build_render_backend()
-    assert isinstance(router._by_provider["bithuman"], BitHumanRenderBackend)
 
 
 def test_a_tenant_session_that_lost_its_key_never_falls_back_to_the_platform_key():
@@ -522,15 +368,3 @@ def test_a_tenant_session_that_lost_its_key_never_falls_back_to_the_platform_key
         pass
     backend.stop_all()
     assert PLATFORM_KEY not in {h["X-API-Key"] for _, h, _ in rest.calls}
-
-
-def test_bithuman_tenant_session_that_lost_its_key_never_uses_the_platform_key():
-    backend, _, rest = make_bh()
-    res = backend.start(tenant_opts("bithuman", "agent_code_1"))
-    backend._tenant_keys.clear()
-    try:
-        backend.stop(res.session_id)
-    except LemonSliceError:
-        pass
-    backend.stop_all()
-    assert rest.stage("/v1/runtime-sessions/bh-1/end") == []

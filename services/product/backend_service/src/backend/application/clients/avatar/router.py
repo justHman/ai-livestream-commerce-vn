@@ -32,7 +32,6 @@ log = logging.getLogger(__name__)
 _NAME_TO_PROVIDER = {
     "cloud_lemonslice": "lemonslice",
     "cloud_simli": "simli",
-    "cloud_bithuman": "bithuman",
     "cloud_beyondpresence": "beyondpresence",
     "cloud_tavus": "tavus",
     "cloud_anam": "anam",

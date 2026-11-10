@@ -412,7 +412,7 @@ def _start_avatar_lifecycle(container: BootstrapContainer) -> None:
 
     from backend.application.clients.avatar.router import AvatarProviderRouter
 
-    # LemonSlice-derived (Simli, bitHuman) or the BYOK router, whose tenant backends are
+    # LemonSlice-derived (Simli) or the BYOK router, whose tenant backends are
     if isinstance(container.backend, LemonSliceRenderBackend | AvatarProviderRouter):
         service = AvatarLifecycle(container, container.config.runtime_ready_ttl_s)
         container.avatar_lifecycle_task = asyncio.create_task(

@@ -66,9 +66,7 @@ def open_tenant_credential(
 
 
 class CredentialCheckReq(BaseModel):
-    provider: Literal[
-        "lemonslice", "simli", "bithuman", "beyondpresence", "tavus", "anam", "runway"
-    ]
+    provider: Literal["lemonslice", "simli", "beyondpresence", "tavus", "anam", "runway"]
     tenant_id: str = Field(min_length=1, max_length=128)
     check_id: str = Field(min_length=1, max_length=128)
     avatar_id: Optional[str] = Field(default=None, max_length=64)
@@ -122,7 +120,6 @@ async def credential_check(
         credential.api_key,
         req.avatar_id,
         simli_base=d.config.simli_api_base,
-        bithuman_base=d.config.bithuman_api_base,
         wave2_bases=d.config.wave2_api_bases(),
     )
     return {"code": code}

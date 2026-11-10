@@ -174,11 +174,10 @@ def test_default_ttl_is_ten_minutes(monkeypatch):
 def test_ready_ttl_defaults_are_600_everywhere():
     import inspect
 
-    from backend.application.clients.avatar.bithuman import BitHumanSettings
     from backend.application.clients.avatar.byok_providers import ByokProviderSettings
     from backend.application.clients.avatar.lemonslice import LemonSliceSettings
     from backend.application.clients.avatar.simli import SimliSettings
 
     assert inspect.signature(AvatarLifecycle).parameters["ready_ttl_s"].default == 600.0
-    for cls in (LemonSliceSettings, BitHumanSettings, ByokProviderSettings, SimliSettings):
+    for cls in (LemonSliceSettings, ByokProviderSettings, SimliSettings):
         assert cls.__dataclass_fields__["ready_ttl_s"].default == 600.0, cls

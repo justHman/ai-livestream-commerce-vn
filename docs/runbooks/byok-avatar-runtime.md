@@ -1,6 +1,6 @@
 # BYOK avatar (Runtime)
 
-A shop may bring its own avatar-provider account (LemonSlice, Simli, bitHuman, Beyond Presence, Tavus, Anam, Runway). The API (S1) seals
+A shop may bring its own avatar-provider account (LemonSlice, Simli, Beyond Presence, Tavus, Anam, Runway). The API (S1) seals
 the shop's key for one Runtime start request; the Runtime opens it into memory, uses it for every
 provider call of that session, and drops it when the session ends. Platform behaviour is unchanged
 when the flags are off.
@@ -15,14 +15,6 @@ Contract: `023-prep/BYOK_AVATAR_CONTRACT_2026-11-01.md` (API addendum is authori
 | `AVATAR_CRED_TRANSIT_KEY` | none | base64 of 32 bytes, same value as S1. Required when the flag is on (the Runtime refuses to start otherwise). Never print it. |
 | `AVATAR_CRED_TRANSIT_KEY_ID` | `t1` | Must equal the envelope `kid`. |
 | `AVATAR_INTERNAL_TOKEN` | existing | Also guards `POST /internal/v1/avatar/credential-check` (header `X-Livento-Internal-Token`). |
-| `BITHUMAN_ENABLED` | off | bitHuman selectable for tenant sessions. Unverified against the real service. |
-| `BITHUMAN_API_BASE` | `https://api.bithuman.ai` | |
-| `BITHUMAN_MODEL` | `essence-2` | |
-| `BITHUMAN_API_KEY` / `BITHUMAN_AGENT_ID` | empty | Platform-account use of bitHuman is not routed (the router never sends a platform session to bitHuman); BYOK sessions bring their own key, so both stay empty. |
-| `BITHUMAN_MAX_SESSION_S` | 3600 | Runtime near-cap guard. bitHuman says a cloud session runs up to 24 h: set 86400 for long lives. |
-| `BITHUMAN_IDLE_BOUND_S` | 120 | End bound of a derived cost row (provider idle unknown). |
-| `BITHUMAN_START_TIMEOUT_S` / `BITHUMAN_REQUEST_TIMEOUT_S` | 30 / 15 | |
-| `BITHUMAN_AVATAR_IDENTITY` | `bithuman-avatar-agent` | LiveKit identity of the avatar agent. |
 
 Simli and LemonSlice tenant sessions use the existing `SIMLI_*` / `LEMONSLICE_*` settings
 (LiveKit, timeouts) with the shop's key; the platform keys are not required for them.
@@ -78,12 +70,11 @@ Anam `GET /v1/avatars`, Runway `GET /v1/organization`); a non-auth 4xx answers `
 
 - Stop accepting tenant keys: unset `AVATAR_BYOK_ENABLED` (or set to `false`) and restart the Runtime.
   Platform sessions are unaffected; running tenant sessions end with the restart (stop_all).
-- Hide only bitHuman: unset `BITHUMAN_ENABLED`; hide a wave 2 provider: unset its `*_ENABLED` flag.
+- Hide a wave 2 provider: unset its `*_ENABLED` flag.
 - Rotate the transit key: change `AVATAR_CRED_TRANSIT_KEY` and `_ID` on S1 and S2 together; envelopes
   live at most 150 s, so no session is affected.
 
 ## Unverified
 
 Nothing here ran against a real provider. See the docstrings of `clients/avatar/simli.py` (S1-S10)
-and `clients/avatar/bithuman.py` (B1-B6), plus: the Simli `GET /faces` list shape and the bitHuman
-`GET /v1/me` response used by the check endpoint.
+plus: the Simli `GET /faces` list shape used by the check endpoint.

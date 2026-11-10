@@ -663,7 +663,6 @@ async def _check(provider, get, avatar_id=None):
         TENANT_KEY,
         avatar_id,
         simli_base="",
-        bithuman_base="",
         wave2_bases=BASES,
         http_get=get,
     )
@@ -704,8 +703,6 @@ async def test_check_with_a_malformed_avatar_id_is_not_found_without_a_call():
 
 async def test_check_with_an_unconfigured_base_is_unknown():
     assert (
-        await check_credential(
-            "tavus", TENANT_KEY, None, simli_base="", bithuman_base="", http_get=FakeGet()
-        )
+        await check_credential("tavus", TENANT_KEY, None, simli_base="", http_get=FakeGet())
         == "unknown"
     )
