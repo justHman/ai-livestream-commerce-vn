@@ -85,7 +85,9 @@ def test_extract_answers_200():
 
 def test_dropped_items_are_only_counted_by_reason():
     llm = llm_returning([*GOOD, fact("feature", "Gói có 3000 phút.", "Gói 1 ngày 30 phút")])
-    assert post(client(llm)).json()["dropped"] == [{"reason": "number_not_in_source", "count": 1}]
+    assert post(client(llm)).json()["dropped"] == [
+        {"reason": "number_not_in_source", "count": 1, "label": "số liệu không có trong trích dẫn"}
+    ]
 
 
 def test_dropped_count_is_returned():

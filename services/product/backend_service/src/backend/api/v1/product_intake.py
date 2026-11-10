@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.dependencies import container_from_request
 from backend.application.product_intake import IntakeError, extract_facts
+from backend.application.product_intake.extractor import DROP_REASON_LABELS_VI
 from backend.application.script_authoring.generation.ordered_units import BoundedLLM
 
 from .avatar_credentials import internal_token_guard
@@ -118,9 +119,10 @@ async def extract(
             {"type": f.type, "text": f.text, "evidence": f.evidence, "flags": list(f.flags)}
             for f in result.facts
         ],
+        "warnings": list(result.warnings),
         "dropped_count": len(result.dropped),
         "dropped": [
-            {"reason": reason, "count": count}
+            {"reason": reason, "count": count, "label": DROP_REASON_LABELS_VI.get(reason, reason)}
             for reason, count in sorted(result.dropped_by_reason().items())
         ],
     }

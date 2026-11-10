@@ -54,6 +54,8 @@ _INSTRUCTION = (
     "một dòng có nhiều ý (nhiều số đo, điều kiện, đặc điểm) thì tách thành nhiều thông tin. Ý lặp lại nhiều lần thì chỉ lấy một lần. "
     "Không thêm số, giá, phần trăm, thời hạn, tên riêng, chứng nhận hay lời hứa không có trong dữ liệu; không suy diễn công dụng. "
     "Dữ liệu mâu thuẫn hoặc vô lý thì vẫn trích đúng như viết, không sửa, không bỏ. "
+    "Các dòng nhãn trường của biểu mẫu như 'Tên sản phẩm:', 'Ngành hàng:' là thông tin đã có sẵn trong biểu mẫu, không trích thành ý riêng; "
+    "'Giá:' và khuyến mãi vẫn trích (kèm điều kiện nếu có); 'Đối tượng:' trích thành ý loại benefit. "
     "`text`: một câu ngắn tiếng Việt, một ý, DÙNG LẠI CHỮ CỦA DỮ LIỆU, giữ nguyên số và đơn vị, không thêm từ nhãn hay từ mới. "
     "`evidence`: đoạn trích NGUYÊN VĂN chứa đủ ý và đủ số của thông tin đó, nằm gọn trong MỘT câu hoặc MỘT dòng "
     "(không nối hai câu hay hai dòng, không sửa chữ), dài TỐI THIỂU 12 ký tự và 3 từ: nếu ý quá ngắn (ví dụ 'có 3 màu') "
@@ -89,7 +91,8 @@ _RISK_PATTERNS: dict[str, re.Pattern[str]] = {
         r"|(?:giam|khuyen mai|uu dai|off|sale)\D{0,12}\d+(?:[.,]\d+)?\s?%|\d+(?:[.,]\d+)?\s?%\s?(?:off|giam)"
     ),
     "time_limited": re.compile(
-        r"hom nay|chi (?:con|trong|co)|co han|gioi han|hop le den|den het|trong \d+ (?:gio|phut|ngay)|flash sale|ngay mai"
+        # "trong 7 ngày" alone is a policy period (đổi trả, bảo hành), not a promotion: only "ngày tới/đầu/này" counts
+        r"hom nay|chi (?:con|trong|co)|co han|gioi han|hop le den|den het|trong \d+ (?:gio|phut)|trong \d+ ngay (?:toi|dau|nay)|flash sale|ngay mai"
         r"|tuan nay|thang nay|cuoi tuan|so luong co han"
     ),
 }
@@ -131,10 +134,65 @@ class DroppedFact:
     reason: str
 
 
+DROP_REASON_LABELS_VI = {
+    "over_cap": "vượt số ý tối đa",
+    "malformed": "dữ liệu trả về sai định dạng",
+    "unknown_type": "nhóm không hợp lệ",
+    "too_short": "nội dung quá ngắn",
+    "too_long": "nội dung quá dài",
+    "evidence_too_short": "trích dẫn quá ngắn",
+    "evidence_too_long": "trích dẫn quá dài",
+    "evidence_not_in_source": "trích dẫn không khớp văn bản gốc",
+    "number_not_in_source": "số liệu không có trong trích dẫn",
+    "negation_mismatch": "ý phủ định không khớp trích dẫn",
+    "evidence_mismatch": "trích dẫn không khớp nội dung ý",
+    "duplicate": "trùng với ý khác",
+    "form_field_duplicate": "trùng trường tên sản phẩm/ngành hàng của biểu mẫu",
+}
+
+_FORM_FIELD_DROP_RE = re.compile(r"^(?:ten san pham|ten|nganh hang|danh muc)\s*:")
+_AUDIENCE_RE = re.compile(r"^doi tuong(?: khach hang)?\s*:\s*")
+_RETURN_RE = re.compile(r"doi tra|doi moi|doi hang|tra hang|hoan tien|hoan lai")
+_WARRANTY_RE = re.compile(r"bao hanh")
+_DURATION_RE = re.compile(r"(\d+)\s*(ngay|tuan|thang|nam)\b")
+_DURATION_DAYS = {"ngay": 1, "tuan": 7, "thang": 30, "nam": 365}
+POLICY_CONFLICT_WARNING = (
+    "Hai ý về đổi trả/bảo hành có thời hạn khác nhau, hãy kiểm tra trước khi dùng"
+)
+
+
+def policy_warnings(facts: tuple[ExtractedFact, ...]) -> tuple[dict[str, object], ...]:
+    """Two return (or two warranty) facts quoting different periods may contradict ("đổi mới trong 7 ngày" vs
+    "đổi trả trong 30 ngày"). Warn only; the owner decides. ``facts`` holds indexes into the fact list."""
+    out = []
+    for kind, pattern in (("return", _RETURN_RE), ("warranty", _WARRANTY_RE)):
+        periods: dict[int, set[int]] = {}
+        for i, f in enumerate(facts):
+            folded = fold_text(f.text)
+            if pattern.search(folded):
+                days = {int(n) * _DURATION_DAYS[u] for n, u in _DURATION_RE.findall(folded)}
+                if days:
+                    periods[i] = days
+        if len(periods) > 1 and len({d for days in periods.values() for d in days}) > 1:
+            out.append(
+                {
+                    "code": "policy_period_conflict",
+                    "kind": kind,
+                    "facts": sorted(periods),
+                    "message": POLICY_CONFLICT_WARNING,
+                }
+            )
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class ExtractionResult:
     facts: tuple[ExtractedFact, ...]
     dropped: tuple[DroppedFact, ...]
+
+    @property
+    def warnings(self) -> tuple[dict[str, object], ...]:
+        return policy_warnings(self.facts)
 
     def dropped_by_reason(self) -> dict[str, int]:
         return dict(Counter(d.reason for d in self.dropped))
@@ -314,6 +372,16 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
         if _evidence_overlap(ftext, evidence) < MIN_EVIDENCE_OVERLAP:
             drop("evidence_mismatch")
             continue
+        folded_text = fold_text(ftext)
+        if _FORM_FIELD_DROP_RE.match(folded_text):
+            drop("form_field_duplicate")
+            continue
+        audience = _AUDIENCE_RE.match(folded_text)
+        if audience:  # "Đối tượng: …" is who it suits, a benefit; the label itself adds nothing
+            ftype, ftext = "benefit", ftext[audience.end() :].strip()
+            if len(ftext) < MIN_FACT_CHARS:
+                drop("too_short")
+                continue
         key = _norm(ftext)
         if key in seen:
             drop("duplicate")
