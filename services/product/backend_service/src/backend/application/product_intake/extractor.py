@@ -37,6 +37,7 @@ MIN_EVIDENCE_CHARS = (
     12  # after normalisation; a short snippet ("Kem dưỡng") can be attached to any false fact
 )
 MIN_EVIDENCE_WORDS = 2
+MIN_NUMERIC_EVIDENCE_CHARS = 5  # a quote carrying a figure ("có 3 màu", "6 giờ") is specific; the overlap/number checks still bind it
 # Share of the fact's content words that the evidence quote itself must contain. Probes (false facts glued to an
 # unrelated real quote) score 0.00-0.33; honest paraphrases of the quote score 0.75-1.00 (see the tests).
 MIN_EVIDENCE_OVERLAP = 0.6
@@ -294,7 +295,8 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
             drop("too_long")
             continue
         quote = _norm(evidence)
-        if len(quote) < MIN_EVIDENCE_CHARS or len(quote.split()) < MIN_EVIDENCE_WORDS:
+        floor = MIN_NUMERIC_EVIDENCE_CHARS if _numbers(evidence) else MIN_EVIDENCE_CHARS
+        if len(quote) < floor or len(quote.split()) < MIN_EVIDENCE_WORDS:
             drop("evidence_too_short")
             continue
         if _evidence_stuffed(evidence, ftext):

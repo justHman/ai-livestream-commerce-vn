@@ -509,3 +509,24 @@ def test_wider_health_wording_is_flagged(text):
 
 def test_cotton_100_percent_is_still_unflagged():
     assert _flags("Cotton 100% thấm hút tốt.") == ()
+
+
+T5_SOURCE = "Bình giữ nhiệt 500ml, giữ nóng 6 giờ, giữ lạnh 12 giờ, nắp xoay chống tràn, có 3 màu. Giảm 28% hôm nay."
+
+
+@pytest.mark.parametrize(
+    ("text", "evidence"),
+    [("Có 3 màu.", "có 3 màu"), ("Giữ lạnh 12 giờ.", "lạnh 12 giờ"), ("Giảm 28%.", "Giảm 28%")],
+)
+def test_short_quote_carrying_a_figure_is_kept(text, evidence):
+    assert probe(text, evidence, T5_SOURCE) == []
+
+
+def test_short_numeric_quote_still_cannot_carry_a_false_claim():
+    assert probe("Bình chống nước tuyệt đối, có 3 màu", "có 3 màu", T5_SOURCE) == [
+        "evidence_mismatch"
+    ]
+
+
+def test_short_quote_without_a_figure_is_still_too_short():
+    assert probe("Bình chống tràn", "chống tràn", T5_SOURCE) == ["evidence_too_short"]
