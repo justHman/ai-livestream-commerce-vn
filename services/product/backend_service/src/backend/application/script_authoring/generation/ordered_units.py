@@ -1148,7 +1148,12 @@ def check_unit_text(
         return None, "missing_info"
     if role_is_intro_without_name(spec, text, product_name):
         return None, "intro_name"
-    if spec is not None and spec.role == "intro" and _GREETING_RE.match(text):
+    if (
+        spec is not None
+        and spec.role == "intro"
+        and _GREETING_RE.match(text)
+        and not _opens_with_name(text, product_name)
+    ):
         return None, "greeting"
     said = origins_of(text)
     if len(said) > 1 or (said and len(all_origins) > 1):
@@ -1164,7 +1169,8 @@ def check_unit_text(
         for m in _HARD_SELL_RE.finditer(_nfc(sell_text))
     ):
         return None, "hard_sell"  # pressure wording the owner did not write
-    lowered = [_nfc(a).lower() for a in approved]  # NFC both sides: NFD owner text must still match
+    # NFC both sides: NFD owner text must still match. The owner's product name and brand are owner wording.
+    lowered = [_nfc(a).lower() for a in (*approved, product_name, brand) if a]
     if any(not _owner_wrote(m.group(), lowered) for m in _CHEAP_RE.finditer(_nfc(text))):
         return None, "hard_sell"  # each superlative must be one the owner wrote
     if _invented_offer(text, approved, product_name):
@@ -1281,6 +1287,12 @@ def _invented_offer(text: str, approved: tuple[str, ...], product_name: str = ""
     return any(m.group().lower() not in name for m in _OFFER_RE.finditer(_nfc(text)))
 
 
+def _opens_with_name(text: str, name: str) -> bool:
+    """A name that itself starts with a greeting word ("Chào Mào") is not a greeting."""
+    prefix = " ".join(_nfc(name).lower().split()[:2])
+    return bool(prefix) and re.sub(r"^\W+", "", _nfc(text).lower()).startswith(prefix)
+
+
 def _nfc(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
@@ -1332,7 +1344,8 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
         # cut only the greeting clause: the same sentence usually carries the product name
         rest = _GREETING_RE.sub("", _nfc(raw or "").strip(), count=1).strip()
         return check_unit_text(rest[:1].upper() + rest[1:], **kwargs)[0] if rest else None
-    phrases = offending_phrases(raw, why, tuple(kwargs.get("approved") or ()))
+    owner = (*(kwargs.get("approved") or ()), kwargs.get("product_name"), kwargs.get("brand"))
+    phrases = offending_phrases(raw, why, tuple(a for a in owner if a))
     if not phrases:
         return None
     sentences = re.split(r"(?<=[.!?])\s+", _nfc(raw or "").strip())

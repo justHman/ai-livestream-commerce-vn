@@ -21,7 +21,8 @@ _SPEC = UnitSpec("highlight", claims=("Giao hàng nhanh trong ngày", "Máy nh�
     [
         "Không bảo hành pin phồng do để nơi nóng.",
         "Không bảo hành đối với hàng rơi vỡ.",
-        "Không bảo hành cho sản phẩm tự sửa.",
+        "Không bảo hành khi rơi vỡ.",
+        "Không bảo hành đối với hàng đã qua sử dụng.",
         "Không bảo hành vì lỗi người dùng.",
     ],
 )
@@ -94,4 +95,46 @@ def test_greeting_clause_is_cut_and_the_name_kept():
 def test_intro_without_greeting_passes():
     raw = "Mình giới thiệu gạo ST25 hạt dài thơm."
     got = check_unit_text(raw, spec=_INTRO, approved=_INTRO.claims, product_name=_NAME)
+    assert got[1] is None
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "Không bảo hành với mọi sản phẩm.",
+        "Sản phẩm không bảo hành, liên hệ với shop nhé.",
+        "Không bảo hành, mua với giá tốt.",
+    ],
+)
+def test_loose_exception_words_do_not_hide_a_real_contradiction(tail):
+    assert check_contradictory_claims(["Bảo hành 12 tháng.", tail], ScriptGateContext()) != []
+
+
+def test_hype_words_inside_the_owner_product_name_or_brand_are_allowed():
+    spec = UnitSpec("highlight", claims=("Dùng cả ngày",))
+    got = check_unit_text(
+        "Máy siêu nhẹ này dùng cả ngày.",
+        spec=spec,
+        approved=spec.claims,
+        product_name="Máy siêu nhẹ X",
+    )
+    assert got[1] is None
+    opening = UnitSpec("opening")
+    got = check_unit_text("Uy Tín Store xin chào mọi người.", spec=opening, brand="Uy Tín Store")
+    assert got[1] is None
+
+
+def test_hype_next_to_an_owner_named_product_is_still_cut():
+    spec = UnitSpec("highlight", claims=("Dùng cả ngày",))
+    got = check_unit_text(
+        "Máy siêu nhẹ này pin trâu.", spec=spec, approved=spec.claims, product_name="Máy siêu nhẹ X"
+    )
+    assert got[1] == "hard_sell"
+
+
+def test_product_name_starting_with_chao_is_not_a_greeting():
+    spec = UnitSpec("intro", claims=("Hót hay",))
+    got = check_unit_text(
+        "Chào Mào hót hay lắm.", spec=spec, approved=spec.claims, product_name="Chào Mào"
+    )
     assert got[1] is None
