@@ -177,13 +177,22 @@ _JARGON = (
     (r"Bluetooth", "blu tút"),
     (r"IPX(\d)", lambda m: f"ai pi ếch {_DIGIT_WORD[int(m.group(1))]}"),
     (r"SPF\s?(\d{1,3})", lambda m: f"ét pi ép {expand_vietnamese_number(m.group(1))}"),
-    (r"([248])K", lambda m: f"{_DIGIT_WORD[int(m.group(1))]} ca"),
+    # 2K/4K/8K is a resolution only beside a screen word; "Giảm 2K" / "Giá 8K" stay prices (nghìn).
+    (
+        r"((?i:màn hình|màn|video|camera|tv|uhd|phân giải|quay)\s+)([248])K",
+        lambda m: f"{m.group(1)}{_DIGIT_WORD[int(m.group(2))]} ca",
+    ),
+    (r"([248])K(?=\s+(?:UHD|HDR|Ultra))", lambda m: f"{_DIGIT_WORD[int(m.group(1))]} ca"),
     (r"LED", "lét"),
     (r"HD", "hát đê"),
     (r"UV", "u vê"),
     (r"pH", "pi hát"),
     (r"mAh", "mi li am pe giờ"),
     (r"inch", "in"),
+)
+# "Wi-Fi6", "Bluetooth5.3", "USB-C3", "UV400": a glued number gets its own word.
+_JARGON_GLUED_RE = re.compile(
+    r"(?<![\w.])(USB[- ]?[CA]|USB|Wi-?Fi|Bluetooth|UV|LED|HD)(?=\d)", re.I
 )
 _JARGON_RE = tuple(
     (
@@ -519,6 +528,7 @@ def compile_spoken_text(
     whitespace_stripped = " ".join(whitespace_stripped.split())
     text = _changed(text, whitespace_stripped, "collapse_whitespace")
 
+    text = _JARGON_GLUED_RE.sub(r"\1 ", text)
     for rx, spoken in _JARGON_RE:
         text = rx.sub(spoken, text)
     # 0901-234-567 must be a phone before the hyphen rules turn it into commas or a range.

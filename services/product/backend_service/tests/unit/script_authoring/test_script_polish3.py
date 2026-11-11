@@ -91,3 +91,62 @@ def test_fallback_keeps_digits_for_display_and_compiles_spoken_form():
     text = fallback_unit_text(spec, product)
     assert "0,84" in text
     assert "không phẩy tám mươi bốn" in compile_spoken_text(text).spoken_text
+
+
+@pytest.mark.parametrize(
+    ("raw", "spoken"),
+    [
+        ("Giảm 2K", "Giảm hai nghìn"),
+        ("Chỉ 4K", "Chỉ bốn nghìn"),
+        ("Giá 8K", "Giá tám nghìn"),
+        ("Giá 20K", "Giá hai mươi nghìn"),
+        ("Nhẫn vàng 24K", "Nhẫn vàng hai mươi bốn nghìn"),
+        ("Màn hình 4K", "Màn hình bốn ca"),
+        ("Quay video 8K", "Quay video tám ca"),
+        ("Wi-Fi6", "wai phai sáu"),
+        ("Bluetooth5.3", "blu tút năm phẩy ba"),
+        ("USB-C3", "u ét bi xi ba"),
+        ("Kính UV400", "Kính u vê bốn trăm"),
+    ],
+)
+def test_resolution_k_only_beside_a_screen_word_and_glued_numbers(raw, spoken):
+    assert compile_spoken_text(raw).spoken_text == spoken
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        ("Nhập khẩu trực tiếp từ Đức", "Sản xuất tại Đức"),
+        ("Made in USA", "Xuất xứ Mỹ"),
+        ("Made in Germany", "Nhập khẩu từ Đức"),
+        ("Nhập khẩu và phân phối bởi Công ty A", "Sản xuất tại Việt Nam"),
+        ("Hàng nhập từ Anh", "Xuất xứ UK"),
+    ],
+)
+def test_same_origin_or_no_origin_words_are_not_a_conflict(claims):
+    assert unsafe_claims(claims) == set()
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        ("Nhập khẩu linh kiện từ Nhật", "Sản xuất tại VN"),
+        ("Nhập khẩu trực tiếp từ Đức", "Made in Vietnam"),
+    ],
+)
+def test_different_known_origins_are_a_conflict(claims):
+    assert unsafe_claims(claims) == set(claims)
+
+
+def test_one_origin_sentence_is_not_rejected_when_data_has_one_origin():
+    claims = ("Nhập khẩu trực tiếp từ Đức", "Sản xuất tại Đức")
+    spec = UnitSpec("highlight", claims=claims)
+    out = check_unit_text("Máy nhập khẩu từ Đức nhé.", spec=spec, approved=claims)
+    assert out[1] is None
+
+
+def test_short_word_name_matches_but_a_nameless_intro_is_rejected():
+    spec = UnitSpec("intro", claims=("Cotton",))
+    kw = {"spec": spec, "approved": spec.claims, "product_name": "Áo Polo Nam"}
+    assert check_unit_text("Mình có chiếc áo này, vải cotton.", **kw)[1] is None
+    assert check_unit_text("Mình có món này, vải cotton.", **kw)[1] == "intro_name"

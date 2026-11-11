@@ -351,24 +351,40 @@ _INJECTION_RE = re.compile(
     r"\bbo qua\b[^.?!]{0,30}\b(?:quy tac|huong dan|chi dan|tat ca|moi)\b"
     r"|\b(?:ignore|disregard)\b|\bsystem prompt\b|\bhay (?:noi|doc|viet|bao|quen)\b"
 )
-_ORIGIN_RE = re.compile(
-    r"\b(?:xuat xu|san xuat (?:tai|o)|nhap khau(?: chinh hang)?(?: tu)?|hang nhap(?: tu)?|made in)"
-    r"\s*:?\s*([a-z]+(?: [a-z]+)?)"
-)
+# Only a KNOWN country after the origin cue counts as an origin ("nhập khẩu và phân phối" names none).
 _ORIGIN_ALIAS = {
-    "germany": "duc",
-    "vietnam": "viet",
-    "china": "trung",
-    "japan": "nhat",
-    "korea": "han",
-    "thailand": "thai",
+    **dict.fromkeys(("duc", "germany", "german"), "duc"),
+    **dict.fromkeys(("viet nam", "vietnam", "vn"), "viet"),
+    **dict.fromkeys(("nhat ban", "nhat", "japan"), "nhat"),
+    **dict.fromkeys(("han quoc", "han", "korea"), "han"),
+    **dict.fromkeys(("trung quoc", "trung", "china", "prc"), "trung"),
+    **dict.fromkeys(("thai lan", "thai", "thailand"), "thai"),
+    **dict.fromkeys(("my", "hoa ky", "usa", "us", "america"), "my"),
+    **dict.fromkeys(("phap", "france"), "phap"),
+    **dict.fromkeys(("y", "italy", "italia"), "y"),
+    **dict.fromkeys(("anh", "uk", "england", "vuong quoc anh"), "anh"),
+    **dict.fromkeys(("uc", "australia"), "uc"),
+    **dict.fromkeys(("dai loan", "taiwan"), "dai loan"),
+    **dict.fromkeys(("singapore",), "singapore"),
+    **dict.fromkeys(("malaysia",), "malaysia"),
+    **dict.fromkeys(("indonesia",), "indonesia"),
+    **dict.fromkeys(("an do", "india"), "an do"),
+    **dict.fromkeys(("thuy si", "switzerland"), "thuy si"),
+    **dict.fromkeys(("thuy dien", "sweden"), "thuy dien"),
+    **dict.fromkeys(("tay ban nha", "spain"), "tay ban nha"),
+    **dict.fromkeys(("canada",), "canada"),
+    **dict.fromkeys(("new zealand",), "new zealand"),
 }
+_ORIGIN_RE = re.compile(
+    r"\b(?:xuat xu|san xuat (?:tai|o)|nhap khau|hang nhap|made in)"
+    r"(?:\s+(?:[a-z]+\s+){0,3}?(?:tu|tai)\b)?\s*:?\s*"
+    rf"({'|'.join(sorted(map(re.escape, _ORIGIN_ALIAS), key=len, reverse=True))})\b"
+)
 
 
 def origins_of(text: str) -> set[str]:
-    """First word of every origin ("nhập khẩu từ Đức", "made in Vietnam") a text names, accent-folded."""
-    found = {m.group(1).split()[0] for m in _ORIGIN_RE.finditer(_fold(text))}
-    return {_ORIGIN_ALIAS.get(o, o) for o in found}
+    """Canonical country of every origin ("nhập khẩu từ Đức", "made in Germany") a text names."""
+    return {_ORIGIN_ALIAS[m.group(1)] for m in _ORIGIN_RE.finditer(_fold(text))}
 
 
 def _policy_polarity(folded: str) -> str | None:
@@ -1063,11 +1079,16 @@ def brand_mentions(text: str, brand: str, product_name: str = "") -> int:
     return len(brand_spans(text, brand))
 
 
+_NAME_STOP = frozenset({"va", "co", "cho", "de", "la", "cua", "voi", "loai", "bo", "mon"})
+
+
 def role_is_intro_without_name(spec: "UnitSpec | None", text: str, name: str) -> bool:
     """An intro must say the product name (any word of it, so a short form still passes)."""
     if spec is None or spec.role != "intro" or not name:
         return False
-    words = {w for w in re.findall(r"[a-z0-9]+", _fold(name)) if len(w) >= 3}
+    words = {
+        w for w in re.findall(r"[a-z0-9]+", _fold(name)) if len(w) >= 2 and w not in _NAME_STOP
+    }
     return bool(words) and not words & set(re.findall(r"[a-z0-9]+", _fold(text)))
 
 
