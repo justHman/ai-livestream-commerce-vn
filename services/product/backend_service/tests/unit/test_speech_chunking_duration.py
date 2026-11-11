@@ -342,3 +342,25 @@ def test_max_coefficients_on_100k_compact_input_stay_finite() -> None:
     estimate = estimator.estimate_ms(text)
     assert estimate >= 0.0
     assert math.isfinite(estimate)
+
+
+# ---------- duration inflation regression (script gate SPEECH_DURATION_SEGMENT) ----------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Áo giá 299.000đ nhé.",
+        "Chất liệu linen, size S đến XL, giá 299.000đ, có 3 màu, mặc rất mát nha.",
+        "Tai nghe dùng Bluetooth 5.3 nghe rất ổn.",
+        "Nặng 0,84 kg thôi.",
+        "Chai 30 ml mang đi du lịch rất tiện.",
+    ],
+)
+def test_short_text_with_numbers_is_not_inflated(text: str) -> None:
+    assert SpeechDurationEstimator().estimate_ms(text) < 10_000
+
+
+def test_genuinely_long_text_still_exceeds_a_60s_segment_cap() -> None:
+    long_text = "Chất liệu linen mềm mát, giá 299.000đ, có 3 màu. " * 25
+    assert SpeechDurationEstimator().estimate_ms(long_text) > 60_000
