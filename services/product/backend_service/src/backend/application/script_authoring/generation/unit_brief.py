@@ -172,6 +172,7 @@ def _reason_code(raw: str) -> str:
         "cta",
         "mashup",
         "intro_name",
+        "greeting",
         "position",
         "name_repeat",
         "brand_repeat",
