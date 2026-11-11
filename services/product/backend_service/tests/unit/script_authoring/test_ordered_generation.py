@@ -15,6 +15,7 @@ from test_service_impl_generation import (
 )
 
 from backend.application.clients.llm.openai_compatible import LLMClientError
+from backend.application.script_authoring.compile import compile_spoken_text
 from backend.application.script_authoring.generation.ordered_units import (
     BoundedLLM,
     LLMDeadlineError,
@@ -299,7 +300,7 @@ async def test_failed_unit_becomes_an_extractive_fallback_never_a_placeholder(ca
     item, version = await _text(repos, set_id, "P1")
     units = split_units(version.spoken_text)
     assert item.state is ScriptState.REVIEWABLE and len(units) == 4
-    assert units[2] == "Giá một trăm năm mươi nghìn đồng hoặc hai trăm nghìn đồng."
+    assert units[2] == "Các mức giá một trăm năm mươi nghìn đồng; hai trăm nghìn đồng."
     assert "<" not in version.spoken_text and ">" not in version.spoken_text
     assert units[1] == " ".join(P1_CLAIMS)  # the other units are untouched
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
@@ -659,7 +660,7 @@ def test_32_limitations_become_short_units_within_the_duration_bound() -> None:
     assert len(units) == 8 and all(len(u.claims) == 4 for u in units)
     for unit in units:
         for paragraph in fallback_unit_text(unit, brief).split("\n\n"):
-            assert spoken_duration_ms(paragraph) / 1000.0 <= 45.0
+            assert spoken_duration_ms(compile_spoken_text(paragraph).spoken_text) / 1000.0 <= 45.0
             assert paragraph.count("Không dùng") <= 3
 
 
@@ -674,7 +675,7 @@ def test_size_chart_fallback_always_speaks_a_restricted_row() -> None:
     text = fallback_unit_text(sizes, brief)
     assert "không giặt máy" in text
     for paragraph in text.split("\n\n"):
-        assert spoken_duration_ms(paragraph) / 1000.0 <= 45.0
+        assert spoken_duration_ms(compile_spoken_text(paragraph).spoken_text) / 1000.0 <= 45.0
 
 
 def test_numeric_comparisons_are_not_markup() -> None:
@@ -1073,7 +1074,9 @@ def test_one_long_claim_is_split_at_clauses_within_the_bound_without_changing_wo
     spec = next(u for u in plan_units(brief, first=False, last=False) if u.role == "assurance")
     paragraphs = fallback_unit_text(spec, brief).split("\n\n")
     assert len(paragraphs) > 1
-    assert all(spoken_duration_ms(p) / 1000.0 <= 45.0 for p in paragraphs)
+    assert all(
+        spoken_duration_ms(compile_spoken_text(p).spoken_text) / 1000.0 <= 45.0 for p in paragraphs
+    )
     rebuilt = " ".join(paragraphs)
     assert rebuilt.count("kích ứng nặng") == 14  # nothing dropped
 

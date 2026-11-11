@@ -85,8 +85,9 @@ _GUIDE = {
     ),
     "intro": (
         "Mở đầu sản phẩm như người trong nghề đang giới thiệu cho bạn bè: câu đầu nói tên sản "
-        "phẩm. Chỉ nói nó dành cho ai hay hợp dịp nào khi thông tin bên dưới có ghi; nếu không "
-        "thì chỉ giới thiệu bằng thông tin có. Không chào lại khán giả. 2 đến 4 câu. Chưa nói giá."
+        "phẩm (bắt buộc nêu đúng tên sản phẩm ở lần đầu). Chỉ nói nó dành cho ai hay hợp dịp nào khi thông tin bên dưới có ghi; nếu không "
+        "thì chỉ giới thiệu bằng thông tin có. Không chào lại khán giả và không nhắc lại lời "
+        "chào, câu mở đầu hay câu hỏi đã nói ở phần Mở đầu. 2 đến 4 câu. Chưa nói giá."
     ),
     "highlight": (
         "Kể về những điểm hay bên dưới bằng lời của MC: mỗi điểm nói thành 1 đến 2 câu, chỉ nói "
@@ -350,9 +351,40 @@ _INJECTION_RE = re.compile(
     r"\bbo qua\b[^.?!]{0,30}\b(?:quy tac|huong dan|chi dan|tat ca|moi)\b"
     r"|\b(?:ignore|disregard)\b|\bsystem prompt\b|\bhay (?:noi|doc|viet|bao|quen)\b"
 )
+# Only a KNOWN country after the origin cue counts as an origin ("nhập khẩu và phân phối" names none).
+_ORIGIN_ALIAS = {
+    **dict.fromkeys(("duc", "germany", "german"), "duc"),
+    **dict.fromkeys(("viet nam", "vietnam", "vn"), "viet"),
+    **dict.fromkeys(("nhat ban", "nhat", "japan"), "nhat"),
+    **dict.fromkeys(("han quoc", "han", "korea"), "han"),
+    **dict.fromkeys(("trung quoc", "trung", "china", "prc"), "trung"),
+    **dict.fromkeys(("thai lan", "thai", "thailand"), "thai"),
+    **dict.fromkeys(("my", "hoa ky", "usa", "us", "america"), "my"),
+    **dict.fromkeys(("phap", "france"), "phap"),
+    **dict.fromkeys(("y", "italy", "italia"), "y"),
+    **dict.fromkeys(("anh", "uk", "england", "vuong quoc anh"), "anh"),
+    **dict.fromkeys(("uc", "australia"), "uc"),
+    **dict.fromkeys(("dai loan", "taiwan"), "dai loan"),
+    **dict.fromkeys(("singapore",), "singapore"),
+    **dict.fromkeys(("malaysia",), "malaysia"),
+    **dict.fromkeys(("indonesia",), "indonesia"),
+    **dict.fromkeys(("an do", "india"), "an do"),
+    **dict.fromkeys(("thuy si", "switzerland"), "thuy si"),
+    **dict.fromkeys(("thuy dien", "sweden"), "thuy dien"),
+    **dict.fromkeys(("tay ban nha", "spain"), "tay ban nha"),
+    **dict.fromkeys(("canada",), "canada"),
+    **dict.fromkeys(("new zealand",), "new zealand"),
+}
 _ORIGIN_RE = re.compile(
-    r"\b(?:xuat xu|san xuat tai|nhap khau tu|made in)\s*:?\s*([a-z]+(?: [a-z]+)?)"
+    r"\b(?:xuat xu|san xuat (?:tai|o)|nhap khau|hang nhap|made in)"
+    r"(?:\s+(?:[a-z]+\s+){0,3}?(?:tu|tai)\b)?\s*:?\s*"
+    rf"({'|'.join(sorted(map(re.escape, _ORIGIN_ALIAS), key=len, reverse=True))})\b"
 )
+
+
+def origins_of(text: str) -> set[str]:
+    """Canonical country of every origin ("nhập khẩu từ Đức", "made in Germany") a text names."""
+    return {_ORIGIN_ALIAS[m.group(1)] for m in _ORIGIN_RE.finditer(_fold(text))}
 
 
 def _policy_polarity(folded: str) -> str | None:
@@ -394,7 +426,7 @@ def unsafe_claims(claims: tuple[str, ...]) -> set[str]:
         if _INJECTION_RE.search(folded):
             out.add(claim)
         else:
-            found = {m.group(1).split()[0] for m in _ORIGIN_RE.finditer(folded)}
+            found = origins_of(claim)
             if len(found) > 1:  # one claim naming two origins ("nhập khẩu từ A và sản xuất tại B")
                 out.add(claim)
             for origin in found:
@@ -543,9 +575,11 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
         text = f"Mình giới thiệu {name} đến mọi người."
     elif spec.role == "offer":
         words = [w for w in (spoken_price(p) for p in product.prices) if w]
-        price = [f"Giá {' hoặc '.join(words)}."] if words and spec.with_price else []
+        # several prices are listed, never joined by "hoặc" (reads as a choice the owner never offered)
+        label = "Giá" if len(words) == 1 else "Các mức giá"
+        price = [f"{label} {'; '.join(words)}."] if words and spec.with_price else []
         text = "\n\n".join(
-            _within_bound(_paragraphs([*price, *spec.promos], max_s), unit_s, spec.must)
+            _within_bound(_paragraphs([*price, *map(_end, spec.promos)], max_s), unit_s, spec.must)
         )
     elif spec.role == "sizes":
         text = "\n\n".join(_size_paragraphs(tuple(map(_end, spec.claims)), set(spec.must), max_s))
@@ -557,7 +591,8 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     text = _KH_RE.sub("không", text or f"Mình giới thiệu thêm về {name}.")
     if spec.revisit:
         text = "Mình nhắc lại để các bạn mới theo dõi tiện tham khảo. " + text
-    return compile_spoken_text(text).spoken_text
+    # display text keeps the owner's digits; record_failed_unit compiles the spoken form
+    return text
 
 
 def spoken_price(price: str) -> str | None:
@@ -1044,6 +1079,19 @@ def brand_mentions(text: str, brand: str, product_name: str = "") -> int:
     return len(brand_spans(text, brand))
 
 
+_NAME_STOP = frozenset({"va", "co", "cho", "de", "la", "cua", "voi", "loai", "bo", "mon"})
+
+
+def role_is_intro_without_name(spec: "UnitSpec | None", text: str, name: str) -> bool:
+    """An intro must say the product name (any word of it, so a short form still passes)."""
+    if spec is None or spec.role != "intro" or not name:
+        return False
+    words = {
+        w for w in re.findall(r"[a-z0-9]+", _fold(name)) if len(w) >= 2 and w not in _NAME_STOP
+    }
+    return bool(words) and not words & set(re.findall(r"[a-z0-9]+", _fold(text)))
+
+
 def check_unit_text(
     raw: str | None,
     *,
@@ -1066,6 +1114,7 @@ def check_unit_text(
     ``brand_used_nearby`` counts the adjacent units of the same product that already say the brand.
     A missing brand is never a rejection.
     """
+    all_origins = origins_of(" . ".join(approved))
     approved = _safe_approved(approved)
     if not raw:
         return None, "empty"
@@ -1089,6 +1138,11 @@ def check_unit_text(
         return None, "truncated"  # cut mid-sentence/mid-word by the provider
     if _states_missing_data(text, approved):
         return None, "missing_info"
+    if role_is_intro_without_name(spec, text, product_name):
+        return None, "intro_name"
+    said = origins_of(text)
+    if len(said) > 1 or (said and len(all_origins) > 1):
+        return None, "mashup"  # two different origins, or an origin the owner's data contradicts
     sell_text = text
     if spec is not None and spec.role in ("opening", "closing"):
         sell_text = _FOLLOW_INVITE_RE.sub("", text)
@@ -1192,6 +1246,9 @@ def ungrounded_number(text: str, facts: tuple[str, ...]) -> list[str]:
     for fact in facts:
         for _e, bare, unit in _claim_numbers(fact):
             allowed.add(tuple(bare))
+            if "phẩy" in bare:  # "0,84" is read "không phẩy tám bốn" as often as "tám mươi bốn"
+                i = bare.index("phẩy")
+                allowed.add((*bare[: i + 1], *(w for w in bare[i + 1 :] if w != "mươi")))
             allowed.update((*bare, m) for m in _MAGNITUDE.get(unit, ()))
     bad = []
     for _e, bare, unit in _claim_numbers(text):
@@ -1414,6 +1471,8 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
             "\nBản trước nói số liệu không khớp thông tin (" + bad + "). Giữ NGUYÊN chữ số, dấu "
             "phẩy thập phân và đơn vị như trong thông tin, không tự viết thành chữ, không đổi số."
         )
+    if why == "intro_name":
+        return "\nBản trước chưa nói tên sản phẩm. Câu đầu phải nêu đúng tên sản phẩm."
     if why == "brand_repeat":
         return "\nBản trước nhắc tên thương hiệu sai chỗ hoặc quá một lần. Bỏ tên thương hiệu khỏi phần này."
     template = _RETRY_HINTS.get(why or "")
@@ -1430,6 +1489,11 @@ def guard_problem(why: str | None, raw: str | None, approved: tuple[str, ...] = 
     phrase); everything else is retry_hint's own wording."""
     # Same cleanup check_unit_text applies before it decides, so the diagnosis sees what the guard saw.
     text = re.sub(r"\s+", " ", _DASH_RE.sub(", ", _FENCE_RE.sub("", raw or ""))).strip()
+    if why == "mashup" and origins_of(text):
+        return (
+            "Bản trước nói xuất xứ mâu thuẫn hoặc không chắc chắn. Bỏ mọi câu nói về xuất xứ "
+            "(nhập khẩu, sản xuất tại)."
+        )
     if why == "mashup":
         joined = []
         for sentence in re.split(r"(?<=[.!?])\s+", text):
@@ -1510,8 +1574,13 @@ def _facts_block(
         lines.append("Không nhắc tên thương hiệu trong phần này.")
     if spec.role == "intro":
         # The brand line above already carries it.
+        clashing = unsafe_claims(
+            (*product.claims, *product.discounts, *(f"{k}: {v}" for k, v in product.info if v))
+        )
         lines += [
-            f"{k}: {v}" for k, v in product.info if v and not (product.brand and k == "Thương hiệu")
+            f"{k}: {v}"
+            for k, v in product.info
+            if v and not (product.brand and k == "Thương hiệu") and f"{k}: {v}" not in clashing
         ]
     if spec.claims:
         lines.append(

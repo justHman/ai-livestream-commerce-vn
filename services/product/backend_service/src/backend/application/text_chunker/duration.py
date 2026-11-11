@@ -143,14 +143,18 @@ class SpeechDurationEstimator:
         if digit_chars > 0:
             syllables += 0.5 * min(digit_chars, 12)
 
-        multiplier = 1.0
-        multiplier *= self._c.number_multiplier ** min(number_tokens, self._MAX_DIGIT_GROUPS)
-        multiplier *= self._c.currency_multiplier ** min(currencies, 4)
-        multiplier *= self._c.percent_multiplier ** min(percents, 3)
-        multiplier *= self._c.acronym_multiplier ** min(self._count_acronyms(text), 3)
-
-        syllable_ms = self._c.syllable_ms * multiplier
-        base_ms = syllables * syllable_ms
+        # Compact forms add extra spoken syllables PER TOKEN (~3 extra
+        # syllables per unit of multiplier above 1). The old code multiplied
+        # the WHOLE text's syllable time by the product of the multipliers,
+        # so a few numbers in a short paragraph inflated it ~50x (e.g.
+        # 299.000d + "5.3" -> 34s for 16 words).
+        extra = 3.0 * (
+            min(number_tokens, self._MAX_DIGIT_GROUPS) * (self._c.number_multiplier - 1.0)
+            + min(currencies, 4) * (self._c.currency_multiplier - 1.0)
+            + min(percents, 3) * (self._c.percent_multiplier - 1.0)
+            + min(self._count_acronyms(text), 3) * (self._c.acronym_multiplier - 1.0)
+        )
+        base_ms = (syllables + max(extra, 0.0)) * self._c.syllable_ms
 
         pauses = self._count_punctuation_pauses(text)
         base_ms += (

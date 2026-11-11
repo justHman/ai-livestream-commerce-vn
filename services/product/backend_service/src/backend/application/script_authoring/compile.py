@@ -149,7 +149,7 @@ _DIGIT_WORD = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy",
 # Compact measurements: "1m65" -> "một mét sáu mươi lăm", "60kg" -> "sáu mươi ki lô gam".
 _METER_CM_RE = re.compile(r"(?<![\w.,])(\d{1,3})m(\d{1,2})(?!\w)")
 _MEASURE_RE = re.compile(
-    r"(?<![\w.,])(\d{1,3}(?:\.\d{3})+|\d+(?:[.,]\d+)?)\s?(mAh|kg|mg|ml|cm|mm|g|m|V|W)(?!\w)"
+    r"(?<![\w.,])(\d{1,3}(?:\.\d{3})+|\d+(?:[.,]\d+)?)\s?(mAh|GB|TB|MB|Hz|kg|mg|ml|cm|mm|g|m|V|W)(?!\w)"
 )
 _MEASURE_WORDS = {
     "kg": "ki lô gam",
@@ -160,9 +160,50 @@ _MEASURE_WORDS = {
     "g": "gam",
     "m": "mét",
     "mAh": "mi li am pe giờ",
+    "GB": "ghi ga bai",
+    "TB": "tê ra bai",
+    "MB": "mê ga bai",
+    "Hz": "héc",
     "V": "vôn",
     "W": "oát",
 }
+# Product jargon read aloud as Vietnamese speakers say it. Applied before hyphens turn into commas
+# ("USB-C" must not become "U S B,C"); every replacement is plain lowercase words, so it is idempotent.
+_JARGON = (
+    (r"USB[- ]?C", "u ét bi xi"),
+    (r"USB[- ]?A", "u ét bi ây"),
+    (r"USB", "u ét bi"),
+    (r"Wi-?Fi", "wai phai"),
+    (r"Bluetooth", "blu tút"),
+    (r"IPX(\d)", lambda m: f"ai pi ếch {_DIGIT_WORD[int(m.group(1))]}"),
+    (r"SPF\s?(\d{1,3})", lambda m: f"ét pi ép {expand_vietnamese_number(m.group(1))}"),
+    # 2K/4K/8K is a resolution only beside a screen word; "Giảm 2K" / "Giá 8K" stay prices (nghìn).
+    (
+        r"((?i:màn hình|màn|video|camera|tv|uhd|phân giải|quay)\s+)([248])K",
+        lambda m: f"{m.group(1)}{_DIGIT_WORD[int(m.group(2))]} ca",
+    ),
+    (r"([248])K(?=\s+(?:UHD|HDR|Ultra))", lambda m: f"{_DIGIT_WORD[int(m.group(1))]} ca"),
+    (r"LED", "lét"),
+    (r"HD", "hát đê"),
+    (r"UV", "u vê"),
+    (r"pH", "pi hát"),
+    (r"mAh", "mi li am pe giờ"),
+    (r"inch", "in"),
+)
+# "Wi-Fi6", "Bluetooth5.3", "USB-C3", "UV400": a glued number gets its own word.
+_JARGON_GLUED_RE = re.compile(
+    r"(?<![\w.])(USB[- ]?[CA]|USB|Wi-?Fi|Bluetooth|UV|LED|HD)(?=\d)", re.I
+)
+_JARGON_RE = tuple(
+    (
+        re.compile(
+            rf"(?<![\w.]){pattern}(?!\w)", re.I if pattern in ("Wi-?Fi", "Bluetooth") else 0
+        ),
+        to,
+    )
+    for pattern, to in _JARGON
+)
+
 # Clock times "20h", "19h30" -> "hai mươi giờ", "mười chín giờ ba mươi".
 _TIME_RE = re.compile(r"(?<![\w.,])(\d{1,2})h(\d{2})?(?!\w)")
 
@@ -487,6 +528,9 @@ def compile_spoken_text(
     whitespace_stripped = " ".join(whitespace_stripped.split())
     text = _changed(text, whitespace_stripped, "collapse_whitespace")
 
+    text = _JARGON_GLUED_RE.sub(r"\1 ", text)
+    for rx, spoken in _JARGON_RE:
+        text = rx.sub(spoken, text)
     # 0901-234-567 must be a phone before the hyphen rules turn it into commas or a range.
     text = _PHONE_HYPHEN_RE.sub(lambda m: re.sub(r"\D", "", m.group()), text)
     text = _DATE_RE.sub(_read_date, text)

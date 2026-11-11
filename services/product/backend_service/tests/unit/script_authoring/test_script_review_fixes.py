@@ -54,3 +54,11 @@ def test_bare_short_evidence_is_still_dropped_by_the_safety_floor():
     out = json.dumps({"facts": [{"type": "feature", "text": "Có 3 màu", "evidence": "có 3 màu"}]})
     result = extract_facts("Bình giữ nhiệt, có 3 màu.", lambda _prompt: out)
     assert [d.reason for d in result.dropped] == ["evidence_too_short"]
+
+
+def test_decimal_read_digit_by_digit_matches_the_owner_figure() -> None:
+    from backend.application.script_authoring.generation.ordered_units import ungrounded_number
+
+    facts = ("Nặng 0,84 kg",)
+    assert ungrounded_number("Nặng không phẩy tám bốn ki lô gam.", facts) == []
+    assert ungrounded_number("Nặng tám trăm bốn mươi ki lô gam.", facts) != []

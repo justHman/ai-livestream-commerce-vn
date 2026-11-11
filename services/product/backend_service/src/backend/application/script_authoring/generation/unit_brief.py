@@ -149,6 +149,9 @@ def _reason_code(raw: str) -> str:
             else "provider_unavailable"
         )
     if raw in ("semantic_budget_exhausted",):
+        # Legacy code name: this is the 3-attempts-per-part cap (no clock).
+        # The machine code stays because Web/API read it; only display text
+        # (reason_text) says "luot viet".
         return "time_budget_exhausted"
     if raw in ("model_budget_unavailable", "segment generator returned no result"):
         return "provider_unavailable"
@@ -168,6 +171,7 @@ def _reason_code(raw: str) -> str:
         "address",
         "cta",
         "mashup",
+        "intro_name",
         "position",
         "name_repeat",
         "brand_repeat",
