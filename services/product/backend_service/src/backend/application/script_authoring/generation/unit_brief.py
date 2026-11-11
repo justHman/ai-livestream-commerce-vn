@@ -156,6 +156,8 @@ def _reason_code(raw: str) -> str:
         return "coverage_missing"
     if name == "truncated":
         return "unfinished_text"
+    if name == "number_mismatch":
+        return "facts_mismatch"
     if name in (
         "empty",
         "too_long",
