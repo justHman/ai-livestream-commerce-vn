@@ -365,3 +365,57 @@ async def test_part_completion_uses_the_same_transaction_as_selected_version():
     )
     assert (await wait_job(service, set_id, "P1", started["workflow_id"]))["status"] == "completed"
     assert len(updates) == 1 and updates[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_hard_sell_rewrite_is_retried_with_forbidden_phrases_named():
+    service, repos, llm, set_id, before, index = await shipping_part()
+    # Same sentence as a mandatory claim, so cutting the sentence cannot salvage it.
+    bad = "Giao hàng trong ba ngày, mua ngay nhé. " + SHIPPING[1]
+    llm.repair = lambda prompt: bad if len(llm.prompts) < 2 else " ".join(SHIPPING)
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed"
+    assert len(llm.prompts) == 2
+    # The first prompt already forbids urging phrases; the retry names what was caught.
+    assert "không dùng: mua ngay" in llm.prompts[0]
+    assert "mua ngay" in llm.prompts[1].split("Lý do:")[-1]
+
+
+@pytest.mark.asyncio
+async def test_hard_sell_on_every_attempt_stores_code_and_phrases_not_text():
+    service, repos, llm, set_id, before, index = await shipping_part()
+    llm.repair = lambda prompt: "Giao hàng trong ba ngày, mua ngay nhé. " + SHIPPING[1]
+    status = await repair_part(service, set_id, before, index)
+    assert status["error_code"] == "part_content_rejected"
+    job = next(iter(repos.jobs.rows.values()))
+    code = job.input_snapshot["last_rejection_code"]
+    assert code.startswith("guard:hard_sell:") and "mua ngay" in code and len(code) < 200
+    assert "Giao hàng" not in code
+
+
+def test_new_repeats_only_blocks_new_groups_containing_the_part():
+    from backend.application.script_authoring.generation.script_variety import (
+        VarietyPart,
+        new_repeats,
+    )
+
+    def part(key, text):
+        return VarietyPart(key, "P", "", text)
+
+    # "nếu bạn muốn" is already a group (a, b, c): joining it creates no NEW group.
+    parts = [
+        part("a", "Nếu bạn muốn xem. Một."),
+        part("b", "Nếu bạn muốn hỏi. Hai."),
+        part("c", "Nếu bạn muốn mua. Ba."),
+        part("d", "Chào cả nhà. Bốn."),
+    ]
+    assert new_repeats(parts, "d", "Nếu bạn muốn biết. Bốn.") == []
+    # A third part opening like two others makes a NEW group that contains it.
+    parts = [
+        part("a", "Giá hôm nay tốt lắm."),
+        part("b", "Giá hôm nay rẻ lắm."),
+        part("d", "Chào cả nhà."),
+    ]
+    added = new_repeats(parts, "d", "Giá hôm nay mềm lắm.")
+    assert added and all("d" in g.members for g in added)
+    assert any(g.prefix == "giá hôm nay" for g in added)
