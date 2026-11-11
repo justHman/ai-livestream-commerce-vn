@@ -300,7 +300,7 @@ _CHEAP_RE = re.compile(
 # An offer the owner's data does not contain: the writer must not make one up.
 _OFFER_RE = re.compile(
     r"miễn phí|free ?ship|giảm giá|giảm (?:thêm )?\d|khuyến mãi|ưu đãi|quà tặng|tặng kèm"
-    r"|(?<!\w)tặng(?!\w)|combo|voucher|mã giảm"
+    r"|voucher|mã giảm"
     r"|giảm (?:thêm )?(?:một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)\b[^.?!]{0,12}(?:triệu|trăm|nghìn|ngàn)",
     re.IGNORECASE,
 )
@@ -388,7 +388,7 @@ def unsafe_claims(claims: tuple[str, ...]) -> set[str]:
         if _INJECTION_RE.search(folded):
             out.add(claim)
         elif m := _ORIGIN_RE.search(folded):
-            origins.setdefault(m.group(1), []).append(claim)
+            origins.setdefault(m.group(1).split()[0], []).append(claim)
     if len(origins) > 1:  # two different origins: neither is trustworthy
         out.update(c for group in origins.values() for c in group)
     return out
@@ -1055,6 +1055,7 @@ def check_unit_text(
     ``brand_used_nearby`` counts the adjacent units of the same product that already say the brand.
     A missing brand is never a rejection.
     """
+    approved = _safe_approved(approved)
     if not raw:
         return None, "empty"
     if _FOREIGN_SCRIPT_RE.search(raw) or _foreign_words(raw, (*approved, product_name, brand)):
@@ -1091,7 +1092,7 @@ def check_unit_text(
     lowered = [_nfc(a).lower() for a in approved]  # NFC both sides: NFD owner text must still match
     if any(not _owner_wrote(m.group(), lowered) for m in _CHEAP_RE.finditer(_nfc(text))):
         return None, "hard_sell"  # each superlative must be one the owner wrote
-    if _invented_offer(text, approved):
+    if _invented_offer(text, approved, product_name):
         return None, "hard_sell"  # an offer, gift or free shipping the data never mentions
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"
@@ -1137,12 +1138,22 @@ def check_unit_text(
 WORDING_REASONS = ("hard_sell", "cta", "bridge", "address", "position")
 
 
-def _invented_offer(text: str, approved: tuple[str, ...]) -> bool:
-    return (
-        bool(approved)
-        and bool(_OFFER_RE.search(_nfc(text)))
-        and not any(_OFFER_RE.search(_nfc(a)) for a in approved)
-    )
+def _safe_approved(approved: tuple[str, ...]) -> tuple[str, ...]:
+    """The owner's words minus claims that are instructions or contradictions: those are not the owner's
+    wording, so they must never exempt a phrase the model added."""
+    bad = unsafe_claims(tuple(approved))
+    return tuple(a for a in approved if a not in bad)
+
+
+def _invented_offer(text: str, approved: tuple[str, ...], product_name: str = "") -> bool:
+    # No approved data at all means the caller gave us nothing to judge against (not "the product has
+    # no offer"), so the check stays off; every production caller passes the claims and discounts.
+    if not approved:
+        return False
+    if any(_OFFER_RE.search(_nfc(a)) for a in approved):
+        return False
+    name = _nfc(product_name).lower()
+    return any(m.group().lower() not in name for m in _OFFER_RE.finditer(_nfc(text)))
 
 
 def _nfc(text: str) -> str:
@@ -1160,6 +1171,7 @@ def offending_phrases(
 ) -> list[str]:
     """The wording our own fixed patterns matched for a wording rejection (never any other text)."""
     text = _nfc(raw or "")
+    approved = _safe_approved(approved)
     lowered = [_nfc(a).lower() for a in approved]
     patterns: tuple[re.Pattern, ...] = {
         "hard_sell": (_HARD_SELL_RE, _CHEAP_RE),
