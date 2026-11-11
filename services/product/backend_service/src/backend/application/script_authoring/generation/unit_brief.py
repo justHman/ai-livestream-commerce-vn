@@ -168,6 +168,7 @@ def _reason_code(raw: str) -> str:
         "address",
         "cta",
         "mashup",
+        "intro_name",
         "position",
         "name_repeat",
         "brand_repeat",

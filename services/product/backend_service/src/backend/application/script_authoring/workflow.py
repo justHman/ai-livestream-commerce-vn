@@ -43,6 +43,7 @@ from backend.application.script_authoring.gate.results import (
     GateRunResult,
     RuleViolation,
 )
+from backend.application.script_authoring.compile import compile_spoken_text
 from backend.application.script_authoring.models import (
     GateRun,
     GateViolation,
@@ -368,7 +369,7 @@ class ProductGenerationWorkflow:
             plan_id=self.plan_id,
             segment_index=index,
             display_text=placeholder,
-            spoken_text=placeholder,
+            spoken_text=compile_spoken_text(placeholder).spoken_text,
             status=ScriptState.GATE_FAILED,
             version=version,
         )
