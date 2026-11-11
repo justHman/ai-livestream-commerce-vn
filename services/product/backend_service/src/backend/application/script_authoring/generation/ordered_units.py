@@ -1057,6 +1057,7 @@ def check_unit_text(
     aware: bool = True,
     brand: str = "",
     brand_used_nearby: int = 0,
+    check_numbers: bool = True,
 ) -> tuple[str | None, str | None]:
     """(text, None) when usable, else (None, machine reason code).
 
@@ -1134,7 +1135,8 @@ def check_unit_text(
     if must and uncovered_claims(text, must, (*spec.claims, *spec.promos) if spec else ()):
         return None, "coverage"  # a must-keep claim (restriction, warranty...) was left out
     if (
-        role in ("intro", "highlight", "assurance", "offer")
+        check_numbers
+        and role in ("intro", "highlight", "assurance", "offer")
         and spec
         and (spec.claims or spec.promos)
     ):
@@ -1348,7 +1350,8 @@ def rescue_unit_text(
     must = tuple(dict.fromkeys(kwargs.get("must") or ()))
     if rejected != "coverage" or not must:
         return None
-    base, _ = check_unit_text(text, **{**kwargs, "must": ()})
+    # numbers are judged by the final check; sentences carrying one are dropped below
+    base, _ = check_unit_text(text, **{**kwargs, "must": (), "check_numbers": False})
     if base is None:
         return None
     spec = kwargs.get("spec")
