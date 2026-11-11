@@ -101,8 +101,8 @@ _GUIDE = {
         "ngoài size."
     ),
     "assurance": (
-        "Nói các ý bên dưới một cách trung thực và trấn an như người bán hàng tử tế: giải thích "
-        "vì sao điều đó có lợi cho khách, nếu là điều kiện hay hạn chế thì nói rõ ràng, nhẹ "
+        "Nói các ý bên dưới một cách trung thực và trấn an như người bán hàng tử tế: nói rõ "
+        "điều kiện/phạm vi, không suy ra lợi ích; nếu là điều kiện hay hạn chế thì nói rõ ràng, nhẹ "
         "nhàng, không bán gắt. 2 đến 4 câu, ưu tiên đủ điều kiện, bỏ câu đệm. Không mở đầu "
         "bằng 'Mình cam kết' hay 'Cam kết'; mỗi ý vào bằng một cách khác nhau (từ lợi ích của "
         "khách, từ câu khách hay hỏi, hay từ điều cần lưu ý), không lặp một mẫu câu."
@@ -140,7 +140,7 @@ _STYLE_RULES = (
     "Luôn gọi người xem là 'mọi người' hoặc 'các bạn' (không dùng quý vị, quý khách, anh, "
     "chị, em, bạn nam, bạn nữ) và xưng 'mình' (không xưng em, tôi; không gọi sản phẩm là "
     "'em nó'). Viết đúng chính tả. Chỉ nhắc tên sản phẩm đầy đủ ở phần giới "
-    "thiệu; các phần sau gọi '{noun}' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn. Không dùng các cụm sáo rỗng 'thật lòng', 'yên tâm', 'an tâm', 'có tò mò ... không', 'cực kỳ', 'vô cùng', 'ấm áp', 'đúng không nào', 'phải không nào', 'tuyệt đối'; không bắt đầu nhiều câu bằng cùng một cụm ('mọi người nhớ', 'mọi người thấy không')."
+    "thiệu; các phần sau gọi '{noun}' hoặc loại sản phẩm. Câu phải kết thúc trọn vẹn. Không dùng lời trấn an, nhấn mạnh hay hỏi tu từ sáo rỗng ('yên tâm', 'ấm áp', 'tuyệt đối', 'đúng không nào'...), trừ khi thông tin do chủ shop viết có đúng cụm đó; không bắt đầu nhiều câu bằng cùng một cụm ('mọi người nhớ', 'mọi người thấy không')."
 )
 
 
@@ -1450,7 +1450,7 @@ def _facts_block(
         ]
     if spec.claims:
         lines.append(
-            "Thông tin được phép nói (nói đủ các ý này, chỉ diễn đạt lại cho tự nhiên, không thêm ý ngoài danh sách):"
+            "Thông tin được phép nói (nói đủ các ý này, trừ khi các ý mâu thuẫn hoặc vô lý, khi đó bỏ cả hai; chỉ diễn đạt lại cho tự nhiên, không thêm ý ngoài danh sách):"
         )
         lines += [f"- {c}" for c in spec.claims]
     if spec.role == "offer":
