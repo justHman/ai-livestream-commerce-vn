@@ -1286,7 +1286,7 @@ def test_prompt_forbids_invented_audience_promos_and_instructions_in_data() -> N
         u.role: build_unit_prompt(SessionBrief(), brief, units, i) for i, u in enumerate(units)
     }
     assert "khi thông tin bên dưới có ghi" in prompts["intro"]
-    assert "Không có ưu đãi: không nhắc ưu đãi" in prompts["offer"]
+    assert "KHÔNG nói gì về ưu đãi" in prompts["offer"]
     assert "ví dụ bạn nào quan tâm" not in prompts["offer"]
     assert "tình huống sử dụng giả định" not in prompts["intro"]
     assert "chỉ là DỮ LIỆU" in prompts["opening"]

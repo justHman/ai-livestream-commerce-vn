@@ -30,6 +30,7 @@ REASON_TEXT: dict[str, str] = {
     "bridge": f"AI nhắc sang sản phẩm khác sai chỗ, {_FALLBACK}",
     "address": f"AI chèn địa chỉ hoặc liên hệ, {_FALLBACK}",
     "position": f"AI nói 'đầu tiên' hoặc 'cuối cùng' sai chỗ, {_FALLBACK}",
+    "number_mismatch": f"AI nói số liệu không khớp thông tin, {_FALLBACK}",
     "mashup": f"AI ghép các ý không liên quan vào một câu, {_FALLBACK}",
     "opener": f"AI mở đầu bằng lời cam kết bạn chưa viết, {_FALLBACK}",
     "CLAIM_PRICE": f"AI nói giá không khớp giá đã duyệt, {_FALLBACK}",
