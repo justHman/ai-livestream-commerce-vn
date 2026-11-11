@@ -76,3 +76,78 @@ def test_same_return_period_twice_does_not_warn():
         ),
     )
     assert r.warnings == ()
+
+
+# --- 2026-11-11: the model rewrote the form fields as "X là Y", which the "X:" filter missed ---
+ANH_20 = [
+    ("feature", "Tên sản phẩm là Máy xay sinh tố cầm tay mini sạc USB Fresho M2"),
+    ("feature", "Ngành hàng là Đồ gia dụng nhà bếp"),
+    ("promotion", "Giá 289.000 đồng, giá niêm yết 399.000 đồng, đang giảm khoảng 28%"),
+    (
+        "benefit",
+        "Dành cho dân văn phòng, sinh viên, người tập gym muốn làm nước ép, sinh tố tại chỗ",
+    ),
+    ("feature", "Dung tích 380 ml"),
+    ("feature", "Thân nhựa Tritan không chứa BPA"),
+    ("feature", "6 lưỡi dao thép không gỉ"),
+    ("feature", "Một lần sạc đầy xay được khoảng 12 mẻ"),
+    ("usage", "Tự làm sạch bằng cách xay nước xà phòng loãng 15 giây"),
+    ("feature", "Nắp kín chống tràn"),
+    ("feature", "Bỏ vừa túi xách"),
+    ("feature", "Nhỏ gọn nặng 420 g"),
+    ("usage", "Xay trái cây mềm, đá viên nhỏ và rau lá trong khoảng 30 giây"),
+    ("feature", "Có 3 màu (kem, xanh bạc hà, hồng phấn)"),
+    ("warranty", "Bảo hành 6 tháng"),
+    ("warranty", "Lỗi do nhà sản xuất đổi mới trong 7 ngày"),
+    ("shipping", "Miễn phí vận chuyển đơn từ 199.000 đồng"),
+    ("limitation", "Không xay đồ nóng và không xay xương hay đá cục lớn"),
+    ("warranty", "Đổi trả trong 30 ngày"),
+    ("promotion", "Tặng kèm 1 cáp sạc USB-C và 1 chổi vệ sinh khi mua trong tuần này"),
+]
+
+
+def test_anh_20_facts_drop_only_the_rewritten_name_and_category():
+    lines = [t for _, t in ANH_20]
+    payload = json.dumps({"facts": [{"type": t, "text": x, "evidence": x} for t, x in ANH_20]})
+    r = extract_facts("\n".join(lines), lambda _p: payload)
+    assert [(d.text, d.reason) for d in r.dropped] == [
+        (ANH_20[0][1], "form_field_duplicate"),
+        (ANH_20[1][1], "form_field_duplicate"),
+    ]
+    assert [f.text for f in r.facts] == lines[2:]
+    # the two period facts (7 days exchange, 30 days return) are the 14th and 17th kept facts
+    assert len(r.warnings) == 1 and r.warnings[0]["code"] == "policy_period_conflict"
+    assert [r.facts[i].text for i in r.warnings[0]["facts"]] == [lines[15], lines[18]]
+
+
+def test_rewritten_form_field_variants_are_dropped():
+    for text in (
+        "Tên sản phẩm là Máy xay Fresho M2",
+        "Tên sản phẩm: Máy xay Fresho M2",
+        "Sản phẩm tên Máy xay Fresho M2",
+        "Ngành hàng là Đồ gia dụng nhà bếp",
+        "Danh mục là Đồ gia dụng nhà bếp.",
+        "Loại sản phẩm là Máy xay sinh tố",
+        "Thuộc ngành hàng Đồ gia dụng nhà bếp",
+    ):
+        r = extract_facts(
+            text,
+            lambda _p, t=text: json.dumps(
+                {"facts": [{"type": "feature", "text": t, "evidence": t}]}
+            ),
+        )
+        assert [d.reason for d in r.dropped] == ["form_field_duplicate"], text
+
+
+def test_form_field_rewrite_with_extra_information_is_kept():
+    for text in (
+        "Ngành hàng là Đồ gia dụng, giao toàn quốc trong 2 ngày",
+        "Tên sản phẩm là Máy xay Fresho M2 (tặng kèm cáp sạc)",
+    ):
+        r = extract_facts(
+            text,
+            lambda _p, t=text: json.dumps(
+                {"facts": [{"type": "feature", "text": t, "evidence": t}]}
+            ),
+        )
+        assert [f.text for f in r.facts] == [text], text

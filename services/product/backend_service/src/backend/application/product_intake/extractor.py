@@ -151,6 +151,19 @@ DROP_REASON_LABELS_VI = {
 }
 
 _FORM_FIELD_DROP_RE = re.compile(r"^(?:ten san pham|ten|nganh hang|danh muc)\s*:")
+# Model rewrites of the form fields: "Tên sản phẩm là X", "Sản phẩm tên X", "Ngành hàng là Y", "Thuộc ngành hàng Y"...
+# Dropped only when the rest is a bare name (short, one clause); "Ngành hàng là X, giao toàn quốc" keeps its extra info.
+_FORM_FIELD_REWRITE_RE = re.compile(
+    r"^(?:(?:ten san pham|loai san pham|nganh hang|danh muc)(?:\s+la)?|san pham ten|thuoc (?:nganh hang|danh muc))\s+(?P<rest>[^:;,()]+)$"
+)
+_FORM_FIELD_REWRITE_MAX_WORDS = 14
+
+
+def _is_form_field_rewrite(folded: str) -> bool:
+    m = _FORM_FIELD_REWRITE_RE.match(folded.rstrip(" ."))
+    return bool(m) and len(m["rest"].split()) <= _FORM_FIELD_REWRITE_MAX_WORDS
+
+
 _AUDIENCE_RE = re.compile(r"^doi tuong(?: khach hang)?\s*:\s*")
 _RETURN_RE = re.compile(r"doi tra|doi moi|doi hang|tra hang|hoan tien|hoan lai")
 _WARRANTY_RE = re.compile(r"bao hanh")
@@ -373,7 +386,7 @@ def extract_facts(text: str, llm: Callable[[str], str]) -> ExtractionResult:
             drop("evidence_mismatch")
             continue
         folded_text = fold_text(ftext)
-        if _FORM_FIELD_DROP_RE.match(folded_text):
+        if _FORM_FIELD_DROP_RE.match(folded_text) or _is_form_field_rewrite(folded_text):
             drop("form_field_duplicate")
             continue
         audience = _AUDIENCE_RE.match(folded_text)
