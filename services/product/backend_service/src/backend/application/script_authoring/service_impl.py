@@ -203,6 +203,13 @@ def _check_closing_unfinished(raw: str | None, check: dict) -> tuple[str | None,
     return text, why
 
 
+def _note_rejection(job, code: str) -> None:
+    """Latest rejection as one short control-free line (code + phrases, never script text)."""
+    job.input_snapshot["last_rejection_code"] = re.sub(r"[\x00-\x1f\x7f\s]+", " ", code).strip()[
+        :200
+    ]
+
+
 def _guard_problem(
     why: str | None, raw: str | None, approved: tuple[str, ...], must: tuple[str, ...]
 ) -> str:
@@ -3663,9 +3670,9 @@ class ScriptAuthoringServiceImpl:
                         + explanations.get(why, "cách diễn đạt chưa phù hợp")
                     )[:600].rstrip(". ") + ". Giữ bản hiện tại."
                     # Short code + offending phrases only (never text), for diagnosis next time.
-                    job.input_snapshot["last_rejection_code"] = (
-                        f"guard:{why}:" + "|".join(str(d)[:40] for d in detail[:5])
-                    )[:200]
+                    _note_rejection(
+                        job, f"guard:{why}:" + "|".join(str(d)[:40] for d in detail[:5])
+                    )
                     prompt = guard_repair_prompt(
                         base_prompt, raw, _guard_problem(why, raw, check["approved"], spec.must)
                     )
@@ -3676,6 +3683,7 @@ class ScriptAuthoringServiceImpl:
                         "Giữ bản hiện tại."
                     )
                     # Kept in the base so a later guard repair still carries this constraint.
+                    _note_rejection(job, "recap")
                     base_prompt = prompt = base_prompt + RECAP_RETRY
                     continue
                 low, high = role_bounds_s(spec.role)
@@ -3692,9 +3700,7 @@ class ScriptAuthoringServiceImpl:
                 )
                 if not result.passed:
                     rules = {v.rule_id for v in result.violations if v.severity.value == "error"}
-                    job.input_snapshot["last_rejection_code"] = ("gate:" + ",".join(sorted(rules)))[
-                        :200
-                    ]
+                    _note_rejection(job, "gate:" + ",".join(sorted(rules)))
                     job.input_snapshot["last_rejection"] = (
                         "Phần này chưa đạt vì "
                         + (
@@ -3735,9 +3741,7 @@ class ScriptAuthoringServiceImpl:
                     job.input_snapshot["last_rejection"] = (
                         "Phần này còn lặp cách mở đầu với các phần khác. Giữ bản hiện tại."
                     )
-                    job.input_snapshot["last_rejection_code"] = (
-                        "variety:" + "|".join(g.prefix for g in added[:5])
-                    )[:200]
+                    _note_rejection(job, "variety:" + "|".join(g.prefix for g in added[:5]))
                     used = tuple(
                         dict.fromkeys(
                             [g.prefix for g in added]
@@ -3804,6 +3808,8 @@ class ScriptAuthoringServiceImpl:
             item.current_version_id, item.state = version.id, state
             for artifact in (new_segment, run, version, item):
                 bridge(artifact)
+            job.input_snapshot.pop("last_rejection_code", None)
+            job.input_snapshot.pop("last_rejection", None)
             job.status = GenerationJobStatus.COMPLETED
             job.error_code = "" if result.passed else "script_needs_review"
             await self._drain_artifacts(bridge, revisions, set(), job=job, complete_job=True)

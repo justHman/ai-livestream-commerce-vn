@@ -419,3 +419,44 @@ def test_new_repeats_only_blocks_new_groups_containing_the_part():
     added = new_repeats(parts, "d", "Giá hôm nay mềm lắm.")
     assert added and all("d" in g.members for g in added)
     assert any(g.prefix == "giá hôm nay" for g in added)
+
+
+@pytest.mark.asyncio
+async def test_new_repeat_group_retries_with_prefixes_and_bounded_prompt(monkeypatch):
+    from backend.application.script_authoring.generation import script_variety
+    from backend.application.script_authoring.generation.script_variety import Repeat
+
+    service, repos, llm, set_id, before, index = await shipping_part()
+    group = Repeat("part", "nếu bạn muốn", None, ("x", "y"), 2)
+    monkeypatch.setattr(script_variety, "new_repeats", lambda *a: [group])
+    llm.repair = lambda prompt: " ".join(SHIPPING)
+    status = await repair_part(service, set_id, before, index)
+    assert status["error_code"] == "part_content_rejected"
+    assert len(llm.prompts) == 3
+    assert "'nếu bạn muốn'" in llm.prompts[1] and "'nếu bạn muốn'" in llm.prompts[2]
+    # Rebuilt from the base each time: the retry prompt does not grow with attempts.
+    assert len(llm.prompts[2]) == len(llm.prompts[1])
+    job = next(iter(repos.jobs.rows.values()))
+    code = job.input_snapshot["last_rejection_code"]
+    assert code.startswith("variety:") and "\n" not in code
+
+
+@pytest.mark.asyncio
+async def test_rejection_code_is_cleared_when_a_later_attempt_completes(monkeypatch):
+    from backend.application.script_authoring.generation import script_variety
+    from backend.application.script_authoring.generation.script_variety import Repeat
+
+    service, repos, llm, set_id, before, index = await shipping_part()
+    group = Repeat("part", "nếu bạn muốn", None, ("x", "y"), 2)
+    calls = []
+
+    def fake(*a):
+        calls.append(1)
+        return [group] if len(calls) == 1 else []
+
+    monkeypatch.setattr(script_variety, "new_repeats", fake)
+    llm.repair = lambda prompt: " ".join(SHIPPING)
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed"
+    job = next(iter(repos.jobs.rows.values()))
+    assert "last_rejection_code" not in job.input_snapshot

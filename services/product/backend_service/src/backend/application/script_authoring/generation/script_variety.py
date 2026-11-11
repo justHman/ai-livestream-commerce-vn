@@ -123,12 +123,6 @@ def improves(parts: list[VarietyPart], key: str, text: str) -> bool:
     return after.excess < before.excess and after.keys <= before.keys
 
 
-def does_not_worsen(parts: list[VarietyPart], key: str, text: str) -> bool:
-    before = audit(parts)
-    after = audit([replace(p, text=text) if p.key == key else p for p in parts])
-    return after.excess <= before.excess and after.keys <= before.keys
-
-
 def new_repeats(parts: list[VarietyPart], key: str, text: str) -> list[Repeat]:
     """Repeat groups that did not exist before and that this part's new text would join.
 
