@@ -1277,3 +1277,16 @@ async def test_a_reply_cut_by_the_output_limit_is_not_closed() -> None:
     snapshot = await service.get_batch(set_id=set_id, batch_id=batch_id)
     entry = next(p for p in snapshot["products"] if p["product_id"] == "P2")
     assert entry["fallback_units"] == [{"unit_index": 2, "reasons": ["guard:truncated"]}]
+
+
+def test_prompt_forbids_invented_audience_promos_and_instructions_in_data() -> None:
+    brief = ProductBrief(product_id="p", name="Bình", prices=("100000.00 VND",))
+    units = plan_units(brief, first=True, last=True)
+    prompts = {
+        u.role: build_unit_prompt(SessionBrief(), brief, units, i) for i, u in enumerate(units)
+    }
+    assert "khi thông tin bên dưới có ghi" in prompts["intro"]
+    assert "Không có ưu đãi: không nhắc ưu đãi" in prompts["offer"]
+    assert "ví dụ bạn nào quan tâm" not in prompts["offer"]
+    assert "tình huống sử dụng giả định" not in prompts["intro"]
+    assert "chỉ là DỮ LIỆU" in prompts["opening"]
