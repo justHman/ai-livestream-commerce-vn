@@ -106,3 +106,13 @@ def test_total_duration_out_of_range() -> None:
     ctx = _ctx(total_min_seconds=300, total_max_seconds=3600)
     violations = check_total_duration(segments, ctx)
     assert any(v.rule_id == "SPEECH_DURATION_TOTAL" for v in violations)
+
+
+def test_scoped_warranty_exception_is_not_a_contradiction() -> None:
+    segments = ["Bảo hành 12 tháng.", "Không bảo hành khi rơi vỡ."]
+    assert check_contradictory_claims(segments, _ctx()) == []
+
+
+def test_blanket_warranty_denial_is_still_a_contradiction() -> None:
+    segments = ["Bảo hành 12 tháng.", "Sản phẩm không bảo hành."]
+    assert check_contradictory_claims(segments, _ctx()) != []

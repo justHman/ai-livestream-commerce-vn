@@ -294,9 +294,16 @@ _CHEAP_RE = re.compile(
     # praise and reassurance the owner never wrote: speed/safety/value verdicts are claims, not wording
     r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý"
     # stock filler the style rules already ban, now enforced; a wording rejection cuts the sentence
-    r"|(?<!\w)(?:yên tâm|thật lòng|cực kỳ|vô cùng)(?!\w)|(?<!\w)có tò mò[^.?!]{0,40}không(?!\w)",
+    r"|(?<!\w)(?:yên tâm|an tâm|ấm áp|thật lòng|cực kỳ|vô cùng)(?!\w)|(?<!\w)(?:đúng|phải) không nào(?!\w)|(?<!\w)có tò mò[^.?!]{0,40}không(?!\w)",
     re.IGNORECASE,
 )  # subjective/superlative claims are not facts unless the owner approved them
+# An offer the owner's data does not contain: the writer must not make one up.
+_OFFER_RE = re.compile(
+    r"miễn phí|free ?ship|giảm giá|giảm (?:thêm )?\d|khuyến mãi|ưu đãi|quà tặng|tặng kèm"
+    r"|(?<!\w)tặng(?!\w)|combo|voucher|mã giảm"
+    r"|giảm (?:thêm )?(?:một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)\b[^.?!]{0,12}(?:triệu|trăm|nghìn|ngàn)",
+    re.IGNORECASE,
+)
 _KH_RE = re.compile(r"(?<!\w)kh(?!\w)")  # texting shorthand typed in product data
 # Clearly different subjects only (material/feel/fit are properties of ONE attribute).
 _TOPICS = {
@@ -334,6 +341,14 @@ _FREE_DISCOUNT_RE = re.compile(r"\bgiam\s*(?:gia\s*)?(?:100|[1-9]\d{2,})\s*%")
 _FREE_DISCOUNT_OK_RE = re.compile(r"\b(?:ship|phi|van chuyen|giao hang)\b")
 
 
+# Data typed into a product field that reads as an instruction to the writer, never as a fact (accent-folded).
+_INJECTION_RE = re.compile(
+    r"\bbo qua\b[^.?!]{0,30}\b(?:quy tac|huong dan|chi dan|tat ca|moi)\b"
+    r"|\b(?:ignore|disregard)\b|\bsystem prompt\b|\bhay (?:noi|doc|viet|bao|quen)\b"
+)
+_ORIGIN_RE = re.compile(r"\b(?:xuat xu|san xuat tai|made in)\s*:?\s*([a-z]+(?: [a-z]+)?)")
+
+
 def _policy_polarity(folded: str) -> str | None:
     """ "yes" / "no" / None for a return or warranty statement; a "question? answer" takes the answer's polarity."""
     if "?" in folded:
@@ -367,6 +382,15 @@ def unsafe_claims(claims: tuple[str, ...]) -> set[str]:
     for sides in by_kind.values():
         if sides["yes"] and sides["no"]:
             out.update(sides["yes"], sides["no"])
+    origins: dict[str, list[str]] = {}
+    for claim in dict.fromkeys(claims):
+        folded = _fold(claim)
+        if _INJECTION_RE.search(folded):
+            out.add(claim)
+        elif m := _ORIGIN_RE.search(folded):
+            origins.setdefault(m.group(1), []).append(claim)
+    if len(origins) > 1:  # two different origins: neither is trustworthy
+        out.update(c for group in origins.values() for c in group)
     return out
 
 
@@ -491,6 +515,13 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
     words; fixed greetings carry no facts. No LLM, no invented facts, no markup.
     """
     name = product.name or product.product_id
+    # Verbatim reading must never voice pressure wording, even the owner's own ("Mua ngay kẻo hết").
+    spec = replace(
+        spec,
+        claims=tuple(x for x in spec.claims if not _HARD_SELL_RE.search(x)),
+        promos=tuple(x for x in spec.promos if not _HARD_SELL_RE.search(x)),
+        must=tuple(x for x in spec.must if not _HARD_SELL_RE.search(x)),
+    )
     max_s = min(role_bounds_s(spec.role)[1], _FALLBACK_MAX_S)
     # The whole unit (not only each paragraph) must fit the role bound; the revisit lead-in takes a few seconds.
     unit_s = role_bounds_s(spec.role)[1] - (4.0 if spec.revisit else 0.0)
@@ -1049,15 +1080,19 @@ def check_unit_text(
     sell_text = text
     if spec is not None and spec.role in ("opening", "closing"):
         sell_text = _FOLLOW_INVITE_RE.sub("", text)
-    approved_text = [a.lower() for a in approved]
+    approved_text = [
+        _nfc(a).lower() for a in approved
+    ]  # NFD owner text must still exempt its own wording
     if any(
         not any(m.group().lower() in a for a in approved_text)
-        for m in _HARD_SELL_RE.finditer(sell_text)
+        for m in _HARD_SELL_RE.finditer(_nfc(sell_text))
     ):
         return None, "hard_sell"  # pressure wording the owner did not write
     lowered = [_nfc(a).lower() for a in approved]  # NFC both sides: NFD owner text must still match
     if any(not _owner_wrote(m.group(), lowered) for m in _CHEAP_RE.finditer(_nfc(text))):
         return None, "hard_sell"  # each superlative must be one the owner wrote
+    if _invented_offer(text, approved):
+        return None, "hard_sell"  # an offer, gift or free shipping the data never mentions
     if not allow_bridge and _BRIDGE_RE.search(text):
         return None, "bridge"
     if _ADDRESS_RE.search(text):
@@ -1102,6 +1137,14 @@ def check_unit_text(
 WORDING_REASONS = ("hard_sell", "cta", "bridge", "address", "position")
 
 
+def _invented_offer(text: str, approved: tuple[str, ...]) -> bool:
+    return (
+        bool(approved)
+        and bool(_OFFER_RE.search(_nfc(text)))
+        and not any(_OFFER_RE.search(_nfc(a)) for a in approved)
+    )
+
+
 def _nfc(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
@@ -1127,6 +1170,8 @@ def offending_phrases(
         "foreign_script": (_FOREIGN_SCRIPT_RE,),
         "personal_experience": (_EXPERIENCE_RE,),
     }.get(why or "", ())
+    if why == "hard_sell" and not any(_OFFER_RE.search(a) for a in lowered):
+        patterns = (*patterns, _OFFER_RE)
     hits: list[str] = []
     for pattern in patterns:
         for match in pattern.finditer(text):

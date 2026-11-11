@@ -539,7 +539,7 @@ def test_two_sentences_opening_with_cam_ket_are_rejected_but_the_owner_may_write
 
 def test_a_cam_ket_claim_of_another_part_does_not_exempt_this_part() -> None:
     owner = ("Cam kết hàng chính hãng.",)
-    text = "Mình cam kết đổi trả miễn phí nhé."
+    text = "Mình cam kết đổi trả nhé."
     assert check_unit_text(text, spec=UnitSpec("assurance"), approved=owner) == (None, "opener")
 
 

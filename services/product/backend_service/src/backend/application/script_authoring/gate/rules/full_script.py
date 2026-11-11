@@ -76,6 +76,17 @@ _CONTRADICTIONS = (
     ("bảo hành", "không bảo hành"),
 )
 
+# "không bảo hành khi/nếu/trừ ..." is an exception to the claim, not a denial of it.
+_EXCEPTION_RE = re.compile(r"[^.!?;\n]*?\b(?:khi|nếu|trừ|ngoại trừ|trong trường hợp)\b")
+
+
+def _negated(text: str, negation: str) -> bool:
+    """The negation phrase occurs unscoped (a scoped one only states a condition)."""
+    return any(
+        not (negation.startswith("không") and _EXCEPTION_RE.match(text, m.end()))
+        for m in re.finditer(re.escape(negation), text)
+    )
+
 
 def _word_ngrams(text: str, n: int) -> set[tuple[str, ...]]:
     words = _WORD_RE.findall(text.lower())
@@ -125,7 +136,7 @@ def check_contradictory_claims(segments: list[str], context) -> list[RuleViolati
     violations: list[RuleViolation] = []
     for claim, negation in _CONTRADICTIONS:
         claim_indexes = [i for i, seg in enumerate(segments) if claim in seg.lower()]
-        negated_indexes = [i for i, seg in enumerate(segments) if negation in seg.lower()]
+        negated_indexes = [i for i, seg in enumerate(segments) if _negated(seg.lower(), negation)]
         if claim_indexes and negated_indexes:
             violations.append(
                 RuleViolation(
