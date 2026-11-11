@@ -1246,6 +1246,9 @@ def ungrounded_number(text: str, facts: tuple[str, ...]) -> list[str]:
     for fact in facts:
         for _e, bare, unit in _claim_numbers(fact):
             allowed.add(tuple(bare))
+            if "phẩy" in bare:  # "0,84" is read "không phẩy tám bốn" as often as "tám mươi bốn"
+                i = bare.index("phẩy")
+                allowed.add((*bare[: i + 1], *(w for w in bare[i + 1 :] if w != "mươi")))
             allowed.update((*bare, m) for m in _MAGNITUDE.get(unit, ()))
     bad = []
     for _e, bare, unit in _claim_numbers(text):

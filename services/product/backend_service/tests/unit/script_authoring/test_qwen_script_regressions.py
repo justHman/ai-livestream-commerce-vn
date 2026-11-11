@@ -66,7 +66,7 @@ def test_complete_shipping_information_fits_the_existing_duration_and_safety_gat
 
 def test_ordered_duration_repair_preserves_values_without_requesting_numeric_prices():
     result = ScriptAuthoringServiceImpl._default_gate().run_segment(
-        "Giá một trăm tám mươi nghìn đồng. " * 30,
+        "Giá một trăm tám mươi nghìn đồng. " * 60,
         ScriptGateContext(target_min_seconds=1, target_max_seconds=60),
     )
     violation = next(v for v in result.violations if v.rule_id == "SPEECH_DURATION_SEGMENT")
