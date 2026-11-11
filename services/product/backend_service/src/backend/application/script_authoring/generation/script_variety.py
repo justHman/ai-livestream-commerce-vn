@@ -123,10 +123,14 @@ def improves(parts: list[VarietyPart], key: str, text: str) -> bool:
     return after.excess < before.excess and after.keys <= before.keys
 
 
-def does_not_worsen(parts: list[VarietyPart], key: str, text: str) -> bool:
-    before = audit(parts)
+def new_repeats(parts: list[VarietyPart], key: str, text: str) -> list[Repeat]:
+    """Repeat groups that did not exist before and that this part's new text would join.
+
+    Pre-existing groups made by other parts are not this rewrite's fault, so they never block it.
+    """
+    before = audit(parts).keys
     after = audit([replace(p, text=text) if p.key == key else p for p in parts])
-    return after.excess <= before.excess and after.keys <= before.keys
+    return [g for g in after.groups if g.key not in before and key in g.members]
 
 
 _NEUTRAL = frozenset(

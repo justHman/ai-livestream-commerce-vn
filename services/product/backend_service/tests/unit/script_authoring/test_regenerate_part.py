@@ -365,3 +365,98 @@ async def test_part_completion_uses_the_same_transaction_as_selected_version():
     )
     assert (await wait_job(service, set_id, "P1", started["workflow_id"]))["status"] == "completed"
     assert len(updates) == 1 and updates[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_hard_sell_rewrite_is_retried_with_forbidden_phrases_named():
+    service, repos, llm, set_id, before, index = await shipping_part()
+    # Same sentence as a mandatory claim, so cutting the sentence cannot salvage it.
+    bad = "Giao hàng trong ba ngày, mua ngay nhé. " + SHIPPING[1]
+    llm.repair = lambda prompt: bad if len(llm.prompts) < 2 else " ".join(SHIPPING)
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed"
+    assert len(llm.prompts) == 2
+    # The first prompt already forbids urging phrases; the retry names what was caught.
+    assert "không dùng: mua ngay" in llm.prompts[0]
+    assert "mua ngay" in llm.prompts[1].split("Lý do:")[-1]
+
+
+@pytest.mark.asyncio
+async def test_hard_sell_on_every_attempt_stores_code_and_phrases_not_text():
+    service, repos, llm, set_id, before, index = await shipping_part()
+    llm.repair = lambda prompt: "Giao hàng trong ba ngày, mua ngay nhé. " + SHIPPING[1]
+    status = await repair_part(service, set_id, before, index)
+    assert status["error_code"] == "part_content_rejected"
+    job = next(iter(repos.jobs.rows.values()))
+    code = job.input_snapshot["last_rejection_code"]
+    assert code.startswith("guard:hard_sell:") and "mua ngay" in code and len(code) < 200
+    assert "Giao hàng" not in code
+
+
+def test_new_repeats_only_blocks_new_groups_containing_the_part():
+    from backend.application.script_authoring.generation.script_variety import (
+        VarietyPart,
+        new_repeats,
+    )
+
+    def part(key, text):
+        return VarietyPart(key, "P", "", text)
+
+    # "nếu bạn muốn" is already a group (a, b, c): joining it creates no NEW group.
+    parts = [
+        part("a", "Nếu bạn muốn xem. Một."),
+        part("b", "Nếu bạn muốn hỏi. Hai."),
+        part("c", "Nếu bạn muốn mua. Ba."),
+        part("d", "Chào cả nhà. Bốn."),
+    ]
+    assert new_repeats(parts, "d", "Nếu bạn muốn biết. Bốn.") == []
+    # A third part opening like two others makes a NEW group that contains it.
+    parts = [
+        part("a", "Giá hôm nay tốt lắm."),
+        part("b", "Giá hôm nay rẻ lắm."),
+        part("d", "Chào cả nhà."),
+    ]
+    added = new_repeats(parts, "d", "Giá hôm nay mềm lắm.")
+    assert added and all("d" in g.members for g in added)
+    assert any(g.prefix == "giá hôm nay" for g in added)
+
+
+@pytest.mark.asyncio
+async def test_new_repeat_group_retries_with_prefixes_and_bounded_prompt(monkeypatch):
+    from backend.application.script_authoring.generation import script_variety
+    from backend.application.script_authoring.generation.script_variety import Repeat
+
+    service, repos, llm, set_id, before, index = await shipping_part()
+    group = Repeat("part", "nếu bạn muốn", None, ("x", "y"), 2)
+    monkeypatch.setattr(script_variety, "new_repeats", lambda *a: [group])
+    llm.repair = lambda prompt: " ".join(SHIPPING)
+    status = await repair_part(service, set_id, before, index)
+    assert status["error_code"] == "part_content_rejected"
+    assert len(llm.prompts) == 3
+    assert "'nếu bạn muốn'" in llm.prompts[1] and "'nếu bạn muốn'" in llm.prompts[2]
+    # Rebuilt from the base each time: the retry prompt does not grow with attempts.
+    assert len(llm.prompts[2]) == len(llm.prompts[1])
+    job = next(iter(repos.jobs.rows.values()))
+    code = job.input_snapshot["last_rejection_code"]
+    assert code.startswith("variety:") and "\n" not in code
+
+
+@pytest.mark.asyncio
+async def test_rejection_code_is_cleared_when_a_later_attempt_completes(monkeypatch):
+    from backend.application.script_authoring.generation import script_variety
+    from backend.application.script_authoring.generation.script_variety import Repeat
+
+    service, repos, llm, set_id, before, index = await shipping_part()
+    group = Repeat("part", "nếu bạn muốn", None, ("x", "y"), 2)
+    calls = []
+
+    def fake(*a):
+        calls.append(1)
+        return [group] if len(calls) == 1 else []
+
+    monkeypatch.setattr(script_variety, "new_repeats", fake)
+    llm.repair = lambda prompt: " ".join(SHIPPING)
+    status = await repair_part(service, set_id, before, index)
+    assert status["status"] == "completed"
+    job = next(iter(repos.jobs.rows.values()))
+    assert "last_rejection_code" not in job.input_snapshot
