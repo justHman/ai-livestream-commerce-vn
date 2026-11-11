@@ -311,6 +311,13 @@ def check_discount_claims(text: str, context) -> list[RuleViolation]:
     return violations
 
 
+def _code_in_facts_text(code: str, facts: ProductFacts) -> bool:
+    """A code inside the product name or an approved claim ("Gạo ST25") is the owner's own wording,
+    even when the owner entered no SKU list."""
+    rx = re.compile(rf"(?<![\w-]){re.escape(code)}(?![\w-])", re.IGNORECASE)
+    return any(rx.search(t) for t in (facts.product_name, *facts.allowed_claims) if t)
+
+
 def check_identity_claims(text: str, context) -> list[RuleViolation]:
     """Flag SKU/product-code references not in ``facts.skus``.
 
@@ -318,7 +325,9 @@ def check_identity_claims(text: str, context) -> list[RuleViolation]:
     """
     violations: list[RuleViolation] = []
     for match in _SKU_RE.finditer(text):
-        if _claims(match.group(), context.facts):
+        if _claims(match.group(), context.facts) or _code_in_facts_text(
+            match.group(), context.facts
+        ):
             continue
         violations.append(
             RuleViolation(

@@ -76,8 +76,13 @@ _CONTRADICTIONS = (
     ("bảo hành", "không bảo hành"),
 )
 
-# "không bảo hành khi/nếu/trừ ..." is an exception to the claim, not a denial of it.
-_EXCEPTION_RE = re.compile(r"[^.!?;\n]*?\b(?:khi|nếu|trừ|ngoại trừ|trong trường hợp)\b")
+# "không bảo hành khi/nếu/trừ/do/đối với ..." is an exception to the claim, not a denial of it. The
+# exception word must sit right after the negation (at most two words between), so "không bảo hành, mua
+# với giá tốt" or "không bảo hành với mọi sản phẩm" stay contradictions.
+_EXCEPTION_RE = re.compile(
+    r"(?:\s+[^\s.!?;,]+){0,2}\s+"
+    r"(?:khi|nếu|trừ|ngoại trừ|(?:trong )?trường hợp|đối với|do|vì|sau khi)\b"
+)
 
 
 def _negated(text: str, negation: str) -> bool:

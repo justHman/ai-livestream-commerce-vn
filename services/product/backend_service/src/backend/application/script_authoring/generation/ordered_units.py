@@ -207,6 +207,10 @@ _FOLLOW_INVITE_RE = re.compile(
     r"(?:không|đừng) bỏ lỡ (?:những |các |mọi )?(?:buổi|phiên|lần|video|bản tin|thông báo)",
     re.IGNORECASE,
 )
+# The opening part already greets; an intro that greets again repeats it ("Chào mọi người, ...").
+_GREETING_RE = re.compile(
+    r"^\W*(?:xin\s+)?chào(?:\s+mừng)?(?!\w)[^,.!?;]*[,.!?;]?\s*", re.IGNORECASE
+)
 _BRIDGE_RE = re.compile(
     r"(?:sản phẩm|món|mẫu)\s+(?:tiếp theo|kế tiếp|tiếp đến)|(?:tiếp theo|kế tiếp) là",
     re.IGNORECASE,
@@ -298,6 +302,10 @@ _CHEAP_RE = re.compile(
     r"|hàng (?:nghìn|ngàn|triệu) (?:khách|người)"
     # praise and reassurance the owner never wrote: speed/safety/value verdicts are claims, not wording
     r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý"
+    # hype adjectives the owner's data never states; plain "nhanh"/"nhẹ" stay allowed (only these phrases)
+    r"|(?<!\w)(?:uy tín|cực nhanh|siêu nhẹ|pin trâu|nhẹ tênh|bổ dưỡng)(?!\w)"
+    r"|(?<!\w)(?:mức giá (?:rất |khá )?|giá (?:rất |khá ))(?:tốt|hấp dẫn|hợp lý)(?!\w)"
+    r"|(?<!\w)(?:cam kết )?chất lượng (?:ổn định|đảm bảo)(?!\w)"
     # stock filler the style rules already ban, now enforced; a wording rejection cuts the sentence
     r"|(?<!\w)(?:yên tâm|an tâm|ấm áp|thật lòng|cực kỳ|vô cùng)(?!\w)|(?<!\w)(?:đúng|phải) không nào(?!\w)|(?<!\w)có tò mò[^.?!]{0,40}không(?!\w)",
     re.IGNORECASE,
@@ -1140,6 +1148,13 @@ def check_unit_text(
         return None, "missing_info"
     if role_is_intro_without_name(spec, text, product_name):
         return None, "intro_name"
+    if (
+        spec is not None
+        and spec.role == "intro"
+        and _GREETING_RE.match(text)
+        and not _opens_with_name(text, product_name)
+    ):
+        return None, "greeting"
     said = origins_of(text)
     if len(said) > 1 or (said and len(all_origins) > 1):
         return None, "mashup"  # two different origins, or an origin the owner's data contradicts
@@ -1154,7 +1169,8 @@ def check_unit_text(
         for m in _HARD_SELL_RE.finditer(_nfc(sell_text))
     ):
         return None, "hard_sell"  # pressure wording the owner did not write
-    lowered = [_nfc(a).lower() for a in approved]  # NFC both sides: NFD owner text must still match
+    # NFC both sides: NFD owner text must still match. The owner's product name and brand are owner wording.
+    lowered = [_nfc(a).lower() for a in (*approved, product_name, brand) if a]
     if any(not _owner_wrote(m.group(), lowered) for m in _CHEAP_RE.finditer(_nfc(text))):
         return None, "hard_sell"  # each superlative must be one the owner wrote
     if _invented_offer(text, approved, product_name):
@@ -1213,7 +1229,7 @@ def check_unit_text(
 
 # Reasons a model text is rejected for specific WORDING (not for length or missing facts): the offending
 # sentence can be cut out instead of paying for another model call.
-WORDING_REASONS = ("hard_sell", "cta", "bridge", "address", "position")
+WORDING_REASONS = ("hard_sell", "cta", "bridge", "address", "position", "greeting")
 
 
 def _safe_approved(approved: tuple[str, ...]) -> tuple[str, ...]:
@@ -1271,6 +1287,12 @@ def _invented_offer(text: str, approved: tuple[str, ...], product_name: str = ""
     return any(m.group().lower() not in name for m in _OFFER_RE.finditer(_nfc(text)))
 
 
+def _opens_with_name(text: str, name: str) -> bool:
+    """A name that itself starts with a greeting word ("Chào Mào") is not a greeting."""
+    prefix = " ".join(_nfc(name).lower().split()[:2])
+    return bool(prefix) and re.sub(r"^\W+", "", _nfc(text).lower()).startswith(prefix)
+
+
 def _nfc(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
@@ -1318,7 +1340,12 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
     every check (length, coverage of the must-keep claims...). None when nothing is salvageable."""
     if why not in WORDING_REASONS:
         return None
-    phrases = offending_phrases(raw, why, tuple(kwargs.get("approved") or ()))
+    if why == "greeting":
+        # cut only the greeting clause: the same sentence usually carries the product name
+        rest = _GREETING_RE.sub("", _nfc(raw or "").strip(), count=1).strip()
+        return check_unit_text(rest[:1].upper() + rest[1:], **kwargs)[0] if rest else None
+    owner = (*(kwargs.get("approved") or ()), kwargs.get("product_name"), kwargs.get("brand"))
+    phrases = offending_phrases(raw, why, tuple(a for a in owner if a))
     if not phrases:
         return None
     sentences = re.split(r"(?<=[.!?])\s+", _nfc(raw or "").strip())
@@ -1471,6 +1498,8 @@ def retry_hint(why: str | None, raw: str | None, approved: tuple[str, ...] = ())
             "\nBản trước nói số liệu không khớp thông tin (" + bad + "). Giữ NGUYÊN chữ số, dấu "
             "phẩy thập phân và đơn vị như trong thông tin, không tự viết thành chữ, không đổi số."
         )
+    if why == "greeting":
+        return "\nBản trước mở bằng lời chào, trùng phần Mở đầu. Bỏ lời chào, câu đầu nêu thẳng tên sản phẩm."
     if why == "intro_name":
         return "\nBản trước chưa nói tên sản phẩm. Câu đầu phải nêu đúng tên sản phẩm."
     if why == "brand_repeat":
