@@ -61,8 +61,8 @@ def test_six_minute_plan_adds_spaced_fact_recaps_and_duration_instructions():
         build_unit_prompt,
     )
 
-    # A script follows how much the owner wrote (~14 s per fact, never below 90 s), so only a product whose
-    # natural units fall short of that is given recaps. Two short facts: intro + one highlight + one recap.
+    # A script follows how much the owner wrote (<= 25 s per fact, floor 120 s), so only a product whose
+    # natural units fall short of that is given recaps: a full recap, then another half of the claims.
     claims = ("Denim dày dặn.", "Màu xanh đậm dễ phối.")
     product = ProductBrief("p", "Áo denim", claims=claims)
     short = plan_units(product, first=False, last=False)
@@ -70,7 +70,7 @@ def test_six_minute_plan_adds_spaced_fact_recaps_and_duration_instructions():
     assert len(long) > len(short)
     assert all(u.role not in ("opening", "closing", "intro") for u in long if u.revisit)
     assert sum(u.with_cta for u in long) == 1
-    assert all(sum(c in u.claims for u in long) <= 2 for c in claims)
+    assert all(sum(c in u.claims for u in long) <= 3 for c in claims)
     index = next(i for i, u in enumerate(long) if u.revisit)
     prompt = build_unit_prompt(SessionBrief(), product, long, index)
     assert "Độ dài mục tiêu" in prompt and "diễn đạt KHÁC" in prompt

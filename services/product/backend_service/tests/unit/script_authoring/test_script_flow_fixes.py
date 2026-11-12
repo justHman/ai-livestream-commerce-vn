@@ -33,16 +33,16 @@ def _revisits(product: ProductBrief, target: float) -> int:
     )
 
 
-def test_thin_product_gets_at_most_one_recap_instead_of_padding_to_the_platform_target():
-    # 360 s used to plan ~7 recap units for ten short facts.
-    assert _revisits(ProductBrief("p", "Gói A", claims=TEN_FACTS), 360) <= 1
+def test_thin_product_recaps_are_bounded_instead_of_padding_to_the_platform_target():
+    # two recap rounds at most (each fact once more, the second time another half of it)
+    assert _revisits(ProductBrief("p", "Gói A", claims=TEN_FACTS), 360) <= 12
 
 
-def test_thin_product_targets_about_fourteen_seconds_per_fact_not_the_platform_target():
+def test_thin_product_targets_at_most_25_seconds_per_fact_not_the_platform_target():
     units = plan_units(
         ProductBrief("p", "Gói A", claims=TEN_FACTS), first=False, last=False, target_duration_s=360
     )
-    assert sum(u.target_seconds for u in units) == pytest.approx(0.85 * 140, abs=1.0)
+    assert sum(u.target_seconds for u in units) == pytest.approx(0.85 * 250, abs=1.0)
 
 
 def test_rich_product_keeps_the_full_platform_target():
@@ -55,14 +55,14 @@ def test_rich_product_keeps_the_full_platform_target():
     assert sum(u.target_seconds for u in units) == pytest.approx(0.85 * 360, abs=1.0)
 
 
-def test_very_thin_product_never_goes_below_ninety_seconds():
+def test_very_thin_product_never_goes_below_120_seconds():
     units = plan_units(
         ProductBrief("p", "Gói A", claims=("Một ý ngắn thôi.",)),
         first=False,
         last=False,
         target_duration_s=360,
     )
-    assert sum(u.target_seconds for u in units) == pytest.approx(0.85 * 90, abs=1.0)
+    assert sum(u.target_seconds for u in units) == pytest.approx(0.85 * 120, abs=1.0)
 
 
 def test_claims_that_are_long_when_spoken_split_into_more_units():
