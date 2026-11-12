@@ -21,6 +21,7 @@ class VarietyPart:
     text: str
     editable: bool = False
     required: tuple[str, ...] = ()
+    revisit: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,14 @@ def audit(parts: list[VarietyPart]) -> VarietyAudit:
                 exemptions.extend(
                     (m.start(), m.end()) for m in re.finditer(re.escape(needle), text)
                 )
+        # Exempt only the neutral recap lead-in, never its body or normal parts.
+        if part.revisit:
+            lead = re.match(
+                r"(?:mình (?:quay lại|nhắc lại)|quay lại|các bạn mới theo dõi|để tiện theo dõi)\b[^,.!?;]*[,.!?;]\s*",
+                text,
+            )
+            if lead:
+                exemptions.append((0, lead.end()))
         first = _prefix(text, 0, exemptions)
         if first:
             buckets["part", first].append(part.key)

@@ -207,9 +207,9 @@ _FOLLOW_INVITE_RE = re.compile(
     r"(?:không|đừng) bỏ lỡ (?:những |các |mọi )?(?:buổi|phiên|lần|video|bản tin|thông báo)",
     re.IGNORECASE,
 )
-# The opening part already greets; an intro that greets again repeats it ("Chào mọi người, ...").
+# Only the opening greets; later parts may salvage the greeting clause.
 _GREETING_RE = re.compile(
-    r"^\W*(?:xin\s+)?chào(?:\s+mừng)?(?!\w)[^,.!?;]*[,.!?;]?\s*", re.IGNORECASE
+    r"(?:^|(?<=[.!?;])\s*)(?:xin\s+)?chào(?:\s+mừng)?(?!\w)[^,.!?;]*[,.!?;]?\s*", re.IGNORECASE
 )
 _BRIDGE_RE = re.compile(
     r"(?:sản phẩm|món|mẫu)\s+(?:tiếp theo|kế tiếp|tiếp đến)|(?:tiếp theo|kế tiếp) là",
@@ -304,6 +304,7 @@ _TYPOS = {"thoải chọn": "thoải mái chọn", "đúng mẫi": "đúng mẫu
 _CHEAP_RE = re.compile(
     r"giá (?:siêu )?rẻ|rẻ nhất|bán chạy nhất|tốt nhất|số (?:một|1)\b"
     r"|hàng (?:nghìn|ngàn|triệu) (?:khách|người)"
+    r"|(?<!\w)(?:hot item|rất đã|cho cả l[ốô]|nâng tầm trải nghiệm|lựa chọn lý tưởng)(?!\w)"
     # praise and reassurance the owner never wrote: speed/safety/value verdicts are claims, not wording
     r"|nhanh nhất|độ an toàn|an toàn tuyệt đối|hoàn hảo|tuyệt vời|giá (?:này )?(?:rất )?hợp lý"
     # hype adjectives the owner's data never states; plain "nhanh"/"nhẹ" stay allowed (only these phrases)
@@ -601,8 +602,16 @@ def fallback_unit_text(spec: "UnitSpec", product: "ProductBrief") -> str:
             paragraphs = _paragraphs([_end(_ask_aloud(c)) for c in spec.claims], max_s)
             text = "\n\n".join(_within_bound(paragraphs, unit_s, spec.must))
     text = _KH_RE.sub("không", text or f"Mình giới thiệu thêm về {name}.")
+    if spec.role == "offer":
+        text = _dedupe_offer_sentences(_speak_approved_prices(text, product.prices))
     if spec.revisit:
-        text = "Mình nhắc lại để các bạn mới theo dõi tiện tham khảo. " + text
+        leads = (
+            "Mình nhắc lại một vài thông tin để mọi người tiện tham khảo. ",
+            "Các bạn mới theo dõi có thể xem lại những ý này. ",
+            "Quay lại phần thông tin đã nói, mình điểm lại nhé. ",
+            "Để tiện theo dõi, mình tóm lược phần này. ",
+        )
+        text = leads[spec.recap_index % len(leads)] + text
     # display text keeps the owner's digits; record_failed_unit compiles the spoken form
     return text
 
@@ -668,6 +677,7 @@ class UnitSpec:
     must: tuple[str, ...] = ()  # claims of this unit the text MUST cover (checked)
     target_seconds: float = 0.0
     revisit: bool = False
+    recap_index: int = 0
     order_code: str = ""  # the product's comment code: said only in the with_cta unit
 
 
@@ -756,12 +766,17 @@ def _cluster_claims(product: ProductBrief) -> dict:
     }
 
 
+def product_floor_s(requested_s: float, facts: int) -> float:
+    """The product floor, bounded by the owner's requested duration."""
+    return min(requested_s, min(_FULL_PRODUCT_S, max(_MIN_PRODUCT_S, _FLOOR_PER_FACT_S * facts)))
+
+
 def product_target_s(requested_s: float, facts: int) -> float:
     """One product's spoken-length target: floor = clamp(20 s x facts, 120, 240) s, ceiling = 25 s x facts,
     so target = min(requested, max(floor, ceiling)). The requested (policy) value always wins."""
     # The 240 s floor applies only at 12+ approved facts. Below that, scale the floor
     # from 120 to 240 s so sparse products are not padded with repetition or invented facts.
-    floor = min(_FULL_PRODUCT_S, max(_MIN_PRODUCT_S, _FLOOR_PER_FACT_S * facts))
+    floor = product_floor_s(requested_s, facts)
     return min(requested_s, max(floor, _SECONDS_PER_FACT * facts))
 
 
@@ -926,6 +941,11 @@ def plan_units(
             remaining_s -= seconds
             elapsed_s = 0.0 if unit.role == "offer" else elapsed_s + seconds
         units = timed
+    ordinal = 0
+    for i, unit in enumerate(units):
+        if unit.revisit:
+            units[i] = replace(unit, recap_index=ordinal)
+            ordinal += 1
     return units
 
 
@@ -1151,9 +1171,9 @@ def _states_missing_data(text: str, approved: tuple[str, ...]) -> bool:
     """A "missing data" phrase is fine only when an approved statement itself says it
     (e.g. the restriction "Không có khuyến mãi cho đơn dưới 200k.")."""
     # Same whitespace cleanup as the cleaner applies to the model output.
-    statements = [" ".join(a.lower().split()) for a in approved]
+    text = _nfc(text)
     return any(
-        not any(m.group().lower() in statement for statement in statements)
+        not _owner_wrote_in_clause(text, m.start(), m.group(), approved)
         for m in _MISSING_INFO_RE.finditer(text)
     )
 
@@ -1185,6 +1205,17 @@ def role_is_intro_without_name(spec: "UnitSpec | None", text: str, name: str) ->
         w for w in re.findall(r"[a-z0-9]+", _fold(name)) if len(w) >= 2 and w not in _NAME_STOP
     }
     return bool(words) and not words & set(re.findall(r"[a-z0-9]+", _fold(text)))
+
+
+def _dedupe_offer_sentences(text: str) -> str:
+    """Deduplicate after prices have been canonicalized to Vietnamese words."""
+    kept, seen = [], set()
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        key = " ".join(re.findall(r"[^\W_]+", _nfc(sentence).casefold()))
+        if key not in seen:
+            kept.append(sentence)
+            seen.add(key)
+    return " ".join(kept)
 
 
 def check_unit_text(
@@ -1225,6 +1256,8 @@ def check_unit_text(
     text = _KH_RE.sub("không", text)
     text = _SPLIT_SIZE_RE.sub(lambda m: re.sub(r"\s+", "", m.group(1)), text)
     text = _speak_approved_prices(text, prices)
+    if spec is not None and spec.role == "offer":
+        text = _dedupe_offer_sentences(text)
     if len(text) < 6 or not re.search(r"[^\W\d_]{2}", text):
         return None, "empty"
     if len(text) > _MAX_UNIT_CHARS:
@@ -1235,12 +1268,7 @@ def check_unit_text(
         return None, "missing_info"
     if role_is_intro_without_name(spec, text, product_name):
         return None, "intro_name"
-    if (
-        spec is not None
-        and spec.role == "intro"
-        and _GREETING_RE.match(text)
-        and not _opens_with_name(text, product_name)
-    ):
+    if spec is not None and spec.role != "opening" and _greeting_spans(text, product_name, brand):
         return None, "greeting"
     said = origins_of(text)
     if len(said) > 1 or (said and len(all_origins) > 1):
@@ -1248,18 +1276,21 @@ def check_unit_text(
     sell_text = text
     if spec is not None and spec.role in ("opening", "closing"):
         sell_text = _FOLLOW_INVITE_RE.sub("", text)
-    approved_text = [
-        _nfc(a).lower() for a in approved
-    ]  # NFD owner text must still exempt its own wording
     if any(
-        not any(m.group().lower() in a for a in approved_text)
+        not _owner_wrote_in_clause(_nfc(sell_text), m.start(), m.group(), approved)
         for m in _HARD_SELL_RE.finditer(_nfc(sell_text))
     ):
         return None, "hard_sell"  # pressure wording the owner did not write
     # NFC both sides: NFD owner text must still match. The owner's product name and brand are owner wording.
-    lowered = [_nfc(a).lower() for a in (*approved, product_name, brand) if a]
-    if any(not _owner_wrote(m.group(), lowered) for m in _CHEAP_RE.finditer(_nfc(text))):
+    if any(
+        not _owner_wrote_in_clause(
+            _nfc(text), m.start(), m.group(), (*approved, product_name, brand)
+        )
+        for m in _CHEAP_RE.finditer(_nfc(text))
+    ):
         return None, "hard_sell"  # each superlative must be one the owner wrote
+    if _unapproved_warranty_qualifiers(text, approved):
+        return None, "hard_sell"  # fabricated warranty qualification
     if _invented_offer(text, approved, product_name):
         return None, "hard_sell"  # an offer, gift or free shipping the data never mentions
     if not allow_bridge and _BRIDGE_RE.search(text):
@@ -1368,16 +1399,79 @@ def _invented_offer(text: str, approved: tuple[str, ...], product_name: str = ""
     # no offer"), so the check stays off; every production caller passes the claims and discounts.
     if not approved:
         return False
-    if any(_OFFER_RE.search(_nfc(a)) for a in approved):
-        return False
-    name = _nfc(product_name).lower()
-    return any(m.group().lower() not in name for m in _OFFER_RE.finditer(_nfc(text)))
+    # Compare the same spoken number forms while keeping exemptions local.
+    text = _nfc(compile_spoken_text(text).spoken_text)
+    approved = tuple(compile_spoken_text(a).spoken_text for a in approved)
+    name = _nfc(compile_spoken_text(product_name).spoken_text).lower()
+    return any(
+        m.group().lower() not in name
+        and not _owner_wrote_in_clause(text, m.start(), m.group(), approved)
+        for m in _OFFER_RE.finditer(text)
+    )
 
 
-def _opens_with_name(text: str, name: str) -> bool:
-    """A name that itself starts with a greeting word ("Chào Mào") is not a greeting."""
-    prefix = " ".join(_nfc(name).lower().split()[:2])
-    return bool(prefix) and re.sub(r"^\W+", "", _nfc(text).lower()).startswith(prefix)
+def _greeting_spans(text: str, product_name: str, brand: str) -> list[tuple[int, int]]:
+    """Protect exact owner names at every position, including inside a greeting clause."""
+    names = [
+        m.span()
+        for name in (product_name, brand)
+        if name
+        for m in re.finditer(rf"(?<!\w){re.escape(_nfc(name))}(?!\w)", text, re.I)
+    ]
+    # Mask names without changing offsets. A match can then never consume a name
+    # during salvage, even in "Chào mọi người, ... Chào Mào ...".
+    masked = list(text)
+    for start, end in names:
+        masked[start:end] = "x" * (end - start)
+    return [
+        (
+            m.start(),
+            min((start for start, _end in names if m.start() < start < m.end()), default=m.end()),
+        )
+        for m in _GREETING_RE.finditer("".join(masked))
+    ]
+
+
+def _unapproved_warranty_qualifiers(text: str, approved: tuple[str, ...]):
+    text = _nfc(text)
+    return [
+        m
+        for m in re.finditer(r"bảo hành[^.!?;,]*?\s+(?P<qualifier>bình thường)\b", text, re.I)
+        if not _owner_wrote_in_clause(text, m.start("qualifier"), m.group("qualifier"), approved)
+    ]
+
+
+def _owner_wrote_in_clause(text: str, position: int, phrase: str, approved) -> bool:
+    """An exemption belongs to the same topic in the same sentence/clause."""
+
+    def clauses(value):
+        return re.split(r"[.!?;,]|\s+và\s+", " ".join(_nfc(value).lower().split()))
+
+    def topics(clause):
+        return (
+            (_topics(clause) - {"policy"})
+            | {kind for kind, rx in _POLICY_KINDS.items() if rx.search(_fold(clause))}
+            | {
+                kind
+                for kind, pattern in (
+                    ("shipping", r"giao hàng|vận chuyển|\bship\b"),
+                    ("inspection", r"kiểm hàng"),
+                )
+                if re.search(pattern, clause)
+            }
+        )
+
+    prefix = text[:position]
+    clause_start = max((m.end() for m in re.finditer(r"[.!?;,]|\s+và\s+", prefix, re.I)), default=0)
+    clause = clauses(text[clause_start:])[0]
+    wanted = topics(clause)
+    # Same topic = the clauses share at least one topic (a rewrite may split or merge clauses, so equality is too
+    # strict), or neither names any topic. A phrase the owner wrote about a DIFFERENT topic never exempts this clause.
+    return any(
+        _owner_wrote(phrase, [owner]) and ((topics(owner) & wanted) or topics(owner) == wanted)
+        for statement in approved
+        for owner in clauses(statement)
+    )
 
 
 def _nfc(text: str) -> str:
@@ -1396,7 +1490,6 @@ def offending_phrases(
     """The wording our own fixed patterns matched for a wording rejection (never any other text)."""
     text = _nfc(raw or "")
     approved = _safe_approved(approved)
-    lowered = [_nfc(a).lower() for a in approved]
     patterns: tuple[re.Pattern, ...] = {
         "hard_sell": (_HARD_SELL_RE, _CHEAP_RE),
         "cta": (_CTA_RE,),
@@ -1406,16 +1499,14 @@ def offending_phrases(
         "foreign_script": (_FOREIGN_SCRIPT_RE,),
         "personal_experience": (_EXPERIENCE_RE,),
     }.get(why or "", ())
-    if why == "hard_sell" and not any(_OFFER_RE.search(a) for a in lowered):
+    if why == "hard_sell":
         patterns = (*patterns, _OFFER_RE)
     hits: list[str] = []
     for pattern in patterns:
         for match in pattern.finditer(text):
             phrase = match.group().strip().lower()
-            owner_wrote = why == "hard_sell" and (
-                _owner_wrote(phrase, lowered)
-                if pattern is _CHEAP_RE
-                else any(phrase in a for a in lowered)
+            owner_wrote = why == "hard_sell" and _owner_wrote_in_clause(
+                text, match.start(), phrase, approved
             )
             if phrase and not owner_wrote and phrase not in hits:
                 hits.append(phrase)
@@ -1427,9 +1518,27 @@ def salvage_unit_text(raw: str | None, why: str | None, **kwargs) -> str | None:
     every check (length, coverage of the must-keep claims...). None when nothing is salvageable."""
     if why not in WORDING_REASONS:
         return None
+    if why == "hard_sell":
+        # An appended warranty qualifier can be removed without losing its policy.
+        cleaned = _nfc(raw or "")
+        matches = _unapproved_warranty_qualifiers(
+            cleaned, _safe_approved(kwargs.get("approved", ()))
+        )
+        for match in reversed(matches):
+            start, end = match.span("qualifier")
+            cleaned = cleaned[:start].rstrip() + cleaned[end:]
+        if cleaned != _nfc(raw or ""):
+            text = check_unit_text(cleaned, **kwargs)[0]
+            if text is not None:
+                return text
     if why == "greeting":
         # cut only the greeting clause: the same sentence usually carries the product name
-        rest = _GREETING_RE.sub("", _nfc(raw or "").strip(), count=1).strip()
+        rest = _nfc(raw or "").strip()
+        for start, end in reversed(
+            _greeting_spans(rest, kwargs.get("product_name", ""), kwargs.get("brand", ""))
+        ):
+            rest = rest[:start] + rest[end:]
+        rest = rest.strip()
         return check_unit_text(rest[:1].upper() + rest[1:], **kwargs)[0] if rest else None
     owner = (*(kwargs.get("approved") or ()), kwargs.get("product_name"), kwargs.get("brand"))
     phrases = offending_phrases(raw, why, tuple(a for a in owner if a))
@@ -1788,6 +1897,18 @@ def build_unit_prompt(
             "cá nhân hay sự thật mới về sản phẩm."
         )
     if spec.revisit:
+        styles = (
+            "nhắc lại ý chính cho người mới theo dõi",
+            "chuyển từ ý trước sang lời tóm lược",
+            "đưa chủ đề cần ôn lại lên đầu câu",
+            "dẫn từ nhu cầu xem lại thông tin của khán giả",
+        )
+        ordinal = sum(u.revisit for u in specs[:index])
+        parts.append(
+            "Luân phiên cách dẫn theo thứ tự phần nhắc lại; phần này "
+            + styles[ordinal % len(styles)]
+            + ". Tự viết lời dẫn, không lặp ba từ mở đầu của phần nhắc lại khác."
+        )
         parts.append(
             "Đây là phần NHẮC LẠI cho người mới vào, KHÔNG giới thiệu lần đầu: không chào lại, "
             "không mở màn sản phẩm; mở bằng một chuyển ý nhắc lại tự nhiên, diễn đạt KHÁC phần "

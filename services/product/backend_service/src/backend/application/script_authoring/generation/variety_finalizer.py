@@ -79,6 +79,7 @@ async def selected_parts(service, script_set):
                             )
                         )
                     ),
+                    revisit=bool((brief or {}).get("revisit")),
                 )
             )
             records[key] = (item, version, selected, segment, plan, brief)
