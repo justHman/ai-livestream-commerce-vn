@@ -12,6 +12,7 @@ from backend.application.script_authoring.generation.ordered_units import (
     build_unit_prompt,
     check_unit_text,
     fallback_unit_text,
+    product_floor_s,
     salvage_unit_text,
 )
 from backend.application.script_authoring.generation.script_variety import VarietyPart, new_repeats
@@ -130,6 +131,106 @@ def test_warranty_does_not_gain_normal_qualification():
     )
 
 
+@pytest.mark.parametrize("floor_s,warns", [(120, True), (60, False)])
+def test_recap_drop_checks_the_product_floor_and_records_duration(monkeypatch, floor_s, warns):
+    from backend.application.script_authoring import service_impl
+    from backend.application.script_authoring.gate.results import GateRunResult
+
+    main = SimpleNamespace(display_text="Vải cotton.", spoken_text="main", provenance={})
+    recap = SimpleNamespace(
+        display_text="Mình nhắc lại nhé. Vải cotton.",
+        spoken_text="recap",
+        provenance={"source": "fallback"},
+    )
+    rows = {0: main, 1: recap}
+
+    def real_gate(segments):
+        return GateRunResult(scope="full_script")
+
+    workflow = SimpleNamespace(segments=rows, plan_segment_count=2, full_gate=real_gate)
+    # Exact observed regression: 114.992s before filtering, 62.132s after.
+    monkeypatch.setattr(
+        service_impl,
+        "spoken_duration_ms",
+        lambda text: 114992 if "recap" in text else 62132,
+    )
+
+    def compile_selected():
+        workflow.last_gate = workflow.full_gate([s.spoken_text for s in workflow.segments.values()])
+        assert list(workflow.segments.values()) == [main]
+        return workflow.last_gate
+
+    result = _compile_without_duplicate_recaps(
+        workflow,
+        [UnitSpec("highlight"), UnitSpec("highlight", revisit=True)],
+        compile_selected,
+        min_duration_s=product_floor_s(floor_s, 22),
+    )
+    assert result is workflow.last_gate and result.passed
+    assert bool(result.warnings) is warns
+    if warns:
+        warning = result.warnings[0]
+        assert warning.rule_id == "RECAP_DURATION_SHORTFALL"
+        assert all(value in warning.message for value in ("114.992s", "62.132s", "120.000s"))
+    assert workflow.segments is rows and workflow.plan_segment_count == 2
+    assert workflow.full_gate is real_gate
+
+
+def test_product_name_at_start_does_not_exempt_a_later_greeting():
+    raw = "Áo XYZ có vải cotton. Chào buổi chiều mọi người."
+    kwargs = {"spec": UnitSpec("highlight"), "product_name": "Áo XYZ"}
+    assert check_unit_text(raw, **kwargs)[1] == "greeting"
+    assert salvage_unit_text(raw, "greeting", **kwargs) == "Áo XYZ có vải cotton."
+
+
+@pytest.mark.parametrize("name_key", ["brand", "product_name"])
+def test_name_at_later_match_position_is_preserved(name_key):
+    raw = "Vải cotton mềm. Chào Mào là thương hiệu của sản phẩm."
+    kwargs = {"spec": UnitSpec("intro"), name_key: "Chào Mào"}
+    assert check_unit_text(raw, **kwargs) == (raw, None)
+    assert salvage_unit_text(raw, "greeting", **kwargs) == raw
+    with_greeting = raw + " Chào buổi chiều mọi người."
+    assert check_unit_text(with_greeting, **kwargs)[1] == "greeting"
+    assert salvage_unit_text(with_greeting, "greeting", **kwargs) == raw
+    assert salvage_unit_text("Chào mọi người, " + raw, "greeting", **kwargs) == raw
+
+
+@pytest.mark.parametrize("separator", [". ", " và ", "; "])
+def test_warranty_exemption_does_not_leak_from_an_unrelated_clause(separator):
+    raw = "Bảo hành 1 năm bình thường."
+    approved = ("Dùng bình thường" + separator + "Bảo hành 1 năm.",)
+    kwargs = {"spec": UnitSpec("assurance"), "approved": approved}
+    assert check_unit_text(raw, **kwargs)[1] == "hard_sell"
+    assert salvage_unit_text(raw, "hard_sell", **kwargs) == "Bảo hành 1 năm."
+
+
+def test_warranty_exemption_cannot_come_from_another_policy():
+    kwargs = {
+        "spec": UnitSpec("assurance"),
+        "approved": ("Bảo hành 1 năm.", "Giao hàng bình thường."),
+    }
+    assert check_unit_text("Bảo hành 1 năm bình thường.", **kwargs)[1] == "hard_sell"
+
+
+def test_hype_exemption_belongs_to_its_owner_clause():
+    kwargs = {"spec": UnitSpec("assurance"), "approved": ("Giặt cực nhanh.", "Giao hàng.")}
+    assert check_unit_text("Giao hàng cực nhanh.", **kwargs)[1] == "hard_sell"
+
+
+def test_free_offer_exemption_belongs_to_its_owner_policy():
+    kwargs = {"spec": UnitSpec("offer"), "approved": ("Đổi trả miễn phí.", "Giao hàng.")}
+    assert check_unit_text("Giao hàng miễn phí.", **kwargs)[1] == "hard_sell"
+    assert (
+        salvage_unit_text("Vải cotton mềm. Giao hàng miễn phí.", "hard_sell", **kwargs)
+        == "Vải cotton mềm."
+    )
+
+
+def test_local_offer_exemption_still_compares_spoken_numbers():
+    raw = "Giảm hai triệu đồng."
+    assert check_unit_text(raw, spec=UnitSpec("offer"), approved=("Giảm 2000000đ.",)) == (raw, None)
+
+
 @pytest.mark.asyncio
 async def test_regenerate_recap_accepts_a_shared_neutral_lead_in(monkeypatch):
     from test_ordered_generation import _service, _text
@@ -138,7 +239,9 @@ async def test_regenerate_recap_accepts_a_shared_neutral_lead_in(monkeypatch):
     from backend.application.script_authoring.generation import variety_finalizer
     from backend.application.script_authoring import service_impl
 
-    monkeypatch.setattr(service_impl, "_compile_without_duplicate_recaps", lambda w, r, c: c())
+    monkeypatch.setattr(
+        service_impl, "_compile_without_duplicate_recaps", lambda w, r, c, **kw: c()
+    )
 
     llm = RepairLLM()
     service, repos = _service(llm)

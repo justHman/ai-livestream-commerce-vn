@@ -49,7 +49,7 @@ from backend.application.script_authoring.compile import (
     brand_of,
     compile_spoken_text,
 )
-from backend.application.script_authoring.duration import gate_duration_band
+from backend.application.script_authoring.duration import gate_duration_band, spoken_duration_ms
 from backend.application.script_authoring.fingerprints import (
     ApprovalDependencies,
     rule_set_version_key,
@@ -61,7 +61,7 @@ from backend.application.script_authoring.gate.engine import (
     default_segment_rules,
 )
 from backend.application.script_authoring.gate.registry import ScriptRuleRegistry
-from backend.application.script_authoring.gate.results import GateRunResult, RuleViolation
+from backend.application.script_authoring.gate.results import GateRunResult, RuleViolation, Severity
 from backend.application.script_authoring.generation.batch import (
     BatchOrchestratorConfig,
     BatchRequest,
@@ -106,9 +106,11 @@ from backend.application.script_authoring.generation.ordered_units import (
     salvage_unit_text,
     uncovered_claims,
     plan_units,
+    product_floor_s,
     role_bounds_s,
     role_title,
     unit_max_tokens,
+    unsafe_claims,
 )
 from backend.application.script_authoring.generation.unit_brief import (
     RECAP_RETRY,
@@ -179,7 +181,7 @@ logger = logging.getLogger(__name__)
 _UNIT_MAX_TOKENS = 900
 
 
-def _compile_without_duplicate_recaps(workflow, roles, compile_selected):
+def _compile_without_duplicate_recaps(workflow, roles, compile_selected, *, min_duration_s=0):
     """Drop extractive recaps whose entire fact body already occurs in a main part.
 
     Keep persisted rows and original indices for audit/recovery. Only the selection
@@ -205,12 +207,36 @@ def _compile_without_duplicate_recaps(workflow, roles, compile_selected):
             if normalized and any(normalized in text for text in main_texts):
                 continue
         selected.append(segment)
+    full_gate = workflow.full_gate if min_duration_s else None
+    if len(selected) < len(original) and min_duration_s:
+        before_s = spoken_duration_ms("\n\n".join(s.spoken_text for s in original.values())) / 1000
+        after_s = spoken_duration_ms("\n\n".join(s.spoken_text for s in selected)) / 1000
+        if after_s < min_duration_s:
+            # Extractive fallback has exhausted usable facts; another lead-in cannot
+            # add substance. Keep the shorter script, but persist a visible warning
+            # in the full gate rather than silently padding it with duplicate facts.
+            def gate_with_duration_warning(segments):
+                result = full_gate(segments)
+                warning = RuleViolation(
+                    rule_id="RECAP_DURATION_SHORTFALL",
+                    severity=Severity.WARNING,
+                    message=(
+                        f"Bỏ phần nhắc lại trùng lặp: {before_s:.3f}s → {after_s:.3f}s; "
+                        f"dưới thời lượng tối thiểu sản phẩm {min_duration_s:.3f}s. "
+                        "Cần bổ sung thông tin đã duyệt hoặc viết lại phần nhắc lại."
+                    ),
+                )
+                return replace(result, violations=(*result.violations, warning))
+
+            workflow.full_gate = gate_with_duration_warning
     workflow.segments = dict(enumerate(selected))
     workflow.plan_segment_count = len(selected)
     try:
         return compile_selected()
     finally:
         workflow.segments, workflow.plan_segment_count = original, count
+        if full_gate is not None:
+            workflow.full_gate = full_gate
 
 
 def _used_openings(continuity: ContinuityState) -> tuple[str, ...]:
@@ -1576,8 +1602,12 @@ class ScriptAuthoringServiceImpl:
             )
 
         compile_selected = workflow.compile_and_full_gate
+        every = (*product.claims, *product.discounts)
+        floor_s = product_floor_s(
+            workflow.target_duration_s or 0, len(set(every) - unsafe_claims(every))
+        )
         workflow.compile_and_full_gate = lambda: _compile_without_duplicate_recaps(
-            workflow, roles, compile_selected
+            workflow, roles, compile_selected, min_duration_s=floor_s
         )
         workflow.full_gate = lambda segments: self._gate.run_full_script(
             list(segments),

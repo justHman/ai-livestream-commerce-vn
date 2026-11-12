@@ -112,6 +112,7 @@ async def test_legacy_segment_without_provenance_is_never_reported_as_llm():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_keep_duplicate_recaps")
 async def test_regenerating_a_recap_part_keeps_the_stored_recap_intent():
     llm = RepairLLM()
     service, repos = _service(llm)
@@ -320,6 +321,7 @@ async def _regen(service, set_id, before, part, key, **extra):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_keep_duplicate_recaps")
 async def test_price_change_blocks_regenerate_before_any_model_call():
     llm = RepairLLM()
     service, repos = _service(llm)
@@ -337,6 +339,7 @@ async def test_price_change_blocks_regenerate_before_any_model_call():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_keep_duplicate_recaps")
 async def test_legacy_part_without_brief_is_not_replanned_unless_owner_picks_intent():
     llm = RepairLLM()
     service, repos = _service(llm)
@@ -413,6 +416,7 @@ async def test_lost_save_race_is_stale_revision_and_writes_no_segment():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_keep_duplicate_recaps")
 async def test_gate_repair_keeps_neighbours_and_opening_inventory(monkeypatch):
     from backend.application.script_authoring.gate.results import (
         GateRunResult,
@@ -538,10 +542,74 @@ async def test_draft_parts_route_replays_conflicts_and_reports_stale():
         assert stale.json()["detail"]["code"] == "stale_revision"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _keep_duplicate_recaps(monkeypatch):
     # These tests exercise brief mechanics on fixture recaps that mirror the main part;
     # the duplicate-recap omission is covered in test_recap_hotfix.py.
     from backend.application.script_authoring import service_impl
 
-    monkeypatch.setattr(service_impl, "_compile_without_duplicate_recaps", lambda w, r, c: c())
+    monkeypatch.setattr(
+        service_impl, "_compile_without_duplicate_recaps", lambda w, r, c, **kw: c()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("by_part_id", [False, True])
+async def test_regenerate_after_real_recap_filter_keeps_original_part_identity(by_part_id):
+    llm = RepairLLM(empty_for={("Kem ABC", "Điểm nổi bật")})
+    service, repos = _service(llm)
+    # P2 goes last so its closing survives after the dropped recap rows.
+    set_id = (
+        await service.create_script_set(
+            name="Phiên",
+            transition_policy="ORDER_AWARE",
+            product_ids=["P1", "P2"],
+            brief=_rich_brief(),
+        )
+    )["id"]
+    await _generate(service, repos, set_id)
+    _, before = await _text(repos, set_id, "P2")
+    parts = (await _parts(service, set_id, "P2"))["parts"]
+    first = await repos.segments.get(parts[0]["segment_id"])
+    plan = await repos.plans.get(first.plan_id)
+    selected_ids = {p["part_id"] for p in parts}
+    dropped = [b for b in plan.unit_briefs["parts"] if b["part_id"] not in selected_ids]
+    assert dropped and all(b["revisit"] for b in dropped)
+    assert any(
+        v.rule_id == "RECAP_DURATION_SHORTFALL" and v.severity == "warning"
+        for run in repos.gate_runs.rows.values()
+        if run.script_item_id == before.script_item_id
+        for v in run.violations
+    )
+    dropped_indices = {
+        i for i, b in enumerate(plan.unit_briefs["parts"]) if b["part_id"] not in selected_ids
+    }
+    # Pick a surviving part after the gap: its displayed position has shifted,
+    # while its persisted segment_index and part_id must still select that part.
+    position, target = next(
+        (i, p)
+        for i, p in enumerate(parts)
+        if p["brief"]["role"] == "closing" and p["segment_index"] > min(dropped_indices)
+    )
+    assert position != target["segment_index"]
+    llm.prompts.clear()
+    llm.repair = lambda prompt: target["display_text"]
+    started = await service.regenerate_segment(
+        set_id=set_id,
+        product_id="P2",
+        segment_index=999 if by_part_id else target["segment_index"],
+        part_id=target["part_id"] if by_part_id else None,
+        idempotency_key="after-recap-filter",
+        expected_version_id=before.id,
+    )
+    status = await wait_job(service, set_id, "P2", started["workflow_id"])
+    assert status["status"] == "completed", status
+    after = (await _parts(service, set_id, "P2"))["parts"]
+    assert [p["part_id"] for p in after] == [p["part_id"] for p in parts]
+    for old, new in zip(parts, after, strict=True):
+        if old["part_id"] == target["part_id"]:
+            assert new["segment_id"] != old["segment_id"]
+            assert new["segment_index"] == old["segment_index"]
+        else:
+            assert new["segment_id"] == old["segment_id"]
+    assert not {p["part_id"] for p in after}.intersection(b["part_id"] for b in dropped)
