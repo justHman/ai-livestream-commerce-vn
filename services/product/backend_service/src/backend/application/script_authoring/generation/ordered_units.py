@@ -240,8 +240,12 @@ _MAX_PROMOS_PER_UNIT = 3
 _MAX_UNIT_VERBATIM_S = 24.0
 # A product's script follows how much the owner wrote, not only the platform target: ~14s of speech per fact
 # (never below 90s). Padding thin products to the target produced repeated "nhắc lại" units.
-_SECONDS_PER_FACT = 14
-_MIN_TARGET_S = 90
+_SECONDS_PER_FACT = 25  # ceiling: more speech per fact than this means padding
+_MIN_PRODUCT_S = 120  # floor for a product with few facts
+_FULL_PRODUCT_S = 240  # floor (4 min) once a product has 12+ facts
+_FLOOR_PER_FACT_S = 20
+_MIN_PART_CLAIMS = 2  # parts are split down to this many facts when the target needs more parts
+_MAX_RECAP_ROUNDS = 2
 _MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
 _MAX_SIZE_ROWS = 40
 _SIZE_ROW_RE = re.compile(
@@ -752,6 +756,13 @@ def _cluster_claims(product: ProductBrief) -> dict:
     }
 
 
+def product_target_s(requested_s: float, facts: int) -> float:
+    """One product's spoken-length target: floor = clamp(20 s x facts, 120, 240) s, ceiling = 25 s x facts,
+    so target = min(requested, max(floor, ceiling)). The requested (policy) value always wins."""
+    floor = min(_FULL_PRODUCT_S, max(_MIN_PRODUCT_S, _FLOOR_PER_FACT_S * facts))
+    return min(requested_s, max(floor, _SECONDS_PER_FACT * facts))
+
+
 def plan_units(
     product: ProductBrief,
     *,
@@ -773,7 +784,7 @@ def plan_units(
     if target_duration_s:
         every = (*product.claims, *product.discounts)
         facts = len(set(every) - unsafe_claims(every))
-        target_duration_s = min(target_duration_s, max(_MIN_TARGET_S, _SECONDS_PER_FACT * facts))
+        target_duration_s = product_target_s(target_duration_s, facts)
 
     def spec(role: str, claims=(), promos=(), **extra) -> UnitSpec:
         covered = tuple(x for x in (*claims, *promos) if x in must)
@@ -796,9 +807,6 @@ def plan_units(
             if x not in keep:
                 keep.append(x)
         highlights = [x for x in highlights if x in keep]
-        highlight_chunks = _chunks_by_duration(highlights, _MAX_CLAIMS_PER_UNIT)
-    else:
-        highlight_chunks = _chunks_by_duration(highlights, _MAX_MUST_PER_UNIT)
 
     def rank(claim: str) -> int:
         kind = c["kinds"].get(claim)
@@ -809,28 +817,73 @@ def plan_units(
         return 0 if re.search(r"bảo hành|đổi trả", claim, re.IGNORECASE) else 3
 
     ordered_assurance = sorted(c["assurances"], key=rank)  # stable: warranty, limitation, ...
-    units = [
-        *([spec("opening")] if first else []),
-        spec("intro", bridge=ordered_aware and not first),
-        *(spec("highlight", chunk) for chunk in highlight_chunks),
-        *([spec("sizes", c["sizes"])] if c["sizes"] else []),
-        *(spec("sizes", chunk) for chunk in _chunks(c["size_overflow"], _MAX_SIZE_ROWS)),
-        *(
-            spec("assurance", chunk)
-            for chunk in _chunks_by_duration(ordered_assurance, _MAX_MUST_PER_UNIT)
-        ),
-    ]
     has_price = any(spoken_price(p) for p in product.prices)
-    promo_chunks = _chunks(c["promos"], _MAX_PROMOS_PER_UNIT) or ([()] if has_price else [])
-    for i, chunk in enumerate(promo_chunks):
-        units.append(spec("offer", promos=chunk, with_price=has_price and i == 0))
-    # One spaced revisit per factual part, no repeated opening/intro/closing or
-    # additional CTA. A longer request expands known information, never invents it.
-    candidates = [u for u in units if u.claims and u.role not in ("opening", "intro")]
-    # The target is the whole live: answers to viewers and pauses take the rest of it.
     speech_s = target_duration_s * _SPEECH_SHARE_OF_TARGET
-    wanted = max(0, math.ceil(speech_s / _UNIT_SECONDS) - len(units) - int(last))
-    revisits = [replace(u, revisit=True, with_cta=False) for u in candidates[:wanted]]
+    need = math.ceil(speech_s / _UNIT_SECONDS) - int(last)
+
+    def build(cap: int) -> list[UnitSpec]:
+        hi = min(_MAX_CLAIMS_PER_UNIT if c["typed"] else _MAX_MUST_PER_UNIT, cap)
+        promo_chunks = _chunks(c["promos"], min(_MAX_PROMOS_PER_UNIT, cap)) or (
+            [()] if has_price else []
+        )
+        return [
+            *([spec("opening")] if first else []),
+            spec("intro", bridge=ordered_aware and not first),
+            *(spec("highlight", chunk) for chunk in _chunks_by_duration(highlights, hi)),
+            *([spec("sizes", c["sizes"])] if c["sizes"] else []),
+            *(spec("sizes", chunk) for chunk in _chunks(c["size_overflow"], _MAX_SIZE_ROWS)),
+            *(
+                spec("assurance", chunk)
+                for chunk in _chunks_by_duration(ordered_assurance, min(_MAX_MUST_PER_UNIT, cap))
+            ),
+            *(
+                spec("offer", promos=chunk, with_price=has_price and i == 0)
+                for i, chunk in enumerate(promo_chunks)
+            ),
+        ]
+
+    def recaps(base: list[UnitSpec]) -> list[UnitSpec]:
+        # Spaced recap rounds of facts already approved (never new ones). Each round ends with a price/offer
+        # reminder carrying the soft call to action (the order code only if the product has one).
+        candidates = [u for u in base if u.claims and u.role not in ("opening", "intro")]
+        offers = [u for u in base if u.role == "offer"]
+        extra = need - len(base)
+        out: list[UnitSpec] = []
+        if not target_duration_s or extra <= 0 or not candidates:
+            return out
+        reminder = (
+            [replace(offers[0], revisit=True, with_cta=True)]
+            if offers and (has_price or offers[0].promos)
+            else []
+        )
+        for r in range(_MAX_RECAP_ROUNDS):
+            room = extra - len(out) - len(reminder)
+            if room <= 0 and out:
+                break
+            # round 2 stresses another half of a unit's own claims; a one-claim unit would repeat round 1
+            for u in [c for c in candidates if not r or len(c.claims) > 1][: max(1, room)]:
+                claims = u.claims[1::2] if r else u.claims
+                out.append(
+                    replace(
+                        u,
+                        claims=claims,
+                        must=tuple(x for x in claims if x in must),
+                        revisit=True,
+                        with_cta=False,
+                    )
+                )
+            out.extend(reminder)
+            if len(out) >= extra:
+                break
+        return out
+
+    # Too few parts for the target: recap rounds first; split the facts into smaller parts (3, then 2 per
+    # part) only while the recaps cannot reach the target.
+    for cap in (_MAX_CLAIMS_PER_UNIT, 3, _MIN_PART_CLAIMS):
+        units = build(cap)
+        revisits = recaps(units)
+        if len(units) + len(revisits) >= need:
+            break
     units.extend(revisits)
     body = [i for i, u in enumerate(units) if u.role != "opening"]
     units[body[-1]] = replace(units[body[-1]], with_cta=True)
