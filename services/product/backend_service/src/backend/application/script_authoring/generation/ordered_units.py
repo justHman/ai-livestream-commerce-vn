@@ -759,6 +759,8 @@ def _cluster_claims(product: ProductBrief) -> dict:
 def product_target_s(requested_s: float, facts: int) -> float:
     """One product's spoken-length target: floor = clamp(20 s x facts, 120, 240) s, ceiling = 25 s x facts,
     so target = min(requested, max(floor, ceiling)). The requested (policy) value always wins."""
+    # The 240 s floor applies only at 12+ approved facts. Below that, scale the floor
+    # from 120 to 240 s so sparse products are not padded with repetition or invented facts.
     floor = min(_FULL_PRODUCT_S, max(_MIN_PRODUCT_S, _FLOOR_PER_FACT_S * facts))
     return min(requested_s, max(floor, _SECONDS_PER_FACT * facts))
 
@@ -776,7 +778,8 @@ def plan_units(
     intro -> highlights -> size chart (one unit) -> assurances (warranty, limitation,
     compliance, then shipping; <= 4 claims per unit, never capped) -> offer (price, promotions
     <= 3 per unit). With types, only decorative claims are capped (6); without types nothing is
-    dropped (units of <= 4). The single soft CTA is folded into the last product unit.
+    dropped (units of <= 4). A soft CTA is folded into the last product unit and
+    price/offer reminders are spaced by estimated spoken duration.
     """
     c = _cluster_claims(product)
     must: set[str] = c["must"]
@@ -843,21 +846,14 @@ def plan_units(
         ]
 
     def recaps(base: list[UnitSpec]) -> list[UnitSpec]:
-        # Spaced recap rounds of facts already approved (never new ones). Each round ends with a price/offer
-        # reminder carrying the soft call to action (the order code only if the product has one).
+        # Recap rounds use only approved facts; offer reminders are timed separately below.
         candidates = [u for u in base if u.claims and u.role not in ("opening", "intro")]
-        offers = [u for u in base if u.role == "offer"]
         extra = need - len(base)
         out: list[UnitSpec] = []
         if not target_duration_s or extra <= 0 or not candidates:
             return out
-        reminder = (
-            [replace(offers[0], revisit=True, with_cta=True)]
-            if offers and (has_price or offers[0].promos)
-            else []
-        )
         for r in range(_MAX_RECAP_ROUNDS):
-            room = extra - len(out) - len(reminder)
+            room = extra - len(out)
             if room <= 0 and out:
                 break
             # round 2 stresses another half of a unit's own claims; a one-claim unit would repeat round 1
@@ -872,7 +868,6 @@ def plan_units(
                         with_cta=False,
                     )
                 )
-            out.extend(reminder)
             if len(out) >= extra:
                 break
         return out
@@ -892,6 +887,45 @@ def plan_units(
     if target_duration_s:
         per_part = speech_s / len(units)
         units = [replace(u, target_seconds=min(per_part, role_bounds_s(u.role)[1])) for u in units]
+
+    offers = [u for u in units if u.role == "offer" and (u.with_price or u.promos)]
+    if offers:
+        reminder = replace(offers[0], revisit=True, with_cta=True, target_seconds=0)
+
+        # Before generation, approved fallback speech is the evidence-based estimate;
+        # a longer speech target also counts, since the model is asked to speak that long.
+        def estimated_s(unit: UnitSpec) -> float:
+            return max(unit.target_seconds, _duration_s(fallback_unit_text(unit, product)))
+
+        reminder_s = estimated_s(reminder)
+        if target_duration_s:
+            # Use the remaining requested budget without pushing the product over its cap.
+            reminder = replace(
+                reminder,
+                target_seconds=min(
+                    reminder_s, role_bounds_s("offer")[1], max(0, target_duration_s - speech_s)
+                ),
+            )
+        durations = [estimated_s(u) for u in units]
+        remaining_s = sum(durations)
+        elapsed_s = 0.0
+        timed: list[UnitSpec] = []
+        budget_s = target_duration_s - sum(u.target_seconds for u in units)
+        for unit, seconds in zip(units, durations):
+            if (
+                elapsed_s >= 150
+                and remaining_s >= 45
+                and timed[-1].role != "offer"
+                and unit.role != "offer"
+                and (not target_duration_s or reminder.target_seconds <= budget_s)
+            ):
+                timed.append(reminder)
+                budget_s -= reminder.target_seconds
+                elapsed_s = 0.0
+            timed.append(unit)
+            remaining_s -= seconds
+            elapsed_s = 0.0 if unit.role == "offer" else elapsed_s + seconds
+        units = timed
     return units
 
 
