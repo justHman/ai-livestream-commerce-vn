@@ -179,6 +179,40 @@ logger = logging.getLogger(__name__)
 _UNIT_MAX_TOKENS = 900
 
 
+def _compile_without_duplicate_recaps(workflow, roles, compile_selected):
+    """Drop extractive recaps whose entire fact body already occurs in a main part.
+
+    Keep persisted rows and original indices for audit/recovery. Only the selection
+    used by compilation and the full gate omits the redundant recap.
+    """
+    original, count = workflow.segments, workflow.plan_segment_count
+    main_texts = [
+        " ".join(s.display_text.casefold().split())
+        for i, s in original.items()
+        if i < len(roles) and not roles[i].revisit
+    ]
+    selected = []
+    for i, segment in original.items():
+        if (
+            i < len(roles)
+            and roles[i].revisit
+            and roles[i].role != "offer"  # timed price/CTA reminders must remain
+            and (segment.provenance or {}).get("source") == "fallback"
+        ):
+            # Extractive recaps carry a neutral first sentence followed by facts.
+            body = re.split(r"(?<=[.!?])\s+", segment.display_text, maxsplit=1)
+            normalized = " ".join(body[-1].casefold().split())
+            if normalized and any(normalized in text for text in main_texts):
+                continue
+        selected.append(segment)
+    workflow.segments = dict(enumerate(selected))
+    workflow.plan_segment_count = len(selected)
+    try:
+        return compile_selected()
+    finally:
+        workflow.segments, workflow.plan_segment_count = original, count
+
+
 def _used_openings(continuity: ContinuityState) -> tuple[str, ...]:
     """How the earlier parts of this product opened (first five words), so a new part opens differently.
 
@@ -1541,6 +1575,10 @@ class ScriptAuthoringServiceImpl:
                 ),
             )
 
+        compile_selected = workflow.compile_and_full_gate
+        workflow.compile_and_full_gate = lambda: _compile_without_duplicate_recaps(
+            workflow, roles, compile_selected
+        )
         workflow.full_gate = lambda segments: self._gate.run_full_script(
             list(segments),
             ScriptGateContext(
@@ -3627,6 +3665,7 @@ class ScriptAuthoringServiceImpl:
                 )
                 check = {
                     "spec": spec,
+                    "product_name": product.name,
                     "prices": product.prices,
                     "allow_bridge": spec.bridge,
                     "approved": (*product.claims, *product.discounts),

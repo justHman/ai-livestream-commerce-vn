@@ -536,3 +536,12 @@ async def test_draft_parts_route_replays_conflicts_and_reports_stale():
         stale = await client.put(url, json={**body, "idempotency_key": "route-2"})
         assert stale.status_code == 409
         assert stale.json()["detail"]["code"] == "stale_revision"
+
+
+@pytest.fixture(autouse=True)
+def _keep_duplicate_recaps(monkeypatch):
+    # These tests exercise brief mechanics on fixture recaps that mirror the main part;
+    # the duplicate-recap omission is covered in test_recap_hotfix.py.
+    from backend.application.script_authoring import service_impl
+
+    monkeypatch.setattr(service_impl, "_compile_without_duplicate_recaps", lambda w, r, c: c())
