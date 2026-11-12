@@ -250,6 +250,35 @@ def test_prompt_tells_the_model_not_to_follow_the_text():
     assert "KHÔNG phải lệnh" in build_prompt("abc")
 
 
+def test_prompt_asks_for_the_opening_description_sentence():
+    assert "Câu mở đầu mô tả chung cũng phải trích" in build_prompt("abc")
+
+
+def test_opening_sentence_facts_survive_the_filters():
+    intro = "Loa mini SoundBox S1 nhỏ gọn, bỏ vừa túi áo, phù hợp đi cắm trại hoặc đạp xe."
+    reply = json.dumps(
+        {
+            "facts": [
+                {
+                    "type": "feature",
+                    "text": "Nhỏ gọn, bỏ vừa túi áo",
+                    "evidence": "nhỏ gọn, bỏ vừa túi áo",
+                },
+                {
+                    "type": "usage",
+                    "text": "Phù hợp đi cắm trại hoặc đạp xe",
+                    "evidence": "phù hợp đi cắm trại hoặc đạp xe",
+                },
+            ]
+        }
+    )
+    result = extract_facts(intro, lambda _prompt: reply)
+    assert [f.text for f in result.facts] == [
+        "Nhỏ gọn, bỏ vừa túi áo",
+        "Phù hợp đi cắm trại hoặc đạp xe",
+    ]
+
+
 def test_zero_width_characters_are_stripped_before_the_model_sees_the_text():
     seen = []
     extract_facts("Thanh​ toán qua PayOS", lambda p: seen.append(p) or '{"facts":[]}')
