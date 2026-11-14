@@ -1,0 +1,30 @@
+{
+  "schema": "script_quality_doc/v1",
+  "note": "Fixture B0: repetition — one sentence is repeated VERBATIM between the main part and the recap part, and all sections open with the same 'Mình quay lại với phần…' five-word prefix (the recap false-positive/true-positive case from TASK_B §4).",
+  "product": {
+    "id": "zz-repetition-demo",
+    "name": "Serum dưỡng ẩm Mộc Lạc Dewmist 30ml",
+    "order_code": "ML-DM30",
+    "target_floor_s": 120,
+    "target_ceiling_s": 240
+  },
+  "claims": [
+    "Giá niêm yết 389.000đ, giá live 299.000đ.",
+    "Giá live giảm 23% so với giá niêm yết.",
+    "Tặng túi mini đựng mỹ phẩm và bông tẩy trang cotton 100 miếng."
+  ],
+  "sections": [
+    {
+      "role": "intro",
+      "text": "Chào cả nhà, mình là Minh. Mình quay lại với phần giới thiệu giá nhé."
+    },
+    {
+      "role": "highlights",
+      "text": "Mình quay lại với phần giá luôn cho các bạn vừa vào live. Giá live hôm nay là 299.000đ, giảm 23% so với giá niêm yết 389.000đ."
+    },
+    {
+      "role": "recap",
+      "text": "Mình quay lại với phần giá lần cuối. Giá live hôm nay là 299.000đ, giảm 23% so với giá niêm yết 389.000đ. Tặng túi mini 100 miếng."
+    }
+  ]
+}

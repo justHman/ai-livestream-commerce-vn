@@ -1,0 +1,59 @@
+{
+  "schema": "script_quality_doc/v1",
+  "note": "Fixture B0: a GOOD script — all numbers covered by claims, no uncovered buzzwords, no verbatim repeats, distinct openings, interactions spaced under 90 s, duration >= 70% of the 180 s floor (>= 2016 chars).",
+  "product": {
+    "id": "zz-serum-moc-lac-dewmist",
+    "name": "Serum dưỡng ẩm Mộc Lạc Dewmist 30ml",
+    "order_code": "ML-DM30",
+    "target_floor_s": 180,
+    "target_ceiling_s": 240
+  },
+  "claims": [
+    "Serum dưỡng ẩm Mộc Lạc Dewmist 30ml, mã ML-DM30.",
+    "Giá niêm yết 389.000đ, giá live 299.000đ.",
+    "Giá live giảm 23% so với giá niêm yết.",
+    "Phù hợp da thường đến khô, da thiếu nước, người ngồi máy lạnh nhiều.",
+    "Gel lỏng trong suốt, thấm sau ~30 giây, không bết dính.",
+    "Công thức có hyaluronic acid hai kích cỡ phân tử.",
+    "Có chiết xuất lô hội, rau má và vitamin B5.",
+    "Không cồn, không paraben, không hương liệu tổng hợp mạnh.",
+    "Cách dùng: sau làm sạch và toner, lấy 2–3 giọt, vỗ lên mặt và cổ, sáng và tối.",
+    "Ban ngày dùng kèm kem chống nắng.",
+    "Từ 30ml dùng được 6–8 tuần nếu dùng hai lần/ngày.",
+    "Hạn dùng 24 tháng, sau khi mở nắp nên dùng trong 12 tháng.",
+    "Tặng túi mini đựng mỹ phẩm và bông tẩy trang cotton 100 miếng.",
+    "Miễn phí vận chuyển cho đơn từ 299.000đ.",
+    "Đổi trả 7 ngày nếu lỗi nhà sản xuất hoặc hư hỏng khi vận chuyển.",
+    "Da nhạy cảm nên thử một chút sau tai trước khi dùng toàn mặt."
+  ],
+  "sections": [
+    {
+      "role": "intro",
+      "text": "Chào cả nhà, mình là Minh. Hôm nay mình giới thiệu serum dưỡng ẩm Mộc Lạc Dewmist 30ml, mã ML-DM30. Đây là dòng dành cho da thường đến khô, da thiếu nước, và các bạn hay ngồi máy lạnh nhiều. Giá niêm yết của serum là 389.000đ, riêng phiên live hôm nay giá chỉ còn 299.000đ, tức giảm 23% so với giá niêm yết."
+    },
+    {
+      "role": "highlights",
+      "text": "Cậu nhìn kết cấu này nhé. Gel lỏng trong suốt, thấm sau khoảng 30 giây là da khô ráo hẳn, không bết dính chút nào. Bên trong có hyaluronic acid hai kích cỡ phân tử, giúp giữ nước theo hai tầng da khác nhau. Ngoài ra còn có chiết xuất lô hội, rau má và vitamin B5 để da dịu và mềm hơn. Công thức không cồn, không paraben, và không hương liệu tổng hợp mạnh nên da nhạy cảm cũng dùng được."
+    },
+    {
+      "role": "highlights",
+      "text": "Mình thấy có bạn nào da khô đang xem live nè. Bạn nào đang cân nhắc thì cứ thả bình luận cho Minh tư vấn riêng nhé. Cách dùng rất đơn giản: sau khi làm sạch và dùng toner, lấy 2–3 giọt, vỗ nhẹ lên mặt và cổ, làm sáng và tối. Riêng ban ngày các bạn dùng kèm kem chống nắng để bảo vệ da tốt hơn."
+    },
+    {
+      "role": "highlights",
+      "text": "Một chai 30ml dùng được từ 6–8 tuần nếu bạn dùng hai lần/ngày, tính ra rất bền. Nhờ vậy lớp dưỡng ẩm luôn đủ cho da suốt ngày, kể cả khi ngồi máy lạnh, và bạn không cần thêm bước dưỡng nào phức tạp khác."
+    },
+    {
+      "role": "assurances",
+      "text": "Về độ an toàn, hạn dùng của serum là 24 tháng, và sau khi mở nắp các bạn nên dùng hết trong 12 tháng. Da nhạy cảm thì nên thử một chút vùng sau tai trước khi dùng toàn mặt. Dùng đúng cách là da khỏe, không cần thêm lo lắng gì đâu."
+    },
+    {
+      "role": "offer",
+      "text": "Riêng tuần live này còn tặng kèm túi mini đựng mỹ phẩm và bông tẩy trang cotton 100 miếng cho mỗi đơn serum. Đơn nào từ 299.000đ được miễn phí vận chuyển. Serum có chính sách đổi trả 7 ngày nếu lỗi nhà sản xuất hoặc hư hỏng khi vận chuyển, nên các bạn cứ thoải mái chọn cho mình, bạn nào cần gợi ý cách phối cùng bước dưỡng thì bình luận để Minh hướng dẫn tiếp nhé."
+    },
+    {
+      "role": "recap",
+      "text": "Tóm lại, serum Mộc Lạc Dewmist 30ml cho da khô và da thiếu nước, giá live 299.000đ giảm 23%, tặng túi mini và bông tẩy trang cotton, miễn phí vận chuyển từ 299.000đ, đổi trả 7 ngày. Bạn nào chốt ML-DM30 thì viết mã kèm số lượng dưới bình luận giúp Minh nhé."
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "script_quality_doc/v1",
+  "note": "Fixture B0: number fraud — the script speaks '0,84 kg' as the written words 'tám trăm bốn mươi kg' (the classic written-number fraud from TASK_B §1), while '0,38 kg' spoken in digits IS covered by a claim and must not be flagged (the CLAIM_FACTUAL false-alarm case from TASK_B §1).",
+  "product": {
+    "id": "zz-fraud-demo",
+    "name": "Serum Mộc Lạc Dewmist (fixture)",
+    "order_code": "ML-DM30",
+    "target_floor_s": 120,
+    "target_ceiling_s": 240
+  },
+  "claims": [
+    "Hộp serum đóng gói nặng 0,38 kg.",
+    "Mỗi chai được làm từ 0,84 kg nguyên liệu tươi."
+  ],
+  "sections": [
+    {
+      "role": "intro",
+      "text": "Chào cả nhà, chai serum Mộc Lạc Dewmist này hộp đóng gói nặng 0,38 kg, cầm rất chắc tay."
+    },
+    {
+      "role": "highlights",
+      "text": "Mỗi chai được làm từ tám trăm bốn mươi kg nguyên liệu tươi, nên dưỡng chất rất đậm đặc."
+    }
+  ]
+}
