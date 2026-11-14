@@ -143,9 +143,9 @@ _DIGIT_WORDS: dict[str, int] = {
     "hai": 2,
     "ba": 3,
     "bon": 4,
-    "tu": 4,  # "tư" — only valid mid-span ("phẩy tám tư"); span-initial "từ" is the preposition
-    "nam": 5,
-    "lam": 5,  # "lăm" — only valid right after "mươi"; span-initial "làm" is the verb
+    "tu": 4,  # canonical key for the surface "tư"; the preposition "từ" never maps here
+    "nam": 5,  # canonical key for the surface "năm"; "nam" unmarked is matched as a unit
+    "lam": 5,  # canonical key for the surface "lăm"; the verb "làm" never maps here
     "sau": 6,
     "bay": 7,
     "tam": 8,
@@ -154,9 +154,9 @@ _DIGIT_WORDS: dict[str, int] = {
 }
 # Close a <1000 group and multiply. "trăm" stays inside a group; nghìn/triệu/tỷ
 # close the accumulated group.
-_MAGNITUDE: dict[str, int] = {"tram": 100, "nghin": 1_000, "ngan": 1_000, "trieu": 1_000_000}
+_MAGNITUDE: dict[str, int] = {"tram": 100, "nghin": 1_000, "trieu": 1_000_000}
 _MAG_BILLION = "ty"
-_TENS_SUFFIX = "muoi"  # "mươi" — folds to the same string as "mười"
+_TENS_SUFFIX = "muoi"  # "mươi" — canonical key shared with the standalone "mười"
 _GAP_MARKERS = frozenset({"linh", "le"})  # "linh"/"lẻ": next digit is a unit
 _DECIMAL_MARK = "phay"  # "phẩy"
 _UNIT_MARKER_YEAR = "nam"  # trailing "năm" after a plain digit run = years
@@ -166,6 +166,50 @@ _NUMBER_VOCAB = set(_DIGIT_WORDS) | set(_MAGNITUDE) | {_MAG_BILLION, _TENS_SUFFI
 _NUMBER_VOCAB.add(_DECIMAL_MARK)
 _NUMBER_VOCAB.add(_UNIT_MARKER_YEAR)
 _NUMBER_VOCAB.add("phan")  # only meaningful in the pair "phần trăm" → %
+
+# Surface form (NFC, lowercased) → canonical number-word key. Matching is
+# diacritic-EXACT on purpose (the real-baseline fix): "bảy" (7) matches while
+# "bây" (as in "Bây giờ") and the verb "bay" do not, "lăm" (5) matches while
+# "làm" does not, "tư" (4) matches while the preposition "từ" does not. Tone
+# and vowel marks carry meaning for number words; only unambiguous function
+# words (units after a number) stay diacritic-insensitive via ``fold_text``.
+_SURFACE_TO_CANON: dict[str, str] = {
+    "không": "khong",
+    "một": "mot",
+    "mốt": "mot",
+    "hai": "hai",
+    "ba": "ba",
+    "bốn": "bon",
+    "tư": "tu",
+    "năm": "nam",
+    "lăm": "lam",
+    "sáu": "sau",
+    "bảy": "bay",
+    "tám": "tam",
+    "chín": "chin",
+    "mười": "muoi",
+    "mươi": "muoi",
+    "trăm": "tram",
+    "nghìn": "nghin",
+    "ngàn": "nghin",
+    "triệu": "trieu",
+    "tỷ": "ty",
+    "tỉ": "ty",
+    "linh": "linh",
+    "lẻ": "le",
+    "phẩy": "phay",
+    "phần": "phan",
+}
+# Spoken low–high range markers: "một sáu lăm đến một bảy tư" = 1m65–1m74.
+_RANGE_MARKERS = frozenset({"đến", "tới"})
+# Span tokens that make the reading unambiguous (grammar/magnitude words): a
+# mismatch there is a hard "error". A bare digit-by-digit run ("một sáu tám
+# năm hai") has an ambiguous segmentation, so its mismatch is "uncertain".
+_DEFINITE_SPAN_TOKENS = (
+    frozenset(_MAGNITUDE)
+    | {_MAG_BILLION, _TENS_SUFFIX, _DECIMAL_MARK, _UNIT_MARKER_PERCENT}
+    | _GAP_MARKERS
+)
 
 # Units recognized after a number (folded). Wide on purpose: unknown units just
 # degrade to bare-value matching against the claims.
@@ -278,6 +322,14 @@ def _fold_tokens(tokens: list[str]) -> list[str]:
     return [fold_text(t) for t in tokens]
 
 
+def _surface_to_canon(token: str) -> str | None:
+    """Canonical number-word key for one surface token, or ``None``.
+
+    Diacritic-exact on purpose — see ``_SURFACE_TO_CANON``. ``"Bây"`` in
+    "Bây giờ" is NOT read as the digit 7; "từ"/"làm" are never digits."""
+    return _SURFACE_TO_CANON.get(unicodedata.normalize("NFC", token.lower()))
+
+
 def _plain_digit_run(tokens: list[str]) -> bool:
     return all(t in _DIGIT_WORDS and _DIGIT_WORDS[t] <= 9 for t in tokens) and bool(tokens)
 
@@ -305,6 +357,12 @@ def _parse_number_tokens(tokens: list[str]) -> str | None:
         if head is None or "," in head:
             return None
         return f"{head},{('').join(str(_DIGIT_WORDS[t]) for t in dec_tokens)}"
+
+    if _plain_digit_run(tokens):
+        # Digit-by-digit reading: every word is one digit ("một sáu tám" → 168,
+        # "năm hai" → 52). This replaces the old positional grammar, which
+        # mis-merged "một sáu tám năm hai" (1m68, 52) into 31.
+        return "".join(str(_DIGIT_WORDS[t]) for t in tokens)
 
     total = 0
     group = 0
@@ -376,43 +434,56 @@ def _candidates(value: str, tokens: list[str]) -> list[str]:
 def written_numbers(text: str) -> list[dict]:
     """Find Vietnamese numbers written in words and normalize them to digits.
 
-    Returns occurrences ``{"value", "unit", "as_written", "tokens"}`` — the
-    "tám trăm bốn mươi kg" case normalizes to ``value="840", unit="kg"``.
+    Returns occurrences ``{"value", "unit", "as_written", "tokens", "checked",
+    "definite", "range_low"}`` — the "tám trăm bốn mươi kg" case normalizes to
+    ``value="840", unit="kg"``. ``definite`` is False for bare digit-by-digit
+    runs ("một sáu tám"), whose segmentation is ambiguous: analyze reports a
+    mismatch on those as "uncertain" instead of "error". A "đến"/"tới" between
+    two readings marks a spoken range — the high side carries ``range_low``.
     Unparseable spans are silently skipped (documented limitation).
     """
     occurrences: list[dict] = []
     tokens = _number_tokens(text)
     folded = _fold_tokens(tokens)
+    canons = [_surface_to_canon(t) for t in tokens]
     i = 0
+    last_value: str | None = None
+    armed_low: str | None = None
     while i < len(tokens):
-        if folded[i] not in _NUMBER_VOCAB:
+        if canons[i] is None:
+            if unicodedata.normalize("NFC", tokens[i].lower()) in _RANGE_MARKERS and (
+                last_value is not None
+            ):
+                armed_low = last_value  # "A đến B": B's occurrence carries range_low=A
             i += 1
             continue
         j = i
         span: list[str] = []
-        while j < len(folded) and folded[j] in _NUMBER_VOCAB:
-            if folded[j] == "tu" and not span:
-                break  # span-initial "từ" is the preposition, not the digit 4
-            if folded[j] == "lam" and (not span or span[-1] != _TENS_SUFFIX):
-                break  # "lăm" only follows "mươi"; elsewhere "lam" is the verb "làm"
+        while j < len(canons) and canons[j] is not None:
             # "phần trăm" pair becomes a % marker; a lone "phần" breaks the span.
-            if folded[j] == "phan":
-                if j + 1 < len(folded) and folded[j + 1] == "tram":
+            if canons[j] == "phan":
+                if j + 1 < len(canons) and canons[j + 1] == "tram":
                     span.append(_UNIT_MARKER_PERCENT)
                     j += 2
                     continue
                 break
-            span.append(folded[j])
+            span.append(canons[j])
             j += 1
         unit = ""
         if j < len(folded) and folded[j] in _UNIT_VOCAB:
             unit = folded[j]
         value = None
+        definite = any(t in _DEFINITE_SPAN_TOKENS for t in span)
         if span and span[-1] == _UNIT_MARKER_PERCENT:
-            value = _parse_number_tokens(span[:-1] + [_UNIT_MARKER_PERCENT])
+            value = _parse_number_tokens(span)
             unit = "%"
-        elif len(span) >= 2 and span[-1] == _UNIT_MARKER_YEAR and _plain_digit_run(span[:-1]):
-            # "một năm" is 1 year, not "15": trailing plain "năm" is the unit.
+        elif (
+            len(span) >= 2
+            and span[-1] == _UNIT_MARKER_YEAR
+            and (_plain_digit_run(span[:-1]) or span[:-1][-1] == _TENS_SUFFIX)
+        ):
+            # "một năm"/"hai mươi năm" is a year count, not "15"/"25": the
+            # trailing "năm" after a completed count is the unit.
             value = _parse_number_tokens(span[:-1])
             unit = "nam"
         else:
@@ -427,8 +498,12 @@ def written_numbers(text: str) -> list[dict]:
                     "as_written": " ".join(tokens[i:span_end]),
                     "tokens": list(span),
                     "checked": _written_should_check(span, value, unit),
+                    "definite": definite,
+                    "range_low": armed_low,
                 }
             )
+            armed_low = None
+            last_value = value
         i = max(j, i + 1)
     return occurrences
 
@@ -454,7 +529,16 @@ def _digit_numbers(text: str) -> list[dict]:
             candidate = fold_text(tail.group(1))
             if candidate in _UNIT_VOCAB:
                 unit = candidate
-        occurrences.append({"value": value, "unit": unit, "as_written": raw, "checked": True})
+        occurrences.append(
+            {
+                "value": value,
+                "unit": unit,
+                "as_written": raw,
+                "checked": True,
+                "start": match.start(),
+                "end": match.end(),
+            }
+        )
     return occurrences
 
 
@@ -477,29 +561,130 @@ def extract_numbers(text: str) -> list[dict]:
 
 # ── Claim coverage ───────────────────────────────────────────────────────────
 
+# Text allowed between two claim numbers for them to form a low–high range
+# ("1m65–1m74", "52–58kg", "2 tới 4 ngày").
+_RANGE_JOIN_RE = re.compile(r"^(?:\s*[-–—~]\s*|\s+(?:tới|đến)\s+)$")
 
-def _claim_coverage(claims: list[str]) -> tuple[set[str], set[str]]:
-    """Build ``(values, pairs)`` sets from the approved claims. ``pairs`` keys
-    are ``"value|unit"`` so "0,84 kg" only matches a claim that has the unit."""
+
+def _digits_of(value: str) -> str:
+    return re.sub(r"\D", "", value)
+
+
+def _in_claim_range(digits: str, ranges: list[tuple[int, int, str]]) -> bool:
+    """True when an all-digit reading falls inside a claim's low–high range
+    ("một sáu lăm" → 165 inside the claim "1m60–1m68"). The digit length must
+    match the endpoints so "16" is only covered via its padded form "160"."""
+    if not 2 <= len(digits) <= 4:
+        return False
+    number = int(digits)
+    return any(len(str(low)) == len(digits) and low <= number <= high for low, high, _ in ranges)
+
+
+def _claim_coverage(claims: list[str]) -> dict:
+    """Coverage sets built from the approved claims:
+
+    - ``values`` — exact value strings ("0,84", "2990000");
+    - ``pairs`` — ``"value|unit"`` so "0,84 kg" only matches a claim with the unit;
+    - ``digit_strings`` — digit-only projections ("1m68" → "168") so digit-by-
+      digit spoken readings ("một sáu tám") match;
+    - ``ranges`` — ``(low, high, unit)`` triples for claim text like
+      "1m65–1m74" or "52–58kg"; a reading inside the range is covered.
+    """
     values: set[str] = set()
     pairs: set[str] = set()
+    digit_strings: set[str] = set()
+    ranges: list[tuple[int, int, str]] = []
     for claim in claims:
         text = (
             claim if isinstance(claim, str) else str(claim.get("claim") or claim.get("text") or "")
         )
-        for occurrence in extract_numbers(text):
+        found = extract_numbers(text)
+        for occurrence in found:
             values.add(occurrence["value"])
             pairs.add(f"{occurrence['value']}|{occurrence['unit']}")
-    return values, pairs
+            digits = _digits_of(occurrence["value"])
+            if digits:
+                digit_strings.add(digits)
+        for previous, following in zip(found, found[1:]):
+            if "start" not in previous or "start" not in following:
+                continue  # only digit-form occurrences carry positions
+            if not _RANGE_JOIN_RE.match(text[previous["end"] : following["start"]]):
+                continue
+            low, high = _digits_of(previous["value"]), _digits_of(following["value"])
+            if low and high and len(low) <= 4 and len(high) <= 4 and int(low) <= int(high):
+                unit = following.get("unit") or previous.get("unit") or ""
+                ranges.append((int(low), int(high), unit))
+    return {"values": values, "pairs": pairs, "digit_strings": digit_strings, "ranges": ranges}
 
 
-def _covered(occurrence: dict, values: set[str], pairs: set[str]) -> bool:
-    for candidate in _candidates(occurrence["value"], occurrence.get("tokens", [])):
-        if f"{candidate}|{occurrence['unit']}" in pairs:
+def _segmentation_covered(digits: str, coverage: dict) -> bool:
+    """True when a long digit-by-digit run can be split so that EVERY part
+    matches the claims ("một sáu tám năm hai" → 168 + 52 against claims that
+    have 1m68 and 52–58kg). Parts are 2–3 digits (height/weight readings);
+    runs outside 4–6 digits are not split (no realistic reading needs it)."""
+    if not 4 <= len(digits) <= 6:
+        return False
+    values = coverage["values"]
+    digit_strings = coverage["digit_strings"]
+    ranges = coverage["ranges"]
+
+    def part_ok(part: str) -> bool:
+        candidates = {part, part + "0"} if len(part) <= 3 else {part}
+        return any(
+            c in values or c in digit_strings or _in_claim_range(c, ranges) for c in candidates
+        )
+
+    def walk(remaining: str) -> bool:
+        if not remaining:
+            return True
+        for size in (2, 3):
+            if len(remaining) >= size and part_ok(remaining[:size]) and walk(remaining[size:]):
+                return True
+        return False
+
+    return walk(digits)
+
+
+def _covered(occurrence: dict, coverage: dict) -> bool:
+    values = coverage["values"]
+    pairs = coverage["pairs"]
+    digit_strings = coverage["digit_strings"]
+    ranges = coverage["ranges"]
+    unit = occurrence.get("unit", "")
+    tokens = occurrence.get("tokens") or []
+    value = occurrence["value"]
+    pure_run = (
+        bool(tokens) and _plain_digit_run(tokens) and value.isdigit() and len(tokens) == len(value)
+    )
+    candidates = list(_candidates(value, tokens))
+    if pure_run and 2 <= len(value) <= 3:
+        # Height read digit-by-digit: "một sáu" → 1m60 (padded "160").
+        candidates.append(value + "0")
+    for candidate in candidates:
+        if f"{candidate}|{unit}" in pairs:
             return True
         if candidate in values:
             return True
-    return False
+        if candidate.isdigit() and candidate in digit_strings:
+            return True
+        if candidate.isdigit() and _in_claim_range(candidate, ranges):
+            return True
+    low = occurrence.get("range_low")
+    if (
+        low is not None
+        and value.isdigit()
+        and low.isdigit()
+        and 1 <= len(low) <= 4
+        and 1 <= len(value) <= 4
+        and int(low) <= int(value)
+    ):
+        spoken = (int(low), int(value))
+        for claim_low, claim_high, _unit in ranges:
+            if spoken == (claim_low, claim_high) or (
+                claim_low <= spoken[0] and spoken[1] <= claim_high
+            ):
+                return True
+    return bool(pure_run and _segmentation_covered(value, coverage))
 
 
 # ── Repetition / openings ────────────────────────────────────────────────────
@@ -602,7 +787,7 @@ def analyze_script(
         c if isinstance(c, str) else str(c.get("claim") or c.get("text") or "")
         for c in (claims or [])
     ]
-    claim_values, claim_pairs = _claim_coverage(claim_texts)
+    coverage = _claim_coverage(claim_texts)
     claim_folded = [fold_text(c) for c in claim_texts if fold_text(c)]
 
     # ── totals + duration ────────────────────────────────────────────────────
@@ -634,12 +819,13 @@ def analyze_script(
     # ── number fraud ────────────────────────────────────────────────────────
     digit_violations: list[dict] = []
     written_violations: list[dict] = []
+    written_uncertain: list[dict] = []
     checked_count = 0
     for sentence_info in sentences:
         for occurrence in extract_numbers(sentence_info["text"]):
             if occurrence["checked"]:
                 checked_count += 1
-            if not occurrence["checked"] or _covered(occurrence, claim_values, claim_pairs):
+            if not occurrence["checked"] or _covered(occurrence, coverage):
                 continue
             violation = {
                 "value": occurrence["value"],
@@ -649,7 +835,16 @@ def analyze_script(
                 "section": sentence_info["section"],
                 "sentence": sentence_info["text"][:160],
             }
-            (written_violations if occurrence["written"] else digit_violations).append(violation)
+            if occurrence["written"] and not occurrence.get("definite", True):
+                # Ambiguous digit-by-digit run ("một bảy tám tám sáu"): report
+                # it, but as "uncertain" — it must not fail the document.
+                violation["severity"] = "uncertain"
+                written_uncertain.append(violation)
+            else:
+                violation["severity"] = "error"
+                (written_violations if occurrence["written"] else digit_violations).append(
+                    violation
+                )
     if digit_violations:
         issues.append("digit_number_not_in_claims")
     if written_violations:
@@ -658,7 +853,9 @@ def analyze_script(
         "checked_occurrences": checked_count,
         "digit_violations": digit_violations,
         "written_violations": written_violations,
+        "written_uncertain": written_uncertain,
         "violation_count": len(digit_violations) + len(written_violations),
+        "uncertain_count": len(written_uncertain),
     }
 
     # ── buzzwords (only when not covered by an approved claim) ──────────────

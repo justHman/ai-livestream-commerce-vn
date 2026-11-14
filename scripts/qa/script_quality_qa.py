@@ -9,7 +9,10 @@ Two subcommands:
 - ``run`` — MANUAL ONLY: drives the real Runtime API (create script-set →
   generate → poll workflow → read parts/gate/fallback → regenerate gate-failed
   parts) for each product × ``--rounds`` rounds, then stores one JSON file the
-  ``analyze`` command can consume. Safety rails:
+  ``analyze`` command can consume. Every regeneration (flagged-part attempts
+  and optional ``--regen-trials``) records the workflow status, error fields
+  and the re-read gate state, so the run reports a real per-attempt success
+  rate instead of the old "no part left flagged" flag. Safety rails:
 
   - the API token is read from the ``LIVENTO_QA_TOKEN`` environment variable
     and is **never** printed or written to any output file (only ever sent in
@@ -164,6 +167,7 @@ def build_plan(
     poll_interval_s: float,
     poll_timeout_s: float,
     regen_attempts: int,
+    regen_trials: int = 0,
 ) -> list[dict]:
     """The exact call sequence ``run`` executes per product × round. Dry-run
     prints this; the real run follows the same shape (set/workflow ids are
@@ -227,8 +231,24 @@ def build_plan(
                             f"{base_url.rstrip('/')}/api/v1/script-sets/{{set_id}}"
                             f"/products/{product['id']}/segments/{{segment_index}}/regenerate"
                         ),
-                        "payload": {"idempotency_key": "<uuid4>"},
+                        "payload": {"idempotency_key": "<uuid4>", "part_id": "<part_id?>"},
                         "note": f"up to {regen_attempts} attempts per part, only if needed",
+                    }
+                )
+            if regen_trials > 0 and round_no == 1:
+                plan.append(
+                    {
+                        "step": f"{slug} r{round_no}: regeneration trials (all segments)",
+                        "method": "POST",
+                        "url": (
+                            f"{base_url.rstrip('/')}/api/v1/script-sets/{{set_id}}"
+                            f"/products/{product['id']}/segments/{{segment_index}}/regenerate"
+                        ),
+                        "payload": {"idempotency_key": "<uuid4>", "part_id": "<part_id?>"},
+                        "note": (
+                            f"{regen_trials} sequential trials rotating segment_index, "
+                            "independent of the gate flags"
+                        ),
                     }
                 )
     return plan
@@ -300,6 +320,129 @@ def _fetch_set(base_url: str, token: str, set_id: str) -> dict:
     return body
 
 
+def _extract_error(body: dict) -> tuple[str | None, str | None]:
+    """Pull ``error_code``/``error_message`` out of an API error body — both the
+    ``{"error": {"code", "message"}}`` envelope and flat shapes."""
+    if not isinstance(body, dict):
+        return None, None
+    error = body.get("error")
+    if isinstance(error, dict):
+        return (
+            error.get("code") or body.get("error_code"),
+            error.get("message") or body.get("error_message"),
+        )
+    return body.get("error_code"), body.get("error_message")
+
+
+def _gate_summary(gate: object) -> tuple[str | None, int | None]:
+    """``(state, error_violation_count)`` of a script-set gate, or ``(None,
+    None)`` when the set carries no gate."""
+    if not isinstance(gate, dict):
+        return None, None
+    violations = gate.get("violations") or []
+    errors = sum(
+        1
+        for violation in violations
+        if isinstance(violation, dict) and str(violation.get("severity", "")).lower() == "error"
+    )
+    return gate.get("state"), errors
+
+
+def _regen_once(
+    base_url: str,
+    token: str,
+    set_id: str,
+    product_id: str,
+    segment_index: object,
+    part_id: object,
+    interval_s: float,
+    timeout_s: float,
+) -> dict:
+    """One regeneration execution: dispatch → poll workflow → re-read the set.
+
+    The returned record carries the workflow status, ``error_code``/
+    ``error_message`` when the body has them, and the post-regeneration gate
+    state + error-violation count. The token never enters the record."""
+    record: dict = {"segment_index": segment_index, "part_id": part_id}
+    payload: dict = {"idempotency_key": uuid.uuid4().hex}
+    if part_id:
+        payload["part_id"] = part_id  # RegenerateReq prefers stable part identity
+    status, body = request_json(
+        base_url,
+        "POST",
+        f"/api/v1/script-sets/{set_id}/products/{product_id}/segments/{segment_index}/regenerate",
+        payload,
+        token,
+    )
+    record["accepted"] = status == 202
+    if status != 202:
+        error_code, error_message = _extract_error(body)
+        record["status"] = status  # HTTP status: the workflow never started
+        record["body"] = body
+        if error_code:
+            record["error_code"] = error_code
+        if error_message:
+            record["error_message"] = error_message
+        return record
+    workflow_id = str(body.get("workflow_id") or body.get("id") or "")
+    record["workflow_id"] = workflow_id
+    workflow_status, job_body = _poll_workflow(
+        base_url, token, set_id, product_id, workflow_id, interval_s, timeout_s
+    )
+    record["status"] = workflow_status
+    error_code, error_message = _extract_error(job_body)
+    if error_code:
+        record["error_code"] = error_code
+    if error_message:
+        record["error_message"] = error_message
+    set_wire = _fetch_set(base_url, token, set_id)  # re-read: gate after this regen
+    item = (set_wire.get("items") or {}).get(product_id) or {}
+    gate_state, gate_errors = _gate_summary(item.get("gate"))
+    record["gate_state_after"] = gate_state
+    record["gate_error_count_after"] = gate_errors
+    return record
+
+
+def _regen_counts(round_results: list[dict]) -> dict:
+    """Aggregate regeneration outcomes over a product's rounds: flagged-part
+    attempts (``round.regen.attempts``) plus trials (``round.regen_trials``).
+
+    - ``regen_attempt_success_rate`` — completed / total executions;
+    - ``regen_clean_success_rate`` — completed AND the re-read gate has no
+      error violations afterwards / total executions."""
+    attempts = [
+        attempt
+        for result in round_results
+        for attempt in (result.get("regen") or {}).get("attempts") or []
+        if isinstance(attempt, dict)
+    ]
+    trials = [
+        trial
+        for result in round_results
+        for trial in (result.get("regen_trials") or {}).get("trials") or []
+        if isinstance(trial, dict)
+    ]
+    entries = attempts + trials
+    total = len(entries)
+    completed = sum(1 for entry in entries if entry.get("status") == "completed")
+    clean = sum(
+        1
+        for entry in entries
+        if entry.get("status") == "completed" and entry.get("gate_error_count_after") == 0
+    )
+    return {
+        "regen_attempts_total": len(attempts),
+        "regen_attempts_completed": sum(
+            1 for attempt in attempts if attempt.get("status") == "completed"
+        ),
+        "regen_trials_total": len(trials),
+        "regen_trials_completed": sum(1 for trial in trials if trial.get("status") == "completed"),
+        "regen_clean_total": clean,
+        "regen_attempt_success_rate": round(completed / total, 4) if total else None,
+        "regen_clean_success_rate": round(clean / total, 4) if total else None,
+    }
+
+
 def _script_doc(set_wire: dict, product: dict) -> dict:
     """Extract the offline-analyzable script doc from a script-set wire."""
     item = (set_wire.get("items") or {}).get(product["id"]) or {}
@@ -328,6 +471,7 @@ def _run_one_round(
     interval_s: float,
     timeout_s: float,
     regen_attempts: int,
+    regen_trials: int = 0,
 ) -> dict:
     """Create → generate → poll → read gate/fallback → regenerate if needed."""
     slug = product["id"]
@@ -395,31 +539,27 @@ def _run_one_round(
     version = item.get("current_version") or {}
     parts = list(version.get("parts") or [])
 
-    # Regenerate gate-failed/fallback parts ("tạo lại phần" success rate).
+    # Regenerate gate-failed/fallback parts. Each attempt records the workflow
+    # status, error fields and the re-read gate state (see _regen_once).
     regen_log: dict = {"attempts": [], "success": True}
     for _attempt in range(max(0, regen_attempts)):
         needing = [p for p in parts if p.get("needs_regeneration")]
         if not needing:
             break
         target = needing[0]
-        index = target.get("segment_index")
-        status, regenerate = request_json(
+        record = _regen_once(
             base_url,
-            "POST",
-            f"/api/v1/script-sets/{set_id}/products/{slug}/segments/{index}/regenerate",
-            {"idempotency_key": uuid.uuid4().hex},
             token,
+            set_id,
+            slug,
+            target.get("segment_index"),
+            target.get("part_id"),
+            interval_s,
+            timeout_s,
         )
-        if status != 202:
-            regen_log["attempts"].append(
-                {"segment_index": index, "status": status, "body": regenerate}
-            )
-            break
-        new_workflow = str(regenerate.get("workflow_id") or regenerate.get("id") or "")
-        new_status, _ = _poll_workflow(
-            base_url, token, set_id, slug, new_workflow, interval_s, timeout_s
-        )
-        regen_log["attempts"].append({"segment_index": index, "status": new_status})
+        regen_log["attempts"].append(record)
+        if not record["accepted"]:
+            break  # the API refused the dispatch; retrying the same way is pointless
         set_wire = _fetch_set(base_url, token, set_id)
         item = (set_wire.get("items") or {}).get(slug) or {}
         version = item.get("current_version") or {}
@@ -427,6 +567,41 @@ def _run_one_round(
     still_needing = [p.get("segment_index") for p in parts if p.get("needs_regeneration")]
     regen_log["still_needing"] = still_needing
     regen_log["success"] = not still_needing
+
+    # Optional --regen-trials: after the FIRST completed generation of each
+    # product, regenerate every segment round-robin (by segment_index, not only
+    # gate-flagged parts) N times sequentially. This is the measurement the
+    # TASK_B §6.7 criterion needs (≥ 18 regens per product, ≥ 90% success).
+    trials: list[dict] = []
+    if regen_trials > 0 and parts:
+        ordered = sorted(
+            (p for p in parts if p.get("segment_index") is not None),
+            key=lambda p: p["segment_index"],
+        )
+        for trial_no in range(regen_trials):
+            if not ordered:
+                break
+            part = ordered[trial_no % len(ordered)]
+            trials.append(
+                _regen_once(
+                    base_url,
+                    token,
+                    set_id,
+                    slug,
+                    part.get("segment_index"),
+                    part.get("part_id"),
+                    interval_s,
+                    timeout_s,
+                )
+            )
+            set_wire = _fetch_set(base_url, token, set_id)
+            item = (set_wire.get("items") or {}).get(slug) or {}
+            version = item.get("current_version") or {}
+            parts = list(version.get("parts") or [])
+            ordered = sorted(
+                (p for p in parts if p.get("segment_index") is not None),
+                key=lambda p: p["segment_index"],
+            )
 
     round_result.update(
         {
@@ -446,6 +621,8 @@ def _run_one_round(
             "script": _script_doc(set_wire, product),
         }
     )
+    if regen_trials > 0:
+        round_result["regen_trials"] = {"trials": trials}
     round_result["metrics"] = analyze_script(
         round_result["script"]["sections"],
         round_result["script"]["claims"],
@@ -464,6 +641,7 @@ def execute_run(
     interval_s: float,
     timeout_s: float,
     regen_attempts: int,
+    regen_trials: int = 0,
 ) -> dict:
     product_results = []
     had_errors = False
@@ -479,41 +657,43 @@ def execute_run(
                 interval_s,
                 timeout_s,
                 regen_attempts,
+                regen_trials,
             )
             for round_no in range(1, rounds + 1)
         ]
         had_errors = had_errors or any(r.get("api_errors") for r in round_results)
         metrics = [r.get("metrics") for r in round_results if r.get("metrics")]
         durations = [m["totals"]["estimated_duration_s"] for m in metrics]
+        summary = {
+            "rounds": len(round_results),
+            "avg_estimated_duration_s": (
+                round(sum(durations) / len(durations), 1) if durations else None
+            ),
+            "min_duration_pct_of_floor": (
+                min((m["totals"]["duration_pct_of_floor"] for m in metrics), default=None)
+            ),
+            "gate_passed_all_rounds": all(
+                (r.get("gate") or {}).get("state") == "passed"
+                for r in round_results
+                if r.get("gate") is not None
+            ),
+            "fallback_parts_total": sum(len(r.get("fallback_parts", [])) for r in round_results),
+            # Renamed from regen_success_all_rounds: this only says no part is
+            # still flagged needs_regeneration — it does NOT measure whether
+            # each regeneration attempt itself succeeded. See the *_rate fields.
+            "regen_no_part_left_flagged": all(
+                r.get("regen", {}).get("success", True) for r in round_results
+            ),
+            "number_violations_total": sum(m["numbers"]["violation_count"] for m in metrics),
+            "buzzword_hits_total": sum(m["buzzwords"]["hit_count"] for m in metrics),
+        }
+        summary.update(_regen_counts(round_results))
         product_results.append(
             {
                 "product_id": product["id"],
                 "product_name": product.get("name", ""),
                 "rounds": round_results,
-                "summary": {
-                    "rounds": len(round_results),
-                    "avg_estimated_duration_s": (
-                        round(sum(durations) / len(durations), 1) if durations else None
-                    ),
-                    "min_duration_pct_of_floor": (
-                        min((m["totals"]["duration_pct_of_floor"] for m in metrics), default=None)
-                    ),
-                    "gate_passed_all_rounds": all(
-                        (r.get("gate") or {}).get("state") == "passed"
-                        for r in round_results
-                        if r.get("gate") is not None
-                    ),
-                    "fallback_parts_total": sum(
-                        len(r.get("fallback_parts", [])) for r in round_results
-                    ),
-                    "regen_success_all_rounds": all(
-                        r.get("regen", {}).get("success", True) for r in round_results
-                    ),
-                    "number_violations_total": sum(
-                        m["numbers"]["violation_count"] for m in metrics
-                    ),
-                    "buzzword_hits_total": sum(m["buzzwords"]["hit_count"] for m in metrics),
-                },
+                "summary": summary,
             }
         )
     return {
@@ -546,6 +726,8 @@ def load_documents(path: Path) -> list[tuple[str, dict]]:
                 )
                 doc["_gate"] = round_result.get("gate")
                 doc["_fallback_parts"] = round_result.get("fallback_parts")
+                doc["_regen"] = round_result.get("regen")
+                doc["_regen_trials"] = round_result.get("regen_trials")
                 docs.append((doc["_label"], doc))
         if docs:
             return docs
@@ -556,11 +738,38 @@ def load_documents(path: Path) -> list[tuple[str, dict]]:
     raise SystemExit(f"input file {path} is neither a run result nor a script document")
 
 
+def _regen_entries(doc: dict) -> list[dict]:
+    """Regeneration execution records attached to one analyzed document:
+    flagged-part attempts (``_regen.attempts``) + trials (``_regen_trials``)."""
+    attempts = (doc.get("_regen") or {}).get("attempts") or []
+    trials = (doc.get("_regen_trials") or {}).get("trials") or []
+    return [entry for entry in list(attempts) + list(trials) if isinstance(entry, dict)]
+
+
+def _regen_rate(doc: dict, key: str) -> str:
+    """Formatted per-round regen rate for the summary table ("—" when the
+    round recorded no regeneration executions). ``key`` picks the metric:
+    ``"completed"`` → attempt success rate, ``"clean"`` → clean-gate rate."""
+    entries = _regen_entries(doc)
+    if not entries:
+        return "—"
+    if key == "clean":
+        good = sum(
+            1
+            for e in entries
+            if e.get("status") == "completed" and e.get("gate_error_count_after") == 0
+        )
+    else:
+        good = sum(1 for e in entries if e.get("status") == "completed")
+    return f"{good / len(entries):.0%}"
+
+
 def format_summary_table(rows: list[dict]) -> str:
     """One line per analyzed script with the headline numbers."""
     header = (
         f"{'label':<38} {'chars':>6} {'parts':>5} {'est_s':>7} {'%floor':>7} "
-        f"{'gate':>12} {'num':>4} {'buzz':>4} {'reps':>4} {'gap_s':>7} {'inter':>6}  verdict"
+        f"{'gate':>12} {'regen':>6} {'clean':>6} {'num':>4} {'buzz':>4} {'reps':>4} "
+        f"{'gap_s':>7} {'inter':>6}  verdict"
     )
     lines = [header, "-" * len(header)]
     for row in rows:
@@ -568,6 +777,7 @@ def format_summary_table(rows: list[dict]) -> str:
         lines.append(
             f"{row['label'][:38]:<38} {row['chars']:>6} {row['parts']:>5} "
             f"{row['est_s']:>7.1f} {row['pct_floor']:>6.1f}% {gate:>12} "
+            f"{row['regen_rate']:>6} {row['clean_rate']:>6} "
             f"{row['number_violations']:>4} {row['buzzword_hits']:>4} {row['repeats']:>4} "
             f"{row['max_gap_s']:>7.1f} {row['interaction_ratio']:>6.1%}  {row['verdict']}"
         )
@@ -599,6 +809,11 @@ def print_issue_details(label: str, analysis: dict, doc: dict) -> None:
         print(
             f"  - written number '{violation['as_written']}' = {violation['value']} "
             f"{violation['unit']} not in claims: …{violation['sentence'][-90:]}"
+        )
+    for violation in numbers.get("written_uncertain", [])[:5]:
+        print(
+            f"  - written number (uncertain) '{violation['as_written']}' = {violation['value']} "
+            f"{violation['unit']} not clearly in claims: …{violation['sentence'][-90:]}"
         )
     for hit in analysis["buzzwords"]["hits"][:5]:
         print(f"  - buzzword '{hit['phrase']}' in section {hit['section']} (not in claims)")
@@ -643,6 +858,8 @@ def run_analyze(args: argparse.Namespace) -> int:
                 "est_s": totals["estimated_duration_s"],
                 "pct_floor": totals["duration_pct_of_floor"],
                 "gate": gate.get("state"),
+                "regen_rate": _regen_rate(doc, "completed"),
+                "clean_rate": _regen_rate(doc, "clean"),
                 "number_violations": analysis["numbers"]["violation_count"],
                 "buzzword_hits": analysis["buzzwords"]["hit_count"],
                 "repeats": (
@@ -658,6 +875,14 @@ def run_analyze(args: argparse.Namespace) -> int:
     for label, doc, analysis in analyses:
         print_issue_details(label, analysis, doc)
 
+    regen_entries = [entry for _label, doc, _analysis in analyses for entry in _regen_entries(doc)]
+    regen_total = len(regen_entries)
+    regen_completed = sum(1 for e in regen_entries if e.get("status") == "completed")
+    regen_clean = sum(
+        1
+        for e in regen_entries
+        if e.get("status") == "completed" and e.get("gate_error_count_after") == 0
+    )
     report = {
         "schema": REPORT_SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -670,6 +895,12 @@ def run_analyze(args: argparse.Namespace) -> int:
             "documents": len(analyses),
             "passed": sum(1 for _, _, a in analyses if a["passed"]),
             "failed": sum(1 for _, _, a in analyses if not a["passed"]),
+            "regen_attempt_success_rate": (
+                round(regen_completed / regen_total, 4) if regen_total else None
+            ),
+            "regen_clean_success_rate": (
+                round(regen_clean / regen_total, 4) if regen_total else None
+            ),
         },
     }
     report_path = (
@@ -703,6 +934,7 @@ def run_real(args: argparse.Namespace) -> int:
         args.poll_interval_s,
         args.poll_timeout_s,
         args.regen_attempts,
+        args.regen_trials,
     )
     if args.dry_run:
         print_plan(plan)
@@ -719,6 +951,7 @@ def run_real(args: argparse.Namespace) -> int:
         args.poll_interval_s,
         args.poll_timeout_s,
         args.regen_attempts,
+        args.regen_trials,
     )
     out_path = (
         Path(args.out) if args.out else Path(f"{WORKSPACE_PREFIX.lower()}_script_qa_results.json")
@@ -772,6 +1005,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--poll-interval-s", type=float, default=5.0)
     run.add_argument("--poll-timeout-s", type=float, default=600.0)
     run.add_argument("--regen-attempts", type=int, default=3, help="regenerate attempts per part")
+    run.add_argument(
+        "--regen-trials",
+        type=int,
+        default=0,
+        help=(
+            "after each product's FIRST completed generation, regenerate every segment "
+            "round-robin N times sequentially (independent of gate flags; recommend 18 "
+            "for the TASK_B §6.7 criterion of >= 18 regens/product, >= 90%% success)"
+        ),
+    )
     run.add_argument("--only", default=None, help="substring filter on product id")
     run.add_argument(
         "--dry-run",
