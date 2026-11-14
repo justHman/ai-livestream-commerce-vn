@@ -355,6 +355,7 @@ def _regen_once(
     product_id: str,
     segment_index: object,
     part_id: object,
+    expected_version_id: object,
     interval_s: float,
     timeout_s: float,
 ) -> dict:
@@ -367,6 +368,11 @@ def _regen_once(
     payload: dict = {"idempotency_key": uuid.uuid4().hex}
     if part_id:
         payload["part_id"] = part_id  # RegenerateReq prefers stable part identity
+    if expected_version_id:
+        # Same call the Studio makes. Without expected_version_id the Runtime takes the legacy
+        # fixed-K segment path, which fails at once on ordered-unit scripts (270/270 in the
+        # first --regen-trials run).
+        payload["expected_version_id"] = expected_version_id
     status, body = request_json(
         base_url,
         "POST",
@@ -538,6 +544,22 @@ def _run_one_round(
     item = (set_wire.get("items") or {}).get(slug) or {}
     version = item.get("current_version") or {}
     parts = list(version.get("parts") or [])
+    # The owner first sees THIS script. Regeneration attempts/trials below change the stored
+    # script (a failed regenerate once inflated part 0 to 2.5k chars), so the primary metrics
+    # are taken from this snapshot and only the final gate state is added afterwards.
+    initial_state = str(item.get("state", ""))
+    initial_gate = item.get("gate")
+    initial_script = _script_doc(set_wire, product)
+    initial_fallback = [
+        {
+            "segment_index": p.get("segment_index"),
+            "source": p.get("source"),
+            "fallback_reason_code": p.get("fallback_reason_code"),
+            "fallback_reason_text": p.get("fallback_reason_text"),
+        }
+        for p in parts
+        if p.get("source") == "fallback"
+    ]
 
     # Regenerate gate-failed/fallback parts. Each attempt records the workflow
     # status, error fields and the re-read gate state (see _regen_once).
@@ -554,6 +576,7 @@ def _run_one_round(
             slug,
             target.get("segment_index"),
             target.get("part_id"),
+            item.get("current_version_id"),
             interval_s,
             timeout_s,
         )
@@ -590,6 +613,7 @@ def _run_one_round(
                     slug,
                     part.get("segment_index"),
                     part.get("part_id"),
+                    item.get("current_version_id"),
                     interval_s,
                     timeout_s,
                 )
@@ -605,20 +629,13 @@ def _run_one_round(
 
     round_result.update(
         {
-            "state": str(item.get("state", "")),
-            "gate": item.get("gate"),
-            "fallback_parts": [
-                {
-                    "segment_index": p.get("segment_index"),
-                    "source": p.get("source"),
-                    "fallback_reason_code": p.get("fallback_reason_code"),
-                    "fallback_reason_text": p.get("fallback_reason_text"),
-                }
-                for p in parts
-                if p.get("source") == "fallback"
-            ],
+            "state": initial_state,
+            "gate": initial_gate,
+            "fallback_parts": initial_fallback,
             "regen": regen_log,
-            "script": _script_doc(set_wire, product),
+            "script": initial_script,
+            "final_state": str(item.get("state", "")),
+            "final_gate": item.get("gate"),
         }
     )
     if regen_trials > 0:

@@ -916,7 +916,9 @@ def test_run_real_flow_with_faked_http_writes_results_without_token(
     round_result = results["products"][0]["rounds"][0]
     assert round_result["set_id"] == "set-1"
     assert round_result["workflow"]["status"] == "completed"
-    assert round_result["gate"]["state"] == "passed"
+    # primary gate/script = snapshot right after the first generation (before any regeneration)
+    assert round_result["gate"]["state"] == "gate_failed"
+    assert round_result["final_gate"]["state"] == "passed"
     assert round_result["regen"]["success"] is True
     assert len(round_result["regen"]["attempts"]) == 1
     attempt = round_result["regen"]["attempts"][0]
@@ -931,7 +933,8 @@ def test_run_real_flow_with_faked_http_writes_results_without_token(
     assert metrics["numbers"]["violation_count"] == 0
     summary = results["products"][0]["summary"]
     assert summary["regen_no_part_left_flagged"] is True
-    assert summary["gate_passed_all_rounds"] is True
+    # initial gate (first generation) failed in the fake; it passes only after regeneration
+    assert summary["gate_passed_all_rounds"] is False
     assert summary["regen_attempts_total"] == 1
     assert summary["regen_attempt_success_rate"] == 1.0
     assert summary["regen_clean_success_rate"] == 1.0
@@ -969,3 +972,23 @@ def test_run_records_api_errors_and_reports_exit_code_3(
     round_result = json.loads(out.read_text(encoding="utf-8"))["products"][0]["rounds"][0]
     assert round_result["api_errors"][0]["status"] == 409
     assert round_result["set_id"] is None
+
+
+def test_regenerate_sends_expected_version_id_like_the_studio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[dict] = []
+
+    def fake_request_json(base_url, method, path, payload, token, timeout_s=60.0):  # noqa: ANN001
+        if method == "POST" and path.endswith("/regenerate"):
+            sent.append(dict(payload))
+            return 202, {"workflow_id": "wf-9", "status": "queued"}
+        if method == "GET" and "/workflows/" in path:
+            return 200, {"status": "completed"}
+        return 200, {"items": {"p": {"gate": {"state": "passed", "violations": []}}}}
+
+    monkeypatch.setattr(qa, "request_json", fake_request_json)
+    record = qa._regen_once("http://x", "t", "set-1", "p", 2, "part-2", "ver-7", 0.0, 1.0)
+    assert sent[0]["expected_version_id"] == "ver-7"
+    assert sent[0]["part_id"] == "part-2"
+    assert record["status"] == "completed"
