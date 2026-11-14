@@ -4,7 +4,15 @@ Covers (per the task sheet):
 - every metric has at least one behavioral test;
 - number fraud catches "tám trăm bốn mươi kg" against claims that only have
   "0,84 kg", and does NOT false-alarm "0,38 kg" when 0,38 kg IS a claim;
+- real-baseline number false alarms: "Bây giờ" is not read as "7 giờ"
+  (diacritic-exact digit words), digit-by-digit size readings ("một sáu tám
+  năm hai đến năm tám kg") match claim ranges (1m60–1m68, 52–58kg) and
+  unsegmentable runs are "uncertain", not "error"; written price fraud
+  ("hai triệu năm trăm nghìn đồng") is still caught;
 - written-number normalization, repetition, flatness;
+- regeneration measurement: each attempt records workflow status, error
+  fields and the re-read gate; ``--regen-trials`` calls the regenerate
+  endpoint exactly N times round-robin; both success rates are reported;
 - ``run --dry-run`` makes no network calls (urllib is patched to explode);
 - ``run`` refuses non-ZZ-TEST workspaces;
 - the LIVENTO_QA_TOKEN never appears in any output.
@@ -129,6 +137,129 @@ def test_digit_number_missing_from_claims_is_flagged() -> None:
     analysis = m.analyze_script(sections, claims, {}, floor_s=30)
     assert analysis["numbers"]["digit_violations"], analysis["numbers"]
     assert analysis["numbers"]["digit_violations"][0]["value"] == "350000"
+
+
+# ── Number fraud: real-baseline false alarms (B0-fix) ────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("words", "expected"),
+    [
+        ("một sáu tám", "168"),  # digit-by-digit height 1m68
+        ("năm hai", "52"),
+        ("một sáu", "16"),  # 1m60
+        ("tám lăm", "85"),
+        ("một sáu tám năm hai", "16852"),
+    ],
+)
+def test_digit_by_digit_words_concatenate(words: str, expected: str) -> None:
+    found = m.written_numbers(words)
+    assert found, f"no written number detected in {words!r}"
+    assert found[0]["value"] == expected
+
+
+def test_bay_gio_is_not_read_as_7_gio() -> None:
+    # Real baseline: "Bây giờ" matched the accentless "bay" (7) + unit "giờ".
+    # Digit words must match WITH their diacritics: "bảy" yes, "bây"/"bay" no.
+    assert m.written_numbers("Bây giờ") == []
+    assert m.written_numbers("bây giờ") == []
+    assert [o["value"] for o in m.written_numbers("bảy giờ")] == ["7"]
+    claims = ["Giá niêm yết 1.790.000đ, giá live 1.390.000đ."]
+    analysis = m.analyze_script(
+        [{"text": "Bây giờ chúng ta cùng điểm qua sản phẩm nồi chiên nhé."}],
+        claims,
+        {},
+        floor_s=30,
+    )
+    assert analysis["numbers"]["violation_count"] == 0
+    assert analysis["numbers"]["uncertain_count"] == 0
+
+
+def test_digit_by_digit_size_readings_match_claim_ranges() -> None:
+    # Real baseline: "một sáu tám năm hai" was mis-merged into "31", "một bảy
+    # tư năm tám" into "34". Digit-by-digit readings must resolve against the
+    # claim ranges (1m60–1m68, 52–58kg, 1m65–1m74, 58–66kg, …) and pass.
+    claims = [
+        "Size M phù hợp 1m60–1m68 và 52–58kg.",
+        "Size L phù hợp 1m65–1m74 và 58–66kg.",
+        "Size XXL phù hợp đến 85kg.",
+    ]
+    sentences = [
+        "M phù hợp từ một sáu đến một sáu tám năm hai đến năm tám kg.",
+        "L cho từ một sáu lăm đến một bảy tư năm tám đến sáu sáu kg.",
+        "XXL phù hợp đến tám lăm kg.",
+    ]
+    for sentence in sentences:
+        numbers = m.analyze_script([{"text": sentence}], claims, {}, floor_s=30)["numbers"]
+        assert numbers["violation_count"] == 0, (sentence, numbers)
+        assert numbers["uncertain_count"] == 0, (sentence, numbers)
+
+
+def test_spoken_range_and_interior_value_covered_by_claim_range() -> None:
+    claims = ["Size L phù hợp 1m65–1m74 và 58–66kg."]
+    occurrences = m.written_numbers("một sáu lăm đến một bảy tư")
+    assert [o["value"] for o in occurrences] == ["165", "174"]
+    assert occurrences[1]["range_low"] == "165"  # spoken low–high via "đến"
+    # Both endpoints of the claim range, and a value inside it, are covered.
+    for sentence in (
+        "Size L cho người cao một sáu lăm đến một bảy tư.",
+        "Size L vừa người cao một sáu tám.",  # 168 inside 1m65–1m74
+    ):
+        numbers = m.analyze_script([{"text": sentence}], claims, {}, floor_s=30)["numbers"]
+        assert numbers["violation_count"] == 0, (sentence, numbers)
+        assert numbers["uncertain_count"] == 0, (sentence, numbers)
+
+
+def test_ambiguous_digit_run_downgraded_to_uncertain_not_error() -> None:
+    # "một bảy tám tám sáu" (1m78 … 86?) has no segmentation fully covered by
+    # the claims (66–75kg has no 86): reported as uncertain, NOT a hard error.
+    claims = ["Size XL phù hợp 1m70–1m78 và 66–75kg."]
+    analysis = m.analyze_script(
+        [{"text": "XL lên đến một bảy tám tám sáu đến bảy lăm kg."}], claims, {}, floor_s=30
+    )
+    numbers = analysis["numbers"]
+    assert numbers["violation_count"] == 0
+    assert numbers["uncertain_count"] == 1
+    uncertain = numbers["written_uncertain"][0]
+    assert uncertain["as_written"] == "một bảy tám tám sáu"
+    assert uncertain["value"] == "17886"
+    assert uncertain["severity"] == "uncertain"
+    assert "written_number_not_in_claims" not in analysis["issues"]
+    assert "digit_number_not_in_claims" not in analysis["issues"]
+
+
+def test_written_price_fraud_still_caught() -> None:
+    # Do-not-weaken guard: a written price absent from the claims stays a hard
+    # error (magnitude words make the reading unambiguous).
+    claims = ["Giá niêm yết 1.790.000đ, giá live 1.390.000đ."]
+    analysis = m.analyze_script(
+        [{"text": "Giá bán cho sản phẩm tuyệt vời này là hai triệu năm trăm nghìn đồng."}],
+        claims,
+        {},
+        floor_s=30,
+    )
+    numbers = analysis["numbers"]
+    assert len(numbers["written_violations"]) == 1
+    violation = numbers["written_violations"][0]
+    assert violation["value"] == "2500000"
+    assert violation["unit"] == "dong"
+    assert violation["severity"] == "error"
+    assert "written_number_not_in_claims" in analysis["issues"]
+    assert analysis["numbers"]["uncertain_count"] == 0
+
+
+def test_fixture_baseline_size_readings_no_false_alarms() -> None:
+    # Sentences extracted verbatim from the real baseline run: zero hard
+    # number errors; the only uncertain runs are the unsegmentable ones.
+    doc = _load("size_readings_baseline.json")
+    analysis = _analyze(doc)
+    numbers = analysis["numbers"]
+    assert numbers["violation_count"] == 0, numbers
+    assert numbers["uncertain_count"] == 2, numbers
+    assert {u["as_written"] for u in numbers["written_uncertain"]} == {
+        "một năm",  # "một năm rưỡi lăm" — "rưỡi" is an unsupported reading
+        "một bảy tám tám sáu",
+    }
 
 
 # ── Buzzwords ────────────────────────────────────────────────────────────────
@@ -313,7 +444,13 @@ def test_analyze_cli_writes_report_and_prints_table(
     assert exit_code == 1  # the fraud fixture must fail
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["schema"] == qa.REPORT_SCHEMA
-    assert payload["summary"] == {"documents": 1, "passed": 0, "failed": 1}
+    assert payload["summary"] == {
+        "documents": 1,
+        "passed": 0,
+        "failed": 1,
+        "regen_attempt_success_rate": None,  # plain script doc: no regen data
+        "regen_clean_success_rate": None,
+    }
     assert payload["documents"][0]["analysis"]["numbers"]["written_violations"]
 
 
@@ -426,6 +563,235 @@ def test_run_requires_token_from_environment(monkeypatch: pytest.MonkeyPatch) ->
     assert qa._TOKEN_ENV in str(excinfo.value)
 
 
+# ── run CLI: regen measurement (HTTP layer fully faked, still no network) ────
+
+
+def test_run_regen_attempt_failure_records_error_code_and_rates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One regen attempt fails (workflow error_code), the next completes: the
+    run must record both truthfully and report attempt/clean rates of 0.5 —
+    the old "success = nothing left flagged" reading said 1.0 here."""
+    workflow_polls = {"count": 0}
+
+    def fake_request_json(base_url, method, path, payload, token, timeout_s=60.0):  # noqa: ANN001
+        assert token == SECRET_TOKEN
+        if method == "POST" and path == "/api/v1/script-sets":
+            return 201, {"id": "set-1"}
+        if method == "POST" and path.endswith("/generate-batch"):
+            return 202, {"batch_id": "b-1"}
+        if method == "GET" and "/generation-batches/" in path:
+            return 200, {"status": "completed"}
+        if method == "POST" and path.endswith("/regenerate"):
+            assert payload["part_id"] == "p2"
+            return 202, {"workflow_id": "wf-r1"}
+        if method == "GET" and "/workflows/" in path:
+            workflow_polls["count"] += 1
+            if workflow_polls["count"] == 1:
+                return 200, {
+                    "status": "failed",
+                    "error_code": "script_generation_failed",
+                    "error_message": "boom",
+                }
+            return 200, {"status": "completed"}
+        if method == "GET" and path.startswith("/api/v1/script-sets/set-1"):
+            return 200, _fake_set_wire(workflow_polls["count"] >= 2)
+        raise AssertionError(f"unexpected call {method} {path}")
+
+    monkeypatch.setattr(qa, "request_json", fake_request_json)
+    monkeypatch.setenv(qa._TOKEN_ENV, SECRET_TOKEN)
+    out = tmp_path / "results.json"
+    exit_code = qa.main(
+        [
+            "run",
+            "--base-url",
+            "http://127.0.0.1:9",
+            "--workspace",
+            "ZZ-TEST-fake",
+            "--rounds",
+            "1",
+            "--only",
+            "zz-serum-moc-lac-dewmist",
+            "--regen-attempts",
+            "3",
+            "--out",
+            str(out),
+        ]
+    )
+    assert exit_code == 0  # a failed regen workflow is a recorded outcome, not an api_error
+    results = json.loads(out.read_text(encoding="utf-8"))
+    round_result = results["products"][0]["rounds"][0]
+    attempts = round_result["regen"]["attempts"]
+    assert len(attempts) == 2
+    assert attempts[0]["status"] == "failed"
+    assert attempts[0]["error_code"] == "script_generation_failed"
+    assert attempts[0]["error_message"] == "boom"
+    assert attempts[0]["gate_state_after"] == "gate_failed"
+    assert attempts[0]["gate_error_count_after"] == 1
+    assert attempts[1]["status"] == "completed"
+    assert attempts[1]["gate_state_after"] == "passed"
+    assert "error_code" not in attempts[1]
+    assert round_result["regen"]["still_needing"] == []
+    summary = results["products"][0]["summary"]
+    assert summary["regen_attempts_total"] == 2
+    assert summary["regen_attempts_completed"] == 1
+    assert summary["regen_attempt_success_rate"] == 0.5
+    assert summary["regen_clean_success_rate"] == 0.5
+    assert summary["regen_no_part_left_flagged"] is True
+    assert SECRET_TOKEN not in out.read_text(encoding="utf-8")
+
+
+def test_run_regen_trials_round_robin_hits_endpoint_exactly_n_times(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--regen-trials 3 on a 2-part product: exactly 3 sequential regenerate
+    calls rotating segment_index 0 → 1 → 0 (with part_id), independent of the
+    gate flags; both rates are 1.0."""
+    parts = [
+        {
+            "part_id": "p1",
+            "segment_index": 0,
+            "source": "llm",
+            "brief": {"role": "intro"},
+            "display_text": (
+                "Chào cả nhà, mình giới thiệu serum dưỡng ẩm Mộc Lạc Dewmist 30ml, giá niêm yết "
+                "389.000đ, giá live 299.000đ, giảm 23% so với giá niêm yết."
+            ),
+        },
+        {
+            "part_id": "p2",
+            "segment_index": 1,
+            "source": "llm",
+            "brief": {"role": "highlights"},
+            "display_text": (
+                "Gel lỏng trong suốt, thấm sau khoảng 30 giây, không bết dính. Cách dùng sau làm "
+                "sạch và toner, lấy 2–3 giọt, vỗ lên mặt và cổ, sáng và tối. Bạn nào da khô thì "
+                "thả bình luận cho mình tư vấn nhé."
+            ),
+        },
+    ]
+    regenerate_calls: list[tuple[str, dict]] = []
+
+    def fake_request_json(base_url, method, path, payload, token, timeout_s=60.0):  # noqa: ANN001
+        assert token == SECRET_TOKEN
+        if method == "POST" and path == "/api/v1/script-sets":
+            return 201, {"id": "set-1"}
+        if method == "POST" and path.endswith("/generate-batch"):
+            return 202, {"batch_id": "b-1"}
+        if method == "GET" and "/generation-batches/" in path:
+            return 200, {"status": "completed"}
+        if method == "POST" and path.endswith("/regenerate"):
+            regenerate_calls.append((path, payload))
+            return 202, {"workflow_id": f"wf-{len(regenerate_calls)}"}
+        if method == "GET" and "/workflows/" in path:
+            return 200, {"status": "completed"}
+        if method == "GET" and path.startswith("/api/v1/script-sets/set-1"):
+            return 200, _fake_set_wire_custom(parts, {"state": "passed", "violations": []})
+        raise AssertionError(f"unexpected call {method} {path}")
+
+    monkeypatch.setattr(qa, "request_json", fake_request_json)
+    monkeypatch.setenv(qa._TOKEN_ENV, SECRET_TOKEN)
+    out = tmp_path / "results.json"
+    exit_code = qa.main(
+        [
+            "run",
+            "--base-url",
+            "http://127.0.0.1:9",
+            "--workspace",
+            "ZZ-TEST-fake",
+            "--rounds",
+            "1",
+            "--only",
+            "zz-serum-moc-lac-dewmist",
+            "--regen-trials",
+            "3",
+            "--out",
+            str(out),
+        ]
+    )
+    assert exit_code == 0
+    assert len(regenerate_calls) == 3  # exactly N calls, nothing more
+    indices = [
+        int(path.rsplit("/segments/", 1)[1].split("/", 1)[0]) for path, _ in regenerate_calls
+    ]
+    assert indices == [0, 1, 0]  # round-robin over segment_index
+    assert [payload.get("part_id") for _, payload in regenerate_calls] == ["p1", "p2", "p1"]
+    results = json.loads(out.read_text(encoding="utf-8"))
+    round_result = results["products"][0]["rounds"][0]
+    assert round_result["regen"]["attempts"] == []  # no part was gate-flagged
+    trials = round_result["regen_trials"]["trials"]
+    assert [t["segment_index"] for t in trials] == [0, 1, 0]
+    assert all(t["status"] == "completed" for t in trials)
+    assert all(
+        t["gate_state_after"] == "passed" and t["gate_error_count_after"] == 0 for t in trials
+    )
+    summary = results["products"][0]["summary"]
+    assert summary["regen_trials_total"] == 3
+    assert summary["regen_trials_completed"] == 3
+    assert summary["regen_attempt_success_rate"] == 1.0
+    assert summary["regen_clean_success_rate"] == 1.0
+    assert SECRET_TOKEN not in out.read_text(encoding="utf-8")
+
+
+def test_analyze_reports_regen_rates_in_summary_and_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    results = {
+        "schema": qa.RESULTS_SCHEMA,
+        "products": [
+            {
+                "product_id": "zz-demo",
+                "rounds": [
+                    {
+                        "round": 1,
+                        "script": _load("good_script.json"),
+                        "regen": {
+                            "attempts": [
+                                {
+                                    "segment_index": 1,
+                                    "status": "completed",
+                                    "gate_state_after": "passed",
+                                    "gate_error_count_after": 0,
+                                },
+                                {
+                                    "segment_index": 1,
+                                    "status": "failed",
+                                    "error_code": "script_generation_failed",
+                                    "gate_state_after": "gate_failed",
+                                    "gate_error_count_after": 2,
+                                },
+                            ]
+                        },
+                        "regen_trials": {
+                            "trials": [
+                                {
+                                    "segment_index": 0,
+                                    "status": "completed",
+                                    "gate_state_after": "passed",
+                                    "gate_error_count_after": 0,
+                                }
+                            ]
+                        },
+                    },
+                    {"round": 2, "script": _load("good_script.json")},
+                ],
+            }
+        ],
+    }
+    source = tmp_path / "run.json"
+    source.write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
+    report = tmp_path / "report.json"
+    exit_code = qa.main(["analyze", "--input", str(source), "--report", str(report)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    summary = json.loads(report.read_text(encoding="utf-8"))["summary"]
+    # 3 executions (2 attempts + 1 trial), 2 completed and gate-clean.
+    assert summary["regen_attempt_success_rate"] == pytest.approx(2 / 3, abs=1e-3)
+    assert summary["regen_clean_success_rate"] == pytest.approx(2 / 3, abs=1e-3)
+    assert "67%" in out  # per-round rates appear in the summary table
+    assert "—" in out  # round 2 recorded no regen executions
+
+
 # ── run CLI real flow (HTTP layer fully faked, still no network) ─────────────
 
 
@@ -486,6 +852,19 @@ def _fake_set_wire(regenerated: bool) -> dict:
     }
 
 
+def _fake_set_wire_custom(parts: list[dict], gate: dict) -> dict:
+    return {
+        "id": "set-1",
+        "items": {
+            "zz-serum-moc-lac-dewmist": {
+                "state": "REVIEWABLE",
+                "current_version": {"parts": parts},
+                "gate": gate,
+            }
+        },
+    }
+
+
 def test_run_real_flow_with_faked_http_writes_results_without_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -540,13 +919,24 @@ def test_run_real_flow_with_faked_http_writes_results_without_token(
     assert round_result["gate"]["state"] == "passed"
     assert round_result["regen"]["success"] is True
     assert len(round_result["regen"]["attempts"]) == 1
+    attempt = round_result["regen"]["attempts"][0]
+    assert attempt["segment_index"] == 1
+    assert attempt["part_id"] == "p2"
+    assert attempt["status"] == "completed"
+    assert attempt["gate_state_after"] == "passed"
+    assert attempt["gate_error_count_after"] == 0
     assert round_result["script"]["sections"][1]["text"].startswith("Gel lỏng")
     metrics = round_result["metrics"]
     assert metrics["totals"]["sections"] == 2
     assert metrics["numbers"]["violation_count"] == 0
     summary = results["products"][0]["summary"]
-    assert summary["regen_success_all_rounds"] is True
+    assert summary["regen_no_part_left_flagged"] is True
     assert summary["gate_passed_all_rounds"] is True
+    assert summary["regen_attempts_total"] == 1
+    assert summary["regen_attempt_success_rate"] == 1.0
+    assert summary["regen_clean_success_rate"] == 1.0
+    assert summary["regen_trials_total"] == 0  # --regen-trials not requested
+    assert SECRET_TOKEN not in out.read_text(encoding="utf-8")
 
 
 def test_run_records_api_errors_and_reports_exit_code_3(

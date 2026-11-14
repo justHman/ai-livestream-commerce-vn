@@ -1,0 +1,25 @@
+{
+  "schema": "script_quality_doc/v1",
+  "note": "Fixture B0: sentences extracted verbatim from a real baseline run (workspace ZZ-TEST-script-qa-baseline-20261114, product zz-ao-khoac-hanoe-breeze, round 2). Digit-by-digit size readings must match the claim ranges (1m60-1m68, 52-58kg, ...) instead of being mis-merged into fake values (31/34/39); 'Bây giờ' must not be read as '7 giờ'; the one unsegmentable run 'một bảy tám tám sáu' is reported as uncertain, not an error.",
+  "product": {
+    "id": "zz-ao-khoac-hanoe-breeze",
+    "name": "Áo khoác Hanoé Breeze",
+    "order_code": "HN-BR02",
+    "target_floor_s": 30,
+    "target_ceiling_s": 240
+  },
+  "claims": [
+    "Giá niêm yết 559.000đ, giá live 429.000đ.",
+    "Size S phù hợp 1m55–1m62 và 45–52kg.",
+    "Size M phù hợp 1m60–1m68 và 52–58kg.",
+    "Size L phù hợp 1m65–1m74 và 58–66kg.",
+    "Size XL phù hợp 1m70–1m78 và 66–75kg.",
+    "Size XXL phù hợp đến 85kg."
+  ],
+  "sections": [
+    {
+      "role": "highlights",
+      "text": "Mọi người chọn size dựa trên chiều cao và cân nặng nhé. S hợp từ một năm rưỡi lăm đến một sáu hai tầm bốn năm đến năm hai kg. M phù hợp từ một sáu đến một sáu tám năm hai đến năm tám kg. L cho từ một sáu lăm đến một bảy tư năm tám đến sáu sáu kg. XL lên đến một bảy tám tám sáu đến bảy lăm kg. XXL phù hợp đến tám lăm kg. Bây giờ mình sang phần giá nhé."
+    }
+  ]
+}
