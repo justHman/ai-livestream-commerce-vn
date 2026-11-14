@@ -497,8 +497,11 @@ def test_run_real_flow_with_faked_http_writes_results_without_token(
             assert payload["name"].startswith("ZZ-TEST-")
             assert payload["brief"]["product_facts"]["zz-serum-moc-lac-dewmist"]["allowed_claims"]
             return 201, {"id": "set-1"}
-        if method == "POST" and path.endswith("/generate"):
-            return 202, {"workflow_id": "wf-1", "status": "queued"}
+        if method == "POST" and path.endswith("/generate-batch"):
+            assert payload["ordered_units"] is True
+            return 202, {"batch_id": "b-1", "status": "queued"}
+        if method == "GET" and "/generation-batches/" in path:
+            return 200, {"status": "completed"}
         if method == "POST" and path.endswith("/regenerate"):
             state["regenerated"] = True
             return 202, {"workflow_id": "wf-2", "status": "queued"}

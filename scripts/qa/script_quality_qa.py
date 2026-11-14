@@ -23,8 +23,8 @@ API surface used (see ``services/product/backend_service/src/backend/api/v1/
 scripts.py`` — viewer-plane bearer auth):
 
 - ``POST /api/v1/script-sets``                        create the QA script-set
-- ``POST /api/v1/script-sets/{id}/products/{pid}/generate``        202 + workflow
-- ``GET  /api/v1/script-sets/{id}/products/{pid}/workflows/{wid}`` poll status
+- ``POST /api/v1/script-sets/{id}/generate-batch``  ordered_units, 202 + batch (Studio path)
+- ``GET  /api/v1/script-sets/{id}/generation-batches/{bid}``       poll status
 - ``GET  /api/v1/script-sets/{id}``                   parts + gate + fallback
 - ``POST /api/v1/script-sets/{id}/products/{pid}/segments/{idx}/regenerate``
 
@@ -62,6 +62,9 @@ WORKSPACE_PREFIX = "ZZ-TEST"
 _TOKEN_ENV = "LIVENTO_QA_TOKEN"
 _REDACTED_TOKEN = "<LIVENTO_QA_TOKEN, redacted>"
 _TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled", "timeout"})
+_TERMINAL_BATCH_STATUSES = frozenset(
+    {"completed", "partial_completed", "failed", "cancelled", "timeout"}
+)
 
 
 # ── Safety guards ────────────────────────────────────────────────────────────
@@ -186,24 +189,22 @@ def build_plan(
                 {
                     "step": f"{slug} r{round_no}: generate",
                     "method": "POST",
-                    "url": (
-                        f"{base_url.rstrip('/')}/api/v1/script-sets/{{set_id}}"
-                        f"/products/{product['id']}/generate"
-                    ),
+                    "url": (f"{base_url.rstrip('/')}/api/v1/script-sets/{{set_id}}/generate-batch"),
                     "payload": {
+                        "product_ids": [product["id"]],
                         "target_duration_s": target_duration_s,
-                        "intent": "selling",
+                        "ordered_units": True,
                         "idempotency_key": "<uuid4>",
                     },
                 }
             )
             plan.append(
                 {
-                    "step": f"{slug} r{round_no}: poll workflow",
+                    "step": f"{slug} r{round_no}: poll batch",
                     "method": "GET",
                     "url": (
                         f"{base_url.rstrip('/')}/api/v1/script-sets/{{set_id}}"
-                        f"/products/{product['id']}/workflows/{{workflow_id}}"
+                        f"/generation-batches/{{batch_id}}"
                     ),
                     "payload": None,
                     "note": f"every {poll_interval_s:g}s, up to {poll_timeout_s:g}s",
@@ -270,6 +271,28 @@ def _poll_workflow(
         time.sleep(interval_s)
 
 
+def _poll_batch(
+    base_url: str,
+    token: str,
+    set_id: str,
+    batch_id: str,
+    interval_s: float,
+    timeout_s: float,
+) -> tuple[str, dict]:
+    """Poll one generation batch (the path the Studio uses) until a terminal state."""
+    path = f"/api/v1/script-sets/{set_id}/generation-batches/{batch_id}"
+    deadline = time.monotonic() + timeout_s
+    body: dict = {}
+    while True:
+        _, body = request_json(base_url, "GET", path, None, token)
+        status = str(body.get("status", ""))
+        if status in _TERMINAL_BATCH_STATUSES:
+            return status, body
+        if time.monotonic() > deadline:
+            return "timeout", body
+        time.sleep(interval_s)
+
+
 def _fetch_set(base_url: str, token: str, set_id: str) -> dict:
     status, body = request_json(base_url, "GET", f"/api/v1/script-sets/{set_id}", None, token)
     if status != 200:
@@ -330,13 +353,16 @@ def _run_one_round(
         }
     set_id = str(set_wire.get("id", ""))
 
+    # Same call the Studio makes: generate-batch with ordered_units (the per-product /generate
+    # path is the legacy fixed-K route and does not exercise the production unit planner).
     status, generate = request_json(
         base_url,
         "POST",
-        f"/api/v1/script-sets/{set_id}/products/{slug}/generate",
+        f"/api/v1/script-sets/{set_id}/generate-batch",
         {
+            "product_ids": [slug],
             "target_duration_s": target_duration_s,
-            "intent": "selling",
+            "ordered_units": True,
             "idempotency_key": uuid.uuid4().hex,
         },
         token,
@@ -347,10 +373,8 @@ def _run_one_round(
             "set_id": set_id,
             "api_errors": [{"step": "generate", "status": status, "body": generate}],
         }
-    workflow_id = str(generate.get("workflow_id") or generate.get("id") or "")
-    job_status, job_body = _poll_workflow(
-        base_url, token, set_id, slug, workflow_id, interval_s, timeout_s
-    )
+    workflow_id = str(generate.get("batch_id") or "")
+    job_status, job_body = _poll_batch(base_url, token, set_id, workflow_id, interval_s, timeout_s)
     round_result: dict = {
         "round": round_no,
         "set_id": set_id,
