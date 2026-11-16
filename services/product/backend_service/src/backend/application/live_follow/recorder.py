@@ -880,11 +880,24 @@ class LiveFollowRecorder:
         elif reason is None:
             self._position(session_id, state, ds, "preparing", None)
 
-    def _script_cursor(self, ds: Any) -> Optional[dict]:
+    def _script_cursor(self, ds: Any, decision: Any = None) -> Optional[dict]:
         director = getattr(ds, "director", None)
         if director is None:
             return None
         current = director.state.current_product()
+        if (
+            decision is not None
+            and decision.unit_index is not None
+            and decision.product_id
+            and decision.action in ("introduce_product", "sell_product")
+            and (current is None or current.product_id != decision.product_id)
+        ):
+            # The Director only moves current_product when the unit COMPLETES, but the host is
+            # already presenting this product: the cursor must not lag a whole unit behind.
+            current = next(
+                (p for p in director.state.products if p.product_id == decision.product_id),
+                current,
+            )
         if current is None:
             return None
         units = tuple(current.units or ())
@@ -911,7 +924,7 @@ class LiveFollowRecorder:
     def _position(
         self, session_id: str, state: _Session, ds: Any, phase: str, decision: Any
     ) -> None:
-        cursor = self._script_cursor(ds)
+        cursor = self._script_cursor(ds, decision)
         if state.held == "held":
             phase = "holding"
         elif phase == "preparing" and decision is None and cursor is not None:

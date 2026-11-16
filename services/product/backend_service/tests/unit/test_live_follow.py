@@ -412,6 +412,52 @@ async def test_position_keeps_the_script_cursor_during_qa_and_advances_only_on_c
     assert last["script_cursor"]["next_unit_index"] == 4 and last["phase"] == "preparing"
 
 
+def _ds_two(current="p1"):
+    products = [
+        SimpleNamespace(product_id=pid, units=tuple(UNITS), next_unit=0) for pid in ("p1", "p2")
+    ]
+    state = SimpleNamespace(
+        current_product=lambda: next(p for p in products if p.product_id == current),
+        products=products,
+    )
+    return SimpleNamespace(director=SimpleNamespace(state=state), approved_envelope=None)
+
+
+@pytest.mark.asyncio
+async def test_script_cursor_product_id_ignores_the_product_a_comment_is_about():
+    recorder, sent = _recorder()
+    ds = _ds_two("p1")
+    other = Decision(
+        action="answer_cluster",
+        product_id="p2",
+        topic="price",
+        cluster_member_ids=("c1",),
+        source_cluster_id="cl-1",
+        turn_id="qa-p2",
+        excursion=True,
+    )
+    recorder.turn_selected("s", other, ds)
+    recorder.speak_started("s", other, ds)
+    positions = [e["position"] for e in await _drain(recorder, sent) if "position" in e]
+    answering = next(p for p in positions if p["phase"] == "answering_comment")
+    assert answering["product_id"] == "p2"  # what the comment is about
+    assert answering["script_cursor"]["product_id"] == "p1"  # what the host is selling
+    assert recorder.snapshot("s", ds)["position"]["script_cursor"]["product_id"] == "p1"
+
+
+@pytest.mark.asyncio
+async def test_script_cursor_follows_the_product_from_the_first_unit_of_the_switch():
+    recorder, sent = _recorder()
+    ds = _ds_two("p1")  # Director moves current_product only when the unit completes
+    first_of_p2 = Decision(action="introduce_product", product_id="p2", unit_index=0, turn_id="u")
+    recorder.turn_selected("s", first_of_p2, ds)
+    recorder.speak_started("s", first_of_p2, ds)
+    positions = [e["position"] for e in await _drain(recorder, sent) if "position" in e]
+    speaking = next(p for p in positions if p["phase"] == "speaking")
+    assert speaking["script_cursor"]["product_id"] == "p2"
+    assert speaking["script_cursor"]["next_unit_index"] == 0
+
+
 @pytest.mark.asyncio
 async def test_hold_and_resume_are_positions():
     recorder, sent = _recorder()
