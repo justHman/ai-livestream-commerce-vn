@@ -125,25 +125,50 @@ _BENEFIT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Strict unsupported claims remain blocking even in relaxed mode.
-_STRICT_CLAIM_RE = re.compile(
-    r"(?<!\w)(?:chữa|điều trị|trị mụn|trị nám|trị thâm|khỏi bệnh|phòng bệnh|ngừa bệnh"
-    r"|ngăn ngừa|diệt khuẩn|diệt vi khuẩn|diệt virus|kháng khuẩn|khử khuẩn|miễn dịch"
-    r"|giảm cân|giảm mỡ|trắng da|làm trắng|mờ nám|mờ thâm|an toàn tuyệt đối"
-    # a bare "cam kết"/"đảm bảo" is everyday sales talk ("đảm bảo đúng như hình"); only a promised result is a claim
-    r"|(?:cam kết|đảm bảo) (?:hiệu quả|an toàn|kết quả|khỏi|trị)"
-    r"|hiệu quả 100%|100% hiệu quả|bảo hành|chứng nhận|đạt chuẩn|FDA|bộ y tế)(?!\w)",
+_DESCRIPTIVE_SIGNALS = (
+    "thiết kế",
+    "gọn nhẹ",
+    "nhỏ gọn",
+    "dễ dàng",
+    "đơn giản",
+    "tiện lợi",
+    "chất lượng",
+    "ổn định",
+    "bền bỉ",
+    "độ bền",
+    "tuổi thọ",
+    "đáng tin cậy",
+    "tiết kiệm",
+    "tối ưu",
+    "nguyên liệu",
+    "thành phần",
+    "công suất",
+    "làm sạch",
+    "làm mềm",
+)
+
+# Health and certification claims are detected even without a benefit signal.
+_HEALTH_RE = re.compile(
+    r"(?<!\w)(?:(?<!sửa )chữa(?! cháy)|điều trị|trị (?:mụn|nám|thâm|viêm|bệnh|ho|đau|gàu|hôi)"
+    r"|mụn|nám|viêm|kháng viêm|bệnh|đề kháng|miễn dịch|lão hóa|tác dụng phụ|lành tính"
+    r"|huyết áp|tiểu đường|giảm đau|mọc tóc|tăng chiều cao|giảm cân|giảm mỡ|trắng da"
+    r"|mờ nám|mờ thâm|diệt khuẩn|diệt vi khuẩn|diệt virus|kháng khuẩn|khử khuẩn"
+    r"|khỏi bệnh|khỏi hẳn|khỏi hoàn toàn|an toàn tuyệt đối"
+    r"|(?:cam kết|đảm bảo) (?:hiệu quả|kết quả|khỏi bệnh|khỏi hẳn|khỏi hoàn toàn)"
+    r"|hiệu quả 100%|100% hiệu quả|chứng nhận|đạt chuẩn|kiểm định|ISO|GMP|FDA|bộ y tế"
+    r"|hữu cơ|organic)(?!\w)",
     re.IGNORECASE,
 )
-_STRICT_NEGATION_RE = re.compile(
+_HEALTH_NEGATION_RE = re.compile(
     r"(?<!\w)(?:không hề|không phải|không|chưa|chẳng) ?$", re.IGNORECASE
 )
+_CONDITION_RE = re.compile(r"(?<!\w)(?:thì|hoàn tiền|nếu|bằng không)(?!\w)", re.IGNORECASE)
 
 
-def _strict_claim(clause: str) -> bool:
+def _health_claim(clause: str) -> bool:
     return any(
-        not _STRICT_NEGATION_RE.search(clause[: match.start()])
-        for match in _STRICT_CLAIM_RE.finditer(clause)
+        _CONDITION_RE.search(clause) or not _HEALTH_NEGATION_RE.search(clause[: match.start()])
+        for match in _HEALTH_RE.finditer(clause)
     )
 
 
@@ -270,13 +295,20 @@ def _discount_stated(token: str, facts: ProductFacts) -> bool:
     )
 
 
-def _price_token_in_facts_text(token: str, facts: ProductFacts) -> bool:
-    """Preserve the owner's exact number spelling and any matched currency/unit."""
-    needle = re.sub(r"\s+", " ", token.strip().lower())
-    unit_boundary = r"(?!\w)" if needle[-1].isalpha() else ""
-    rx = re.compile(rf"(?<![\d.,]){re.escape(needle)}(?!\d|[.,]\d){unit_boundary}")
+def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> bool:
+    """Exempt only an owner's exact quantity number and non-money unit word."""
+    number = match.group()
+    if not re.fullmatch(r"\d+(?:[.,]\d+)*", number):
+        return False
+    unit = re.match(r" ?([^\W\d_]+)(?!\w)", match.string[match.end() :])
+    if unit is None or re.fullmatch(_UNIT, unit.group(1), re.IGNORECASE):
+        return False
+    rx = re.compile(
+        rf"(?<![\d.,]){re.escape(number)}(?!\d|[.,]\d) ?{re.escape(unit.group(1))}(?!\w)",
+        re.IGNORECASE,
+    )
     return any(
-        rx.search(re.sub(r"\s+", " ", candidate.lower()))
+        rx.search(candidate)
         for candidate in (facts.product_name, *facts.allowed_claims)
         if candidate
     )
@@ -291,7 +323,7 @@ def check_price_claims(text: str, context) -> list[RuleViolation]:
     for match in _PRICE_RE.finditer(text):
         if _claims(match.group(), context.facts):
             continue
-        if relaxed_gate_enabled() and _price_token_in_facts_text(match.group(), context.facts):
+        if relaxed_gate_enabled() and _price_token_in_facts_text(match, context.facts):
             continue
         violations.append(
             RuleViolation(
@@ -546,11 +578,10 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
     holds exact claim sentences known to be true; a claim the backend never
     authorized is an ERROR.
 
-    A sentence is a claim candidate ONLY when it carries a specific
-    benefit/capability/spec signal (``_BENEFIT_SIGNALS`` — category-agnostic
-    capability words, never product nouns). Each signal-bearing CLAUSE must be
-    authorized by clause-level word overlap with an allowed claim; an
-    unsupported clause is an ERROR.
+    Benefit/capability/spec signals identify claim candidates. In relaxed
+    mode, health/certification signals also identify candidates, and only
+    unsupported descriptive benefits without health claims become warnings.
+    Each candidate CLAUSE is authorized by overlap with an allowed claim.
 
     The old product-reference guard (a hardcoded product-noun vocabulary) let
     unsupported claims escape when their nouns fell outside that vocabulary.
@@ -569,14 +600,14 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
         if (
             _PRICE_RE.search(stripped)
             and not _BENEFIT_RE.search(stripped)
-            and not (relaxed and _STRICT_CLAIM_RE.search(stripped))
+            and not (relaxed and _health_claim(stripped))
         ):
             continue
         for clause in _split_clauses(stripped):
             lowered = clause.lower()
-            if not _BENEFIT_RE.search(lowered) and not (
-                relaxed and _STRICT_CLAIM_RE.search(lowered)
-            ):
+            benefits = list(_BENEFIT_RE.finditer(lowered))
+            health = relaxed and _health_claim(clause)
+            if not benefits and not health:
                 continue
             if _overlaps_allowed(lowered, allowed):
                 continue
@@ -585,7 +616,9 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
                     rule_id=RULE_CLAIM_FACTUAL,
                     severity=(
                         Severity.WARNING
-                        if relaxed and not _strict_claim(clause)
+                        if relaxed
+                        and not health
+                        and all(hit.group() in _DESCRIPTIVE_SIGNALS for hit in benefits)
                         else Severity.ERROR
                     ),
                     message=(

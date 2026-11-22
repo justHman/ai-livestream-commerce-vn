@@ -93,6 +93,11 @@ def _negated(text: str, negation: str) -> bool:
         and not (
             relaxed_gate_enabled()
             and not negation.startswith("không")
+            and not re.search(
+                r"(?<!\w)thì(?!\w)",
+                re.split(r"[.!?;,]|\bvà\b|đồng thời", text[: m.start()])[-1]
+                + re.split(r"[.!?;,]|\bvà\b|đồng thời", text[m.end() :])[0],
+            )
             and re.search(
                 r"(?<!\w)(?:không hề|không phải|không có|không|chẳng) (?:là )?$",
                 text[: m.start()],
@@ -155,7 +160,11 @@ def check_contradictory_claims(segments: list[str], context) -> list[RuleViolati
             violations.append(
                 RuleViolation(
                     rule_id=RULE_CLAIM_CONTRADICTION,
-                    severity=Severity.WARNING if relaxed_gate_enabled() else Severity.ERROR,
+                    severity=(
+                        Severity.WARNING
+                        if relaxed_gate_enabled() and claim in ("chính hãng", "mới 100%")
+                        else Severity.ERROR
+                    ),
                     message=(
                         f"Claim {claim!r} is asserted in segment "
                         f"{claim_indexes[0] + 1} and contradicted in "
