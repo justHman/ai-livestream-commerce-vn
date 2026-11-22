@@ -147,6 +147,30 @@ _DESCRIPTIVE_SIGNALS = (
     "làm mềm",
 )
 
+_NUMBER_WORD_RE = re.compile(
+    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|gấp|nửa"
+    r"|(?:một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)\s+"
+    r"(?:lần|tháng|năm|ngày|tuần|giờ|phút|giây|kg|ký|cân|lít))\b",
+    re.IGNORECASE,
+)
+_EFFECT_RE = re.compile(
+    r"\b(?:giúp|hỗ trợ|ngừa|phòng ngừa|phòng chống|phòng|chống|trị|hạ|bổ|giải độc|giải"
+    r"|cai|tăng|giảm|gây|tác dụng|lợi sữa|làm đẹp|thông minh|sinh lý|chữa|khỏi"
+    r"|cho bé|cho trẻ|cho mẹ|cho người|bé|trẻ em|trẻ nhỏ|mẹ bầu|bà bầu|người già"
+    r"|người bệnh|chứa|không chứa|dị ứng|nghiện|hóa chất|chất bảo quản)\b",
+    re.IGNORECASE,
+)
+_EFFECT_EXCEPT_RE = re.compile(
+    r"\b(?:phòng khách|phòng ngủ|phòng tắm|văn phòng|giải thích|giải đáp|giải trí"
+    r"|chống trượt|chống sốc)\b",
+    re.IGNORECASE,
+)
+_ASSERT_RE = re.compile(
+    r"\b(?:nhất|số một|số 1|độc quyền|sáng chế|chứng thực|tin dùng|chính hãng|nhập khẩu"
+    r"|xuất xứ|chuẩn|hơn hẳn|vượt trội)\b",
+    re.IGNORECASE,
+)
+
 # Health and certification claims are detected even without a benefit signal.
 _HEALTH_RE = re.compile(
     r"(?<!\w)(?:(?<!sửa )chữa(?! cháy)|điều trị|trị (?:mụn|nám|thâm|viêm|bệnh|ho|đau|gàu|hôi)"
@@ -167,10 +191,13 @@ _HEALTH_NEGATION_RE = re.compile(
 )
 _CONDITION_RE = re.compile(r"(?<!\w)(?:thì|hoàn tiền|nếu|bằng không)(?!\w)", re.IGNORECASE)
 _SAFETY_CLAIMS = frozenset(("kích ứng", "paraben", "độc hại"))
+_SAFETY_RE = re.compile(
+    r"\b(?:không (?:có )?tác dụng phụ|không gây|không chứa|không đau)\b", re.IGNORECASE
+)
 
 
 def _health_claim(clause: str) -> bool:
-    return any(
+    return bool(_SAFETY_RE.search(clause)) or any(
         match.group().lower() in _SAFETY_CLAIMS
         or _CONDITION_RE.search(clause)
         or not _HEALTH_NEGATION_RE.search(clause[: match.start()])
@@ -598,7 +625,8 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
 
     Benefit/capability/spec signals identify claim candidates. In relaxed
     mode, health/certification signals also identify candidates, and only
-    unsupported descriptive benefits without health claims become warnings.
+    unsupported descriptive benefits without quantities, effects, assertions,
+    or health claims become warnings.
     Each candidate CLAUSE is authorized by overlap with an allowed claim.
 
     The old product-reference guard (a hardcoded product-noun vocabulary) let
@@ -637,6 +665,9 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
                         if relaxed
                         and not health
                         and not re.search(r"[0-9]", clause)
+                        and not _NUMBER_WORD_RE.search(clause)
+                        and not _EFFECT_RE.search(_EFFECT_EXCEPT_RE.sub(" ", clause))
+                        and not _ASSERT_RE.search(clause)
                         and all(hit.group() in _DESCRIPTIVE_SIGNALS for hit in benefits)
                         else Severity.ERROR
                     ),

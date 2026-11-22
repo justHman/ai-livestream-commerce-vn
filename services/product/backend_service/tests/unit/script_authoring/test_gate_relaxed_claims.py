@@ -71,6 +71,184 @@ def test_relaxed_word_claim_severity(monkeypatch, text, severity):
     assert violations[0].severity == severity
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Thành phần từ nghệ giúp phòng ngừa ung thư",
+        "Thành phần giúp giải độc gan",
+        "Thành phần bổ thận",
+        "Thành phần hạ mỡ máu",
+        "Thành phần giảm cholesterol",
+        "Thành phần trị táo bón",
+        "Thành phần phòng covid",
+        "Thành phần hỗ trợ cai thuốc lá",
+        "Thành phần tăng sinh lý",
+        "Thành phần lợi sữa",
+        "Thành phần chắc khỏe xương cho bé",
+        "Thành phần không tác dụng phụ",
+        "Thành phần không gây dị ứng",
+        "Thành phần không gây nghiện",
+        "Thành phần không đau",
+        "Thành phần thiên nhiên dùng được cho bé",
+        "Nguyên liệu giúp bé thông minh",
+        "tiết kiệm hai trăm nghìn đồng so với giá gốc",
+        "Thiết kế đẹp mà tiết kiệm được năm trăm nghìn",
+        "Làm sạch chín mươi chín phần trăm vết bẩn",
+        "Tiết kiệm điện gấp ba lần",
+        "Tiết kiệm một nửa tiền điện",
+        "Thiết kế độc quyền",
+        "Chất lượng Nhật Bản chuẩn xuất khẩu",
+        "Nguyên liệu nhập khẩu Hàn Quốc",
+        "Tiện lợi hơn hẳn các hãng khác",
+        "Thiết kế được cấp bằng sáng chế",
+        "Chất lượng hàng chính hãng",
+        "Công suất mạnh nhất thị trường",
+        "Thành phần không chứa chất bảo quản",
+    ],
+)
+def test_structural_claims_are_never_demoted(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    violations = check_factual_claims(text, _ctx())
+    assert [(v.rule_id, v.severity) for v in violations] == [("CLAIM_FACTUAL", Severity.ERROR)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Máy dùng rất dễ dàng.",
+        "Thiết kế đơn giản nhưng rất thanh lịch",
+        "Mọi người thấy thế nào về sự tiện lợi này",
+        "Các bạn có thể dễ dàng mang theo bên mình mà không thấy cồng kềnh "
+        "hay vướng víu gì đúng không",
+        "Cách chốt đơn rất đơn giản: bình luận chữ Chốt",
+        "Đôi khi đơn giản là một lợi thế về thao tác",
+        "Từ chiếc balo UrbanFold tiện lợi",
+        "Kết quả phụ thuộc vào loại nguyên liệu",
+        "bạn có thể cân nhắc thiết kế này",
+        "cũng không cam kết độ bền trong tình huống đó",
+        "Thiết kế gọn, để trong phòng khách rất hợp",
+    ],
+)
+def test_descriptive_production_phrases_remain_warnings(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.WARNING]
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "phòng khách",
+        "phòng ngủ",
+        "phòng tắm",
+        "văn phòng",
+        "giải thích",
+        "giải đáp",
+        "giải trí",
+        "chống trượt",
+        "chống sốc",
+    ],
+)
+def test_harmless_effect_compounds_remain_descriptive(monkeypatch, phrase):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thiết kế {phrase.upper()}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.WARNING]
+    assert [v.severity for v in check_factual_claims(f"{text} giúp bé", _ctx())] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "bổ sung",
+        "chống nước",
+        "tăng giảm",
+        "giảm giá",
+        "chứng thực",
+        "tin dùng",
+        "xuất xứ",
+        "vượt trội",
+        "số một",
+        "số 1",
+    ],
+)
+def test_effects_and_assertions_block_demotion(monkeypatch, phrase):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thiết kế {phrase.upper()}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    "quantity",
+    [
+        "trăm",
+        "nghìn",
+        "ngàn",
+        "triệu",
+        "tỷ",
+        "tỉ",
+        "mươi",
+        "phần trăm",
+        "gấp",
+        "nửa",
+        "một lần",
+        "hai tháng",
+        "ba năm",
+        "bốn ngày",
+        "năm tuần",
+        "sáu giờ",
+        "bảy phút",
+        "tám giây",
+        "chín kg",
+        "mười ký",
+        "hai cân",
+        "ba lít",
+    ],
+)
+def test_written_quantities_block_demotion(monkeypatch, quantity):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Tiết kiệm {quantity.upper()}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize("phrase", ["gấpđôi", "giúpđỡ", "nhấtquán"])
+def test_structural_markers_require_word_boundaries(monkeypatch, phrase):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    assert [v.severity for v in check_factual_claims(f"Thiết kế {phrase}", _ctx())] == [
+        Severity.WARNING
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "không tác dụng phụ",
+        "không có tác dụng phụ",
+        "không gây khó chịu",
+        "không chứa đường",
+        "không đau",
+    ],
+)
+def test_safety_phrases_are_non_negatable_and_can_be_approved(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    negated = f"Sản phẩm chưa {text}"
+    text = f"Sản phẩm {text}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+    assert [v.severity for v in check_factual_claims(negated, _ctx())] == [Severity.ERROR]
+    assert check_factual_claims(text, _ctx(allowed_claims=(text,))) == []
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "0")
+    assert check_factual_claims(text, _ctx()) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Thành phần bổ thận", "Tiết kiệm hai tháng", "Thiết kế độc quyền"],
+)
+def test_structural_guards_preserve_approval_and_flag_off(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    assert check_factual_claims(text, _ctx(allowed_claims=(text,))) == []
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "0")
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+
+
 @pytest.mark.parametrize("prefix", ["không", "không hề", "chưa", "chẳng", "không phải"])
 def test_strict_claim_negation(monkeypatch, prefix):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
