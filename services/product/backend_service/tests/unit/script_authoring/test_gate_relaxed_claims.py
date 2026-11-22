@@ -1,9 +1,15 @@
-"""Opt-in gate relaxation keeps unsafe claims and wrong values blocking."""
+"""Opt-in claim relaxation and advisory owner-facing full-script checks."""
 
 import pytest
 
 from backend.application.script_authoring.gate.context import ProductFacts, ScriptGateContext
 from backend.application.script_authoring.gate.context import relaxed_gate_enabled
+from backend.application.script_authoring.gate.engine import (
+    ScriptGate,
+    default_full_script_rules,
+    default_segment_rules,
+)
+from backend.application.script_authoring.gate.registry import ScriptRuleRegistry
 from backend.application.script_authoring.gate.results import Severity
 from backend.application.script_authoring.gate.rules.commerce_claims import (
     check_factual_claims,
@@ -40,9 +46,9 @@ def test_descriptive_claim_defaults_to_error(monkeypatch):
     [
         ("Máy dùng rất dễ dàng.", Severity.WARNING),
         ("Thiết kế đơn giản nhưng rất thanh lịch", Severity.WARNING),
-        ("cũng không cam kết độ bền trong tình huống đó", Severity.WARNING),
+        ("cũng không cam kết độ bền trong tình huống đó", Severity.ERROR),
         ("Sản phẩm giúp trị mụn hiệu quả", Severity.ERROR),
-        ("cũng không cam kết độ bền", Severity.WARNING),
+        ("cũng không cam kết độ bền", Severity.ERROR),
         ("Bảo hành trọn đời", Severity.ERROR),
         ("Sản phẩm chữa bệnh", Severity.ERROR),
         ("Sản phẩm đạt chuẩn FDA", Severity.ERROR),
@@ -123,15 +129,24 @@ def test_structural_claims_are_never_demoted(monkeypatch, text):
         "Cách chốt đơn rất đơn giản: bình luận chữ Chốt",
         "Đôi khi đơn giản là một lợi thế về thao tác",
         "Từ chiếc balo UrbanFold tiện lợi",
-        "Kết quả phụ thuộc vào loại nguyên liệu",
         "bạn có thể cân nhắc thiết kế này",
-        "cũng không cam kết độ bền trong tình huống đó",
         "Thiết kế gọn, để trong phòng khách rất hợp",
+        "Thiết kế thông minh, gấp gọn dễ dàng",
+        "Thiết kế tiện lợi cho người dùng",
+        "Một giải pháp tiện lợi cho dân văn phòng",
+        "Ngăn chứa đồ rộng rãi, thiết kế tiện lợi",
+        "Thiết kế nhỏ bé xinh xắn",
+        "Thiết kế bổ sung thêm ngăn phụ tiện lợi",
+        "Thiết kế chống trơn trượt tiện lợi",
+        "Đặt ở phòng bếp rất tiện lợi",
+        "Thiết kế bổ sung",
     ],
 )
 def test_descriptive_production_phrases_remain_warnings(monkeypatch, text):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
-    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.WARNING]
+    violations = check_factual_claims(text, _ctx())
+    assert violations
+    assert all(v.severity == Severity.WARNING for v in violations)
 
 
 @pytest.mark.parametrize(
@@ -158,7 +173,7 @@ def test_harmless_effect_compounds_remain_descriptive(monkeypatch, phrase):
 @pytest.mark.parametrize(
     "phrase",
     [
-        "bổ sung",
+        "bổ sung vitamin",
         "chống nước",
         "tăng giảm",
         "giảm giá",
@@ -187,7 +202,8 @@ def test_effects_and_assertions_block_demotion(monkeypatch, phrase):
         "tỉ",
         "mươi",
         "phần trăm",
-        "gấp",
+        "gấp đôi",
+        "gấp ba",
         "nửa",
         "một lần",
         "hai tháng",
@@ -201,11 +217,24 @@ def test_effects_and_assertions_block_demotion(monkeypatch, phrase):
         "mười ký",
         "hai cân",
         "ba lít",
+        "chục",
+        "lăm",
+        "mốt",
+        "thập kỷ",
+        "thập niên",
+        "kilowatt",
+        "oát",
+        "watt",
+        "phần hai",
+        "phần ba",
+        "phần tư",
+        "phần năm",
+        "phần mười",
     ],
 )
 def test_written_quantities_block_demotion(monkeypatch, quantity):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
-    text = f"Tiết kiệm {quantity.upper()}"
+    text = f"Thiết kế {quantity.upper()}"
     assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
 
 
@@ -253,7 +282,7 @@ def test_structural_guards_preserve_approval_and_flag_off(monkeypatch, text):
 def test_strict_claim_negation(monkeypatch, prefix):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     violations = check_factual_claims(f"cũng {prefix} cam kết độ bền", _ctx())
-    assert [v.severity for v in violations] == [Severity.WARNING]
+    assert [v.severity for v in violations] == [Severity.ERROR]
 
 
 def test_allowed_claim_overlap_still_exempt(monkeypatch):
@@ -592,3 +621,203 @@ def test_budget_cap_preserves_specific_display_text():
 def test_relaxed_promise_of_relief_from_worry_is_not_a_health_claim(monkeypatch):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     assert check_factual_claims("Đảm bảo khỏi phải lo", _ctx()) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Độ bền mười lăm năm",
+        "Tuổi thọ cả chục năm",
+        "Độ bền cả thập kỷ",
+        "Tiết kiệm đến hai phần ba lượng điện",
+        "Công suất hai kilowatt",
+        "Thành phần không corticoid",
+        "Thành phần không cồn",
+        "Nguyên liệu không độc tố",
+        "Thiết kế không chì",
+        "Thành phần collagen trẻ hóa làn da",
+        "Làm sạch sâu se khít lỗ chân lông",
+        "Làm mềm da mịn màng",
+        "Thiết kế ôm lưng không còn cong vẹo cột sống",
+        "Làm sạch da không mụn",
+        "Chất lượng ngang hàng hiệu",
+        "Tiết kiệm điện đáng kể",
+        "Thành phần thảo dược quý",
+        "Kết quả phụ thuộc vào loại nguyên liệu",
+    ],
+)
+def test_unsupported_performance_and_body_claims_remain_errors(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    violations = check_factual_claims(text, _ctx())
+    assert any(v.severity == Severity.ERROR for v in violations)
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [
+        "chất lượng",
+        "ổn định",
+        "độ bền",
+        "tuổi thọ",
+        "đáng tin cậy",
+        "tiết kiệm",
+        "tối ưu",
+        "nguyên liệu",
+        "thành phần",
+        "công suất",
+        "làm sạch",
+        "làm mềm",
+    ],
+)
+@pytest.mark.parametrize("flag", ["0", "1"])
+def test_removed_descriptive_signals_remain_errors(monkeypatch, signal, flag):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", flag)
+    assert [v.severity for v in check_factual_claims(signal, _ctx())] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize("prefix", ["không", "chẳng"])
+@pytest.mark.parametrize("noun", ["đường", "corticoid", "chì", "BPA", "hóa chất"])
+def test_negative_composition_claim_blocks_demotion(monkeypatch, prefix, noun):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thiết kế {prefix} {noun}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize("prefix", ["không", "chẳng"])
+@pytest.mark.parametrize(
+    "following", "thấy cần phải bị lo sợ mất tốn cam hề quá nhiều lâu khó ai gì còn chỉ".split()
+)
+def test_allowed_negative_following_words_do_not_block_demotion(monkeypatch, prefix, following):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thiết kế tiện lợi {prefix} {following}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.WARNING]
+
+
+@pytest.mark.parametrize("prefix", ["không", "chẳng", "chưa", "không hề", "không phải"])
+def test_benefit_with_negated_health_word_remains_error(monkeypatch, prefix):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thiết kế {prefix} mụn"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        "da",
+        "làn da",
+        "tóc",
+        "răng",
+        "lỗ chân lông",
+        "cơ thể",
+        "cột sống",
+        "xương",
+        "trẻ hóa",
+        "trẻ hoá",
+        "thải độc",
+        "nhạy cảm",
+        "ngủ ngon",
+        "collagen",
+        "corticoid",
+        "hormone",
+        "cồn",
+        "độc tố",
+        "thuốc trừ sâu",
+        "chì",
+        "BPA",
+        "giải nhiệt",
+        "giải rượu",
+        "cho người già",
+        "cho người bệnh",
+        "bé thông minh",
+        "trẻ thông minh",
+        "bổ máu",
+        "bồi bổ",
+        "bổ sung canxi",
+        "phòng bệnh",
+        "chứa hoạt chất",
+    ],
+)
+def test_effect_words_block_otherwise_descriptive_clause(monkeypatch, effect):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thiết kế {effect.upper()}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    "unit",
+    (
+        "mah w kw wh v ml l lít g gr kg mg cm mm m inch gb tb mb hz mhz ghz mp dpi rpm "
+        "viên gói miếng cái chiếc lượt vòng độ °c lumen lux ppi fps"
+    ).split(),
+)
+def test_written_number_with_measurement_blocks_demotion(monkeypatch, unit):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thiết kế hai {unit.upper()}"
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
+
+
+def _gate() -> ScriptGate:
+    segment, full = default_segment_rules(), default_full_script_rules()
+    return ScriptGate(ScriptRuleRegistry([*segment.rules, *full.rules]), segment, full)
+
+
+_OWNER_TEXT = "Giá chỉ 199.000đ, bảo hành 5 năm, thiết kế tiện lợi"
+
+
+@pytest.mark.parametrize("flag", ["0", "1"])
+def test_owner_full_script_claims_are_advisory_only_when_relaxed(monkeypatch, flag):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", flag)
+    context = ScriptGateContext(facts=ProductFacts(prices=("299.000đ",)), total_min_seconds=0)
+    result = _gate().run_full_script([_OWNER_TEXT], context)
+    claims = [v for v in result.violations if v.rule_id.startswith("CLAIM_")]
+    assert {v.rule_id for v in claims} >= {"CLAIM_PRICE", "CLAIM_FACTUAL"}
+    assert all(v.segment_index == 0 for v in claims)
+    assert result.passed == (flag == "1")
+    if flag == "1":
+        assert all(v.severity == Severity.WARNING for v in claims)
+        price = next(v for v in claims if v.rule_id == "CLAIM_PRICE")
+        original = check_price_claims(_OWNER_TEXT, context)[0]
+        assert price.message == original.message
+        assert price.text_span == original.text_span
+    else:
+        assert any(v.severity == Severity.ERROR for v in claims)
+
+
+def test_owner_advisory_mode_does_not_relax_segment_errors(monkeypatch):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    result = _gate().run_segment(_OWNER_TEXT, _ctx(prices=("299.000đ",)))
+    assert not result.passed
+    assert any(
+        v.rule_id.startswith("CLAIM_") and v.severity == Severity.ERROR for v in result.violations
+    )
+
+
+@pytest.mark.parametrize(
+    ("suffix", "rule_id"),
+    [
+        (" địt", "PROFANITY_OFFENSIVE"),
+        ("\x01", "FORMAT_CONTROL"),
+        (" <b>mua ngay</b>", "TTS_MARKUP"),
+    ],
+)
+def test_owner_advisory_mode_preserves_non_claim_errors(monkeypatch, suffix, rule_id):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = ScriptGateContext(facts=ProductFacts(prices=("299.000đ",)), total_min_seconds=0)
+    result = _gate().run_full_script([_OWNER_TEXT + suffix], context)
+    assert not result.passed
+    assert any(v.rule_id == rule_id and v.severity == Severity.ERROR for v in result.violations)
+    assert all(
+        v.severity == Severity.WARNING for v in result.violations if v.rule_id.startswith("CLAIM_")
+    )
+
+
+def test_owner_advisory_mode_includes_full_scope_claims(monkeypatch):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    result = _gate().run_full_script(
+        ["Sản phẩm an toàn.", "Sản phẩm độc hại."],
+        ScriptGateContext(total_min_seconds=0),
+    )
+    claims = [v for v in result.violations if v.rule_id == "CLAIM_CONTRADICTION"]
+    assert claims
+    assert all(v.severity == Severity.WARNING for v in claims)
+    assert result.passed

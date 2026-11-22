@@ -132,37 +132,43 @@ _DESCRIPTIVE_SIGNALS = (
     "dễ dàng",
     "đơn giản",
     "tiện lợi",
-    "chất lượng",
-    "ổn định",
     "bền bỉ",
-    "độ bền",
-    "tuổi thọ",
-    "đáng tin cậy",
-    "tiết kiệm",
-    "tối ưu",
-    "nguyên liệu",
-    "thành phần",
-    "công suất",
-    "làm sạch",
-    "làm mềm",
 )
 
+_MEASURE_UNITS = frozenset(
+    "mah w kw wh v ml l lít g gr kg mg cm mm m inch gb tb mb hz mhz ghz mp dpi rpm "
+    "viên gói miếng cái chiếc lượt vòng độ °c lumen lux ppi fps".split()
+)
+_NUMBER_WORD_UNITS = _MEASURE_UNITS | frozenset(
+    "lần tháng năm ngày tuần giờ phút giây ký cân".split()
+)
 _NUMBER_WORD_RE = re.compile(
-    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|gấp|nửa"
+    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|nửa"
+    # "gấp gọn" is folding; only "gấp đôi/ba/2…" is a multiplier
+    r"|gấp (?:đôi|rưỡi|nhiều|\d|một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)"
+    r"|chục|lăm|mốt|thập kỷ|thập niên|kilowatt|oát|watt|phần (?:hai|ba|tư|năm|mười)"
     r"|(?:một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)\s+"
-    r"(?:lần|tháng|năm|ngày|tuần|giờ|phút|giây|kg|ký|cân|lít))\b",
+    r"(?:" + "|".join(re.escape(unit) for unit in sorted(_NUMBER_WORD_UNITS)) + r"))\b",
     re.IGNORECASE,
 )
+_NEG_OK = frozenset("thấy cần phải bị lo sợ mất tốn cam hề quá nhiều lâu khó ai gì còn chỉ".split())
+_NEG_FOLLOWING_RE = re.compile(r"\b(?:không|chẳng)\s+(\w+)", re.IGNORECASE)
 _EFFECT_RE = re.compile(
-    r"\b(?:giúp|hỗ trợ|ngừa|phòng ngừa|phòng chống|phòng|chống|trị|hạ|bổ|giải độc|giải"
-    r"|cai|tăng|giảm|gây|tác dụng|lợi sữa|làm đẹp|thông minh|sinh lý|chữa|khỏi"
-    r"|cho bé|cho trẻ|cho mẹ|cho người|bé|trẻ em|trẻ nhỏ|mẹ bầu|bà bầu|người già"
-    r"|người bệnh|chứa|không chứa|dị ứng|nghiện|hóa chất|chất bảo quản)\b",
+    r"\b(?:giúp|hỗ trợ|ngừa|phòng (?:bệnh|ngừa|chống)|chống|trị|hạ"
+    r"|bổ (?:máu|thận|não|gan|phổi|dưỡng)|bồi bổ"
+    r"|bổ sung (?:canxi|vitamin|sắt|kẽm|collagen|dưỡng chất|khoáng chất)"
+    r"|giải (?:độc|nhiệt|rượu)"
+    r"|cai|tăng|giảm|gây|tác dụng|lợi sữa|làm đẹp|(?:bé|trẻ) thông minh|sinh lý|chữa|khỏi"
+    r"|cho bé|cho trẻ|cho mẹ|cho người (?:già|bệnh)|(?<!nhỏ )bé|trẻ em|trẻ nhỏ|mẹ bầu"
+    r"|bà bầu|người già"
+    r"|người bệnh|chứa (?:chất|hoạt chất)|không chứa|dị ứng|nghiện|hóa chất|chất bảo quản"
+    r"|da|làn da|tóc|răng|lỗ chân lông|cơ thể|cột sống|xương|trẻ hóa|trẻ hoá|thải độc"
+    r"|nhạy cảm|ngủ ngon|collagen|corticoid|hormone|cồn|độc tố|thuốc trừ sâu|chì|BPA)\b",
     re.IGNORECASE,
 )
 _EFFECT_EXCEPT_RE = re.compile(
     r"\b(?:phòng khách|phòng ngủ|phòng tắm|văn phòng|giải thích|giải đáp|giải trí"
-    r"|chống trượt|chống sốc)\b",
+    r"|chống trượt|chống trơn trượt|chống sốc)\b",
     re.IGNORECASE,
 )
 _ASSERT_RE = re.compile(
@@ -328,10 +334,6 @@ def _discount_stated(token: str, facts: ProductFacts) -> bool:
     )
 
 
-_MEASURE_UNITS = frozenset(
-    "mah w kw wh v ml l lít g gr kg mg cm mm m inch gb tb mb hz mhz ghz mp dpi rpm "
-    "viên gói miếng cái chiếc lượt vòng độ °c lumen lux ppi fps".split()
-)
 _PRICE_CUES = frozenset(
     "giá chỉ còn chốt ship giảm tặng voucher combo mua cũ gốc tiền phí đồng bán trả".split()
 )
@@ -652,7 +654,9 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
         for clause in _split_clauses(stripped):
             lowered = clause.lower()
             benefits = list(_BENEFIT_RE.finditer(lowered))
-            health = relaxed and _health_claim(clause)
+            health = relaxed and (
+                _health_claim(clause) or bool(benefits and _HEALTH_RE.search(clause))
+            )
             if not benefits and not health:
                 continue
             if _overlaps_allowed(lowered, allowed):
@@ -668,6 +672,10 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
                         and not _NUMBER_WORD_RE.search(clause)
                         and not _EFFECT_RE.search(_EFFECT_EXCEPT_RE.sub(" ", clause))
                         and not _ASSERT_RE.search(clause)
+                        and not any(
+                            hit.group(1).lower() not in _NEG_OK
+                            for hit in _NEG_FOLLOWING_RE.finditer(clause)
+                        )
                         and all(hit.group() in _DESCRIPTIVE_SIGNALS for hit in benefits)
                         else Severity.ERROR
                     ),

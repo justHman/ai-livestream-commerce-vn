@@ -16,9 +16,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from ..units import split_units
-from .context import ScriptGateContext
+from .context import ScriptGateContext, relaxed_gate_enabled
 from .registry import RuleSpec, ScriptRuleRegistry
-from .results import GateRunResult, RuleSetFingerprint, RuleViolation
+from .results import GateRunResult, RuleSetFingerprint, RuleViolation, Severity
 from .rules import (
     check_common_spelling,
     check_contradictory_claims,
@@ -163,6 +163,15 @@ class ScriptGate:
                 violations.extend(
                     replace(v, segment_index=index) for v in rule.check(unit, context)
                 )
+        if relaxed_gate_enabled():
+            # Owner-reviewed final text keeps claim findings advisory; segment
+            # generation still uses the strict errors returned by each rule.
+            violations = [
+                replace(v, severity=Severity.WARNING)
+                if v.rule_id.startswith("CLAIM_") and v.severity == Severity.ERROR
+                else v
+                for v in violations
+            ]
         fingerprint = RuleSetFingerprint.from_rule_versions(
             [(rule.id, rule.version) for rule in (*self._full_rules, *self._unit_rules)]
         )
