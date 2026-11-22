@@ -460,3 +460,33 @@ async def test_rejection_code_is_cleared_when_a_later_attempt_completes(monkeypa
     assert status["status"] == "completed"
     job = next(iter(repos.jobs.rows.values()))
     assert "last_rejection_code" not in job.input_snapshot
+
+
+@pytest.mark.asyncio
+async def test_claim_rejection_quotes_the_blocked_words(monkeypatch):
+    service, repos, llm, set_id, before, index = await shipping_part()
+    from backend.application.script_authoring.gate.results import TextSpan
+
+    text = " ".join(SHIPPING)
+    start = text.index("ba ngày")
+
+    def gate(spoken, context):
+        return GateRunResult(
+            scope="segment",
+            fingerprint=RuleSetFingerprint(),
+            violations=(
+                RuleViolation(
+                    rule_id="CLAIM_PRICE",
+                    severity=Severity.ERROR,
+                    message="x",
+                    text_span=TextSpan(start, start + len("ba ngày")),
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(service._gate, "run_segment", gate)
+    llm.repair = lambda prompt: text
+    status = await repair_part(service, set_id, before, index)
+    assert status["error_message"] == (
+        'Phần này chưa đạt vì AI nói "ba ngày", chưa khớp với thông tin sản phẩm. Giữ bản hiện tại.'
+    )

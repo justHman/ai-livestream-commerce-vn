@@ -3771,10 +3771,26 @@ class ScriptAuthoringServiceImpl:
                 if not result.passed:
                     rules = {v.rule_id for v in result.violations if v.severity.value == "error"}
                     _note_rejection(job, "gate:" + ",".join(sorted(rules)))
+                    # Quote the blocked words so the owner knows what to add to the product
+                    # info or fix by hand, instead of clicking again blind.
+                    claim = next(
+                        (
+                            " ".join(spoken[v.text_span.start : v.text_span.end].split())
+                            for v in result.violations
+                            if v.rule_id.startswith("CLAIM_")
+                            and v.severity.value == "error"
+                            and v.text_span is not None
+                        ),
+                        "",
+                    )
                     job.input_snapshot["last_rejection"] = (
                         "Phần này chưa đạt vì "
                         + (
-                            "có thông tin chưa được xác nhận"
+                            (
+                                f'AI nói "{claim[:80]}", chưa khớp với thông tin sản phẩm'
+                                if claim
+                                else "có thông tin chưa được xác nhận"
+                            )
                             if any(r.startswith("CLAIM_") for r in rules)
                             else "nội dung quá dài hoặc quá ngắn"
                             if "SPEECH_DURATION_SEGMENT" in rules
