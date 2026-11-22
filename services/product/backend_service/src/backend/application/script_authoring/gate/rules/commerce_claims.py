@@ -135,6 +135,25 @@ _DESCRIPTIVE_SIGNALS = (
     "bền bỉ",
 )
 
+_DEMOTE_ALLOWED_WORDS = frozenset(
+    """
+    cần mình mọi người các bạn cả nhà ai ạ nhé nha nhỉ à ơi đó đây này kia ấy thì là mà
+    và hay hoặc với cho của để khi nếu thì nên cũng đều vẫn còn đã đang sẽ được bị
+    có không chưa rất khá hơi lắm quá thật luôn nữa thêm chỉ ngay rồi đúng gì nào
+    sao thế vậy đi lên xuống ra vào về từ trong ngoài trên dưới bên sự việc cái
+    chiếc một những mỗi từng loại kiểu phần chút đôi khi lúc hôm nay
+    thấy xem nghĩ cân nhắc hỏi bình luận chốt đơn nhắn inbox chọn thích muốn biết
+    nói kể giới thiệu nhớ thử gửi theo dõi ủng hộ
+    dùng sử dụng cầm nắm mang theo mở đóng lắp ráp tháo gấp xếp cất để đặt treo đeo
+    mặc vệ sinh lau rửa chùi thao tác cách kiểu dáng màu sắc mẫu form phom đường
+    nét thanh lịch hiện đại tinh tế gọn gàng sang trọng xinh xắn đẹp mắt trẻ trung
+    năng động nhẹ nhàng cồng kềnh vướng víu lỉnh kỉnh rộng rãi chắc chắn vừa vặn
+    tay túi balo ngăn quai khóa nắp góc mặt lợi thế thoải mái hợp phù quen thuộc
+    ngày hằng thường nhanh gọn liền
+    nhưng thể chữ phòng khách
+    """.split()
+)
+
 _MEASURE_UNITS = frozenset(
     "mah w kw wh v ml l lít g gr kg mg cm mm m inch gb tb mb hz mhz ghz mp dpi rpm "
     "viên gói miếng cái chiếc lượt vòng độ °c lumen lux ppi fps".split()
@@ -151,7 +170,7 @@ _NUMBER_WORD_RE = re.compile(
     r"(?:" + "|".join(re.escape(unit) for unit in sorted(_NUMBER_WORD_UNITS)) + r"))\b",
     re.IGNORECASE,
 )
-_NEG_OK = frozenset("thấy cần phải bị lo sợ mất tốn cam hề quá nhiều lâu khó ai gì còn chỉ".split())
+_NEG_OK = frozenset("thấy cần phải bị sợ mất tốn cam hề quá nhiều lâu khó ai gì còn chỉ".split())
 _NEG_FOLLOWING_RE = re.compile(r"\b(?:không|chẳng)\s+(\w+)", re.IGNORECASE)
 _EFFECT_RE = re.compile(
     r"\b(?:giúp|hỗ trợ|ngừa|phòng (?:bệnh|ngừa|chống)|chống|trị|hạ"
@@ -189,7 +208,8 @@ _HEALTH_RE = re.compile(
     r"|đường huyết|sức khỏe|sức khoẻ|y khoa|lâm sàng|kiểm nghiệm|bác sĩ|da liễu"
     r"|đau|nhức|mỏi|khuẩn|virus|độc hại|kích ứng|paraben|nếp nhăn|rụng tóc|xương khớp"
     r"|tim mạch|tiêu hóa|tiêu hoá|bà bầu|mẹ bầu|trẻ em|trẻ sơ sinh|tiêu chuẩn|chống nước|IP\d{2}"
-    r"|hữu cơ|organic)(?!\w)",
+    r"|hữu cơ|organic|ung thư|khỏe|khoẻ|thuốc|thai|ăn kiêng|cháy nổ|điện giật"
+    r"|vô trùng|kháng nước)(?!\w)",
     re.IGNORECASE,
 )
 _HEALTH_NEGATION_RE = re.compile(
@@ -249,6 +269,19 @@ _WORD_RE = re.compile(r"[\w]+", re.UNICODE)
 def _content_words(text: str) -> set[str]:
     """Lowercased word tokens minus function words (claim-overlap evidence)."""
     return {w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS}
+
+
+def _demotion_words_allowed(clause: str, facts: ProductFacts) -> bool:
+    """Fail closed on vocabulary beyond descriptive prose and owner-provided words."""
+    remaining = " ".join(_WORD_RE.findall(clause.lower()))
+    for phrase in _DESCRIPTIVE_SIGNALS:
+        remaining = re.sub(rf"\b{re.escape(phrase)}\b", " ", remaining)
+    approved_words = {
+        word
+        for text in (facts.product_name, *facts.allowed_claims)
+        for word in _WORD_RE.findall((text or "").lower())
+    }
+    return set(_WORD_RE.findall(remaining)) <= _DEMOTE_ALLOWED_WORDS | approved_words
 
 
 def _overlaps_allowed(lowered_clause: str, allowed: list[str]) -> bool:
@@ -677,6 +710,7 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
                             for hit in _NEG_FOLLOWING_RE.finditer(clause)
                         )
                         and all(hit.group() in _DESCRIPTIVE_SIGNALS for hit in benefits)
+                        and _demotion_words_allowed(clause, context.facts)
                         else Severity.ERROR
                     ),
                     message=(

@@ -71,7 +71,7 @@ def test_descriptive_claim_defaults_to_error(monkeypatch):
 )
 def test_relaxed_word_claim_severity(monkeypatch, text, severity):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
-    violations = check_factual_claims(text, _ctx())
+    violations = check_factual_claims(text, _ctx(product_name="Máy"))
     assert len(violations) == 1
     assert violations[0].rule_id == "CLAIM_FACTUAL"
     assert violations[0].severity == severity
@@ -131,20 +131,13 @@ def test_structural_claims_are_never_demoted(monkeypatch, text):
         "Từ chiếc balo UrbanFold tiện lợi",
         "bạn có thể cân nhắc thiết kế này",
         "Thiết kế gọn, để trong phòng khách rất hợp",
-        "Thiết kế thông minh, gấp gọn dễ dàng",
         "Thiết kế tiện lợi cho người dùng",
-        "Một giải pháp tiện lợi cho dân văn phòng",
         "Ngăn chứa đồ rộng rãi, thiết kế tiện lợi",
-        "Thiết kế nhỏ bé xinh xắn",
-        "Thiết kế bổ sung thêm ngăn phụ tiện lợi",
-        "Thiết kế chống trơn trượt tiện lợi",
-        "Đặt ở phòng bếp rất tiện lợi",
-        "Thiết kế bổ sung",
     ],
 )
 def test_descriptive_production_phrases_remain_warnings(monkeypatch, text):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
-    violations = check_factual_claims(text, _ctx())
+    violations = check_factual_claims(text, _ctx(product_name="Máy Balo UrbanFold"))
     assert violations
     assert all(v.severity == Severity.WARNING for v in violations)
 
@@ -166,7 +159,8 @@ def test_descriptive_production_phrases_remain_warnings(monkeypatch, text):
 def test_harmless_effect_compounds_remain_descriptive(monkeypatch, phrase):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     text = f"Thiết kế {phrase.upper()}"
-    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.WARNING]
+    severity = Severity.WARNING if phrase == "phòng khách" else Severity.ERROR
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [severity]
     assert [v.severity for v in check_factual_claims(f"{text} giúp bé", _ctx())] == [Severity.ERROR]
 
 
@@ -239,11 +233,62 @@ def test_written_quantities_block_demotion(monkeypatch, quantity):
 
 
 @pytest.mark.parametrize("phrase", ["gấpđôi", "giúpđỡ", "nhấtquán"])
-def test_structural_markers_require_word_boundaries(monkeypatch, phrase):
+def test_unknown_joined_words_fail_closed(monkeypatch, phrase):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     assert [v.severity for v in check_factual_claims(f"Thiết kế {phrase}", _ctx())] == [
-        Severity.WARNING
+        Severity.ERROR
     ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Dễ dàng thay thế thuốc.",
+        "Thiết kế đơn giản thay thế thuốc ngủ.",
+        "Dễ dàng hết say xe.",
+        "Đơn giản mà khỏe mạnh.",
+        "Thiết kế tiện lợi khỏe re.",
+        "Thiết kế đơn giản dùng cho thai phụ.",
+        "Thiết kế đơn giản phù hợp người ăn kiêng.",
+        "Thiết kế tiện lợi không lo cháy nổ.",
+        "Thiết kế tiện lợi không lo điện giật.",
+        "Thiết kế vô trùng tuyệt đối.",
+        "Thiết kế tiện lợi kháng nước.",
+        "Thiết kế được cấp phép lưu hành.",
+        "Thiết kế được chuyên gia khuyên dùng.",
+        "Thiết kế đạt giải thưởng quốc tế.",
+        "Thiết kế tiện lợi bán chạy hàng đầu.",
+        "Thiết kế tiện lợi top một thị trường.",
+        "Thiết kế tiện lợi hàng Nhật nội địa.",
+        "Thiết kế tiện lợi miễn phí vận chuyển.",
+        "Thiết kế tiện lợi tặng kèm quà.",
+        "Thiết kế bền bỉ trọn đời.",
+        "Thiết kế tiện lợi, chống ung thư.",
+        "Tiện lợi, uống vào là khỏe.",
+        "Thiết kế thông minh, gấp gọn dễ dàng",
+        "Một giải pháp tiện lợi cho dân văn phòng",
+        "Thiết kế nhỏ bé xinh xắn",
+        "Thiết kế bổ sung thêm ngăn phụ tiện lợi",
+        "Thiết kế chống trơn trượt tiện lợi",
+        "Đặt ở phòng bếp rất tiện lợi",
+        "Thiết kế bổ sung",
+    ],
+)
+def test_unapproved_vocabulary_prevents_demotion(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    violations = check_factual_claims(text, _ctx())
+    assert any(v.severity == Severity.ERROR for v in violations)
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [{"product_name": "Balo UrbanFold"}, {"allowed_claims": ("Balo", "UrbanFold")}],
+)
+def test_owner_vocabulary_can_be_used_in_descriptive_claims(monkeypatch, facts):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = "Từ chiếc balo UrbanFold tiện lợi"
+    assert [v.severity for v in check_factual_claims(text, _ctx(**facts))] == [Severity.WARNING]
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.ERROR]
 
 
 @pytest.mark.parametrize(
@@ -690,7 +735,14 @@ def test_negative_composition_claim_blocks_demotion(monkeypatch, prefix, noun):
 def test_allowed_negative_following_words_do_not_block_demotion(monkeypatch, prefix, following):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     text = f"Thiết kế tiện lợi {prefix} {following}"
-    assert [v.severity for v in check_factual_claims(text, _ctx())] == [Severity.WARNING]
+    # The negation guard is necessary but no longer sufficient: all tokens must
+    # also be permitted by the descriptive vocabulary allowlist.
+    severity = (
+        Severity.WARNING
+        if prefix == "không" and following in "thấy cần bị quá ai gì còn chỉ".split()
+        else Severity.ERROR
+    )
+    assert [v.severity for v in check_factual_claims(text, _ctx())] == [severity]
 
 
 @pytest.mark.parametrize("prefix", ["không", "chẳng", "chưa", "không hề", "không phải"])

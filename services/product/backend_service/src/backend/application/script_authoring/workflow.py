@@ -42,7 +42,9 @@ from typing import Optional
 from backend.application.script_authoring.gate.results import (
     GateRunResult,
     RuleViolation,
+    Severity,
 )
+from backend.application.script_authoring.gate.context import relaxed_gate_enabled
 from backend.application.script_authoring.compile import compile_spoken_text
 from backend.application.script_authoring.models import (
     GateRun,
@@ -60,6 +62,7 @@ from backend.application.script_authoring.state import (
     TransitionVerb,
     transition,
 )
+from backend.application.script_authoring.units import split_units
 
 __all__ = [
     "ProductGenerationWorkflow",
@@ -601,6 +604,20 @@ class ProductGenerationWorkflow:
         if not display or not spoken:
             self._persist_transition("generation_failed")
             raise ValueError("AI fix result must carry non-empty display_text and spoken_text")
+        # Full-script checks are advisory in relaxed mode. Reject invented claims
+        # before appending a draft, preserving the current immutable version.
+        if relaxed_gate_enabled():
+            try:
+                for unit in split_units(display):
+                    result = self.segment_gate(unit, None)
+                    if any(
+                        v.rule_id.startswith("CLAIM_") and v.severity == Severity.ERROR
+                        for v in result.violations
+                    ):
+                        raise ValueError("AI fix contains unsupported claims")
+            except Exception:
+                self._persist_transition("generation_failed")
+                raise
         version = ScriptVersion(
             id=new_id("script_version"),
             script_item_id=self.item.id,

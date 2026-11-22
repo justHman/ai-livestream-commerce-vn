@@ -276,6 +276,29 @@ def test_ai_fix_uses_exactly_one_semantic_call() -> None:
     assert fake.semantic_calls == 1
 
 
+@pytest.mark.parametrize("flag", ["0", "1"])
+@pytest.mark.parametrize("rule_id", ["CLAIM_PRICE", "STYLE_001"])
+def test_ai_fix_strict_claim_check_preserves_flag_off_and_non_claim_behavior(
+    monkeypatch, flag, rule_id
+):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", flag)
+    fake = _make(segment_gate=_fail(_violation(rule_id)), with_generate=True)
+    wf = fake.workflow
+    wf.create_manual_draft(display_text="Bản cũ.", spoken_text="Bản cũ.")
+    wf.item.state = GATE_FAILED
+    source = wf.current_version
+    if flag == "1" and rule_id.startswith("CLAIM_"):
+        with pytest.raises(ValueError, match="unsupported claims"):
+            wf.apply_ai_fix()
+        assert wf.current_version is source
+        assert len(wf.versions) == 1
+        assert wf.item.state is FAILED
+    else:
+        wf.apply_ai_fix()
+        assert wf.item.state is DRAFT
+        assert len(wf.versions) == 2
+
+
 # --- 4. generated long-form PASS (tasks 9.1/9.2) ------------------------------
 
 
