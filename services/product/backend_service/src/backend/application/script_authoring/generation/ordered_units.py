@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 
 from ..compile import brand_spans, compile_spoken_text, number_to_vietnamese_words
 from ..duration import spoken_duration_ms
+from ..gate.context import rich_writing_enabled
 from ..gate.rules.commerce_claims import _vnd_amount
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,23 @@ _GUIDE = {
         "sản phẩm, không nhắc tên sản phẩm hay ưu đãi, không dùng 'không bỏ lỡ' hay 'đừng bỏ lỡ'."
     ),
 }
+_RICH_GUIDE = {
+    **_GUIDE,
+    "intro": _GUIDE["intro"].replace("2 đến 4 câu", "3 đến 5 câu"),
+    "highlight": (
+        "Kể về những điểm hay bên dưới bằng lời của MC: mỗi điểm nói 2 đến 4 câu "
+        "(nêu ý, giải thích ý đó giúp gì cho người xem bằng lời đời thường, rồi có thể hỏi "
+        "khán giả); cả phần khoảng 5 đến 9 câu. Chỉ nói lại đúng điều thông tin ghi; câu "
+        "hỏi không được nêu thêm đặc tính hay tình huống mới. MỖI CÂU CHỈ MỘT CHỦ ĐỀ, "
+        "không nối các ý khác chủ đề (ví dụ size với cách giặt) bằng 'và'. Giữ nguyên số "
+        "liệu và ký hiệu size (S, M, L, XL...) viết liền, không tách chữ."
+    ),
+    "sizes": _GUIDE["sizes"].replace("3 đến 6 câu", "4 đến 8 câu"),
+    "assurance": _GUIDE["assurance"].replace(
+        "2 đến 4 câu, ưu tiên đủ điều kiện, bỏ câu đệm", "3 đến 6 câu, nói rõ điều kiện"
+    ),
+    "offer": _GUIDE["offer"].replace("2 đến 4 câu", "3 đến 5 câu"),
+}
 # The only roles where the brand may be said (at most once per part, never in two adjacent parts).
 _BRAND_ROLES = ("opening", "intro", "offer", "closing")
 # The role title is also sent to the model. "Cam kết và lưu ý" made it open every assurance part with
@@ -178,6 +196,21 @@ _TRUTH_RULES = (
     "phiên bản, số lượng, thời hạn) giữ NGUYÊN chữ số, dấu phẩy hoặc dấu chấm thập phân và đơn vị "
     "y như trong thông tin, KHÔNG tự viết thành chữ và không đổi cách viết; hệ thống tự đọc thành tiếng."
 )
+# Reuse the unchanged prohibitions, copying rules and injection/time restrictions verbatim.
+_RICH_TRUTH_RULES = (
+    _TRUTH_RULES[: _TRUTH_RULES.index("Thông tin ít")]
+    + "Hãy nói từng ý như một MC thật: nêu sự thật, giải thích bằng lời đời thường ý đó "
+    "có nghĩa gì với người xem; chỉ liên hệ cách dùng khi thông tin có ghi người dùng, "
+    "dịp dùng hoặc cách sử dụng, rồi thêm câu hỏi hay lời mời bình luận. Có thể dùng từ "
+    "mô tả nhẹ về thiết kế và sự dễ dùng (gọn, tiện, dễ dùng, đơn giản, đẹp mắt, nhỏ gọn), "
+    "nhưng không khen hiệu quả, chất lượng, độ bền, độ an toàn hay giá trị. Không bịa "
+    "trải nghiệm cá nhân (đã dùng thử, đã thấy); không suy ra công dụng, độ bền, cảm giác "
+    "sử dụng hay cam kết mới từ tên, chất liệu hay thương hiệu; không đoán người dùng, "
+    "dịp dùng hay tình huống nếu thông tin không ghi; không đổi đối tượng sử dụng. "
+    + _TRUTH_RULES[_TRUTH_RULES.index("TUYỆT ĐỐI KHÔNG thêm:") :]
+)
+# The current style rules contain no ban on the mild design/ease-of-use words.
+_RICH_STYLE_RULES = _STYLE_RULES
 _COMMON_RULES = (
     "Không bao giờ nói rằng thiếu thông tin (ví dụ 'chưa có thông tin', 'chưa có khuyến mãi'): "
     "nếu không có gì để nói thì bỏ qua ý đó."
@@ -248,6 +281,40 @@ _MIN_PART_CLAIMS = 2  # parts are split down to this many facts when the target 
 _MAX_RECAP_ROUNDS = 2
 _MAX_PARAGRAPH_CLAIMS = 3  # fallback paragraphs
 _MAX_SIZE_ROWS = 40
+
+
+def _unit_seconds() -> int:
+    return 45 if rich_writing_enabled() else _UNIT_SECONDS
+
+
+def _seconds_per_fact() -> int:
+    return 40 if rich_writing_enabled() else _SECONDS_PER_FACT
+
+
+def _floor_per_fact_s() -> int:
+    return 30 if rich_writing_enabled() else _FLOOR_PER_FACT_S
+
+
+def _min_product_s() -> int:
+    return 150 if rich_writing_enabled() else _MIN_PRODUCT_S
+
+
+def _max_unit_verbatim_s() -> float:
+    return 36.0 if rich_writing_enabled() else _MAX_UNIT_VERBATIM_S
+
+
+def _max_unit_chars() -> int:
+    return 1800 if rich_writing_enabled() else _MAX_UNIT_CHARS
+
+
+def _target_char_cap() -> int:
+    return 1600 if rich_writing_enabled() else 850
+
+
+def _unit_token_cap() -> int:
+    return 2600 if rich_writing_enabled() else 1800
+
+
 _SIZE_ROW_RE = re.compile(
     r"(?:cao|chiều cao)[^.]*?(?:cân nặng|nặng)|\bsize\s*[A-Za-z0-9]+\b[^.]*\d"
     r"|\b\d\s*m\s*\d{2}\b[^.]*\d\s*(?:kg|kí|ki lô)\b[^.]*\bsize\b",
@@ -450,6 +517,11 @@ def unsafe_claims(claims: tuple[str, ...]) -> set[str]:
 
 
 def role_bounds_s(role: str) -> tuple[float, float]:
+    if rich_writing_enabled():
+        if role == "intro":
+            return (1.0, 60.0)
+        if role in ("highlight", "sizes", "assurance", "offer"):
+            return (1.0, 100.0)
     return _BOUNDS_S[role]
 
 
@@ -696,7 +768,7 @@ def _chunks_by_duration(items: list[str], size: int) -> list[tuple[str, ...]]:
     spent = 0.0
     for item in items:
         seconds = _duration_s(item)
-        if chunks and len(chunks[-1]) < size and spent + seconds <= _MAX_UNIT_VERBATIM_S:
+        if chunks and len(chunks[-1]) < size and spent + seconds <= _max_unit_verbatim_s():
             chunks[-1].append(item)
             spent += seconds
         else:
@@ -768,7 +840,9 @@ def _cluster_claims(product: ProductBrief) -> dict:
 
 def product_floor_s(requested_s: float, facts: int) -> float:
     """The product floor, bounded by the owner's requested duration."""
-    return min(requested_s, min(_FULL_PRODUCT_S, max(_MIN_PRODUCT_S, _FLOOR_PER_FACT_S * facts)))
+    return min(
+        requested_s, min(_FULL_PRODUCT_S, max(_min_product_s(), _floor_per_fact_s() * facts))
+    )
 
 
 def product_target_s(requested_s: float, facts: int) -> float:
@@ -777,7 +851,7 @@ def product_target_s(requested_s: float, facts: int) -> float:
     # The 240 s floor applies only at 12+ approved facts. Below that, scale the floor
     # from 120 to 240 s so sparse products are not padded with repetition or invented facts.
     floor = product_floor_s(requested_s, facts)
-    return min(requested_s, max(floor, _SECONDS_PER_FACT * facts))
+    return min(requested_s, max(floor, _seconds_per_fact() * facts))
 
 
 def plan_units(
@@ -837,7 +911,7 @@ def plan_units(
     ordered_assurance = sorted(c["assurances"], key=rank)  # stable: warranty, limitation, ...
     has_price = any(spoken_price(p) for p in product.prices)
     speech_s = target_duration_s * _SPEECH_SHARE_OF_TARGET
-    need = math.ceil(speech_s / _UNIT_SECONDS) - int(last)
+    need = math.ceil(speech_s / _unit_seconds()) - int(last)
 
     def build(cap: int) -> list[UnitSpec]:
         hi = min(_MAX_CLAIMS_PER_UNIT if c["typed"] else _MAX_MUST_PER_UNIT, cap)
@@ -1260,7 +1334,7 @@ def check_unit_text(
         text = _dedupe_offer_sentences(text)
     if len(text) < 6 or not re.search(r"[^\W\d_]{2}", text):
         return None, "empty"
-    if len(text) > _MAX_UNIT_CHARS:
+    if len(text) > _max_unit_chars():
         return None, "too_long"
     if not _SENTENCE_END_RE.search(text):
         return None, "truncated"  # cut mid-sentence/mid-word by the provider
@@ -1600,8 +1674,8 @@ def unit_max_tokens(specs: list["UnitSpec"]) -> int:
     Vietnamese character in the worst tokenizers plus headroom), bounded. The engine never lowers its
     own configured budget, so this only raises it."""
     seconds = max((s.target_seconds or role_bounds_s(s.role)[1] for s in specs), default=60.0)
-    chars = min(850.0, seconds * _VOICE_CHARS_PER_S * 1.15)
-    return int(min(1800, max(700, chars * 0.9 + 300)))
+    chars = min(_target_char_cap(), seconds * _VOICE_CHARS_PER_S * 1.15)
+    return int(min(_unit_token_cap(), max(700, chars * 0.9 + 300)))
 
 
 def rescue_unit_text(
@@ -1862,18 +1936,27 @@ def build_unit_prompt(
     used_openings: tuple[str, ...] = (),
 ) -> str:
     spec = specs[index]
+    rich = rich_writing_enabled()
     used = [c for s in specs[:index] for c in (*s.claims, *s.promos)]
     parts = [
         "Bạn là MC livestream bán hàng Việt Nam giàu kinh nghiệm: nói chuyện như người thật đang "
         "trò chuyện với khán giả, giọng ấm, tự nhiên, có cảm xúc, câu dài ngắn đan xen, không "
         "đọc như đọc danh sách hay đọc lại tài liệu.",
         "Viết ĐÚNG MỘT phần lời thoại để đọc thành tiếng, đủ ý như người nói thật "
-        "(xem số câu ở vai trò bên dưới); thông tin ít thì nói ít, không kéo dài bằng ý mới.",
+        + (
+            "(xem số câu ở vai trò bên dưới); giải thích kỹ các ý đã cho, tương tác với khán "
+            "giả và chuyển ý tự nhiên, không thêm sự thật mới."
+            if rich
+            else (
+                "(xem số câu ở vai trò bên dưới); thông tin ít thì nói ít, "
+                "không kéo dài bằng ý mới."
+            )
+        ),
         "Chỉ trả về lời thoại. Không tiêu đề, không markdown, không emoji, không chú thích, "
         "không dấu gạch ngang dài. Chỉ dùng tiếng Việt; tên thương hiệu giữ nguyên.",
-        _TRUTH_RULES,
+        _RICH_TRUTH_RULES if rich else _TRUTH_RULES,
         _COMMON_RULES,
-        _STYLE_RULES.format(noun=_item_noun(product.name)),
+        (_RICH_STYLE_RULES if rich else _STYLE_RULES).format(noun=_item_noun(product.name)),
         f"Phiên live: {session.title or '(chưa đặt tên)'}"
         + (f"; shop: {session.shop_name}" if session.shop_name else "")
         + (f"; MC: {session.persona}" if session.persona else ""),
@@ -1884,17 +1967,27 @@ def build_unit_prompt(
         parts.append(f"Ghi chú của chủ shop: {session.notes}")
     parts.append(
         f"Vai trò của phần này ({index + 1}/{len(specs)}): {_PROMPT_TITLES[spec.role]}. "
-        f"{_GUIDE[spec.role]}"
+        f"{(_RICH_GUIDE if rich else _GUIDE)[spec.role]}"
     )
     if spec.target_seconds:
         # This is prompt calibration, not a second gate duration estimator.
         low = max(120, int(spec.target_seconds * _VOICE_CHARS_PER_S * 0.85))
-        high = min(850, max(low, int(spec.target_seconds * _VOICE_CHARS_PER_S * 1.15)))
+        high = min(
+            _target_char_cap(), max(low, int(spec.target_seconds * _VOICE_CHARS_PER_S * 1.15))
+        )
         parts.append(
-            f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự tiếng Việt. "
-            "Đây là gợi ý, không kéo dài chỉ để đủ số câu hay ký tự. Ưu tiên nói đủ thông tin "
-            "và điều kiện trước, bỏ câu đệm; không thêm thông số, cam kết, ưu đãi, trải nghiệm "
-            "cá nhân hay sự thật mới về sản phẩm."
+            (
+                f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự. Hãy nói đủ độ dài này bằng "
+                "cách giải thích kỹ từng ý đã cho, tương tác với khán giả và chuyển ý mượt; "
+                "tuyệt đối không thêm sự thật, con số, ưu đãi hay cam kết mới."
+            )
+            if rich
+            else (
+                f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự tiếng Việt. "
+                "Đây là gợi ý, không kéo dài chỉ để đủ số câu hay ký tự. Ưu tiên nói đủ thông tin "
+                "và điều kiện trước, bỏ câu đệm; không thêm thông số, cam kết, ưu đãi, trải nghiệm "
+                "cá nhân hay sự thật mới về sản phẩm."
+            )
         )
     if spec.revisit:
         styles = (

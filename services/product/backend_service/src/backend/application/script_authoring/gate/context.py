@@ -74,3 +74,13 @@ def relaxed_gate_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def rich_writing_enabled() -> bool:
+    """Call-time opt-in for richer unit writing; default off."""
+    return os.environ.get("SCRIPT_RICH_WRITING_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }

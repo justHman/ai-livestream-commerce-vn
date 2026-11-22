@@ -496,6 +496,8 @@ class ScriptAuthoringConfig:
             sse_replay_window_seconds=int(os.environ.get("SA_SSE_REPLAY_WINDOW_SECONDS", "300")),
             drain_timeout_s=float(os.environ.get("SA_DRAIN_TIMEOUT_S", "5.0")),
             recovery_lease_seconds=int(os.environ.get("SA_RECOVERY_LEASE_SECONDS", "300")),
+            unit_llm_call_timeout_s=float(os.environ.get("SA_UNIT_LLM_CALL_TIMEOUT_S", "60.0")),
+            unit_job_deadline_s=float(os.environ.get("SA_UNIT_JOB_DEADLINE_S", "900.0")),
         )
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 
+from ..context import rich_writing_enabled
 from ..results import RuleViolation, Severity, TextSpan
 
 __all__ = [
@@ -123,7 +124,7 @@ def check_punctuation(text: str, context) -> list[RuleViolation]:
         violations.append(
             RuleViolation(
                 rule_id=RULE_FORMAT_PUNCTUATION,
-                severity=Severity.ERROR,
+                severity=Severity.WARNING if rich_writing_enabled() else Severity.ERROR,
                 message=message,
                 text_span=_span_of(match),
             )
