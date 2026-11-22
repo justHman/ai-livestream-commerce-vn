@@ -11,8 +11,10 @@ Pure pattern matching, no AI detection heuristics.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from ..context import ProductFacts
+from ..relaxed import relaxed_gate_enabled
 from ..results import RuleViolation, Severity, TextSpan
 
 __all__ = [
@@ -122,6 +124,28 @@ _BENEFIT_RE = re.compile(
     "|".join(re.escape(signal) for signal in _BENEFIT_SIGNALS),
     re.IGNORECASE,
 )
+
+# Strict unsupported claims remain blocking even in relaxed mode.
+_STRICT_CLAIM_RE = re.compile(
+    r"(?<!\w)(?:chữa|điều trị|trị mụn|trị nám|trị thâm|khỏi bệnh|phòng bệnh|ngừa bệnh"
+    r"|ngăn ngừa|diệt khuẩn|diệt vi khuẩn|diệt virus|kháng khuẩn|khử khuẩn|miễn dịch"
+    r"|giảm cân|giảm mỡ|trắng da|làm trắng|mờ nám|mờ thâm|an toàn tuyệt đối"
+    # a bare "cam kết"/"đảm bảo" is everyday sales talk ("đảm bảo đúng như hình"); only a promised result is a claim
+    r"|(?:cam kết|đảm bảo) (?:hiệu quả|an toàn|kết quả|khỏi|trị)"
+    r"|hiệu quả 100%|100% hiệu quả|bảo hành|chứng nhận|đạt chuẩn|FDA|bộ y tế)(?!\w)",
+    re.IGNORECASE,
+)
+_STRICT_NEGATION_RE = re.compile(
+    r"(?<!\w)(?:không hề|không phải|không|chưa|chẳng) ?$", re.IGNORECASE
+)
+
+
+def _strict_claim(clause: str) -> bool:
+    return any(
+        not _STRICT_NEGATION_RE.search(clause[: match.start()])
+        for match in _STRICT_CLAIM_RE.finditer(clause)
+    )
+
 
 # Vietnamese clause connectors: a factual sentence may combine a supported
 # fragment with an invented extension ("thiết kế gọn nhẹ và bảo hành 10
@@ -246,6 +270,18 @@ def _discount_stated(token: str, facts: ProductFacts) -> bool:
     )
 
 
+def _price_token_in_facts_text(token: str, facts: ProductFacts) -> bool:
+    """Preserve the owner's exact number spelling and any matched currency/unit."""
+    needle = re.sub(r"\s+", " ", token.strip().lower())
+    unit_boundary = r"(?!\w)" if needle[-1].isalpha() else ""
+    rx = re.compile(rf"(?<![\d.,]){re.escape(needle)}(?!\d|[.,]\d){unit_boundary}")
+    return any(
+        rx.search(re.sub(r"\s+", " ", candidate.lower()))
+        for candidate in (facts.product_name, *facts.allowed_claims)
+        if candidate
+    )
+
+
 def check_price_claims(text: str, context) -> list[RuleViolation]:
     """Flag prices that have no authoritative counterpart in ``facts.prices``.
 
@@ -254,6 +290,8 @@ def check_price_claims(text: str, context) -> list[RuleViolation]:
     violations: list[RuleViolation] = []
     for match in _PRICE_RE.finditer(text):
         if _claims(match.group(), context.facts):
+            continue
+        if relaxed_gate_enabled() and _price_token_in_facts_text(match.group(), context.facts):
             continue
         violations.append(
             RuleViolation(
@@ -440,6 +478,16 @@ def _approved_statements(facts: ProductFacts) -> list[tuple[set[tuple[str, str]]
     return out
 
 
+def _duration_pair(value: str, unit: str) -> tuple[str, str]:
+    if relaxed_gate_enabled() and unit in ("năm", "tháng"):
+        try:
+            months = Decimal(value) * (12 if unit == "năm" else 1)
+        except ArithmeticError:  # decimal.InvalidOperation: keep the raw pair
+            return value, unit
+        return format(months.normalize(), "f"), "tháng"
+    return value, unit
+
+
 def _numeric_violations(text: str, context) -> list[RuleViolation]:
     statements = _approved_statements(context.facts)
     violations: list[RuleViolation] = []
@@ -457,7 +505,11 @@ def _numeric_violations(text: str, context) -> list[RuleViolation]:
             ]
             shown = lowered[start:end].strip()
             if same_topic:
-                if any((value, unit) in pairs for pairs in same_topic):
+                if any(
+                    _duration_pair(value, unit) == _duration_pair(v, u)
+                    for pairs in same_topic
+                    for v, u in pairs
+                ):
                     continue
                 violations.append(
                     RuleViolation(
@@ -507,24 +559,35 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
     """
     violations: list[RuleViolation] = _numeric_violations(text, context)
     allowed = [claim.strip().lower() for claim in context.facts.allowed_claims]
+    relaxed = relaxed_gate_enabled()
     for sentence in re.split(r"[.!?]+", text):
         stripped = sentence.strip()
         if not stripped:
             continue
         # Sentences that only carry price/discount/SKU forms are covered by
         # the dedicated claim rules; do not re-flag them here.
-        if _PRICE_RE.search(stripped) and not _BENEFIT_RE.search(stripped):
+        if (
+            _PRICE_RE.search(stripped)
+            and not _BENEFIT_RE.search(stripped)
+            and not (relaxed and _STRICT_CLAIM_RE.search(stripped))
+        ):
             continue
         for clause in _split_clauses(stripped):
             lowered = clause.lower()
-            if not _BENEFIT_RE.search(lowered):
+            if not _BENEFIT_RE.search(lowered) and not (
+                relaxed and _STRICT_CLAIM_RE.search(lowered)
+            ):
                 continue
             if _overlaps_allowed(lowered, allowed):
                 continue
             violations.append(
                 RuleViolation(
                     rule_id=RULE_CLAIM_FACTUAL,
-                    severity=Severity.ERROR,
+                    severity=(
+                        Severity.WARNING
+                        if relaxed and not _strict_claim(clause)
+                        else Severity.ERROR
+                    ),
                     message=(
                         f"Claim {clause!r} is not among the authoritative "
                         "allowed claims; do not state it."

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 
+from ..relaxed import relaxed_gate_enabled
 from ..results import RuleViolation, Severity
 
 __all__ = [
@@ -89,6 +90,14 @@ def _negated(text: str, negation: str) -> bool:
     """The negation phrase occurs unscoped (a scoped one only states a condition)."""
     return any(
         not (negation.startswith("không") and _EXCEPTION_RE.match(text, m.end()))
+        and not (
+            relaxed_gate_enabled()
+            and not negation.startswith("không")
+            and re.search(
+                r"(?<!\w)(?:không hề|không phải|không có|không|chẳng) (?:là )?$",
+                text[: m.start()],
+            )
+        )
         for m in re.finditer(re.escape(negation), text)
     )
 
@@ -146,7 +155,7 @@ def check_contradictory_claims(segments: list[str], context) -> list[RuleViolati
             violations.append(
                 RuleViolation(
                     rule_id=RULE_CLAIM_CONTRADICTION,
-                    severity=Severity.ERROR,
+                    severity=Severity.WARNING if relaxed_gate_enabled() else Severity.ERROR,
                     message=(
                         f"Claim {claim!r} is asserted in segment "
                         f"{claim_indexes[0] + 1} and contradicted in "

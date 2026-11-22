@@ -127,13 +127,26 @@ def find_brief(unit_briefs: dict[str, Any] | None, part_id: str | None) -> dict[
 
 
 def fallback_reason_code(reasons: list[str] | tuple[str, ...]) -> str:
-    """Normalize raw per-attempt reasons into one customer-safe code (the LAST reason decides).
+    """Normalize raw per-attempt reasons into one customer-safe code (last specific reason wins).
 
     Raw forms: gate rule ids (``CLAIM_FACTUAL``), guard codes (``coverage``, ``guard:truncated``),
     provider errors (``llm_failed:TimeoutError``) and budget codes. Anything else is ``unknown``.
     """
-    for raw in reversed([str(r) for r in reasons]):
-        code = _reason_code(raw.strip())
+    normalized = [str(r).strip() for r in reasons]
+    for index in range(len(normalized) - 1, -1, -1):
+        raw = normalized[index]
+        if raw == "semantic_budget_exhausted" and any(
+            _reason_code(earlier)
+            in {
+                "coverage_missing",
+                "facts_mismatch",
+                "unfinished_text",
+                "wording_unsuitable",
+            }
+            for earlier in normalized[:index]
+        ):
+            continue
+        code = _reason_code(raw)
         if code != "unknown":
             return code
     return "unknown"
