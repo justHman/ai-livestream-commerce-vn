@@ -150,6 +150,10 @@ _DEMOTE_ALLOWED_WORDS = frozenset(
     tay túi balo ngăn quai khóa nắp góc mặt lợi thế thoải mái hợp phù quen thuộc
     ngày hằng thường nhanh gọn liền
     nhưng thể chữ phòng khách
+    như nhỏ gia đình lưu trữ lúc nơi bất cứ đâu chuẩn bị nguyên liệu gian bếp nấu nướng
+    trở hơn nhiều hãy cùng khám phá chi tiết thành dạng lỏng serum thời giao mùa chúc
+    làm vận hành đáng tìm kiếm bỏ qua gợi ý lần dọn dẹp món ăn chế biến khoảng gu tích
+    dung giúp anh chị em ta tuyệt nghe đáp trả lời câu
     """.split()
 )
 
@@ -172,7 +176,7 @@ _NUMBER_WORD_RE = re.compile(
 _NEG_OK = frozenset("thấy cần phải bị sợ mất tốn cam hề quá nhiều lâu khó ai gì còn chỉ".split())
 _NEG_FOLLOWING_RE = re.compile(r"\b(?:không|chẳng)\s+(\w+)", re.IGNORECASE)
 _EFFECT_RE = re.compile(
-    r"\b(?:giúp|hỗ trợ|ngừa|phòng (?:bệnh|ngừa|chống)|chống|trị|hạ"
+    r"\b(?:hỗ trợ|ngừa|phòng (?:bệnh|ngừa|chống)|chống|trị|hạ"
     r"|bổ (?:máu|thận|não|gan|phổi|dưỡng)|bồi bổ"
     r"|bổ sung (?:canxi|vitamin|sắt|kẽm|collagen|dưỡng chất|khoáng chất)"
     r"|giải (?:độc|nhiệt|rượu)"
@@ -191,7 +195,7 @@ _EFFECT_EXCEPT_RE = re.compile(
 )
 _ASSERT_RE = re.compile(
     r"\b(?:nhất|số một|số 1|độc quyền|sáng chế|chứng thực|tin dùng|chính hãng|nhập khẩu"
-    r"|xuất xứ|chuẩn|hơn hẳn|vượt trội)\b",
+    r"|xuất xứ|chuẩn(?! bị)|hơn hẳn|vượt trội)\b",
     re.IGNORECASE,
 )
 
@@ -393,6 +397,21 @@ def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> boo
     )
 
 
+def _money_in_claim_context(match: re.Match[str], facts: ProductFacts) -> bool:
+    """A money amount repeated with the same two leading words as in an approved claim
+    ("đơn từ 1.000.000đ") is the owner's own sentence, not a new price."""
+    lead = match.string[: match.start()].lower().split()[-2:]
+    number = re.match(r"[\d.,]+", match.group())
+    if len(lead) < 2 or number is None:
+        return False
+    rx = re.compile(
+        rf"(?<!\w){re.escape(lead[0])}\s+{re.escape(lead[1])}\s+"
+        rf"{re.escape(number.group())}(?![.,]?\d)",
+        re.IGNORECASE,
+    )
+    return any(rx.search(claim) for claim in facts.allowed_claims if claim)
+
+
 def check_price_claims(text: str, context) -> list[RuleViolation]:
     """Flag prices that have no authoritative counterpart in ``facts.prices``.
 
@@ -403,6 +422,8 @@ def check_price_claims(text: str, context) -> list[RuleViolation]:
         if _claims(match.group(), context.facts):
             continue
         if relaxed_gate_enabled() and _price_token_in_facts_text(match, context.facts):
+            continue
+        if relaxed_gate_enabled() and _money_in_claim_context(match, context.facts):
             continue
         violations.append(
             RuleViolation(
