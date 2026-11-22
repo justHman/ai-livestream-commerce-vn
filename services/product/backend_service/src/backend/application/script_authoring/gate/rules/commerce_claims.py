@@ -14,7 +14,7 @@ import re
 from decimal import Decimal
 
 from ..context import ProductFacts
-from ..relaxed import relaxed_gate_enabled
+from ..context import relaxed_gate_enabled
 from ..results import RuleViolation, Severity, TextSpan
 
 __all__ = [

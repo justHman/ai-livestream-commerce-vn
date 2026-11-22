@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 
-from ..relaxed import relaxed_gate_enabled
+from ..context import relaxed_gate_enabled
 from ..results import RuleViolation, Severity
 
 __all__ = [

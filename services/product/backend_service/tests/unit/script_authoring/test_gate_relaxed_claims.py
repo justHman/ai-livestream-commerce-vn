@@ -3,7 +3,7 @@
 import pytest
 
 from backend.application.script_authoring.gate.context import ProductFacts, ScriptGateContext
-from backend.application.script_authoring.gate.relaxed import relaxed_gate_enabled
+from backend.application.script_authoring.gate.context import relaxed_gate_enabled
 from backend.application.script_authoring.gate.results import Severity
 from backend.application.script_authoring.gate.rules.commerce_claims import (
     check_factual_claims,
