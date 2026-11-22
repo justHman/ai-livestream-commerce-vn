@@ -881,7 +881,12 @@ def test_money_repeated_in_its_claim_context_is_not_a_new_price(monkeypatch):
         allowed_claims=("Trả góp 0% qua thẻ tín dụng cho đơn từ 1.000.000đ",),
         prices=("1.390.000đ",),
     )
-    assert check_price_claims("Trả góp 0% cho đơn từ 1.000.000đ nhé", context) == []
+    assert (
+        check_price_claims(
+            "Mọi người ơi, trả góp 0% qua thẻ tín dụng cho đơn từ 1.000.000đ nhé", context
+        )
+        == []
+    )
 
 
 def test_same_money_amount_as_a_price_stays_blocked(monkeypatch):
@@ -921,4 +926,20 @@ def test_viewer_question_about_compact_design_is_a_warning(monkeypatch):
 def test_money_in_changed_claim_context_stays_blocked(monkeypatch, claim, text):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     context = _ctx(allowed_claims=(claim,), prices=("1.390.000đ",))
+    assert [v.severity for v in check_price_claims(text, context)] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    ("claim", "text"),
+    [
+        ("Combo 2 hộp chỉ 500.000đ", "Chỉ 500.000đ nhé"),
+        ("Combo 2 hộp, chỉ 500.000đ", "Chỉ 500.000đ"),
+        ("Thành viên được giảm còn 299.000đ", "Còn 299.000đ"),
+        ("Đơn từ 300.000đ được freeship", "Từ 300.000đ"),
+        ("Trả góp 0% qua thẻ tín dụng cho đơn từ 1.000.000đ", "Trả góp 0% cho đơn từ 1.000.000đ"),
+    ],
+)
+def test_money_with_a_dropped_condition_stays_blocked(monkeypatch, claim, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = _ctx(allowed_claims=(claim,), prices=("399.000đ",))
     assert [v.severity for v in check_price_claims(text, context)] == [Severity.ERROR]

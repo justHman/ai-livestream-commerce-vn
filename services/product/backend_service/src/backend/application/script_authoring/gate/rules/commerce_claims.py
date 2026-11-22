@@ -11,6 +11,7 @@ Pure pattern matching, no AI detection heuristics.
 from __future__ import annotations
 
 import re
+import unicodedata
 from decimal import Decimal
 
 from ..context import ProductFacts
@@ -397,37 +398,38 @@ def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> boo
     )
 
 
-_CLAUSE_BREAK_RE = re.compile(r"[.!?;,\n]|\bvà\b|đồng thời", re.IGNORECASE)
-_FINAL_PARTICLES = frozenset("nhé nha nhỉ ạ ha".split())
+_SENTENCE_BREAK_RE = re.compile(r"[.!?\n]")
+# Words a host may add around the owner's sentence without changing who or what it is about.
+_ADDRESS_WORDS = frozenset("mọi người ơi các bạn cả nhà nhé nha nhỉ ạ ha thôi nhen".split())
 _MONEY_UNIT_RE = re.compile(r"(?:đ|₫|đồng|vnd|vnđ|k|nghìn|ngàn|tr|triệu)(?!\w)", re.IGNORECASE)
 
 
-def _clause_tokens(text: str, start: int, end: int) -> list[str]:
-    """Lower-cased words of the clause around text[start:end], edge punctuation stripped."""
-    left = _CLAUSE_BREAK_RE.split(text[:start])[-1]
-    right = _CLAUSE_BREAK_RE.split(text[end:])[0]
-    return [t.strip(":\"'()") for t in (left + text[start:end] + right).lower().split()]
+def _sentence_words(text: str, start: int, end: int) -> set[str]:
+    """NFC, lower-cased words of the whole sentence around text[start:end]."""
+    left = _SENTENCE_BREAK_RE.split(text[:start])[-1]
+    right = _SENTENCE_BREAK_RE.split(text[end:])[0]
+    sentence = unicodedata.normalize("NFC", left + text[start:end] + right).lower()
+    return {t.strip(":\"'(),;") for t in sentence.split()} - {""}
 
 
 def _money_in_claim_context(match: re.Match[str], facts: ProductFacts) -> bool:
-    """The owner's own sentence repeated: the same money amount, and every word of the
-    script clause around it occurs in the approved-claim clause that holds that amount
-    ("đơn từ 1.000.000đ"). A changed subject, a new price cue or another unit is not."""
+    """The owner's own sentence repeated: the same money amount, every word of the approved
+    sentence holding that amount is said, and nothing else but address words is added
+    ("đơn từ 1.000.000đ" with its condition). A dropped qualifier, a changed subject, another
+    unit or a 'giá' keeps CLAIM_PRICE."""
     amount = _vnd_amount(match.group())
     tail = match.group() + match.string[match.end() : match.end() + 6]
     if amount is None or not _MONEY_UNIT_RE.search(re.sub(r"^[\d.,\s]+", "", tail)):
         return False  # a measurement, not money: only the measurement-unit exemption applies
-    said = [t for t in _clause_tokens(match.string, match.start(), match.end()) if t]
-    while said and said[-1] in _FINAL_PARTICLES:
-        said.pop()
+    said = _sentence_words(match.string, match.start(), match.end())
     if "giá" in said:
         return False  # the selling price comes only from the product price fields
     for claim in facts.allowed_claims:
         for found in _PRICE_RE.finditer(claim or ""):
             if _vnd_amount(found.group()) != amount:
                 continue
-            owner = set(_clause_tokens(claim, found.start(), found.end()))
-            if said and all(token in owner for token in said):
+            owner = _sentence_words(claim, found.start(), found.end())
+            if owner <= said <= owner | _ADDRESS_WORDS:
                 return True
     return False
 
