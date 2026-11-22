@@ -398,7 +398,9 @@ def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> boo
     )
 
 
-_SENTENCE_BREAK_RE = re.compile(r"(?<!d).(?!d)|[!?]")  # no split inside numbers or at line breaks
+_SENTENCE_BREAK_RE = re.compile(
+    r"(?<!\d)\.(?!\d)|[!?]"
+)  # no split inside numbers or at line breaks
 # Words a host may add around the owner's sentence without changing who or what it is about.
 _ADDRESS_WORDS = frozenset("mọi người ơi các bạn cả nhà nhé nha nhỉ ạ ha thôi nhen".split())
 _MONEY_UNIT_RE = re.compile(r"(?:đ|₫|đồng|vnd|vnđ|k|nghìn|ngàn|tr|triệu)(?!\w)", re.IGNORECASE)
