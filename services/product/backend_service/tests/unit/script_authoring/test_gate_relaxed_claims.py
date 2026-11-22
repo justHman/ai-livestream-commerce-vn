@@ -47,6 +47,20 @@ def test_descriptive_claim_defaults_to_error(monkeypatch):
         ("Sản phẩm chữa bệnh", Severity.ERROR),
         ("Sản phẩm đạt chuẩn FDA", Severity.ERROR),
         ("không cam kết nhưng đảm bảo hiệu quả", Severity.ERROR),
+        ("Ổn định đường huyết", Severity.ERROR),
+        ("Thiết kế giúp hết đau lưng", Severity.ERROR),
+        ("Đơn giản mà hết nhức mỏi", Severity.ERROR),
+        ("Chất lượng tốt cho sức khỏe", Severity.ERROR),
+        ("Chất lượng chuẩn y khoa", Severity.ERROR),
+        ("Chất lượng được kiểm nghiệm", Severity.ERROR),
+        ("Thành phần đã qua kiểm nghiệm lâm sàng", Severity.ERROR),
+        ("Giúp giảm nếp nhăn", Severity.ERROR),
+        ("Hỗ trợ xương khớp", Severity.ERROR),
+        ("Dùng được cho bà bầu", Severity.ERROR),
+        ("Được bác sĩ khuyên dùng", Severity.ERROR),
+        ("Đạt tiêu chuẩn châu Âu", Severity.ERROR),
+        ("Không gây kích ứng", Severity.ERROR),
+        ("Thành phần không chứa paraben", Severity.ERROR),
     ],
 )
 def test_relaxed_word_claim_severity(monkeypatch, text, severity):
@@ -123,6 +137,81 @@ def test_money_in_approved_claim_never_exempts_price(monkeypatch, unit):
 
 
 @pytest.mark.parametrize(
+    ("claim", "text"),
+    [
+        ("Giảm 500.000 cho đơn đầu tiên", "Giá chỉ 500.000 cho bạn hôm nay"),
+        ("Giá gốc 990.000 nay giảm còn 299.000", "Giá 990.000 nay chốt luôn"),
+        ("Phí ship 30.000 toàn quốc", "Giá 30.000 toàn quốc"),
+        ("Combo 2 hộp 550.000 tiết kiệm", "Mua liền 550.000 tiết kiệm"),
+        ("Tặng voucher 100.000 khi mua", "Chỉ 100.000 khi mua hôm nay"),
+    ],
+)
+def test_bare_money_in_approved_claim_never_exempts_price(monkeypatch, claim, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    violations = check_price_claims(text, _ctx(allowed_claims=(claim,), prices=("299.000",)))
+    assert [v.severity for v in violations] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    "cue", "giá chỉ còn chốt ship giảm tặng voucher combo mua cũ gốc tiền phí đồng bán trả".split()
+)
+@pytest.mark.parametrize("between", ["", "hôm "])
+def test_measurement_with_recent_price_cue_is_not_exempt(monkeypatch, cue, between):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    violations = check_price_claims(
+        f"{cue.upper()} {between}5.000 mAh", _ctx(allowed_claims=("Pin 5.000 mAh",))
+    )
+    assert [v.severity for v in violations] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    "unit",
+    (
+        "mah w kw wh v ml l lít g gr kg mg cm mm m inch gb tb mb hz mhz ghz mp dpi rpm "
+        "viên gói miếng cái chiếc lượt vòng độ °c lumen lux ppi fps"
+    ).split(),
+)
+def test_explicit_measurement_units_are_exempt(monkeypatch, unit):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = _ctx(allowed_claims=(f"Thông số 5.000{unit}",), prices=("299.000",))
+    assert check_price_claims(f"Thông số 5.000 {unit.upper()}", context) == []
+
+
+@pytest.mark.parametrize("unit", ["watts", "mahx", "mAh2", "gói_hàng", "cho", "tiết"])
+def test_unlisted_or_partial_measurement_unit_is_not_exempt(monkeypatch, unit):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    text = f"Thông số 5.000 {unit}"
+    assert [v.severity for v in check_price_claims(text, _ctx(allowed_claims=(text,)))] == [
+        Severity.ERROR
+    ]
+
+
+@pytest.mark.parametrize("prefix", ["Giá rất tốt. Pin", "Giá rất tốt và pin", "Giá rất tốt pin"])
+def test_price_cue_scope_is_two_words_in_script_clause(monkeypatch, prefix):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    assert check_price_claims(f"{prefix} 5.000 mAh", _ctx(allowed_claims=("Pin 5.000 mAh",))) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Độ bền 10 năm",
+        "Tuổi thọ 20 năm",
+        "Công suất 2000W",
+        "Tiết kiệm 50% điện năng",
+        "Nguyên liệu 100% tự nhiên",
+        "Làm sạch 99,9% vi khuẩn",
+        "Dễ dàng giảm 5kg trong 1 tháng",
+        "Thiết kế chống nước IP68",
+    ],
+)
+def test_numeric_word_claims_are_never_demoted(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    violations = check_factual_claims(text, _ctx())
+    assert any(v.rule_id == "CLAIM_FACTUAL" and v.severity == Severity.ERROR for v in violations)
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "Tăng cường sức đề kháng",
@@ -179,6 +268,21 @@ def test_health_and_non_descriptive_claims_fail_closed(monkeypatch, text):
 def test_direct_health_negation_is_exempt(monkeypatch, prefix):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     assert check_factual_claims(f"Sản phẩm {prefix} chữa ho", _ctx()) == []
+
+
+@pytest.mark.parametrize("claim", ["kích ứng", "paraben", "độc hại"])
+@pytest.mark.parametrize("prefix", ["không", "không hề", "chưa", "chẳng", "không phải"])
+def test_safety_claims_cannot_be_excused_by_negation(monkeypatch, claim, prefix):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    assert [v.severity for v in check_factual_claims(f"Sản phẩm {prefix} {claim}", _ctx())] == [
+        Severity.ERROR
+    ]
+
+
+@pytest.mark.parametrize("text", ["Logo IP680", "Logo IP68X", "Logo parabenfree", "Logo virusx"])
+def test_health_terms_require_word_boundaries(monkeypatch, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    assert check_factual_claims(text, _ctx()) == []
 
 
 @pytest.mark.parametrize(
@@ -242,17 +346,16 @@ def test_warranty_denial_and_exception_remain_distinct(monkeypatch):
     [
         ("an toàn", "độc hại", Severity.ERROR),
         ("an toàn", "không phải là độc hại thì là gì", Severity.ERROR),
-        ("chính hãng", "hàng giả", Severity.WARNING),
-        ("mới 100%", "đã qua sử dụng", Severity.WARNING),
+        ("Chính hãng.", "hàng giả", Severity.ERROR),
+        ("mới 100%", "đã qua sử dụng", Severity.ERROR),
         ("bảo hành", "không bảo hành", Severity.ERROR),
     ],
 )
 @pytest.mark.parametrize("flag", ["0", "1"])
 def test_contradiction_severity_by_pair(monkeypatch, claim, negative, severity, flag):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", flag)
-    expected = severity if flag == "1" else Severity.ERROR
     violations = check_contradictory_claims([claim, negative], _ctx())
-    assert [v.severity for v in violations] == [expected]
+    assert [v.severity for v in violations] == [severity]
 
 
 def test_contradiction_condition_is_scoped_to_occurrence_clause(monkeypatch):

@@ -156,6 +156,9 @@ _HEALTH_RE = re.compile(
     r"|khỏi bệnh|khỏi hẳn|khỏi hoàn toàn|an toàn tuyệt đối"
     r"|(?:cam kết|đảm bảo) (?:hiệu quả|kết quả|khỏi bệnh|khỏi hẳn|khỏi hoàn toàn)"
     r"|hiệu quả 100%|100% hiệu quả|chứng nhận|đạt chuẩn|kiểm định|ISO|GMP|FDA|bộ y tế"
+    r"|đường huyết|sức khỏe|sức khoẻ|y khoa|lâm sàng|kiểm nghiệm|bác sĩ|da liễu"
+    r"|đau|nhức|mỏi|khuẩn|virus|độc hại|kích ứng|paraben|nếp nhăn|rụng tóc|xương khớp"
+    r"|tim mạch|tiêu hóa|tiêu hoá|bà bầu|mẹ bầu|trẻ em|trẻ sơ sinh|tiêu chuẩn|chống nước|IP\d{2}"
     r"|hữu cơ|organic)(?!\w)",
     re.IGNORECASE,
 )
@@ -163,11 +166,14 @@ _HEALTH_NEGATION_RE = re.compile(
     r"(?<!\w)(?:không hề|không phải|không|chưa|chẳng) ?$", re.IGNORECASE
 )
 _CONDITION_RE = re.compile(r"(?<!\w)(?:thì|hoàn tiền|nếu|bằng không)(?!\w)", re.IGNORECASE)
+_SAFETY_CLAIMS = frozenset(("kích ứng", "paraben", "độc hại"))
 
 
 def _health_claim(clause: str) -> bool:
     return any(
-        _CONDITION_RE.search(clause) or not _HEALTH_NEGATION_RE.search(clause[: match.start()])
+        match.group().lower() in _SAFETY_CLAIMS
+        or _CONDITION_RE.search(clause)
+        or not _HEALTH_NEGATION_RE.search(clause[: match.start()])
         for match in _HEALTH_RE.finditer(clause)
     )
 
@@ -295,13 +301,25 @@ def _discount_stated(token: str, facts: ProductFacts) -> bool:
     )
 
 
+_MEASURE_UNITS = frozenset(
+    "mah w kw wh v ml l lít g gr kg mg cm mm m inch gb tb mb hz mhz ghz mp dpi rpm "
+    "viên gói miếng cái chiếc lượt vòng độ °c lumen lux ppi fps".split()
+)
+_PRICE_CUES = frozenset(
+    "giá chỉ còn chốt ship giảm tặng voucher combo mua cũ gốc tiền phí đồng bán trả".split()
+)
+
+
 def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> bool:
-    """Exempt only an owner's exact quantity number and non-money unit word."""
+    """Exempt an approved measurement only when its script clause has no price cue."""
     number = match.group()
     if not re.fullmatch(r"\d+(?:[.,]\d+)*", number):
         return False
-    unit = re.match(r" ?([^\W\d_]+)(?!\w)", match.string[match.end() :])
-    if unit is None or re.fullmatch(_UNIT, unit.group(1), re.IGNORECASE):
+    unit = re.match(r" ?(°c|[^\W\d_]+)(?!\w)", match.string[match.end() :], re.IGNORECASE)
+    if unit is None or unit.group(1).lower() not in _MEASURE_UNITS:
+        return False
+    prefix = re.split(r"[.!?;,\n]|\bvà\b|đồng thời", match.string[: match.start()])[-1]
+    if _PRICE_CUES.intersection(_WORD_RE.findall(prefix.lower())[-2:]):
         return False
     rx = re.compile(
         rf"(?<![\d.,]){re.escape(number)}(?!\d|[.,]\d) ?{re.escape(unit.group(1))}(?!\w)",
@@ -618,6 +636,7 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
                         Severity.WARNING
                         if relaxed
                         and not health
+                        and not re.search(r"[0-9]", clause)
                         and all(hit.group() in _DESCRIPTIVE_SIGNALS for hit in benefits)
                         else Severity.ERROR
                     ),

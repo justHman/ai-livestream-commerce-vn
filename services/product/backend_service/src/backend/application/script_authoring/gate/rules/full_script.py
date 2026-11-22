@@ -160,11 +160,7 @@ def check_contradictory_claims(segments: list[str], context) -> list[RuleViolati
             violations.append(
                 RuleViolation(
                     rule_id=RULE_CLAIM_CONTRADICTION,
-                    severity=(
-                        Severity.WARNING
-                        if relaxed_gate_enabled() and claim in ("chính hãng", "mới 100%")
-                        else Severity.ERROR
-                    ),
+                    severity=Severity.ERROR,
                     message=(
                         f"Claim {claim!r} is asserted in segment "
                         f"{claim_indexes[0] + 1} and contradicted in "
