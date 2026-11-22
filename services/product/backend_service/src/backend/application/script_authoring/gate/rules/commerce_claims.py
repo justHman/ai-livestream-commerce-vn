@@ -132,7 +132,6 @@ _DESCRIPTIVE_SIGNALS = (
     "dễ dàng",
     "đơn giản",
     "tiện lợi",
-    "bền bỉ",
 )
 
 _DEMOTE_ALLOWED_WORDS = frozenset(
@@ -147,7 +146,7 @@ _DEMOTE_ALLOWED_WORDS = frozenset(
     dùng sử dụng cầm nắm mang theo mở đóng lắp ráp tháo gấp xếp cất để đặt treo đeo
     mặc vệ sinh lau rửa chùi thao tác cách kiểu dáng màu sắc mẫu form phom đường
     nét thanh lịch hiện đại tinh tế gọn gàng sang trọng xinh xắn đẹp mắt trẻ trung
-    năng động nhẹ nhàng cồng kềnh vướng víu lỉnh kỉnh rộng rãi chắc chắn vừa vặn
+    năng động nhẹ nhàng cồng kềnh vướng víu lỉnh kỉnh rộng rãi vừa vặn
     tay túi balo ngăn quai khóa nắp góc mặt lợi thế thoải mái hợp phù quen thuộc
     ngày hằng thường nhanh gọn liền
     nhưng thể chữ phòng khách

@@ -49,9 +49,10 @@ def test_rich_prompt_and_lengths_are_read_at_call_time(monkeypatch, value):
     assert "mỗi điểm nói 2 đến 4 câu" in prompt
     assert "cả phần khoảng 5 đến 9 câu" in prompt
     assert (
-        "Độ dài mục tiêu: khoảng 1360 đến 1600 ký tự. Hãy nói đủ độ dài này bằng "
-        "cách giải thích kỹ từng ý đã cho, tương tác với khán giả và chuyển ý mượt; "
-        "tuyệt đối không thêm sự thật, con số, ưu đãi hay cam kết mới."
+        "Độ dài mục tiêu: khoảng 1360 đến 1600 ký tự. Nên nói trong khoảng này bằng "
+        "cách giải thích kỹ từng ý đã cho, tương tác với khán giả và chuyển ý mượt; ý ít thì "
+        "thêm câu hỏi, lời mời bình luận hoặc nhắc lại ý chính theo cách khác, không suy ra "
+        "công dụng hay tình huống mới; tuyệt đối không thêm sự thật, con số, ưu đãi hay cam kết mới."
     ) in prompt
     assert "TUYỆT ĐỐI KHÔNG thêm" in prompt
     # All strict factual prohibitions, number/price rules, injection and time rules survive.

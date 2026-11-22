@@ -168,7 +168,9 @@ class ScriptGate:
             # generation still uses the strict errors returned by each rule.
             violations = [
                 replace(v, severity=Severity.WARNING)
-                if v.rule_id.startswith("CLAIM_") and v.severity == Severity.ERROR
+                if v.rule_id.startswith("CLAIM_")
+                and v.rule_id != "CLAIM_CONTRADICTION"  # AI compile also runs here
+                and v.severity == Severity.ERROR
                 else v
                 for v in violations
             ]

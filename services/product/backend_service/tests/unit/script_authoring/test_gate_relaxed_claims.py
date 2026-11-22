@@ -863,13 +863,12 @@ def test_owner_advisory_mode_preserves_non_claim_errors(monkeypatch, suffix, rul
     )
 
 
-def test_owner_advisory_mode_includes_full_scope_claims(monkeypatch):
+def test_cross_part_contradiction_still_blocks_in_relaxed_mode(monkeypatch):
+    # run_full_script also gates AI-compiled scripts; a contradiction across parts cannot be
+    # caught per segment, so it stays an error even when other claim findings are advisory.
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     result = _gate().run_full_script(
         ["Sản phẩm an toàn.", "Sản phẩm độc hại."],
         ScriptGateContext(total_min_seconds=0),
     )
-    claims = [v for v in result.violations if v.rule_id == "CLAIM_CONTRADICTION"]
-    assert claims
-    assert all(v.severity == Severity.WARNING for v in claims)
-    assert result.passed
+    assert not result.passed

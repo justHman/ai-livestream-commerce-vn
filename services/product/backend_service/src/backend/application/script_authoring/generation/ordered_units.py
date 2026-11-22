@@ -128,7 +128,7 @@ _RICH_GUIDE = {
     "intro": _GUIDE["intro"].replace("2 đến 4 câu", "3 đến 5 câu"),
     "highlight": (
         "Kể về những điểm hay bên dưới bằng lời của MC: mỗi điểm nói 2 đến 4 câu "
-        "(nêu ý, giải thích ý đó giúp gì cho người xem bằng lời đời thường, rồi có thể hỏi "
+        "(nêu ý, giải thích ý đó bằng lời đời thường, rồi có thể hỏi "
         "khán giả); cả phần khoảng 5 đến 9 câu. Chỉ nói lại đúng điều thông tin ghi; câu "
         "hỏi không được nêu thêm đặc tính hay tình huống mới. MỖI CÂU CHỈ MỘT CHỦ ĐỀ, "
         "không nối các ý khác chủ đề (ví dụ size với cách giặt) bằng 'và'. Giữ nguyên số "
@@ -1977,9 +1977,10 @@ def build_unit_prompt(
         )
         parts.append(
             (
-                f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự. Hãy nói đủ độ dài này bằng "
-                "cách giải thích kỹ từng ý đã cho, tương tác với khán giả và chuyển ý mượt; "
-                "tuyệt đối không thêm sự thật, con số, ưu đãi hay cam kết mới."
+                f"Độ dài mục tiêu: khoảng {low} đến {high} ký tự. Nên nói trong khoảng này bằng "
+                "cách giải thích kỹ từng ý đã cho, tương tác với khán giả và chuyển ý mượt; ý ít thì "
+                "thêm câu hỏi, lời mời bình luận hoặc nhắc lại ý chính theo cách khác, không suy ra "
+                "công dụng hay tình huống mới; tuyệt đối không thêm sự thật, con số, ưu đãi hay cam kết mới."
             )
             if rich
             else (
