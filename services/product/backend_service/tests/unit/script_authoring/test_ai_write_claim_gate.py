@@ -34,9 +34,10 @@ class _RecordingGate:
 def _assert_bad_claims_checked(service):
     results = [result for text, result in service._gate.segment_results if text == BAD_TEXT]
     assert len(results) == 1
-    assert {
-        v.rule_id for v in results[0].violations if v.severity.value == "error"
-    } >= {"CLAIM_PRICE", "CLAIM_FACTUAL"}
+    assert {v.rule_id for v in results[0].violations if v.severity.value == "error"} >= {
+        "CLAIM_PRICE",
+        "CLAIM_FACTUAL",
+    }
 
 
 async def _setup():
@@ -48,16 +49,23 @@ async def _setup():
         brief={"product_facts": {"P1": {"prices": ["299.000đ"]}}},
     )
     await service.save_draft(
-        set_id=created["id"], product_id="P1", display_text="Bản hiện tại.",
-        spoken_text="Bản hiện tại.", revision=None,
+        set_id=created["id"],
+        product_id="P1",
+        display_text="Bản hiện tại.",
+        spoken_text="Bản hiện tại.",
+        revision=None,
     )
     await service.submit_for_gate(set_id=created["id"], product_id="P1")
     item = await repos.items.get_by_product(created["id"], "P1")
     script_set = await repos.script_sets.get(created["id"])
     source = repos.versions.rows[item.current_version_id]
     job = GenerationJob(
-        id=new_id("job"), batch_id=new_id("batch"), script_item_id=item.id,
-        product_id="P1", target_duration_s=60, status=GenerationJobStatus.RUNNING,
+        id=new_id("job"),
+        batch_id=new_id("batch"),
+        script_item_id=item.id,
+        product_id="P1",
+        target_duration_s=60,
+        status=GenerationJobStatus.RUNNING,
     )
     await repos.jobs.insert(job)
     service._gate = _RecordingGate()
@@ -69,13 +77,19 @@ async def test_legacy_regenerate_rejects_strict_segment_claims(monkeypatch):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     service, repos, item, script_set, source, job = await _setup()
     plan = SimpleNamespace(
-        id=new_id("plan"), script_item_id=item.id, target_duration_s=60,
+        id=new_id("plan"),
+        script_item_id=item.id,
+        target_duration_s=60,
     )
     await repos.plans.insert(plan)
     segment = ScriptSegment(
-        id=new_id("segment"), script_item_id=item.id, plan_id=plan.id,
-        segment_index=0, target_duration_s=30,
-        display_text=source.display_text, spoken_text=source.spoken_text,
+        id=new_id("segment"),
+        script_item_id=item.id,
+        plan_id=plan.id,
+        segment_index=0,
+        target_duration_s=30,
+        display_text=source.display_text,
+        spoken_text=source.spoken_text,
     )
     await repos.segments.insert(segment)
     versions_before = set(repos.versions.rows)
