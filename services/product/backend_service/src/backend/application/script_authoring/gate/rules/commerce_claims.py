@@ -151,8 +151,8 @@ _DEMOTE_ALLOWED_WORDS = frozenset(
     ngày hằng thường nhanh gọn liền
     nhưng thể chữ phòng khách
     như nhỏ gia đình lưu trữ lúc nơi bất cứ đâu chuẩn bị nguyên liệu gian bếp nấu nướng
-    trở hơn nhiều hãy cùng khám phá chi tiết thành dạng lỏng serum thời giao mùa chúc
-    làm vận hành đáng tìm kiếm bỏ qua gợi ý lần dọn dẹp món ăn chế biến khoảng gu tích
+    trở hơn nhiều hãy cùng khám phá chi tiết dạng lỏng serum thời mùa chúc
+    làm vận hành đáng tìm kiếm bỏ qua gợi ý lần dọn dẹp món ăn chế biến khoảng gu
     dung giúp anh chị em ta tuyệt nghe đáp trả lời câu
     """.split()
 )
@@ -165,7 +165,7 @@ _NUMBER_WORD_UNITS = _MEASURE_UNITS | frozenset(
     "lần tháng năm ngày tuần giờ phút giây ký cân".split()
 )
 _NUMBER_WORD_RE = re.compile(
-    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|nửa"
+    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|nửa|nhiều lần"
     # "gấp gọn" is folding; only "gấp đôi/ba/2…" is a multiplier
     r"|gấp (?:đôi|rưỡi|nhiều|\d|một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)"
     r"|chục|lăm|mốt|thập kỷ|thập niên|kilowatt|oát|watt|phần (?:hai|ba|tư|năm|mười)"
@@ -397,19 +397,39 @@ def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> boo
     )
 
 
+_CLAUSE_BREAK_RE = re.compile(r"[.!?;,\n]|\bvà\b|đồng thời", re.IGNORECASE)
+_FINAL_PARTICLES = frozenset("nhé nha nhỉ ạ ha".split())
+_MONEY_UNIT_RE = re.compile(r"(?:đ|₫|đồng|vnd|vnđ|k|nghìn|ngàn|tr|triệu)(?!\w)", re.IGNORECASE)
+
+
+def _clause_tokens(text: str, start: int, end: int) -> list[str]:
+    """Lower-cased words of the clause around text[start:end], edge punctuation stripped."""
+    left = _CLAUSE_BREAK_RE.split(text[:start])[-1]
+    right = _CLAUSE_BREAK_RE.split(text[end:])[0]
+    return [t.strip(":\"'()") for t in (left + text[start:end] + right).lower().split()]
+
+
 def _money_in_claim_context(match: re.Match[str], facts: ProductFacts) -> bool:
-    """A money amount repeated with the same two leading words as in an approved claim
-    ("đơn từ 1.000.000đ") is the owner's own sentence, not a new price."""
-    lead = match.string[: match.start()].lower().split()[-2:]
-    number = re.match(r"[\d.,]+", match.group())
-    if len(lead) < 2 or number is None:
-        return False
-    rx = re.compile(
-        rf"(?<!\w){re.escape(lead[0])}\s+{re.escape(lead[1])}\s+"
-        rf"{re.escape(number.group())}(?![.,]?\d)",
-        re.IGNORECASE,
-    )
-    return any(rx.search(claim) for claim in facts.allowed_claims if claim)
+    """The owner's own sentence repeated: the same money amount, and every word of the
+    script clause around it occurs in the approved-claim clause that holds that amount
+    ("đơn từ 1.000.000đ"). A changed subject, a new price cue or another unit is not."""
+    amount = _vnd_amount(match.group())
+    tail = match.group() + match.string[match.end() : match.end() + 6]
+    if amount is None or not _MONEY_UNIT_RE.search(re.sub(r"^[\d.,\s]+", "", tail)):
+        return False  # a measurement, not money: only the measurement-unit exemption applies
+    said = [t for t in _clause_tokens(match.string, match.start(), match.end()) if t]
+    while said and said[-1] in _FINAL_PARTICLES:
+        said.pop()
+    if "giá" in said:
+        return False  # the selling price comes only from the product price fields
+    for claim in facts.allowed_claims:
+        for found in _PRICE_RE.finditer(claim or ""):
+            if _vnd_amount(found.group()) != amount:
+                continue
+            owner = set(_clause_tokens(claim, found.start(), found.end()))
+            if said and all(token in owner for token in said):
+                return True
+    return False
 
 
 def check_price_claims(text: str, context) -> list[RuleViolation]:

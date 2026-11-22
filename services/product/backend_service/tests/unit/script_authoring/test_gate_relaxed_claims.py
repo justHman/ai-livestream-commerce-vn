@@ -904,3 +904,21 @@ def test_viewer_question_about_compact_design_is_a_warning(monkeypatch):
         )
     ]
     assert severities == [Severity.WARNING]
+
+
+@pytest.mark.parametrize(
+    ("claim", "text"),
+    [
+        ("Combo 2 hộp chỉ 500.000đ", "Một hộp chỉ 500.000đ"),
+        ("Giảm thêm 50k cho đơn đầu", "Hôm nay giảm thêm 50 triệu"),
+        ("Bảo hành 12 tháng, đổi trả 7 ngày", "Bảo hành 12 triệu"),
+        ("Thành viên giá chỉ 299.000đ", "Mọi người giá chỉ 299.000đ"),
+        ("Phí ship chỉ 30.000đ", "Giá ship chỉ 30.000đ"),
+        ("Freeship cho đơn từ 300.000đ", "Chốt đơn từ 300.000đ thôi"),
+        ("Giá gốc 599.000đ, nay còn 299.000đ", "nay còn 599.000đ"),
+    ],
+)
+def test_money_in_changed_claim_context_stays_blocked(monkeypatch, claim, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = _ctx(allowed_claims=(claim,), prices=("1.390.000đ",))
+    assert [v.severity for v in check_price_claims(text, context)] == [Severity.ERROR]
