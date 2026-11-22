@@ -432,8 +432,9 @@ def test_explicit_measurement_units_are_exempt(monkeypatch, unit):
 @pytest.mark.parametrize("unit", ["watts", "mahx", "mAh2", "gói_hàng", "cho", "tiết"])
 def test_unlisted_or_partial_measurement_unit_is_not_exempt(monkeypatch, unit):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
-    text = f"Thông số 5.000 {unit}"
-    assert [v.severity for v in check_price_claims(text, _ctx(allowed_claims=(text,)))] == [
+    # A different lead-in than the claim, so only the measurement-unit exemption could apply.
+    context = _ctx(allowed_claims=(f"Thông số 5.000 {unit}",))
+    assert [v.severity for v in check_price_claims(f"Pin này 5.000 {unit}", context)] == [
         Severity.ERROR
     ]
 
@@ -739,7 +740,7 @@ def test_allowed_negative_following_words_do_not_block_demotion(monkeypatch, pre
     # also be permitted by the descriptive vocabulary allowlist.
     severity = (
         Severity.WARNING
-        if prefix == "không" and following in "thấy cần bị quá ai gì còn chỉ".split()
+        if prefix == "không" and following in "thấy cần bị quá nhiều ai gì còn chỉ".split()
         else Severity.ERROR
     )
     assert [v.severity for v in check_factual_claims(text, _ctx())] == [severity]
@@ -872,3 +873,73 @@ def test_cross_part_contradiction_still_blocks_in_relaxed_mode(monkeypatch):
         ScriptGateContext(total_min_seconds=0),
     )
     assert not result.passed
+
+
+def test_money_repeated_in_its_claim_context_is_not_a_new_price(monkeypatch):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = _ctx(
+        allowed_claims=("Trả góp 0% qua thẻ tín dụng cho đơn từ 1.000.000đ",),
+        prices=("1.390.000đ",),
+    )
+    assert (
+        check_price_claims(
+            "Mọi người ơi, trả góp 0% qua thẻ tín dụng cho đơn từ 1.000.000đ nhé", context
+        )
+        == []
+    )
+
+
+def test_same_money_amount_as_a_price_stays_blocked(monkeypatch):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = _ctx(
+        allowed_claims=("Trả góp 0% qua thẻ tín dụng cho đơn từ 1.000.000đ",),
+        prices=("1.390.000đ",),
+    )
+    assert [v.severity for v in check_price_claims("Giá chỉ 1.000.000đ thôi", context)] == [
+        Severity.ERROR
+    ]
+
+
+def test_viewer_question_about_compact_design_is_a_warning(monkeypatch):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    severities = [
+        v.severity
+        for v in check_factual_claims(
+            "Các bạn thấy thiết kế nhỏ gọn như thế này có tiện lợi không", _ctx()
+        )
+    ]
+    assert severities == [Severity.WARNING]
+
+
+@pytest.mark.parametrize(
+    ("claim", "text"),
+    [
+        ("Combo 2 hộp chỉ 500.000đ", "Một hộp chỉ 500.000đ"),
+        ("Giảm thêm 50k cho đơn đầu", "Hôm nay giảm thêm 50 triệu"),
+        ("Bảo hành 12 tháng, đổi trả 7 ngày", "Bảo hành 12 triệu"),
+        ("Thành viên giá chỉ 299.000đ", "Mọi người giá chỉ 299.000đ"),
+        ("Phí ship chỉ 30.000đ", "Giá ship chỉ 30.000đ"),
+        ("Freeship cho đơn từ 300.000đ", "Chốt đơn từ 300.000đ thôi"),
+        ("Giá gốc 599.000đ, nay còn 299.000đ", "nay còn 599.000đ"),
+    ],
+)
+def test_money_in_changed_claim_context_stays_blocked(monkeypatch, claim, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = _ctx(allowed_claims=(claim,), prices=("1.390.000đ",))
+    assert [v.severity for v in check_price_claims(text, context)] == [Severity.ERROR]
+
+
+@pytest.mark.parametrize(
+    ("claim", "text"),
+    [
+        ("Combo 2 hộp chỉ 500.000đ", "Chỉ 500.000đ nhé"),
+        ("Combo 2 hộp, chỉ 500.000đ", "Chỉ 500.000đ"),
+        ("Thành viên được giảm còn 299.000đ", "Còn 299.000đ"),
+        ("Đơn từ 300.000đ được freeship", "Từ 300.000đ"),
+        ("Trả góp 0% qua thẻ tín dụng cho đơn từ 1.000.000đ", "Trả góp 0% cho đơn từ 1.000.000đ"),
+    ],
+)
+def test_money_with_a_dropped_condition_stays_blocked(monkeypatch, claim, text):
+    monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
+    context = _ctx(allowed_claims=(claim,), prices=("399.000đ",))
+    assert [v.severity for v in check_price_claims(text, context)] == [Severity.ERROR]

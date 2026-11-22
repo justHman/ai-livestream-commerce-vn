@@ -11,6 +11,7 @@ Pure pattern matching, no AI detection heuristics.
 from __future__ import annotations
 
 import re
+import unicodedata
 from decimal import Decimal
 
 from ..context import ProductFacts
@@ -150,6 +151,10 @@ _DEMOTE_ALLOWED_WORDS = frozenset(
     tay túi balo ngăn quai khóa nắp góc mặt lợi thế thoải mái hợp phù quen thuộc
     ngày hằng thường nhanh gọn liền
     nhưng thể chữ phòng khách
+    như nhỏ gia đình lưu trữ lúc nơi bất cứ đâu chuẩn bị nguyên liệu gian bếp nấu nướng
+    trở hơn nhiều hãy cùng khám phá chi tiết dạng lỏng serum thời mùa chúc
+    làm vận hành đáng tìm kiếm bỏ qua gợi ý lần dọn dẹp món ăn chế biến khoảng gu
+    dung giúp anh chị em ta tuyệt nghe đáp trả lời câu
     """.split()
 )
 
@@ -161,7 +166,7 @@ _NUMBER_WORD_UNITS = _MEASURE_UNITS | frozenset(
     "lần tháng năm ngày tuần giờ phút giây ký cân".split()
 )
 _NUMBER_WORD_RE = re.compile(
-    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|nửa"
+    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|nửa|nhiều lần"
     # "gấp gọn" is folding; only "gấp đôi/ba/2…" is a multiplier
     r"|gấp (?:đôi|rưỡi|nhiều|\d|một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)"
     r"|chục|lăm|mốt|thập kỷ|thập niên|kilowatt|oát|watt|phần (?:hai|ba|tư|năm|mười)"
@@ -172,7 +177,7 @@ _NUMBER_WORD_RE = re.compile(
 _NEG_OK = frozenset("thấy cần phải bị sợ mất tốn cam hề quá nhiều lâu khó ai gì còn chỉ".split())
 _NEG_FOLLOWING_RE = re.compile(r"\b(?:không|chẳng)\s+(\w+)", re.IGNORECASE)
 _EFFECT_RE = re.compile(
-    r"\b(?:giúp|hỗ trợ|ngừa|phòng (?:bệnh|ngừa|chống)|chống|trị|hạ"
+    r"\b(?:hỗ trợ|ngừa|phòng (?:bệnh|ngừa|chống)|chống|trị|hạ"
     r"|bổ (?:máu|thận|não|gan|phổi|dưỡng)|bồi bổ"
     r"|bổ sung (?:canxi|vitamin|sắt|kẽm|collagen|dưỡng chất|khoáng chất)"
     r"|giải (?:độc|nhiệt|rượu)"
@@ -191,7 +196,7 @@ _EFFECT_EXCEPT_RE = re.compile(
 )
 _ASSERT_RE = re.compile(
     r"\b(?:nhất|số một|số 1|độc quyền|sáng chế|chứng thực|tin dùng|chính hãng|nhập khẩu"
-    r"|xuất xứ|chuẩn|hơn hẳn|vượt trội)\b",
+    r"|xuất xứ|chuẩn(?! bị)|hơn hẳn|vượt trội)\b",
     re.IGNORECASE,
 )
 
@@ -393,6 +398,44 @@ def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> boo
     )
 
 
+_SENTENCE_BREAK_RE = re.compile(
+    r"(?<!\d)\.(?!\d)|[!?]"
+)  # no split inside numbers or at line breaks
+# Words a host may add around the owner's sentence without changing who or what it is about.
+_ADDRESS_WORDS = frozenset("mọi người ơi các bạn cả nhà nhé nha nhỉ ạ ha thôi nhen".split())
+_MONEY_UNIT_RE = re.compile(r"(?:đ|₫|đồng|vnd|vnđ|k|nghìn|ngàn|tr|triệu)(?!\w)", re.IGNORECASE)
+
+
+def _sentence_words(text: str, start: int, end: int) -> set[str]:
+    """NFC, lower-cased words of the whole sentence around text[start:end]."""
+    left = _SENTENCE_BREAK_RE.split(text[:start])[-1]
+    right = _SENTENCE_BREAK_RE.split(text[end:])[0]
+    sentence = unicodedata.normalize("NFC", left + text[start:end] + right).lower()
+    return {t.strip(":\"'(),;") for t in sentence.split()} - {""}
+
+
+def _money_in_claim_context(match: re.Match[str], facts: ProductFacts) -> bool:
+    """The owner's own sentence repeated: the same money amount, every word of the approved
+    sentence holding that amount is said, and nothing else but address words is added
+    ("đơn từ 1.000.000đ" with its condition). A dropped qualifier, a changed subject, another
+    unit or a 'giá' keeps CLAIM_PRICE."""
+    amount = _vnd_amount(match.group())
+    tail = match.group() + match.string[match.end() : match.end() + 6]
+    if amount is None or not _MONEY_UNIT_RE.search(re.sub(r"^[\d.,\s]+", "", tail)):
+        return False  # a measurement, not money: only the measurement-unit exemption applies
+    said = _sentence_words(match.string, match.start(), match.end())
+    if "giá" in said:
+        return False  # the selling price comes only from the product price fields
+    for claim in facts.allowed_claims:
+        for found in _PRICE_RE.finditer(claim or ""):
+            if _vnd_amount(found.group()) != amount:
+                continue
+            owner = _sentence_words(claim, found.start(), found.end())
+            if owner <= said <= owner | _ADDRESS_WORDS:
+                return True
+    return False
+
+
 def check_price_claims(text: str, context) -> list[RuleViolation]:
     """Flag prices that have no authoritative counterpart in ``facts.prices``.
 
@@ -403,6 +446,8 @@ def check_price_claims(text: str, context) -> list[RuleViolation]:
         if _claims(match.group(), context.facts):
             continue
         if relaxed_gate_enabled() and _price_token_in_facts_text(match, context.facts):
+            continue
+        if relaxed_gate_enabled() and _money_in_claim_context(match, context.facts):
             continue
         violations.append(
             RuleViolation(
