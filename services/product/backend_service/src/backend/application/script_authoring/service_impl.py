@@ -3775,7 +3775,7 @@ class ScriptAuthoringServiceImpl:
                     # info or fix by hand, instead of clicking again blind.
                     claim = next(
                         (
-                            spoken[v.text_span.start : v.text_span.end].strip()
+                            " ".join(spoken[v.text_span.start : v.text_span.end].split())
                             for v in result.violations
                             if v.rule_id.startswith("CLAIM_")
                             and v.severity.value == "error"
@@ -3787,7 +3787,7 @@ class ScriptAuthoringServiceImpl:
                         "Phần này chưa đạt vì "
                         + (
                             (
-                                f'AI nói "{claim[:80]}" mà thông tin sản phẩm chưa có'
+                                f'AI nói "{claim[:80]}", chưa khớp với thông tin sản phẩm'
                                 if claim
                                 else "có thông tin chưa được xác nhận"
                             )

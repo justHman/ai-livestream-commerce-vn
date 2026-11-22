@@ -943,3 +943,11 @@ def test_money_with_a_dropped_condition_stays_blocked(monkeypatch, claim, text):
     monkeypatch.setenv("SCRIPT_GATE_RELAXED_ENABLED", "1")
     context = _ctx(allowed_claims=(claim,), prices=("399.000đ",))
     assert [v.severity for v in check_price_claims(text, context)] == [Severity.ERROR]
+
+
+def test_factual_claim_points_at_the_blocked_clause(monkeypatch):
+    monkeypatch.delenv("SCRIPT_GATE_RELAXED_ENABLED", raising=False)
+    text = "Chào cả nhà. Máy dùng rất dễ dàng."
+    (violation,) = check_factual_claims(text, _ctx())
+    span = violation.text_span
+    assert text[span.start : span.end].strip(" .") == "Máy dùng rất dễ dàng"

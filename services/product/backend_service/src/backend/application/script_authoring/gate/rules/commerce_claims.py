@@ -738,6 +738,7 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
                 continue
             if _overlaps_allowed(lowered, allowed):
                 continue
+            at = text.find(clause)
             violations.append(
                 RuleViolation(
                     rule_id=RULE_CLAIM_FACTUAL,
@@ -761,6 +762,7 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
                         f"Claim {clause!r} is not among the authoritative "
                         "allowed claims; do not state it."
                     ),
+                    text_span=TextSpan(at, at + len(clause)) if at >= 0 else None,
                 )
             )
     return violations

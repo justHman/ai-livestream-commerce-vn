@@ -476,7 +476,7 @@ async def test_claim_rejection_quotes_the_blocked_words(monkeypatch):
             fingerprint=RuleSetFingerprint(),
             violations=(
                 RuleViolation(
-                    rule_id="CLAIM_FACTUAL",
+                    rule_id="CLAIM_PRICE",
                     severity=Severity.ERROR,
                     message="x",
                     text_span=TextSpan(start, start + len("ba ngày")),
@@ -488,5 +488,5 @@ async def test_claim_rejection_quotes_the_blocked_words(monkeypatch):
     llm.repair = lambda prompt: text
     status = await repair_part(service, set_id, before, index)
     assert status["error_message"] == (
-        'Phần này chưa đạt vì AI nói "ba ngày" mà thông tin sản phẩm chưa có. Giữ bản hiện tại.'
+        'Phần này chưa đạt vì AI nói "ba ngày", chưa khớp với thông tin sản phẩm. Giữ bản hiện tại.'
     )
