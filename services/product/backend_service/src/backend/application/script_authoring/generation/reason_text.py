@@ -3,7 +3,8 @@
 Pure and dependency-free so the API and the Web can both use it. Input is the raw per-attempt reason
 list a unit recorded (gate rule ids such as ``SPEECH_DURATION_SEGMENT``, guard codes such as
 ``truncated`` or ``guard:truncated``, ``llm_failed:<Error>``, budget codes). Like
-``unit_brief.fallback_reason_code`` the LAST recognised reason decides. Unknown input gives "".
+``unit_brief.fallback_reason_code`` the last recognised reason decides, except a write cap does
+not hide an earlier specific guard or gate reason. Unknown input gives "".
 """
 
 from __future__ import annotations
@@ -68,7 +69,20 @@ def _key(raw: str) -> str:
 
 def reason_text(reasons: list[str] | tuple[str, ...]) -> str:
     """One short sentence for the owner; the last recognised reason decides; "" when none is known."""
-    for raw in reversed([str(r) for r in reasons]):
+    normalized = [str(r).strip() for r in reasons]
+    for index in range(len(normalized) - 1, -1, -1):
+        raw = normalized[index]
+        if raw == "semantic_budget_exhausted" and any(
+            _key(earlier)
+            not in {
+                "",
+                "semantic_budget_exhausted",
+                "time_budget_exhausted",
+                "provider_unavailable",
+            }
+            for earlier in normalized[:index]
+        ):
+            continue
         key = _key(raw)
         if key == "CLAIM_OTHER":
             return _CLAIM_OTHER

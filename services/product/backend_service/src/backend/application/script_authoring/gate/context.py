@@ -8,6 +8,8 @@ the network or an LLM; a missing fact is a missing fact, never a lookup.
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -62,3 +64,23 @@ class ScriptGateContext:
     other_product_names: tuple[str, ...] = ()
     # Required fact/topic coverage at full-script scope (from the plan).
     required_topics: tuple[str, ...] = ()
+
+
+def relaxed_gate_enabled() -> bool:
+    """Call-time opt-in (env SCRIPT_GATE_RELAXED_ENABLED) for the relaxed claim rules; default off."""
+    return os.environ.get("SCRIPT_GATE_RELAXED_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def rich_writing_enabled() -> bool:
+    """Call-time opt-in for richer unit writing; default off."""
+    return os.environ.get("SCRIPT_RICH_WRITING_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }

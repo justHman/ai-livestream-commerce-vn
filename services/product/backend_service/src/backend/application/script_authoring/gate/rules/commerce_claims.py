@@ -11,8 +11,10 @@ Pure pattern matching, no AI detection heuristics.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from ..context import ProductFacts
+from ..context import relaxed_gate_enabled
 from ..results import RuleViolation, Severity, TextSpan
 
 __all__ = [
@@ -123,6 +125,111 @@ _BENEFIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DESCRIPTIVE_SIGNALS = (
+    "thiết kế",
+    "gọn nhẹ",
+    "nhỏ gọn",
+    "dễ dàng",
+    "đơn giản",
+    "tiện lợi",
+)
+
+_DEMOTE_ALLOWED_WORDS = frozenset(
+    """
+    cần mình mọi người các bạn cả nhà ai ạ nhé nha nhỉ à ơi đó đây này kia ấy thì là mà
+    và hay hoặc với cho của để khi nếu thì nên cũng đều vẫn còn đã đang sẽ được bị
+    có không chưa rất khá hơi lắm quá thật luôn nữa thêm chỉ ngay rồi đúng gì nào
+    sao thế vậy đi lên xuống ra vào về từ trong ngoài trên dưới bên sự việc cái
+    chiếc một những mỗi từng loại kiểu phần chút đôi khi lúc hôm nay
+    thấy xem nghĩ cân nhắc hỏi bình luận chốt đơn nhắn inbox chọn thích muốn biết
+    nói kể giới thiệu nhớ thử gửi theo dõi ủng hộ
+    dùng sử dụng cầm nắm mang theo mở đóng lắp ráp tháo gấp xếp cất để đặt treo đeo
+    mặc vệ sinh lau rửa chùi thao tác cách kiểu dáng màu sắc mẫu form phom đường
+    nét thanh lịch hiện đại tinh tế gọn gàng sang trọng xinh xắn đẹp mắt trẻ trung
+    năng động nhẹ nhàng cồng kềnh vướng víu lỉnh kỉnh rộng rãi vừa vặn
+    tay túi balo ngăn quai khóa nắp góc mặt lợi thế thoải mái hợp phù quen thuộc
+    ngày hằng thường nhanh gọn liền
+    nhưng thể chữ phòng khách
+    """.split()
+)
+
+_MEASURE_UNITS = frozenset(
+    "mah w kw wh v ml l lít g gr kg mg cm mm m inch gb tb mb hz mhz ghz mp dpi rpm "
+    "viên gói miếng cái chiếc lượt vòng độ °c lumen lux ppi fps".split()
+)
+_NUMBER_WORD_UNITS = _MEASURE_UNITS | frozenset(
+    "lần tháng năm ngày tuần giờ phút giây ký cân".split()
+)
+_NUMBER_WORD_RE = re.compile(
+    r"\b(?:trăm|nghìn|ngàn|triệu|tỷ|tỉ|mươi|phần trăm|nửa"
+    # "gấp gọn" is folding; only "gấp đôi/ba/2…" is a multiplier
+    r"|gấp (?:đôi|rưỡi|nhiều|\d|một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)"
+    r"|chục|lăm|mốt|thập kỷ|thập niên|kilowatt|oát|watt|phần (?:hai|ba|tư|năm|mười)"
+    r"|(?:một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)\s+"
+    r"(?:" + "|".join(re.escape(unit) for unit in sorted(_NUMBER_WORD_UNITS)) + r"))\b",
+    re.IGNORECASE,
+)
+_NEG_OK = frozenset("thấy cần phải bị sợ mất tốn cam hề quá nhiều lâu khó ai gì còn chỉ".split())
+_NEG_FOLLOWING_RE = re.compile(r"\b(?:không|chẳng)\s+(\w+)", re.IGNORECASE)
+_EFFECT_RE = re.compile(
+    r"\b(?:giúp|hỗ trợ|ngừa|phòng (?:bệnh|ngừa|chống)|chống|trị|hạ"
+    r"|bổ (?:máu|thận|não|gan|phổi|dưỡng)|bồi bổ"
+    r"|bổ sung (?:canxi|vitamin|sắt|kẽm|collagen|dưỡng chất|khoáng chất)"
+    r"|giải (?:độc|nhiệt|rượu)"
+    r"|cai|tăng|giảm|gây|tác dụng|lợi sữa|làm đẹp|(?:bé|trẻ) thông minh|sinh lý|chữa|khỏi"
+    r"|cho bé|cho trẻ|cho mẹ|cho người (?:già|bệnh)|(?<!nhỏ )bé|trẻ em|trẻ nhỏ|mẹ bầu"
+    r"|bà bầu|người già"
+    r"|người bệnh|chứa (?:chất|hoạt chất)|không chứa|dị ứng|nghiện|hóa chất|chất bảo quản"
+    r"|da|làn da|tóc|răng|lỗ chân lông|cơ thể|cột sống|xương|trẻ hóa|trẻ hoá|thải độc"
+    r"|nhạy cảm|ngủ ngon|collagen|corticoid|hormone|cồn|độc tố|thuốc trừ sâu|chì|BPA)\b",
+    re.IGNORECASE,
+)
+_EFFECT_EXCEPT_RE = re.compile(
+    r"\b(?:phòng khách|phòng ngủ|phòng tắm|văn phòng|giải thích|giải đáp|giải trí"
+    r"|chống trượt|chống trơn trượt|chống sốc)\b",
+    re.IGNORECASE,
+)
+_ASSERT_RE = re.compile(
+    r"\b(?:nhất|số một|số 1|độc quyền|sáng chế|chứng thực|tin dùng|chính hãng|nhập khẩu"
+    r"|xuất xứ|chuẩn|hơn hẳn|vượt trội)\b",
+    re.IGNORECASE,
+)
+
+# Health and certification claims are detected even without a benefit signal.
+_HEALTH_RE = re.compile(
+    r"(?<!\w)(?:(?<!sửa )chữa(?! cháy)|điều trị|trị (?:mụn|nám|thâm|viêm|bệnh|ho|đau|gàu|hôi)"
+    r"|mụn|nám|viêm|kháng viêm|bệnh|đề kháng|miễn dịch|lão hóa|tác dụng phụ|lành tính"
+    r"|huyết áp|tiểu đường|giảm đau|mọc tóc|tăng chiều cao|giảm cân|giảm mỡ|trắng da"
+    r"|mờ nám|mờ thâm|diệt khuẩn|diệt vi khuẩn|diệt virus|kháng khuẩn|khử khuẩn"
+    r"|khỏi bệnh|khỏi hẳn|khỏi hoàn toàn|an toàn tuyệt đối"
+    r"|(?:cam kết|đảm bảo) (?:hiệu quả|kết quả|khỏi bệnh|khỏi hẳn|khỏi hoàn toàn)"
+    r"|hiệu quả 100%|100% hiệu quả|chứng nhận|đạt chuẩn|kiểm định|ISO|GMP|FDA|bộ y tế"
+    r"|đường huyết|sức khỏe|sức khoẻ|y khoa|lâm sàng|kiểm nghiệm|bác sĩ|da liễu"
+    r"|đau|nhức|mỏi|khuẩn|virus|độc hại|kích ứng|paraben|nếp nhăn|rụng tóc|xương khớp"
+    r"|tim mạch|tiêu hóa|tiêu hoá|bà bầu|mẹ bầu|trẻ em|trẻ sơ sinh|tiêu chuẩn|chống nước|IP\d{2}"
+    r"|hữu cơ|organic|ung thư|khỏe|khoẻ|thuốc|thai|ăn kiêng|cháy nổ|điện giật"
+    r"|vô trùng|kháng nước)(?!\w)",
+    re.IGNORECASE,
+)
+_HEALTH_NEGATION_RE = re.compile(
+    r"(?<!\w)(?:không hề|không phải|không|chưa|chẳng) ?$", re.IGNORECASE
+)
+_CONDITION_RE = re.compile(r"(?<!\w)(?:thì|hoàn tiền|nếu|bằng không)(?!\w)", re.IGNORECASE)
+_SAFETY_CLAIMS = frozenset(("kích ứng", "paraben", "độc hại"))
+_SAFETY_RE = re.compile(
+    r"\b(?:không (?:có )?tác dụng phụ|không gây|không chứa|không đau)\b", re.IGNORECASE
+)
+
+
+def _health_claim(clause: str) -> bool:
+    return bool(_SAFETY_RE.search(clause)) or any(
+        match.group().lower() in _SAFETY_CLAIMS
+        or _CONDITION_RE.search(clause)
+        or not _HEALTH_NEGATION_RE.search(clause[: match.start()])
+        for match in _HEALTH_RE.finditer(clause)
+    )
+
+
 # Vietnamese clause connectors: a factual sentence may combine a supported
 # fragment with an invented extension ("thiết kế gọn nhẹ và bảo hành 10
 # năm"). Splitting on these makes support checking clause-level so the
@@ -161,6 +268,19 @@ _WORD_RE = re.compile(r"[\w]+", re.UNICODE)
 def _content_words(text: str) -> set[str]:
     """Lowercased word tokens minus function words (claim-overlap evidence)."""
     return {w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS}
+
+
+def _demotion_words_allowed(clause: str, facts: ProductFacts) -> bool:
+    """Fail closed on vocabulary beyond descriptive prose and owner-provided words."""
+    remaining = " ".join(_WORD_RE.findall(clause.lower()))
+    for phrase in _DESCRIPTIVE_SIGNALS:
+        remaining = re.sub(rf"\b{re.escape(phrase)}\b", " ", remaining)
+    approved_words = {
+        word
+        for text in (facts.product_name, *facts.allowed_claims)
+        for word in _WORD_RE.findall((text or "").lower())
+    }
+    return set(_WORD_RE.findall(remaining)) <= _DEMOTE_ALLOWED_WORDS | approved_words
 
 
 def _overlaps_allowed(lowered_clause: str, allowed: list[str]) -> bool:
@@ -246,6 +366,33 @@ def _discount_stated(token: str, facts: ProductFacts) -> bool:
     )
 
 
+_PRICE_CUES = frozenset(
+    "giá chỉ còn chốt ship giảm tặng voucher combo mua cũ gốc tiền phí đồng bán trả".split()
+)
+
+
+def _price_token_in_facts_text(match: re.Match[str], facts: ProductFacts) -> bool:
+    """Exempt an approved measurement only when its script clause has no price cue."""
+    number = match.group()
+    if not re.fullmatch(r"\d+(?:[.,]\d+)*", number):
+        return False
+    unit = re.match(r" ?(°c|[^\W\d_]+)(?!\w)", match.string[match.end() :], re.IGNORECASE)
+    if unit is None or unit.group(1).lower() not in _MEASURE_UNITS:
+        return False
+    prefix = re.split(r"[.!?;,\n]|\bvà\b|đồng thời", match.string[: match.start()])[-1]
+    if _PRICE_CUES.intersection(_WORD_RE.findall(prefix.lower())[-2:]):
+        return False
+    rx = re.compile(
+        rf"(?<![\d.,]){re.escape(number)}(?!\d|[.,]\d) ?{re.escape(unit.group(1))}(?!\w)",
+        re.IGNORECASE,
+    )
+    return any(
+        rx.search(candidate)
+        for candidate in (facts.product_name, *facts.allowed_claims)
+        if candidate
+    )
+
+
 def check_price_claims(text: str, context) -> list[RuleViolation]:
     """Flag prices that have no authoritative counterpart in ``facts.prices``.
 
@@ -254,6 +401,8 @@ def check_price_claims(text: str, context) -> list[RuleViolation]:
     violations: list[RuleViolation] = []
     for match in _PRICE_RE.finditer(text):
         if _claims(match.group(), context.facts):
+            continue
+        if relaxed_gate_enabled() and _price_token_in_facts_text(match, context.facts):
             continue
         violations.append(
             RuleViolation(
@@ -440,6 +589,16 @@ def _approved_statements(facts: ProductFacts) -> list[tuple[set[tuple[str, str]]
     return out
 
 
+def _duration_pair(value: str, unit: str) -> tuple[str, str]:
+    if relaxed_gate_enabled() and unit in ("năm", "tháng"):
+        try:
+            months = Decimal(value) * (12 if unit == "năm" else 1)
+        except ArithmeticError:  # decimal.InvalidOperation: keep the raw pair
+            return value, unit
+        return format(months.normalize(), "f"), "tháng"
+    return value, unit
+
+
 def _numeric_violations(text: str, context) -> list[RuleViolation]:
     statements = _approved_statements(context.facts)
     violations: list[RuleViolation] = []
@@ -457,7 +616,11 @@ def _numeric_violations(text: str, context) -> list[RuleViolation]:
             ]
             shown = lowered[start:end].strip()
             if same_topic:
-                if any((value, unit) in pairs for pairs in same_topic):
+                if any(
+                    _duration_pair(value, unit) == _duration_pair(v, u)
+                    for pairs in same_topic
+                    for v, u in pairs
+                ):
                     continue
                 violations.append(
                     RuleViolation(
@@ -494,11 +657,11 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
     holds exact claim sentences known to be true; a claim the backend never
     authorized is an ERROR.
 
-    A sentence is a claim candidate ONLY when it carries a specific
-    benefit/capability/spec signal (``_BENEFIT_SIGNALS`` — category-agnostic
-    capability words, never product nouns). Each signal-bearing CLAUSE must be
-    authorized by clause-level word overlap with an allowed claim; an
-    unsupported clause is an ERROR.
+    Benefit/capability/spec signals identify claim candidates. In relaxed
+    mode, health/certification signals also identify candidates, and only
+    unsupported descriptive benefits without quantities, effects, assertions,
+    or health claims become warnings.
+    Each candidate CLAUSE is authorized by overlap with an allowed claim.
 
     The old product-reference guard (a hardcoded product-noun vocabulary) let
     unsupported claims escape when their nouns fell outside that vocabulary.
@@ -507,24 +670,48 @@ def check_factual_claims(text: str, context) -> list[RuleViolation]:
     """
     violations: list[RuleViolation] = _numeric_violations(text, context)
     allowed = [claim.strip().lower() for claim in context.facts.allowed_claims]
+    relaxed = relaxed_gate_enabled()
     for sentence in re.split(r"[.!?]+", text):
         stripped = sentence.strip()
         if not stripped:
             continue
         # Sentences that only carry price/discount/SKU forms are covered by
         # the dedicated claim rules; do not re-flag them here.
-        if _PRICE_RE.search(stripped) and not _BENEFIT_RE.search(stripped):
+        if (
+            _PRICE_RE.search(stripped)
+            and not _BENEFIT_RE.search(stripped)
+            and not (relaxed and _health_claim(stripped))
+        ):
             continue
         for clause in _split_clauses(stripped):
             lowered = clause.lower()
-            if not _BENEFIT_RE.search(lowered):
+            benefits = list(_BENEFIT_RE.finditer(lowered))
+            health = relaxed and (
+                _health_claim(clause) or bool(benefits and _HEALTH_RE.search(clause))
+            )
+            if not benefits and not health:
                 continue
             if _overlaps_allowed(lowered, allowed):
                 continue
             violations.append(
                 RuleViolation(
                     rule_id=RULE_CLAIM_FACTUAL,
-                    severity=Severity.ERROR,
+                    severity=(
+                        Severity.WARNING
+                        if relaxed
+                        and not health
+                        and not re.search(r"[0-9]", clause)
+                        and not _NUMBER_WORD_RE.search(clause)
+                        and not _EFFECT_RE.search(_EFFECT_EXCEPT_RE.sub(" ", clause))
+                        and not _ASSERT_RE.search(clause)
+                        and not any(
+                            hit.group(1).lower() not in _NEG_OK
+                            for hit in _NEG_FOLLOWING_RE.finditer(clause)
+                        )
+                        and all(hit.group() in _DESCRIPTIVE_SIGNALS for hit in benefits)
+                        and _demotion_words_allowed(clause, context.facts)
+                        else Severity.ERROR
+                    ),
                     message=(
                         f"Claim {clause!r} is not among the authoritative "
                         "allowed claims; do not state it."

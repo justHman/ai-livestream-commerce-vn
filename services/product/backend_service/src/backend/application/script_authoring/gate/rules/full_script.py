@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 
+from ..context import relaxed_gate_enabled
 from ..results import RuleViolation, Severity
 
 __all__ = [
@@ -89,6 +90,19 @@ def _negated(text: str, negation: str) -> bool:
     """The negation phrase occurs unscoped (a scoped one only states a condition)."""
     return any(
         not (negation.startswith("không") and _EXCEPTION_RE.match(text, m.end()))
+        and not (
+            relaxed_gate_enabled()
+            and not negation.startswith("không")
+            and not re.search(
+                r"(?<!\w)thì(?!\w)",
+                re.split(r"[.!?;,]|\bvà\b|đồng thời", text[: m.start()])[-1]
+                + re.split(r"[.!?;,]|\bvà\b|đồng thời", text[m.end() :])[0],
+            )
+            and re.search(
+                r"(?<!\w)(?:không hề|không phải|không có|không|chẳng) (?:là )?$",
+                text[: m.start()],
+            )
+        )
         for m in re.finditer(re.escape(negation), text)
     )
 

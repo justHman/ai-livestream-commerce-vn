@@ -55,6 +55,7 @@ from backend.application.script_authoring.fingerprints import (
     rule_set_version_key,
 )
 from backend.application.script_authoring.gate.context import ProductFacts, ScriptGateContext
+from backend.application.script_authoring.gate.context import relaxed_gate_enabled
 from backend.application.script_authoring.gate.engine import (
     ScriptGate,
     default_full_script_rules,
@@ -3950,6 +3951,27 @@ class ScriptAuthoringServiceImpl:
                 status=ScriptState.DRAFT,
                 version=current_segment.version + 1,
             )
+            # Preserve legacy flag-OFF behavior; relaxed full-script checks are advisory,
+            # so AI output must pass the strict segment gate before it can be saved.
+            if relaxed_gate_enabled():
+                low, high = (
+                    gate_duration_band(current_segment.target_duration_s)
+                    if current_segment.target_duration_s > 0
+                    else (10.0, 180.0)
+                )
+                segment_result = self._gate.run_segment(
+                    new_segment.spoken_text,
+                    ScriptGateContext(
+                        facts=self._product_facts(script_set.brief, item.product_id),
+                        brand_allowlist=_brand_allowlist(script_set.brief, item.product_id),
+                        transition_policy=script_set.brief.transition_policy,
+                        target_min_seconds=low,
+                        target_max_seconds=high,
+                    ),
+                )
+                if not segment_result.passed:
+                    await self._fail_job(job, "part_content_rejected")
+                    return
             # One text per index (the latest candidate/placeholder), not every attempt row.
             latest: dict[int, ScriptSegment] = {}
             for seg in segments:
