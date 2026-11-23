@@ -58,6 +58,10 @@ def _slots(request: Request) -> asyncio.Semaphore:
 
 class IntakeExtractReq(BaseModel):
     text: str = Field(repr=False)
+    # Optional, so the Go caller can start sending them later: the product being entered, used to flag facts about
+    # OTHER products in a pasted price list / shop page (flag "other_product"). Absent = that check is skipped.
+    product_name: str | None = Field(default=None, max_length=500, repr=False)
+    price_vnd: int | None = Field(default=None, ge=0, le=10**12)
 
 
 def _fail(status: int, code: str) -> NoReturn:
@@ -98,7 +102,9 @@ async def extract(
         _fail(503, "INTAKE_BUSY")
     started = time.monotonic()
     try:
-        result = await asyncio.to_thread(extract_facts, req.text, llm)
+        result = await asyncio.to_thread(
+            extract_facts, req.text, llm, req.product_name, req.price_vnd
+        )
     except IntakeError as exc:
         logger.warning("product intake failed code=%s chars=%d", exc.code, len(req.text))
         status, code = _ERRORS.get(exc.code, (502, "INTAKE_LLM_FAILED"))
