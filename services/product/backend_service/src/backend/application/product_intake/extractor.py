@@ -338,13 +338,15 @@ def _flags(text: str) -> tuple[str, ...]:
 
 
 # A price needs a currency unit ("299k", "299.000đ", "1tr2", "2 triệu 5") or, bare, a thousands group right after a
-# price word ("giá 299.000", "- 299.000"): counts and specs ("đã bán 2.000", "10.000 đánh giá", "pin 10.000mAh") are not.
-# Matched on fold_text output, so "đ" is "d" and "nghìn" is "nghin".
+# price word ("Giá: 299.000", "chỉ còn 249.000", or " - 299.000" ending the clause): counts, specs and model codes
+# ("đã bán 2.000", "10.000 đánh giá", "pin 10.000mAh", "KD-1.200") are not. Matched on fold_text output ("đ" is "d").
 _PRICE_UNIT_RE = re.compile(
-    r"(?<![\w.,])(\d+(?:[.,]\d+)*)\s*(trieu|tr|nghin|ngan|dong|vnd|k|d)(?:\s*(\d{1,3})(?![\d.,]))?(?![a-z])"
+    r"(?<![\w.,])(\d+(?:[.,]\d+)*)\s*(trieu|tr|nghin|ngan|dong|vnd|k|d|₫)(?:\s*(\d{1,3})(?![\d.,]))?(?![a-z])"
 )
 _PRICE_BARE_RE = re.compile(
-    r"(?:(?<!danh )\bgia|\bchi|\bcon|-)\s*(\d{1,3}(?:[.,]\d{3})+)(?![\w.,])"
+    r"(?:(?:(?<!danh )\bgia|\bchi|\bcon)[:\s]*)(\d{1,3}(?:[.,]\d{3})+)(?![\w.,])"
+    r"|(?<=\s)-\s*(\d{1,3}(?:[.,]\d{3})+)(?=\s*(?:[,;]|$))",
+    re.MULTILINE,
 )
 _PRICE_UNIT = {"k": 1_000, "nghin": 1_000, "ngan": 1_000, "tr": 1_000_000, "trieu": 1_000_000}
 # A fact or quote about the product's own deals (sale price, combo, gift value, shipping fee) quotes other amounts on
@@ -352,6 +354,8 @@ _PRICE_UNIT = {"k": 1_000, "nghin": 1_000, "ngan": 1_000, "tr": 1_000_000, "trie
 _PROMO_RE = re.compile(
     r"giam|khuyen mai|uu dai|\btang\b|mien phi|free ?ship|\bship|combo|tri gia|voucher|\bsale\b|\bmua \d|qua tang"
 )
+# A variant of the same product ("Màu đen ... 1tr350", "Bản 50ml: 459k") has its own price but is no other product.
+_VARIANT_RE = re.compile(r"\bmau\b|\bban\b|\bloai\b|\bsize\b|\bco\b|dung tich|\bma\b|kich thuoc")
 # Words of a price/promo/size line that do not name a product.
 _NON_PRODUCT_WORDS = frozenset(
     "gia goc niem yet chi con giam tang mua freeship ship phi don tu combo uu dai khuyen mai sale tri qua voucher "
@@ -359,16 +363,28 @@ _NON_PRODUCT_WORDS = frozenset(
 )
 
 
-def _prices(text: str) -> set[int]:
+def _price_matches(text: str) -> list[tuple[int, int]]:
+    """(position in fold_text(text), value) of each price of at least 1,000."""
     folded = fold_text(text)
-    out = set()
-    for raw, unit, tail in _PRICE_UNIT_RE.findall(folded):
+    out = []
+    for m in _PRICE_UNIT_RE.finditer(folded):
+        raw, unit, tail = m.groups()
         key = _number_key(raw)
         if tail and unit in ("tr", "trieu") and "." not in key:
             key = f"{key}.{tail}"  # "1tr2" = 1.2 triệu, "2 triệu 5" = 2.5 triệu
-        out.add(round(float(key) * _PRICE_UNIT.get(unit, 1)))
-    out.update(int(_number_key(raw)) for raw in _PRICE_BARE_RE.findall(folded))
-    return {v for v in out if v >= 1_000}
+        out.append((m.start(), round(float(key) * _PRICE_UNIT.get(unit, 1))))
+    for m in _PRICE_BARE_RE.finditer(folded):
+        out.append((m.start(), int(_number_key(m.group(1) or m.group(2)))))
+    return [(at, v) for at, v in out if v >= 1_000]
+
+
+def _prices(text: str) -> set[int]:
+    return {v for _, v in _price_matches(text)}
+
+
+def _heading(line: str) -> str:
+    """The folded part of a priced line before its first price: where a list names its product."""
+    return fold_text(line)[: min(at for at, _ in _price_matches(line))]
 
 
 def _product_words(text: str) -> set[str]:
@@ -379,17 +395,17 @@ def _product_words(text: str) -> set[str]:
     }
 
 
-def _other_product(
-    evidence: str, fact_text: str, source: str, product_name: str, price_vnd: int | None
-) -> bool:
-    """True only when the evidence clearly sits on ANOTHER product's line of a list-like paste. Biased to miss: a
-    wrong untick hides the owner's own fact, and the prompt rule is the main guard. All must hold:
+def _other_product(evidence: str, fact_text: str, source: str, product_name: str) -> bool:
+    """True only when the evidence clearly sits on ANOTHER product's line of a price list. Biased to miss: a wrong
+    untick hides the owner's own fact, and the prompt rule is the main guard. All must hold:
     - a product name is given (no name: skip) and some source line shares a word with it;
+    - the source has 2+ lines carrying a price (one priced line is not a list);
     - neither the fact nor the quote is about a deal (``_PROMO_RE``);
-    - every source line holding the quote carries a price, and has 2+ product words of its own that share none with
-      the name and none of its prices is the target's (``price_vnd`` or a price on a line naming the target);
-      words common to all price lines (the shop's brand) are ignored on both sides;
-    - the source has 2+ price lines, or that line's prices differ from ``price_vnd``.
+    - every source line holding the quote carries a price, and the part BEFORE its first price (the product heading)
+      has no variant marker (``_VARIANT_RE``: màu, bản, loại, size, cỡ, dung tích, mã, kích thước), has 2+ product
+      words that share none with the name, and none of the line's prices is one on a line naming the target.
+      Words common to all price-line headings (the shop's brand) are ignored on both sides.
+    ``price_vnd`` is deliberately unused here: a stale form price would flag the owner's own line.
     ponytail: line heuristic; another product's spec on a line WITHOUT its own price is not caught (prompt only).
     Upgrade: split the source into blocks per product heading.
     """
@@ -397,24 +413,31 @@ def _other_product(
         return False
     lines = source.splitlines()
     price_lines = [line for line in lines if _prices(line)]
+    if len(price_lines) < 2:
+        return False
     quote = _norm(evidence)
     own = [line for line in lines if quote in _norm(line)]
     if not own or not all(line in price_lines for line in own):
         return False
-    shared = set.intersection(*map(_product_words, price_lines)) if len(price_lines) > 1 else set()
+    shared = set.intersection(*(_product_words(_heading(line)) for line in price_lines))
     name = _product_words(product_name) - shared
     if not name or not any(name & _product_words(line) for line in lines):
         return False
-    target_prices = {price_vnd} if price_vnd else set()
-    for line in price_lines:
-        if name & _product_words(line):
-            target_prices |= _prices(line)
+    target_prices = {
+        v for line in price_lines if name & _product_words(line) for v in _prices(line)
+    }
 
     def foreign(line: str) -> bool:
-        words = _product_words(line) - shared
-        return len(words) >= 2 and not words & name and not _prices(line) & target_prices
+        heading = _heading(line)
+        words = _product_words(heading) - shared
+        return (
+            not _VARIANT_RE.search(heading)
+            and len(words) >= 2
+            and not words & name
+            and not _prices(line) & target_prices
+        )
 
-    return all(foreign(line) for line in own) and (len(price_lines) >= 2 or bool(price_vnd))
+    return all(foreign(line) for line in own)
 
 
 def _parse(raw: object) -> list[object]:
@@ -528,7 +551,7 @@ def extract_facts(
         if _names_missing(ftext, source_words):
             # Owner decision: lenient. The merchant edits freely, so a name the source never uses is flagged, not dropped.
             flags = tuple(sorted({*flags, "unknown_proper_name"}))
-        if _other_product(evidence, ftext, source, target_name, price_vnd):
+        if _other_product(evidence, ftext, source, target_name):
             flags = tuple(sorted({*flags, OTHER_PRODUCT_FLAG}))
         facts.append(ExtractedFact(ftype, ftext, evidence.strip(), flags))
     return ExtractionResult(tuple(facts), tuple(dropped))
