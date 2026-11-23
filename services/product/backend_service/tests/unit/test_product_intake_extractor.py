@@ -13,6 +13,7 @@ from backend.application.product_intake.extractor import (
     _flags,
     _negated,
     _numbers,
+    _prices,
     build_prompt,
 )
 
@@ -572,16 +573,92 @@ def test_facts_of_another_product_in_a_price_list_are_flagged_other_product():
     assert "other_product" in got["Son môi lên màu chuẩn."]
 
 
-def test_a_price_different_from_the_given_price_is_flagged_other_product():
-    llm = fake(
-        [
-            fact("promotion", "Sữa rửa mặt giá 159k.", "Sữa rửa mặt Livento 100ml - 159k"),
-            fact("promotion", "Kem dưỡng giá 299.000đ.", "Kem dưỡng ẩm Livento 50ml - 299.000đ"),
-        ]
+def test_a_price_alone_without_a_name_does_not_flag_other_product():
+    llm = fake([fact("promotion", "Sữa rửa mặt giá 159k.", "Sữa rửa mặt Livento 100ml - 159k")])
+    assert extract_facts(PRICE_LIST, llm, price_vnd=299_000).facts[0].flags == ()
+
+
+TWO_LINES = "Kem dưỡng ẩm Livento dưỡng ẩm suốt 24 giờ.\nSữa rửa mặt dịu nhẹ tạo bọt mịn - 159k"
+OTHER_LINE_FACT = fact(
+    "feature", "Sữa rửa mặt tạo bọt mịn.", "Sữa rửa mặt dịu nhẹ tạo bọt mịn - 159k"
+)
+
+
+def test_another_products_line_with_a_different_price_is_flagged_without_a_list():
+    result = extract_facts(
+        TWO_LINES, fake([OTHER_LINE_FACT]), product_name="Kem dưỡng ẩm Livento", price_vnd=299_000
     )
-    got = flags_by_text(extract_facts(PRICE_LIST, llm, price_vnd=299_000))
-    assert "other_product" in got["Sữa rửa mặt giá 159k."]
-    assert "other_product" not in got["Kem dưỡng giá 299.000đ."]
+    assert result.facts[0].flags == ("other_product",)
+
+
+def test_a_price_under_one_thousand_is_ignored():
+    result = extract_facts(
+        TWO_LINES, fake([OTHER_LINE_FACT]), product_name="Kem dưỡng ẩm Livento", price_vnd=5
+    )
+    assert result.facts[0].flags == ()
+
+
+OWN_PROMO_SOURCE = (
+    "Kem dưỡng ẩm Livento giá 299k\n"
+    "Mua 2 tặng 1, chỉ 598k\n"
+    "Freeship đơn từ 300k\n"
+    "Combo 2 hũ chỉ 550k\n"
+    "Size lớn 100ml: 499k\n"
+    "Dung tích 50ml, giá 299k\n"
+    "Giảm còn 99k cho đơn đầu\n"
+    "Phí ship 30k toàn quốc nhanh\n"
+    "Kèm quà trị giá 100k xinh xắn\n"
+    "Đã bán 2.000 sản phẩm toàn quốc"
+)
+
+
+@pytest.mark.parametrize(
+    ("ftype", "text", "evidence"),
+    [
+        ("promotion", "Mua 2 tặng 1, chỉ 598k.", "Mua 2 tặng 1, chỉ 598k"),
+        ("shipping", "Freeship đơn từ 300k.", "Freeship đơn từ 300k"),
+        ("promotion", "Combo 2 hũ chỉ 550k.", "Combo 2 hũ chỉ 550k"),
+        ("feature", "Size lớn 100ml giá 499k.", "Size lớn 100ml: 499k"),
+        ("feature", "Dung tích 50ml, giá 299k.", "Dung tích 50ml, giá 299k"),
+        ("promotion", "Giảm còn 99k cho đơn đầu.", "Giảm còn 99k cho đơn đầu"),
+        ("shipping", "Phí ship 30k toàn quốc.", "Phí ship 30k toàn quốc nhanh"),
+        ("promotion", "Kèm quà trị giá 100k.", "Kèm quà trị giá 100k xinh xắn"),
+        ("feature", "Đã bán 2.000 sản phẩm toàn quốc.", "Đã bán 2.000 sản phẩm toàn quốc"),
+    ],
+)
+def test_the_products_own_promo_size_spec_and_count_lines_are_not_other_product(
+    ftype, text, evidence
+):
+    result = extract_facts(
+        OWN_PROMO_SOURCE,
+        fake([fact(ftype, text, evidence)]),
+        product_name="Kem dưỡng ẩm Livento",
+        price_vnd=299_000,
+    )
+    assert "other_product" not in result.facts[0].flags
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Đã bán 2.000 sản phẩm", set()),
+        ("10.000 đánh giá 5 sao", set()),
+        ("Đánh giá 10.000 lượt", set()),
+        ("hơn 1.000 khách", set()),
+        ("động cơ 1.200 vòng", set()),
+        ("pin 10.000mAh", set()),
+        ("giá 299.000", {299_000}),
+        ("Kem - 299.000", {299_000}),
+        ("299.000đ", {299_000}),
+        ("159k", {159_000}),
+        ("1tr2", {1_200_000}),
+        ("1tr5", {1_500_000}),
+        ("2 triệu 5", {2_500_000}),
+        ("1,5tr", {1_500_000}),
+    ],
+)
+def test_prices_need_a_currency_unit_or_a_price_word(text, expected):
+    assert _prices(text) == expected
 
 
 def test_single_product_paste_is_not_flagged_other_product():

@@ -106,8 +106,6 @@ _RISK_PATTERNS: dict[str, re.Pattern[str]] = {
 
 # Set by the post-check, not by a text pattern: the evidence belongs to another product (see _other_product).
 OTHER_PRODUCT_FLAG = "other_product"
-# Flags that need the owner's explicit confirmation; the API's IntakeRiskFlags must list the same names.
-RISK_FLAGS = (*_RISK_PATTERNS, OTHER_PRODUCT_FLAG)
 
 _ZERO_WIDTH_CATEGORIES = {"Cc", "Cf", "Cs", "Co", "Cn"}
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
@@ -339,54 +337,84 @@ def _flags(text: str) -> tuple[str, ...]:
     return tuple(sorted(k for k, p in _RISK_PATTERNS.items() if p.search(folded) or p.search(raw)))
 
 
-# A price: a number with a currency/unit ("299k", "299.000đ", "1,5tr") or a bare thousands group ("299.000").
+# A price needs a currency unit ("299k", "299.000đ", "1tr2", "2 triệu 5") or, bare, a thousands group right after a
+# price word ("giá 299.000", "- 299.000"): counts and specs ("đã bán 2.000", "10.000 đánh giá", "pin 10.000mAh") are not.
 # Matched on fold_text output, so "đ" is "d" and "nghìn" is "nghin".
-_PRICE_RE = re.compile(
-    r"(?<![\w.,])(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)\s*(k|d|dong|vnd|nghin|ngan|tr|trieu)?(?!\w)"
+_PRICE_UNIT_RE = re.compile(
+    r"(?<![\w.,])(\d+(?:[.,]\d+)*)\s*(trieu|tr|nghin|ngan|dong|vnd|k|d)(?:\s*(\d{1,3})(?![\d.,]))?(?![a-z])"
+)
+_PRICE_BARE_RE = re.compile(
+    r"(?:(?<!danh )\bgia|\bchi|\bcon|-)\s*(\d{1,3}(?:[.,]\d{3})+)(?![\w.,])"
 )
 _PRICE_UNIT = {"k": 1_000, "nghin": 1_000, "ngan": 1_000, "tr": 1_000_000, "trieu": 1_000_000}
+# A fact or quote about the product's own deals (sale price, combo, gift value, shipping fee) quotes other amounts on
+# purpose: never "other_product".
+_PROMO_RE = re.compile(
+    r"giam|khuyen mai|uu dai|\btang\b|mien phi|free ?ship|\bship|combo|tri gia|voucher|\bsale\b|\bmua \d|qua tang"
+)
+# Words of a price/promo/size line that do not name a product.
+_NON_PRODUCT_WORDS = frozenset(
+    "gia goc niem yet chi con giam tang mua freeship ship phi don tu combo uu dai khuyen mai sale tri qua voucher "
+    "dong vnd nghin ngan trieu tr size co hu chai tuyp hop goi lo binh tui loai ban lon nho mini vua".split()
+)
 
 
 def _prices(text: str) -> set[int]:
+    folded = fold_text(text)
     out = set()
-    for raw, unit in _PRICE_RE.findall(fold_text(text)):
-        if not unit and not _THOUSANDS_RE.fullmatch(raw):
-            continue  # "50ml", "3 màu", "2 năm" are not prices
-        value = round(float(_number_key(raw)) * _PRICE_UNIT.get(unit, 1))
-        if value >= 1_000:
-            out.add(value)
-    return out
+    for raw, unit, tail in _PRICE_UNIT_RE.findall(folded):
+        key = _number_key(raw)
+        if tail and unit in ("tr", "trieu") and "." not in key:
+            key = f"{key}.{tail}"  # "1tr2" = 1.2 triệu, "2 triệu 5" = 2.5 triệu
+        out.add(round(float(key) * _PRICE_UNIT.get(unit, 1)))
+    out.update(int(_number_key(raw)) for raw in _PRICE_BARE_RE.findall(folded))
+    return {v for v in out if v >= 1_000}
+
+
+def _product_words(text: str) -> set[str]:
+    return {
+        t
+        for t in _content_tokens(text)
+        if len(t) > 1 and not t[0].isdigit() and t not in _NON_PRODUCT_WORDS
+    }
 
 
 def _other_product(
-    evidence: str, source: str, product_name: str, price_vnd: int | None, flags: tuple[str, ...]
+    evidence: str, fact_text: str, source: str, product_name: str, price_vnd: int | None
 ) -> bool:
-    """True when the evidence clearly belongs to another product than the one being entered.
-
-    Either signal is enough; each is skipped when its input (price / name) is missing:
-    1. price: the evidence quotes a price and none of them equals ``price_vnd`` (skipped for discount facts: a sale
-       price differs from the list price on purpose, and those already need a tick).
-    2. list line: the source has 2+ lines that each carry a price (one product per line: a price list, a shop page),
-       the evidence sits on such a line, and that line is not the one best matching ``product_name``'s words. When no
-       price line shares a word with the name, the target cannot be told apart: skip.
-    ponytail: line heuristic; a spec of another product on a line WITHOUT its own price (under that product's
-    heading) is not caught, only the prompt rule guards it. Upgrade: split the source into blocks per product heading.
+    """True only when the evidence clearly sits on ANOTHER product's line of a list-like paste. Biased to miss: a
+    wrong untick hides the owner's own fact, and the prompt rule is the main guard. All must hold:
+    - a product name is given (no name: skip) and some source line shares a word with it;
+    - neither the fact nor the quote is about a deal (``_PROMO_RE``);
+    - every source line holding the quote carries a price, and has 2+ product words of its own that share none with
+      the name and none of its prices is the target's (``price_vnd`` or a price on a line naming the target);
+      words common to all price lines (the shop's brand) are ignored on both sides;
+    - the source has 2+ price lines, or that line's prices differ from ``price_vnd``.
+    ponytail: line heuristic; another product's spec on a line WITHOUT its own price is not caught (prompt only).
+    Upgrade: split the source into blocks per product heading.
     """
-    quoted = _prices(evidence)
-    if price_vnd and quoted and price_vnd not in quoted and "discount" not in flags:
-        return True
-    name_tokens = set(_content_tokens(product_name))
-    price_lines = [line for line in source.splitlines() if _prices(line)]
-    if not name_tokens or len(price_lines) < 2:
+    if _PROMO_RE.search(fold_text(evidence)) or _PROMO_RE.search(fold_text(fact_text)):
         return False
-
-    def score(line: str) -> float:
-        return len(name_tokens & set(_norm(line).split())) / len(name_tokens)
-
-    best = max(score(line) for line in price_lines)
+    lines = source.splitlines()
+    price_lines = [line for line in lines if _prices(line)]
     quote = _norm(evidence)
-    own = [line for line in price_lines if quote in _norm(line)]
-    return best > 0 and bool(own) and all(score(line) < best for line in own)
+    own = [line for line in lines if quote in _norm(line)]
+    if not own or not all(line in price_lines for line in own):
+        return False
+    shared = set.intersection(*map(_product_words, price_lines)) if len(price_lines) > 1 else set()
+    name = _product_words(product_name) - shared
+    if not name or not any(name & _product_words(line) for line in lines):
+        return False
+    target_prices = {price_vnd} if price_vnd else set()
+    for line in price_lines:
+        if name & _product_words(line):
+            target_prices |= _prices(line)
+
+    def foreign(line: str) -> bool:
+        words = _product_words(line) - shared
+        return len(words) >= 2 and not words & name and not _prices(line) & target_prices
+
+    return all(foreign(line) for line in own) and (len(price_lines) >= 2 or bool(price_vnd))
 
 
 def _parse(raw: object) -> list[object]:
@@ -414,7 +442,7 @@ def extract_facts(
     another product is flagged ``other_product`` (a risk flag: the Studio leaves it unticked)."""
     source = sanitize_source(text)
     target_name = _clean_target_name(product_name)
-    if isinstance(price_vnd, bool) or not isinstance(price_vnd, int) or price_vnd <= 0:
+    if isinstance(price_vnd, bool) or not isinstance(price_vnd, int) or price_vnd < 1_000:
         price_vnd = None
     try:
         raw = llm(build_prompt(source, target_name, price_vnd))
@@ -500,7 +528,7 @@ def extract_facts(
         if _names_missing(ftext, source_words):
             # Owner decision: lenient. The merchant edits freely, so a name the source never uses is flagged, not dropped.
             flags = tuple(sorted({*flags, "unknown_proper_name"}))
-        if _other_product(evidence, source, target_name, price_vnd, flags):
+        if _other_product(evidence, ftext, source, target_name, price_vnd):
             flags = tuple(sorted({*flags, OTHER_PRODUCT_FLAG}))
         facts.append(ExtractedFact(ftype, ftext, evidence.strip(), flags))
     return ExtractionResult(tuple(facts), tuple(dropped))
