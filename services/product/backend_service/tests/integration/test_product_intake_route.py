@@ -229,3 +229,16 @@ def test_without_an_engine_manager_the_route_answers_502():
     d.engine_manager = None
     r = post(TestClient(create_app(config=cfg, deps=d)))
     assert (r.status_code, r.json()["error"]["code"]) == (502, "INTAKE_LLM_FAILED")
+
+
+def test_extract_accepts_optional_product_name_and_price_and_flags_other_product():
+    source = (
+        "Kem dưỡng Livento - 299.000đ, dưỡng ẩm lâu\nSữa rửa mặt Livento - 159.000đ, tạo bọt mịn"
+    )
+    llm = llm_returning(
+        [fact("feature", "Sữa rửa mặt tạo bọt mịn.", "Sữa rửa mặt Livento - 159.000đ, tạo bọt mịn")]
+    )
+    body = {"text": source, "product_name": "Kem dưỡng Livento", "price_vnd": 299000}
+    res = client(llm).post(URL, json=body, headers=TOKEN)
+    assert res.status_code == 200
+    assert res.json()["facts"][0]["flags"] == ["other_product"]
